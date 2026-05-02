@@ -175,13 +175,13 @@ export default function Bench() {
 
       <div className={`bench-toolbar${showFilters ? ' with-filters' : ''}`}>
         <input
-          className="search-input"
-          placeholder="작성자 또는 코드로 검색"
+          className="search-input bench-search"
+          placeholder="작성자·코드 검색"
           value={search}
           onChange={e => onSearch(e.target.value)}
           aria-label="작성자 또는 코드로 검색"
-          style={{ marginBottom: 0, flex: 1, minWidth: 200 }}
         />
+        <div className="bench-toolbar-spacer" />
         <div className="segment-group" role="tablist" aria-label="정렬 기준">
           {([['plays', '조회수'], ['likes', '좋아요'], ['er', 'ER'], ['recent', '최신순']] as const).map(([k, l]) => (
             <button
@@ -201,7 +201,11 @@ export default function Bench() {
           aria-controls="filter-panel"
           onClick={() => setShowFilters(!showFilters)}
         >
-          필터{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+          <svg className="filter-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M2 3h12M4 8h8M6 13h4" />
+          </svg>
+          필터
+          {activeFilterCount > 0 && <span className="filter-count">{activeFilterCount}</span>}
         </button>
       </div>
 

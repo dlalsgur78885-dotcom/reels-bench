@@ -931,22 +931,50 @@ select:focus-visible,
 
 /* ── Filter Toggle (필터 펼침 버튼) ── */
 .btn-filter-toggle {
-  padding: 6px 14px;
-  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  height: 36px;
   font-size: 12px;
   font-weight: 600;
+  font-family: inherit;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-surface);
   color: var(--text-secondary);
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  white-space: nowrap;
 }
-.btn-filter-toggle:hover { background: var(--bg-hover); }
+.btn-filter-toggle:hover { background: var(--bg-hover); color: var(--text-body); }
+.btn-filter-toggle[aria-expanded="true"] {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
 .btn-filter-toggle.has-filters {
   border-color: var(--accent);
   background: var(--accent-light);
   color: var(--accent);
+}
+.btn-filter-toggle .filter-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.btn-filter-toggle .filter-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 99px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Filter Chip (체크 가능 멀티 선택) ── */
@@ -1083,9 +1111,25 @@ select:focus-visible,
   margin-bottom: 16px;
 }
 .bench-toolbar.with-filters { margin-bottom: 0; }
+
+/* 검색바: 좌측 정렬, 폭 제한 */
+.bench-search {
+  width: 280px;
+  max-width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  margin-bottom: 0;
+  flex: 0 0 auto;
+}
+/* 검색~툴 사이 공간을 메우는 invisible spacer */
+.bench-toolbar-spacer {
+  flex: 1 1 0;
+}
 @media (max-width: 720px) {
   .bench-toolbar { flex-direction: column; align-items: stretch; }
   .bench-toolbar > * { width: 100%; }
+  .bench-search { width: 100%; }
+  .bench-toolbar-spacer { display: none; }
   .segment-group { overflow-x: auto; }
 }
 

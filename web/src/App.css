@@ -58,6 +58,7 @@
   margin-left: 220px;
   padding: 28px 32px;
   min-height: 100vh;
+  max-width: 1360px;
 }
 
 /* ── Page Header ── */
@@ -108,11 +109,17 @@
   line-height: 1.2;
 }
 
-/* ── Reel Grid ── */
+/* ── Reel Grid (1360px main 안에서 6열 고정) ── */
 .reel-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 14px;
+}
+@media (max-width: 1180px) {
+  .reel-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .reel-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .reel-card {
   background: var(--bg-surface);

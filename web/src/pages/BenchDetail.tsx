@@ -259,7 +259,7 @@ export default function BenchDetail() {
       </div>
 
       {tab === 'overview' && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 20 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 24 }}>
           <div>
             <Thumb src={shortcode ? thumbUrl(shortcode) : undefined} shortcode={shortcode} style={{ width: '100%', borderRadius: 'var(--radius-lg)', aspectRatio: '9/16', objectFit: 'cover' }} />
             <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)', display: 'flex', gap: 6, alignItems: 'baseline' }}>

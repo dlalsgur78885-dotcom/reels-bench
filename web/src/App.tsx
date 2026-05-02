@@ -7,11 +7,10 @@ import AnalysisPage from './pages/AnalysisPage'
 import Channels from './pages/Channels'
 import ReelIntake from './pages/ReelIntake'
 import Login from './pages/Login'
-import Users from './pages/Users'
-import Secrets from './pages/Secrets'
 import ScriptGen from './pages/ScriptGen'
 import MyProducts from './pages/MyProducts'
 import Phrases from './pages/Phrases'
+import Settings from './pages/Settings'
 import { supabase } from './supabase'
 import { api, type UserProfile } from './api'
 import './App.css'
@@ -73,18 +72,6 @@ export default function App() {
               {n.label}
             </NavLink>
           ))}
-          {me?.role === 'admin' && (
-            <>
-              <NavLink to="/users" className={({ isActive }) => `sb-item${isActive ? ' active' : ''}`}>
-                <span className="sb-icon">&#x1F465;</span>
-                직원 관리
-              </NavLink>
-              <NavLink to="/admin/secrets" className={({ isActive }) => `sb-item${isActive ? ' active' : ''}`}>
-                <span className="sb-icon">&#x1F510;</span>
-                시크릿
-              </NavLink>
-            </>
-          )}
         </nav>
         <UserMenu me={me} />
       </aside>
@@ -100,16 +87,14 @@ export default function App() {
           <Route path="/script" element={<ScriptGen />} />
           <Route path="/my-products" element={<MyProducts />} />
           <Route path="/login" element={<Navigate to="/" replace />} />
-          <Route path="/users" element={
+          <Route path="/settings" element={
             meLoading ? <div style={{ padding: 40, color: 'var(--text-muted)' }}>로딩...</div>
-            : me?.role === 'admin' ? <Users />
+            : me?.role === 'admin' ? <Settings />
             : <Navigate to="/" replace />
           } />
-          <Route path="/admin/secrets" element={
-            meLoading ? <div style={{ padding: 40, color: 'var(--text-muted)' }}>로딩...</div>
-            : me?.role === 'admin' ? <Secrets />
-            : <Navigate to="/" replace />
-          } />
+          {/* 이전 경로 → 설정 탭으로 redirect */}
+          <Route path="/users" element={<Navigate to="/settings?tab=users" replace />} />
+          <Route path="/admin/secrets" element={<Navigate to="/settings?tab=secrets" replace />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
       </main>
@@ -120,6 +105,11 @@ export default function App() {
 function UserMenu({ me }: { me: UserProfile | null }) {
   const navigate = useNavigate()
   const logout = async () => { await supabase.auth.signOut(); navigate('/login') }
+  const btnSt: React.CSSProperties = {
+    width: '100%', padding: '6px 10px', fontSize: 11,
+    border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+    background: 'var(--bg-base)', color: 'var(--text-secondary)', cursor: 'pointer',
+  }
   return (
     <div style={{
       marginTop: 'auto', padding: '12px 14px', borderTop: '1px solid var(--border-subtle)',
@@ -131,11 +121,10 @@ function UserMenu({ me }: { me: UserProfile | null }) {
       <div style={{ fontSize: 10, marginBottom: 6 }}>
         {me?.role === 'admin' ? '관리자' : '직원'}
       </div>
-      <button onClick={logout} style={{
-        width: '100%', padding: '6px 10px', fontSize: 11,
-        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-        background: 'var(--bg-base)', color: 'var(--text-secondary)', cursor: 'pointer',
-      }}>로그아웃</button>
+      <button onClick={logout} style={btnSt}>로그아웃</button>
+      {me?.role === 'admin' && (
+        <button onClick={() => navigate('/settings')} style={{ ...btnSt, marginTop: 6 }}>설정</button>
+      )}
     </div>
   )
 }

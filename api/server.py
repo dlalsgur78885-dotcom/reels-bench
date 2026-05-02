@@ -457,12 +457,51 @@ def list_my_products(request: Request):
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     import requests as _r
-    r = _r.get(
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+
+    # 1. 소유 상품
+    own = _r.get(
         f"{SUPA}/rest/v1/my_products?owner_id=eq.{me['id']}&select=*&order=updated_at.desc",
-        headers={"apikey": SK, "Authorization": f"Bearer {SK}"},
-        timeout=10,
-    )
-    return r.json() if r.status_code == 200 else []
+        headers=H, timeout=10,
+    ).json() or []
+    me_name = (me.get("display_name") or (me.get("email") or "").split("@")[0])
+    for p in own:
+        p["is_shared"] = False
+        p["permission"] = "owner"
+        p["owner_name"] = me_name
+
+    # 2. 공유받은 상품
+    shared_rows = _r.get(
+        f"{SUPA}/rest/v1/my_product_shares?shared_with_id=eq.{me['id']}"
+        f"&select=permission,product:my_products(*)",
+        headers=H, timeout=10,
+    ).json() or []
+
+    # 소유자 이름 매핑 (한 번에 fetch)
+    owner_ids = list({row["product"]["owner_id"] for row in shared_rows if row.get("product")})
+    name_map: dict[str, str] = {}
+    if owner_ids:
+        prof = _r.get(
+            f"{SUPA}/rest/v1/profiles?id=in.({','.join(owner_ids)})&select=id,display_name,email",
+            headers=H, timeout=10,
+        ).json() or []
+        for p in prof:
+            name_map[p["id"]] = p.get("display_name") or (p.get("email") or "").split("@")[0]
+
+    shared = []
+    for row in shared_rows:
+        prod = row.get("product")
+        if not prod:
+            continue
+        prod["is_shared"] = True
+        prod["permission"] = row["permission"]
+        prod["owner_name"] = name_map.get(prod["owner_id"], "?")
+        shared.append(prod)
+
+    # 최신순으로 합쳐서 반환
+    merged = own + shared
+    merged.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
+    return merged
 
 
 @app.post("/api/my-products")
@@ -491,11 +530,20 @@ def update_my_product(pid: int, req: MyProductIn, request: Request):
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     import requests as _r
-    # 소유자 확인
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    # 소유자 OR 수정 권한 share
     own = _r.get(f"{SUPA}/rest/v1/my_products?id=eq.{pid}&select=owner_id",
-        headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10).json()
-    if not own or own[0]["owner_id"] != me["id"]:
-        raise HTTPException(403, "권한 없음")
+        headers=H, timeout=10).json()
+    if not own:
+        raise HTTPException(404, "상품 없음")
+    if own[0]["owner_id"] != me["id"]:
+        share = _r.get(
+            f"{SUPA}/rest/v1/my_product_shares?product_id=eq.{pid}"
+            f"&shared_with_id=eq.{me['id']}&permission=eq.edit&select=id&limit=1",
+            headers=H, timeout=10,
+        ).json()
+        if not share:
+            raise HTTPException(403, "권한 없음")
     r = _r.patch(
         f"{SUPA}/rest/v1/my_products?id=eq.{pid}",
         headers={"apikey": SK, "Authorization": f"Bearer {SK}",
@@ -520,6 +568,120 @@ def delete_my_product(pid: int, request: Request):
         timeout=10,
     )
     return {"message": "삭제 완료"}
+
+
+# ── My Products: 공유 ──
+
+class ShareCreateRequest(BaseModel):
+    user_ids: list[str]
+    permission: str = "view"  # 'view' | 'edit'
+
+
+def _assert_product_owner(pid: int, me_id: str) -> None:
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    import requests as _r
+    rows = _r.get(
+        f"{SUPA}/rest/v1/my_products?id=eq.{pid}&select=owner_id",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}"},
+        timeout=10,
+    ).json()
+    if not rows:
+        raise HTTPException(404, "상품 없음")
+    if rows[0]["owner_id"] != me_id:
+        raise HTTPException(403, "공유 관리는 소유자만 가능")
+
+
+@app.get("/api/my-products/{pid}/shares")
+def list_product_shares(pid: int, request: Request):
+    """소유자: 이 상품을 누구에게 공유했는지 + 권한."""
+    me = auth_svc.require_user(request)
+    _assert_product_owner(pid, me["id"])
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    import requests as _r
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+
+    shares = _r.get(
+        f"{SUPA}/rest/v1/my_product_shares?product_id=eq.{pid}"
+        f"&select=shared_with_id,permission,created_at&order=created_at.desc",
+        headers=H, timeout=10,
+    ).json() or []
+
+    if not shares:
+        return []
+
+    user_ids = [s["shared_with_id"] for s in shares]
+    prof = _r.get(
+        f"{SUPA}/rest/v1/profiles?id=in.({','.join(user_ids)})&select=id,email,display_name",
+        headers=H, timeout=10,
+    ).json() or []
+    pmap = {p["id"]: p for p in prof}
+    for s in shares:
+        p = pmap.get(s["shared_with_id"]) or {}
+        s["display_name"] = p.get("display_name") or (p.get("email") or "").split("@")[0]
+        s["email"] = p.get("email")
+    return shares
+
+
+@app.post("/api/my-products/{pid}/shares")
+def create_product_shares(pid: int, req: ShareCreateRequest, request: Request):
+    me = auth_svc.require_user(request)
+    _assert_product_owner(pid, me["id"])
+    if req.permission not in ("view", "edit"):
+        raise HTTPException(400, "permission must be view or edit")
+
+    rows = [
+        {"product_id": pid, "shared_with_id": uid, "permission": req.permission, "created_by": me["id"]}
+        for uid in req.user_ids if uid and uid != me["id"]
+    ]
+    if not rows:
+        return {"message": "변경 없음", "count": 0}
+
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    import requests as _r
+    r = _r.post(
+        f"{SUPA}/rest/v1/my_product_shares?on_conflict=product_id,shared_with_id",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json",
+                 "Prefer": "resolution=merge-duplicates,return=representation"},
+        json=rows, timeout=10,
+    )
+    if r.status_code not in (200, 201):
+        raise HTTPException(r.status_code, r.text[:200])
+    return {"message": f"{len(rows)}명에게 공유", "count": len(rows)}
+
+
+@app.delete("/api/my-products/{pid}/shares/{user_id}")
+def delete_product_share(pid: int, user_id: str, request: Request):
+    me = auth_svc.require_user(request)
+    _assert_product_owner(pid, me["id"])
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    import requests as _r
+    _r.delete(
+        f"{SUPA}/rest/v1/my_product_shares?product_id=eq.{pid}&shared_with_id=eq.{user_id}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}", "Prefer": "return=minimal"},
+        timeout=10,
+    )
+    return {"message": "공유 해제 완료"}
+
+
+@app.get("/api/users/shareable")
+def list_shareable_users(request: Request):
+    """공유 대상 picker용 — 활성 사용자 (자기 제외). 일반 직원도 호출 가능."""
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    import requests as _r
+    rows = _r.get(
+        f"{SUPA}/rest/v1/profiles?active=eq.true"
+        f"&select=id,email,display_name&order=display_name.asc.nullslast",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}"},
+        timeout=10,
+    ).json() or []
+    return [u for u in rows if u["id"] != me["id"]]
 
 
 # ── Auth ──

@@ -299,6 +299,15 @@ export const api = {
   updateMyProduct: (id: number, data: { name: string; persona?: string; usps?: any[] }) =>
     patch<MyProduct>(`/api/my-products/${id}`, data),
   deleteMyProduct: (id: number) => del<{ message: string }>(`/api/my-products/${id}`),
+  // My Products: 공유
+  listProductShares: (pid: number) => get<ShareInfo[]>(`/api/my-products/${pid}/shares`),
+  shareProduct: (pid: number, userIds: string[], permission: 'view' | 'edit') =>
+    post<{ message: string; count: number }>(`/api/my-products/${pid}/shares`, {
+      user_ids: userIds, permission,
+    }),
+  unshareProduct: (pid: number, userId: string) =>
+    del<{ message: string }>(`/api/my-products/${pid}/shares/${userId}`),
+  shareableUsers: () => get<ShareableUser[]>('/api/users/shareable'),
   // Auth
   me: () => get<UserProfile>('/api/me'),
   listUsers: () => get<UserProfile[]>('/api/users'),
@@ -338,6 +347,23 @@ export interface MyProduct {
   usps: { usp: string; reviews: string[] }[]
   created_at: string
   updated_at: string
+  is_shared?: boolean
+  permission?: 'owner' | 'view' | 'edit'
+  owner_name?: string
+}
+
+export interface ShareInfo {
+  shared_with_id: string
+  permission: 'view' | 'edit'
+  display_name: string
+  email: string | null
+  created_at: string
+}
+
+export interface ShareableUser {
+  id: string
+  email: string
+  display_name: string | null
 }
 
 export interface UserProfile {

@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef, Fragment } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api, thumbUrl } from '../api'
-import type { Metadata, Transcript, Analysis, AnalysisStatus, ExtraData, UserProfile } from '../api'
+import type { Metadata, Transcript, Analysis, AnalysisStatus, ExtraData } from '../api'
+import { useMe } from '../auth'
 import { fmtNum, engagementRate, erColor, parseFrameAnalysis } from '../utils'
 import FrameTimeline from '../components/FrameTimeline'
 import Thumb from '../components/Thumb'
@@ -105,10 +106,8 @@ export default function BenchDetail() {
   const [ttsScript, setTtsScript] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [transcriptOpen, setTranscriptOpen] = useState(false)
-  const [me, setMe] = useState<UserProfile | null>(null)
   const [deleting, setDeleting] = useState(false)
-
-  useEffect(() => { api.me().then(setMe).catch(() => {}) }, [])
+  const me = useMe()
 
   const canDelete = !!me && (me.role === 'admin' || me.can_delete_reels)
   const onDelete = async () => {

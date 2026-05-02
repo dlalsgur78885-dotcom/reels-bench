@@ -13,7 +13,23 @@ import Phrases from './pages/Phrases'
 import Settings from './pages/Settings'
 import { supabase } from './supabase'
 import { api, type UserProfile } from './api'
+import { AuthContext } from './auth'
 import './App.css'
+
+const ME_CACHE_KEY = 'cached_me'
+
+function loadCachedMe(): UserProfile | null {
+  try {
+    const raw = localStorage.getItem(ME_CACHE_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+function saveCachedMe(p: UserProfile | null) {
+  try {
+    if (p) localStorage.setItem(ME_CACHE_KEY, JSON.stringify(p))
+    else localStorage.removeItem(ME_CACHE_KEY)
+  } catch {}
+}
 
 const NAV = [
   { to: '/', label: '홈', icon: '&#x2302;' },
@@ -26,7 +42,7 @@ const NAV = [
 
 export default function App() {
   const [session, setSession] = useState<any>(null)
-  const [me, setMe] = useState<UserProfile | null>(null)
+  const [me, setMe] = useState<UserProfile | null>(loadCachedMe)
   const [bootstrapping, setBootstrapping] = useState(true)
   const [meLoading, setMeLoading] = useState(false)
 
@@ -40,9 +56,12 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!session) { setMe(null); setMeLoading(false); return }
+    if (!session) { setMe(null); saveCachedMe(null); setMeLoading(false); return }
     setMeLoading(true)
-    api.me().then(setMe).catch(() => setMe(null)).finally(() => setMeLoading(false))
+    api.me()
+      .then(p => { setMe(p); saveCachedMe(p) })
+      .catch(() => { setMe(null); saveCachedMe(null) })
+      .finally(() => setMeLoading(false))
   }, [session])
 
   if (bootstrapping) return null
@@ -57,6 +76,7 @@ export default function App() {
   }
 
   return (
+    <AuthContext.Provider value={{ me }}>
     <div className="layout">
       <aside className="sidebar">
         <div className="sb-logo">릴스 벤치</div>
@@ -99,6 +119,7 @@ export default function App() {
         </Routes>
       </main>
     </div>
+    </AuthContext.Provider>
   )
 }
 

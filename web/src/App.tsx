@@ -56,13 +56,15 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    // bootstrap이 끝나기 전에는 캐시된 me를 보존 (초기 session=null로 wipe 방지)
+    if (bootstrapping) return
     if (!session) { setMe(null); saveCachedMe(null); setMeLoading(false); return }
     setMeLoading(true)
     api.me()
       .then(p => { setMe(p); saveCachedMe(p) })
       .catch(() => { setMe(null); saveCachedMe(null) })
       .finally(() => setMeLoading(false))
-  }, [session])
+  }, [session, bootstrapping])
 
   if (bootstrapping) return null
 

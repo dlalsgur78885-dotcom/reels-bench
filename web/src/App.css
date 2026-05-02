@@ -93,7 +93,7 @@
   padding: 18px 20px;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
-.kpi-card:hover { border-color: #d1d5db; box-shadow: var(--shadow-sm); }
+.kpi-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-sm); }
 .kpi-label {
   color: var(--text-muted);
   font-size: 12px;
@@ -522,7 +522,6 @@
   color: var(--text-body);
   outline: none;
   transition: border-color 0.15s;
-  margin-bottom: 16px;
 }
 .search-input:focus { border-color: var(--accent); }
 .search-input::placeholder { color: var(--text-muted); }
@@ -688,7 +687,7 @@
   cursor: pointer;
 }
 .channel-delete:hover {
-  background: #FEF2F2;
+  background: var(--error-soft-bg);
 }
 .channel-delete:disabled {
   opacity: .5;
@@ -870,9 +869,9 @@
   font-size: 12px;
 }
 .manage-row button.danger {
-  border-color: #FCA5A5;
+  border-color: var(--error-soft-border);
   color: var(--error);
-  background: #FEF2F2;
+  background: var(--error-soft-bg);
 }
 
 /* ── Focus Ring (시스템 전체 키보드 포커스) ── */
@@ -955,7 +954,7 @@ select:focus-visible,
 .btn-filter-toggle.has-filters {
   border-color: var(--accent);
   background: var(--accent-light);
-  color: var(--accent);
+  color: var(--primary-600);
 }
 .btn-filter-toggle .filter-icon {
   width: 14px;
@@ -979,10 +978,11 @@ select:focus-visible,
 
 /* ── Filter Chip (체크 가능 멀티 선택) ── */
 .filter-chip {
-  padding: 6px 12px;
-  min-height: 28px;
-  font-size: 11px;
+  padding: 0 14px;
+  min-height: 32px;
+  font-size: 12px;
   font-weight: 600;
+  font-family: inherit;
   border: 1px solid var(--border);
   border-radius: 99px;
   background: var(--bg-base);
@@ -1071,8 +1071,8 @@ select:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 26px;
-  padding: 0 8px;
+  height: 30px;
+  padding: 0 10px;
   font-size: 12px;
   font-weight: 500;
   font-family: inherit;
@@ -1113,7 +1113,7 @@ select:focus-visible,
 .active-filter-clear {
   margin-left: auto;
   padding: 0 8px;
-  height: 26px;
+  height: 30px;
   font-size: 11px;
   font-weight: 600;
   background: none;
@@ -1401,7 +1401,7 @@ select:focus-visible,
   border: 1px solid var(--accent);
   border-radius: var(--radius-sm);
   background: var(--accent-light);
-  color: var(--accent);
+  color: var(--primary-600);
   cursor: pointer;
   transition: background 0.15s;
 }
@@ -1660,9 +1660,9 @@ select:focus-visible,
   font-weight: 600;
 }
 .intake-alert.error {
-  border-color: #FCA5A5;
+  border-color: var(--error-soft-border);
   color: var(--error);
-  background: #FEF2F2;
+  background: var(--error-soft-bg);
 }
 .intake-result {
   display: flex;

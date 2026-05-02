@@ -1,0 +1,48 @@
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css');
+
+:root {
+  --primary-500: #307df0;
+  --primary-600: #2664c3;
+  --bg-base: #F8F9FB;
+  --bg-surface: #FFFFFF;
+  --bg-elevated: #F2F3F7;
+  --bg-hover: #F5F6FA;
+  --text-primary: #121721;
+  --text-body: #1A1B1C;
+  --text-secondary: #6B7280;
+  --text-muted: #8B94A9;
+  --text-dim: #A7ABB6;
+  --border: #E5E7EB;
+  --border-subtle: #F0F1F5;
+  --border-strong: #D1D5DB;
+  --error-soft-bg: #FEF2F2;
+  --error-soft-border: #FCA5A5;
+  --accent: #307df0;
+  --accent-light: rgba(48,125,240,0.08);
+  --accent-medium: rgba(48,125,240,0.12);
+  --success: #10B981;
+  --error: #EF4444;
+  --warning: #F59E0B;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.06);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+* { font-family: 'Pretendard Variable', 'Pretendard', -apple-system, sans-serif; }
+
+body {
+  background: var(--bg-base);
+  color: var(--text-body);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+a { color: inherit; text-decoration: none; }
+
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #c8ccdb; border-radius: 99px; }

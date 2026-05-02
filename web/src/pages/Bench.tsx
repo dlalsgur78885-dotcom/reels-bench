@@ -206,14 +206,14 @@ export default function Bench() {
           />
         </div>
         <div className="bench-toolbar-spacer" />
-        <div className="segment-group" role="tablist" aria-label="정렬 기준">
+        <div className="segment-group" role="radiogroup" aria-label="정렬 기준">
           {([['plays', '조회수'], ['likes', '좋아요'], ['er', 'ER'], ['recent', '최신순']] as const).map(([k, l]) => (
             <button
               key={k}
               type="button"
               className={`btn-segment${sort === k ? ' active' : ''}`}
-              role="tab"
-              aria-selected={sort === k}
+              role="radio"
+              aria-checked={sort === k}
               onClick={() => setSort(k)}
             >{l}</button>
           ))}

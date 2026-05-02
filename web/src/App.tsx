@@ -51,18 +51,25 @@ export default function App() {
       setSession(data.session)
       setBootstrapping(false)
     })
-    const { data: sub } = supabase.auth.onAuthStateChange((_, s) => setSession(s))
+    // SIGNED_OUT 이벤트에서만 캐시 wipe — 일시적 session=null/토큰 갱신 중에는 보존
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      setSession(s)
+      if (event === 'SIGNED_OUT') {
+        setMe(null)
+        saveCachedMe(null)
+      }
+    })
     return () => sub.subscription.unsubscribe()
   }, [])
 
   useEffect(() => {
-    // bootstrap이 끝나기 전에는 캐시된 me를 보존 (초기 session=null로 wipe 방지)
     if (bootstrapping) return
-    if (!session) { setMe(null); saveCachedMe(null); setMeLoading(false); return }
+    if (!session) { setMeLoading(false); return }
     setMeLoading(true)
     api.me()
       .then(p => { setMe(p); saveCachedMe(p) })
-      .catch(() => { setMe(null); saveCachedMe(null) })
+      // api.me() 실패해도 cached me는 보존 (네트워크 일시 오류일 수 있음)
+      .catch(() => {})
       .finally(() => setMeLoading(false))
   }, [session, bootstrapping])
 

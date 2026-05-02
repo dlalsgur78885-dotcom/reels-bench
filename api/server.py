@@ -328,13 +328,20 @@ def refine_script(req: ScriptRefineRequest):
                     }
             except Exception as e:
                 logger.warning("ref fetch failed in refine: %s", e)
-        # B. Flash로 어색 문장 사전 검출
+        # B. Pro 3.1 어색 검출 (도메인 정합 + 구체 교정안)
         awkward_info = []
         try:
             ref_for_aw = (ref_info or {}).get("sentences") or []
-            awkward_info = script_gen.detect_awkward_sentences(req.draft.get("sentences") or [], ref_for_aw)
+            tp = req.draft.get("_target_persona") or {}
+            pn = req.draft.get("_product_name", "") or ""
+            awkward_info = script_gen.detect_awkward_sentences(
+                req.draft.get("sentences") or [],
+                ref_for_aw,
+                product_name=pn,
+                target_persona=tp,
+            )
             if awkward_info:
-                logger.info("[refine] %d awkward sentences detected", len(awkward_info))
+                logger.info("[refine] %d awkward sentences detected (Pro)", len(awkward_info))
         except Exception as e:
             logger.warning("[refine] awkward detection failed: %s", e)
 
@@ -1875,21 +1882,14 @@ def get_user_analysis(username: str, limit: int = Query(24, ge=1, le=100)):
     if not username:
         raise HTTPException(400, "username이 필요합니다")
 
-    # author는 reels_metadata.author_username에서 — 먼저 해당 작가의 shortcode 모음
-    by_author = supabase.sb_get(
+    # 1. metadata에서 author 필터로 한 번에 모든 필드 (이전: shortcode만 조회 후 재조회)
+    meta = supabase.sb_get(
         "reels_metadata",
-        f"author_username=eq.{username}&select=shortcode&limit=500",
+        f"author_username=eq.{username}"
+        f"&select=shortcode,play_count,like_count,comment_count,video_duration,thumbnail_url,caption_text,author_username,taken_at"
+        f"&limit=500",
     )
-    sc_set = {r["shortcode"] for r in by_author}
-    if not sc_set:
-        reels = []
-    else:
-        sc_filter = ",".join(f'"{s}"' for s in sc_set)
-        reels = supabase.sb_get(
-            "reels",
-            f"shortcode=in.({sc_filter})&select=shortcode,url,account_category,collected_at&order=collected_at.desc&limit=500",
-        )
-    if not reels:
+    if not meta:
         return {
             "username": username,
             "stats": {
@@ -1909,20 +1909,26 @@ def get_user_analysis(username: str, limit: int = Query(24, ge=1, le=100)):
             },
         }
 
-    shortcodes = [r["shortcode"] for r in reels if r.get("shortcode")]
+    shortcodes = [m["shortcode"] for m in meta if m.get("shortcode")]
     sc_filter = ",".join(shortcodes)
-    meta = supabase.sb_get(
-        "reels_metadata",
-        f"shortcode=in.({sc_filter})&select=shortcode,play_count,like_count,comment_count,video_duration,thumbnail_url,caption_text,author_username,taken_at&limit=500",
-    ) if sc_filter else []
-    analyses = supabase.sb_get(
-        "opus_analyses",
-        f"shortcode=in.({sc_filter})&select=shortcode,analysis,analyzed_at&limit=500",
-    ) if sc_filter else []
-    categories = supabase.sb_get(
-        "reels_category",
-        f"shortcode=in.({sc_filter})&select=shortcode,topic,style,tags&limit=500",
-    ) if sc_filter else []
+
+    # 2. reels / analyses / categories 병렬 조회
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_reels = ex.submit(
+            supabase.sb_get, "reels",
+            f"shortcode=in.({sc_filter})&select=shortcode,url,account_category,collected_at&order=collected_at.desc&limit=500",
+        )
+        f_analyses = ex.submit(
+            supabase.sb_get, "opus_analyses",
+            f"shortcode=in.({sc_filter})&select=shortcode,analysis,analyzed_at&limit=500",
+        )
+        f_categories = ex.submit(
+            supabase.sb_get, "reels_category",
+            f"shortcode=in.({sc_filter})&select=shortcode,topic,style,tags&limit=500",
+        )
+    reels = f_reels.result() or []
+    analyses = f_analyses.result() or []
+    categories = f_categories.result() or []
 
     meta_map = {m["shortcode"]: m for m in meta}
     analysis_map = {a["shortcode"]: a for a in analyses}

@@ -6,6 +6,9 @@ import requests
 from fastapi import Request, HTTPException, Depends
 from . import supabase
 
+# supabase 서비스의 session 재사용 (connection pool 공유)
+_S = supabase.get_session()
+
 
 def _hash_key(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
@@ -28,7 +31,7 @@ def issue(owner: str, rate_limit: int = 60) -> str | None:
     }
     SUPA = os.getenv("SUPABASE_URL")
     KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
-    r = requests.post(
+    r = _S.post(
         f"{SUPA}/rest/v1/api_keys",
         headers={
             "apikey": KEY, "Authorization": f"Bearer {KEY}",
@@ -53,7 +56,7 @@ def verify_key(api_key: str | None) -> dict | None:
     if not SUPA or not SK:
         return None
     try:
-        r = requests.get(
+        r = _S.get(
             f"{SUPA}/rest/v1/api_keys?key_hash=eq.{h}"
             f"&select=id,owner,rate_limit_per_min,enabled,usage_count&limit=1",
             headers={"apikey": SK, "Authorization": f"Bearer {SK}"},
@@ -72,7 +75,7 @@ def verify_key(api_key: str | None) -> dict | None:
         from datetime import datetime, timezone
         SUPA = os.getenv("SUPABASE_URL")
         KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
-        requests.patch(
+        _S.patch(
             f"{SUPA}/rest/v1/api_keys?id=eq.{row['id']}",
             headers={
                 "apikey": KEY, "Authorization": f"Bearer {KEY}",
@@ -113,7 +116,7 @@ def verify_jwt(token: str | None) -> dict | None:
     if not SUPA or not ANON:
         return None
     try:
-        r = requests.get(
+        r = _S.get(
             f"{SUPA}/auth/v1/user",
             headers={"apikey": ANON, "Authorization": f"Bearer {token}"},
             timeout=10,
@@ -132,7 +135,7 @@ def get_profile(user_id: str) -> dict | None:
     if not SUPA or not SK or not user_id:
         return None
     try:
-        r = requests.get(
+        r = _S.get(
             f"{SUPA}/rest/v1/profiles?id=eq.{user_id}&select=id,email,display_name,role,active,can_delete_reels,created_at,last_login_at&limit=1",
             headers={"apikey": SK, "Authorization": f"Bearer {SK}"},
             timeout=10,

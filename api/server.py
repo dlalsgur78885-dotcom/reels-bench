@@ -131,7 +131,7 @@ def extract_personas(req: PersonaExtractRequest):
 
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    import requests as _r
+    _r = supabase.get_session()
 
     # 1. 캐시 lookup
     if req.product_id is not None and req.usp_index is not None:
@@ -194,7 +194,7 @@ def update_usp_personas(pid: int, req: UspPersonasUpdateRequest, request: Reques
     me = auth_svc.require_user(request)
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    import requests as _r
+    _r = supabase.get_session()
     # ownership
     own = _r.get(
         f"{SUPA}/rest/v1/my_products?id=eq.{pid}&select=owner_id,usps",
@@ -223,7 +223,7 @@ def classify_sentences_for_reel(shortcode: str, request: Request):
     auth_svc.require_user(request)
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    import requests as _r
+    _r = supabase.get_session()
     H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
     # 1. transcripts + structure 가져오기
     trans = _r.get(
@@ -337,6 +337,50 @@ def refine_script(req: ScriptRefineRequest):
                 logger.info("[refine] %d awkward sentences detected", len(awkward_info))
         except Exception as e:
             logger.warning("[refine] awkward detection failed: %s", e)
+
+        # main USP 키워드 누락 체크 — Hook 첫 문장 + CTA 마지막 문장 위치만 (강제 X, 자연스러움 우선)
+        try:
+            target_persona = req.draft.get("_target_persona") or {}
+            main_kws = script_gen._extract_main_usp_keywords(req.usps or [], target_persona)
+            if main_kws:
+                draft_sents = req.draft.get("sentences") or []
+                plan = req.draft.get("_plan") or {}
+                # hook 첫 위치 + cta 마지막 위치만 체크
+                check_indices: list[int] = []  # 0-based
+                flat_idx = 0
+                hook_first_idx = None
+                cta_last_idx = None
+                for sec in (plan.get("sections") or []):
+                    sec_name = sec.get("name", "")
+                    sents = sec.get("sentences") or []
+                    if not sents:
+                        continue
+                    if sec_name == "hook" and hook_first_idx is None:
+                        hook_first_idx = flat_idx
+                    if sec_name == "cta":
+                        cta_last_idx = flat_idx + len(sents) - 1
+                    flat_idx += len(sents)
+                if hook_first_idx is not None:
+                    check_indices.append(hook_first_idx)
+                if cta_last_idx is not None and cta_last_idx != hook_first_idx:
+                    check_indices.append(cta_last_idx)
+
+                missing_main = []
+                for i in check_indices:
+                    if i >= len(draft_sents):
+                        continue
+                    text = draft_sents[i].get("text", "")
+                    if not any(kw in text for kw in main_kws):
+                        missing_main.append({
+                            "idx": i + 1,
+                            "text": text,
+                            "reason": f"main USP 키워드 누락 (이 핵심 위치엔 필수: {', '.join(main_kws[:3])})",
+                        })
+                if missing_main:
+                    logger.info("[refine] %d main USP keyword missing at hook-first/cta-last: %s", len(missing_main), [m["idx"] for m in missing_main])
+                    awkward_info.extend(missing_main)
+        except Exception as e:
+            logger.warning("[refine] main USP keyword check failed: %s", e)
         prompt = script_gen.build_refine_prompt(req.draft, unified.get("city"), ref_info=ref_info, usps=req.usps, awkward_info=awkward_info)
         draft_n = len(req.draft.get("sentences") or [])
         # 길이 매칭: ref 있으면 그 수로, 없으면 draft 그대로
@@ -456,7 +500,7 @@ def list_my_products(request: Request):
     me = auth_svc.require_user(request)
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    import requests as _r
+    _r = supabase.get_session()
     H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
 
     # 소유 + 공유받은 상품을 병렬로 조회
@@ -515,7 +559,7 @@ def create_my_product(req: MyProductIn, request: Request):
         raise HTTPException(400, "이름 필수")
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    import requests as _r
+    _r = supabase.get_session()
     r = _r.post(
         f"{SUPA}/rest/v1/my_products",
         headers={"apikey": SK, "Authorization": f"Bearer {SK}",
@@ -533,7 +577,7 @@ def update_my_product(pid: int, req: MyProductIn, request: Request):
     me = auth_svc.require_user(request)
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    import requests as _r
+    _r = supabase.get_session()
     H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
     # 소유자 OR 수정 권한 share
     own = _r.get(f"{SUPA}/rest/v1/my_products?id=eq.{pid}&select=owner_id",
@@ -565,7 +609,7 @@ def delete_my_product(pid: int, request: Request):
     me = auth_svc.require_user(request)
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    import requests as _r
+    _r = supabase.get_session()
     r = _r.delete(
         f"{SUPA}/rest/v1/my_products?id=eq.{pid}&owner_id=eq.{me['id']}",
         headers={"apikey": SK, "Authorization": f"Bearer {SK}", "Prefer": "return=minimal"},
@@ -584,7 +628,7 @@ class ShareCreateRequest(BaseModel):
 def _assert_product_owner(pid: int, me_id: str) -> None:
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    import requests as _r
+    _r = supabase.get_session()
     rows = _r.get(
         f"{SUPA}/rest/v1/my_products?id=eq.{pid}&select=owner_id",
         headers={"apikey": SK, "Authorization": f"Bearer {SK}"},
@@ -603,7 +647,7 @@ def list_product_shares(pid: int, request: Request):
     _assert_product_owner(pid, me["id"])
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    import requests as _r
+    _r = supabase.get_session()
     H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
 
     shares = _r.get(
@@ -644,7 +688,7 @@ def create_product_shares(pid: int, req: ShareCreateRequest, request: Request):
 
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    import requests as _r
+    _r = supabase.get_session()
     r = _r.post(
         f"{SUPA}/rest/v1/my_product_shares?on_conflict=product_id,shared_with_id",
         headers={"apikey": SK, "Authorization": f"Bearer {SK}",
@@ -663,7 +707,7 @@ def delete_product_share(pid: int, user_id: str, request: Request):
     _assert_product_owner(pid, me["id"])
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    import requests as _r
+    _r = supabase.get_session()
     _r.delete(
         f"{SUPA}/rest/v1/my_product_shares?product_id=eq.{pid}&shared_with_id=eq.{user_id}",
         headers={"apikey": SK, "Authorization": f"Bearer {SK}", "Prefer": "return=minimal"},
@@ -678,7 +722,7 @@ def list_shareable_users(request: Request):
     me = auth_svc.require_user(request)
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    import requests as _r
+    _r = supabase.get_session()
     rows = _r.get(
         f"{SUPA}/rest/v1/profiles?active=eq.true"
         f"&select=id,email,display_name&order=display_name.asc.nullslast",
@@ -699,7 +743,7 @@ def get_me(request: Request):
         from datetime import datetime, timezone
         SUPA = (os.getenv("SUPABASE_URL") or "").strip()
         KEY = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or "").strip()
-        import requests as _r
+        _r = supabase.get_session()
         _r.patch(
             f"{SUPA}/rest/v1/profiles?id=eq.{profile['id']}",
             headers={"apikey": KEY, "Authorization": f"Bearer {KEY}",
@@ -718,7 +762,7 @@ def list_users(request: Request):
     auth_svc.require_admin(request)
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     KEY = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or "").strip()
-    import requests as _r
+    _r = supabase.get_session()
     r = _r.get(
         f"{SUPA}/rest/v1/profiles?select=id,email,display_name,role,active,can_delete_reels,created_at,last_login_at&order=created_at.desc",
         headers={"apikey": KEY, "Authorization": f"Bearer {KEY}"},
@@ -747,7 +791,7 @@ def invite_user(req: UserInviteRequest, request: Request):
         raise HTTPException(500, "SUPABASE_SERVICE_ROLE_KEY 필요")
 
     import secrets
-    import requests as _r
+    _r = supabase.get_session()
     pw = req.password or ("Tmp_" + secrets.token_urlsafe(12))
 
     # 1. auth user 생성 (admin API)
@@ -808,7 +852,7 @@ def update_user(user_id: str, req: UserUpdateRequest, request: Request):
 
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or "").strip()
-    import requests as _r
+    _r = supabase.get_session()
     r = _r.patch(
         f"{SUPA}/rest/v1/profiles?id=eq.{user_id}",
         headers={"apikey": SK, "Authorization": f"Bearer {SK}",
@@ -830,7 +874,7 @@ def delete_user(user_id: str, request: Request):
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     if not SK:
         raise HTTPException(500, "SUPABASE_SERVICE_ROLE_KEY 필요")
-    import requests as _r
+    _r = supabase.get_session()
     r = _r.delete(
         f"{SUPA}/auth/v1/admin/users/{user_id}",
         headers={"apikey": SK, "Authorization": f"Bearer {SK}"},
@@ -1547,7 +1591,7 @@ def _fetch_hiker_metadata(shortcode: str) -> dict:
     key = os.getenv("HIKER_API_KEY")
     if not key:
         return {}
-    import requests as _r
+    _r = supabase.get_session()
     try:
         r = _r.get(
             "https://api.hikerapi.com/v1/media/by/code",
@@ -1727,7 +1771,7 @@ def update_extra(shortcode: str, req: ExtraUpdateRequest):
         data["script_by_sec"] = sc_by_sec
         # DB의 reels_transcripts.segments도 업데이트 (UPSERT)
         try:
-            import requests as _r
+            _r = supabase.get_session()
             transcript_text = " ".join((s.get("text") or "").strip() for s in req.sentences if (s.get("text") or "").strip())
             _r.post(
                 f"{supabase.SUPABASE_URL}/rest/v1/reels_transcripts?on_conflict=shortcode",
@@ -1747,7 +1791,7 @@ def update_extra(shortcode: str, req: ExtraUpdateRequest):
 def fetch_and_save_comments(shortcode: str):
     cmts = comments.fetch_playwright(shortcode)
     if cmts:
-        import requests as _r
+        _r = supabase.get_session()
         _r.post(
             f"{supabase.SUPABASE_URL}/rest/v1/reels_comments",
             headers={**supabase.SUPABASE_HEADERS, "Prefer": "resolution=merge-duplicates"},
@@ -1957,7 +2001,7 @@ def get_user_analysis(username: str, limit: int = Query(24, ge=1, le=100)):
 def debug_auth(request: Request):
     """API key 디버그용 — env + verify 결과 노출."""
     import hashlib
-    import requests as _r
+    _r = supabase.get_session()
     api_key = request.headers.get("X-API-Key") or request.headers.get("x-api-key")
     info = {
         "has_supabase_url": bool((os.getenv("SUPABASE_URL") or "").strip()),

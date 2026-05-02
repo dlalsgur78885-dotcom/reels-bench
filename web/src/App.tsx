@@ -19,10 +19,10 @@ import './App.css'
 const NAV = [
   { to: '/', label: '홈', icon: '&#x2302;' },
   { to: '/bench', label: '벤치마크', icon: '&#x25A6;' },
-  { to: '/phrases', label: '문구별 보기', icon: '&#x201C;' },
   { to: '/channels', label: '채널', icon: '&#x2631;' },
   { to: '/reels/new', label: '릴스 추가', icon: '&#x2795;' },
   { to: '/my-products', label: '내 상품', icon: '&#x1F4E6;' },
+  { to: '/phrases', label: '문구별 보기', icon: '&#x201C;' },
 ]
 
 export default function App() {

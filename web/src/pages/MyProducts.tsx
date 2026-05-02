@@ -56,9 +56,21 @@ function cleanReviews(raw: string, replaceFrom: string, replaceTo: string): stri
   return cleaned
 }
 
+const CACHE_KEY = 'my_products_cache'
+function loadCache(): MyProduct[] | null {
+  try {
+    const raw = sessionStorage.getItem(CACHE_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+function saveCache(v: MyProduct[]) {
+  try { sessionStorage.setItem(CACHE_KEY, JSON.stringify(v)) } catch {}
+}
+
 export default function MyProducts() {
-  const [items, setItems] = useState<MyProduct[]>([])
-  const [loading, setLoading] = useState(true)
+  const cached = loadCache()
+  const [items, setItems] = useState<MyProduct[]>(cached || [])
+  const [loading, setLoading] = useState(!cached)
   const [editing, setEditing] = useState<MyProduct | 'new' | null>(null)
   const [name, setName] = useState('')
   const [usps, setUsps] = useState<USPItem[]>([{ usp: '', reviews: [''] }])
@@ -80,11 +92,15 @@ export default function MyProducts() {
   const [shareErr, setShareErr] = useState('')
 
   const load = async () => {
-    setLoading(true)
-    try { setItems(await api.listMyProducts()) } catch (e: any) { setErr(e.message) }
+    if (items.length === 0) setLoading(true)
+    try {
+      const fresh = await api.listMyProducts()
+      setItems(fresh)
+      saveCache(fresh)
+    } catch (e: any) { setErr(e.message) }
     setLoading(false)
   }
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() /* eslint-disable-line react-hooks/exhaustive-deps */ }, [])
 
   const resetCollector = (productName = '') => {
     setCollectorText('')
@@ -195,7 +211,7 @@ export default function MyProducts() {
     <>
       <div className="page-header">
         <h1>내 상품</h1>
-        <p>{items.length}개</p>
+        <p>{loading && items.length === 0 ? '불러오는 중…' : `${items.length}개`}</p>
       </div>
 
       <div style={{ marginBottom: 16 }}>

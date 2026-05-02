@@ -216,6 +216,39 @@ export function thumbFallbackUrl(shortcode: string): string {
   return `${BASE}/api/thumb/${shortcode}`
 }
 
+export interface PhraseHookIntroItem {
+  shortcode: string
+  author: string
+  play_count: number
+  like_count: number
+  thumbnail_url: string
+  hook_text: string
+  hook_type: string
+  hook_seconds: string
+  intro_text: string
+  intro_seconds: string
+}
+
+export interface PhraseCtaItem {
+  shortcode: string
+  author: string
+  play_count: number
+  like_count: number
+  thumbnail_url: string
+  cta_text: string
+  cta_type: string
+  cta_seconds: string
+}
+
+export type PhrasesItem = PhraseHookIntroItem | PhraseCtaItem
+
+export interface PhrasesPage {
+  items: PhrasesItem[]
+  total: number
+  page: number
+  has_more: boolean
+}
+
 export interface BenchFilters {
   page?: number
   limit?: number
@@ -253,6 +286,26 @@ export const api = {
     if (p.hook_type) params.set('hook_type', p.hook_type)
     if (p.cta_type) params.set('cta_type', p.cta_type)
     return get<BenchPage>(`/api/bench?${params}`)
+  },
+  phrases: (part: 'hook_intro' | 'cta', p: BenchFilters = {}) => {
+    const params = new URLSearchParams()
+    params.set('part', part)
+    params.set('page', String(p.page ?? 1))
+    params.set('limit', String(p.limit ?? 30))
+    params.set('sort', p.sort ?? 'plays')
+    if (p.q) params.set('q', p.q)
+    if (p.plays_min) params.set('plays_min', String(p.plays_min))
+    if (p.plays_max) params.set('plays_max', String(p.plays_max))
+    if (p.er_min) params.set('er_min', String(p.er_min))
+    if (p.er_max) params.set('er_max', String(p.er_max))
+    if (p.date_from) params.set('date_from', p.date_from)
+    if (p.date_to) params.set('date_to', p.date_to)
+    if (p.ad_suitability) params.set('ad_suitability', p.ad_suitability)
+    if (p.usp_count) params.set('usp_count', p.usp_count)
+    if (p.body_structure) params.set('body_structure', p.body_structure)
+    if (p.hook_type) params.set('hook_type', p.hook_type)
+    if (p.cta_type) params.set('cta_type', p.cta_type)
+    return get<PhrasesPage>(`/api/phrases?${params}`)
   },
   dashboard: () => get<DashboardData>('/api/dashboard'),
   reels: () => get<Reel[]>('/api/reels'),

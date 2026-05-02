@@ -11,6 +11,7 @@ import Users from './pages/Users'
 import Secrets from './pages/Secrets'
 import ScriptGen from './pages/ScriptGen'
 import MyProducts from './pages/MyProducts'
+import Phrases from './pages/Phrases'
 import { supabase } from './supabase'
 import { api, type UserProfile } from './api'
 import './App.css'
@@ -18,6 +19,7 @@ import './App.css'
 const NAV = [
   { to: '/', label: '홈', icon: '&#x2302;' },
   { to: '/bench', label: '벤치마크', icon: '&#x25A6;' },
+  { to: '/phrases', label: '문구별 보기', icon: '&#x201C;' },
   { to: '/channels', label: '채널', icon: '&#x2631;' },
   { to: '/reels/new', label: '릴스 추가', icon: '&#x2795;' },
   { to: '/my-products', label: '내 상품', icon: '&#x1F4E6;' },
@@ -92,6 +94,7 @@ export default function App() {
           <Route path="/reels/new" element={<ReelIntake />} />
           <Route path="/bench" element={<Bench />} />
           <Route path="/bench/:shortcode" element={<BenchDetail />} />
+          <Route path="/phrases" element={<Phrases />} />
           <Route path="/analysis" element={<AnalysisPage />} />
           <Route path="/channels" element={<Channels />} />
           <Route path="/script" element={<ScriptGen />} />

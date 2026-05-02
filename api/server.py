@@ -1165,6 +1165,58 @@ def _er(i: dict) -> float:
     return round(i["like_count"] / i["play_count"] * 100, 2) if i["play_count"] else 0
 
 
+def _filter_and_sort_bench(
+    items: list, *,
+    sort: str = "plays",
+    q: str = "", plays_min: int = 0, plays_max: int = 0,
+    er_min: float = 0, er_max: float = 0,
+    date_from: str = "", date_to: str = "",
+    ad_suitability: str = "", usp_count: str = "",
+    body_structure: str = "", hook_type: str = "", cta_type: str = "",
+) -> list:
+    """벤치 캐시에서 가져온 items에 필터·정렬 일괄 적용."""
+    if q:
+        ql = q.lower()
+        items = [i for i in items if ql in i["shortcode"].lower() or ql in i["author"].lower()]
+    if plays_min > 0:
+        items = [i for i in items if i["play_count"] >= plays_min]
+    if plays_max > 0:
+        items = [i for i in items if i["play_count"] <= plays_max]
+    if er_min > 0:
+        items = [i for i in items if _er(i) >= er_min]
+    if er_max > 0:
+        items = [i for i in items if _er(i) <= er_max]
+    if date_from:
+        items = [i for i in items if i["collected_at"][:10] >= date_from]
+    if date_to:
+        items = [i for i in items if i["collected_at"][:10] <= date_to]
+
+    def _multi(field: str, val: str, current: list):
+        opts = [v.strip() for v in val.split(",") if v.strip()]
+        return [i for i in current if i.get(field) in opts]
+    if ad_suitability:
+        items = _multi("ad_suitability", ad_suitability, items)
+    if usp_count:
+        opts = [int(v) for v in usp_count.split(",") if v.strip().isdigit()]
+        items = [i for i in items if i.get("usp_count") in opts]
+    if body_structure:
+        items = _multi("body_structure", body_structure, items)
+    if hook_type:
+        items = _multi("hook_type", hook_type, items)
+    if cta_type:
+        items = _multi("cta_type", cta_type, items)
+
+    if sort == "plays":
+        items = sorted(items, key=lambda i: i["play_count"], reverse=True)
+    elif sort == "likes":
+        items = sorted(items, key=lambda i: i["like_count"], reverse=True)
+    elif sort == "er":
+        items = sorted(items, key=lambda i: _er(i), reverse=True)
+    elif sort == "recent":
+        items = sorted(items, key=lambda i: i["collected_at"], reverse=True)
+    return items
+
+
 @app.get("/api/bench")
 def get_bench(
     page: int = Query(1, ge=1),
@@ -1186,53 +1238,16 @@ def get_bench(
     cache = _get_bench()
     if not cache:
         return {"items": [], "stats": {}, "total": 0, "page": 1, "has_more": False}
-    items = list(cache["items"])
     stats = cache["stats"]
-
-    # search
-    if q:
-        ql = q.lower()
-        items = [i for i in items if ql in i["shortcode"].lower() or ql in i["author"].lower()]
-
-    # filters
-    if plays_min > 0:
-        items = [i for i in items if i["play_count"] >= plays_min]
-    if plays_max > 0:
-        items = [i for i in items if i["play_count"] <= plays_max]
-    if er_min > 0:
-        items = [i for i in items if _er(i) >= er_min]
-    if er_max > 0:
-        items = [i for i in items if _er(i) <= er_max]
-    if date_from:
-        items = [i for i in items if i["collected_at"][:10] >= date_from]
-    if date_to:
-        items = [i for i in items if i["collected_at"][:10] <= date_to]
-
-    # 분류 필터 (콤마로 OR 가능)
-    def _multi(field: str, val: str):
-        opts = [v.strip() for v in val.split(",") if v.strip()]
-        return [i for i in items if i.get(field) in opts]
-    if ad_suitability:
-        items = _multi("ad_suitability", ad_suitability)
-    if usp_count:
-        opts = [int(v) for v in usp_count.split(",") if v.strip().isdigit()]
-        items = [i for i in items if i.get("usp_count") in opts]
-    if body_structure:
-        items = _multi("body_structure", body_structure)
-    if hook_type:
-        items = _multi("hook_type", hook_type)
-    if cta_type:
-        items = _multi("cta_type", cta_type)
-
-    # sort
-    if sort == "plays":
-        items = sorted(items, key=lambda i: i["play_count"], reverse=True)
-    elif sort == "likes":
-        items = sorted(items, key=lambda i: i["like_count"], reverse=True)
-    elif sort == "er":
-        items = sorted(items, key=lambda i: _er(i), reverse=True)
-    elif sort == "recent":
-        items = sorted(items, key=lambda i: i["collected_at"], reverse=True)
+    items = _filter_and_sort_bench(
+        list(cache["items"]),
+        sort=sort, q=q,
+        plays_min=plays_min, plays_max=plays_max,
+        er_min=er_min, er_max=er_max,
+        date_from=date_from, date_to=date_to,
+        ad_suitability=ad_suitability, usp_count=usp_count,
+        body_structure=body_structure, hook_type=hook_type, cta_type=cta_type,
+    )
 
     total = len(items)
     start = (page - 1) * limit
@@ -1249,6 +1264,106 @@ def get_bench(
         media_type="application/json",
         headers={"Cache-Control": "private, max-age=30"},
     )
+
+
+@app.get("/api/phrases")
+def get_phrases(
+    part: str = Query("hook_intro"),  # 'hook_intro' | 'cta'
+    page: int = Query(1, ge=1),
+    limit: int = Query(30, ge=1, le=100),
+    sort: str = Query("plays"),
+    q: str = Query(""),
+    plays_min: int = Query(0, ge=0),
+    plays_max: int = Query(0, ge=0),
+    er_min: float = Query(0, ge=0),
+    er_max: float = Query(0, ge=0),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    ad_suitability: str = Query(""),
+    usp_count: str = Query(""),
+    body_structure: str = Query(""),
+    hook_type: str = Query(""),
+    cta_type: str = Query(""),
+):
+    """문구별 보기 — bench와 동일 필터 + part(hook_intro|cta)별 텍스트."""
+    if part not in ("hook_intro", "cta"):
+        raise HTTPException(400, "part must be hook_intro or cta")
+
+    cache = _get_bench()
+    if not cache:
+        return {"items": [], "total": 0, "page": 1, "has_more": False}
+
+    items = _filter_and_sort_bench(
+        list(cache["items"]),
+        sort=sort, q=q,
+        plays_min=plays_min, plays_max=plays_max,
+        er_min=er_min, er_max=er_max,
+        date_from=date_from, date_to=date_to,
+        ad_suitability=ad_suitability, usp_count=usp_count,
+        body_structure=body_structure, hook_type=hook_type, cta_type=cta_type,
+    )
+    # 분석된 릴스만 (script_structure가 있을 수 있는 후보)
+    items = [i for i in items if i.get("analyzed")]
+
+    total_pre = len(items)
+    # 페이지 단위로 잘라서 script_structure 조회 (효율)
+    start = (page - 1) * limit
+    page_items = items[start:start + limit]
+    if not page_items:
+        return {"items": [], "total": 0, "page": page, "has_more": False}
+
+    scs = [i["shortcode"] for i in page_items]
+    select = "shortcode," + ("hook,intro" if part == "hook_intro" else "cta")
+    rows = supabase.sb_get(
+        "reels_script_structure",
+        f"shortcode=in.({','.join(scs)})&select={select}",
+    ) or []
+    by_sc = {r["shortcode"]: r for r in rows}
+
+    out = []
+    for i in page_items:
+        rec = by_sc.get(i["shortcode"]) or {}
+        if part == "hook_intro":
+            hook = rec.get("hook") or {}
+            intro = rec.get("intro") or {}
+            hook_text = (hook.get("text") or "").strip()
+            intro_text = (intro.get("text") or "").strip()
+            if not hook_text and not intro_text:
+                continue
+            out.append({
+                "shortcode": i["shortcode"],
+                "author": i["author"],
+                "play_count": i["play_count"],
+                "like_count": i["like_count"],
+                "thumbnail_url": i.get("thumbnail_url") or "",
+                "hook_text": hook_text,
+                "hook_type": hook.get("type") or "",
+                "hook_seconds": hook.get("seconds") or "",
+                "intro_text": intro_text,
+                "intro_seconds": intro.get("seconds") or "",
+            })
+        else:
+            cta = rec.get("cta") or {}
+            cta_text = (cta.get("text") or "").strip()
+            if not cta_text:
+                continue
+            out.append({
+                "shortcode": i["shortcode"],
+                "author": i["author"],
+                "play_count": i["play_count"],
+                "like_count": i["like_count"],
+                "thumbnail_url": i.get("thumbnail_url") or "",
+                "cta_text": cta_text,
+                "cta_type": cta.get("type") or "",
+                "cta_seconds": cta.get("seconds") or "",
+            })
+
+    return {
+        "items": out,
+        "total": total_pre,
+        "page": page,
+        "has_more": start + limit < total_pre,
+    }
 
 
 @app.delete("/api/reels/{shortcode}")

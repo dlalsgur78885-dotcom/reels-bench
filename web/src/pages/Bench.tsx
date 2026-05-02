@@ -159,6 +159,24 @@ export default function Bench() {
     setAdSuit(new Set()); setUspCount(new Set()); setBodyStruct(new Set()); setHookT(new Set()); setCtaT(new Set())
   }
 
+  // 활성 필터를 인라인 칩으로 표시
+  const removeFromSet = (s: Set<string>, v: string, setter: (n: Set<string>) => void) => {
+    const n = new Set(s); n.delete(v); setter(n)
+  }
+  type ActiveFilter = { id: string; key?: string; label: string; remove: () => void }
+  const activeFilters: ActiveFilter[] = []
+  if (playsMin) activeFilters.push({ id: 'pmin', key: '조회수', label: `${fmtNum(Number(playsMin))}+`, remove: () => setPlaysMin('') })
+  if (playsMax) activeFilters.push({ id: 'pmax', key: '조회수', label: `~${fmtNum(Number(playsMax))}`, remove: () => setPlaysMax('') })
+  if (erMin) activeFilters.push({ id: 'emin', key: 'ER', label: `${erMin}%+`, remove: () => setErMin('') })
+  if (erMax) activeFilters.push({ id: 'emax', key: 'ER', label: `~${erMax}%`, remove: () => setErMax('') })
+  if (dateFrom) activeFilters.push({ id: 'df', key: '시작', label: dateFrom, remove: () => setDateFrom('') })
+  if (dateTo) activeFilters.push({ id: 'dt', key: '종료', label: dateTo, remove: () => setDateTo('') })
+  adSuit.forEach(v => activeFilters.push({ id: `ad-${v}`, key: '광고', label: v, remove: () => removeFromSet(adSuit, v, setAdSuit) }))
+  uspCount.forEach(v => activeFilters.push({ id: `usp-${v}`, key: 'USP', label: v, remove: () => removeFromSet(uspCount, v, setUspCount) }))
+  bodyStruct.forEach(v => activeFilters.push({ id: `bs-${v}`, key: 'Body', label: v, remove: () => removeFromSet(bodyStruct, v, setBodyStruct) }))
+  hookT.forEach(v => activeFilters.push({ id: `h-${v}`, key: 'Hook', label: v, remove: () => removeFromSet(hookT, v, setHookT) }))
+  ctaT.forEach(v => activeFilters.push({ id: `c-${v}`, key: 'CTA', label: v, remove: () => removeFromSet(ctaT, v, setCtaT) }))
+
   const subtitleParts: string[] = []
   if (stats) {
     subtitleParts.push(`${fmtNum(stats.total_reels)}개`)
@@ -262,6 +280,28 @@ export default function Bench() {
             <FilterChips title="CTA 유형" options={['댓글유도','행동촉구','저장유도','링크유도','정보제공','없음']}
               selected={ctaT} onToggle={v => toggle(ctaT, v, setCtaT)} />
           </div>
+        </div>
+      )}
+
+      {activeFilters.length > 0 && (
+        <div className="active-filter-strip" role="region" aria-label="적용된 필터">
+          <span className="active-filter-strip-label">적용</span>
+          {activeFilters.map(f => (
+            <button
+              key={f.id}
+              type="button"
+              className="active-filter-chip"
+              onClick={f.remove}
+              aria-label={`${f.key ? f.key + ' ' : ''}${f.label} 해제`}
+            >
+              {f.key && <span className="active-filter-chip-key">{f.key}</span>}
+              {f.label}
+              <span className="active-filter-chip-x" aria-hidden="true">×</span>
+            </button>
+          ))}
+          <button type="button" className="active-filter-clear" onClick={clearFilters}>
+            모두 지우기
+          </button>
         </div>
       )}
 

@@ -1048,6 +1048,85 @@ select:focus-visible,
   color: var(--text-muted);
 }
 
+/* ── Active Filter Strip (적용된 필터 한눈에) ── */
+.active-filter-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+}
+.active-filter-strip-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-right: 4px;
+}
+.active-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.active-filter-chip:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-muted);
+}
+.active-filter-chip-key {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 11px;
+  margin-right: 2px;
+}
+.active-filter-chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 2px;
+  margin-right: -2px;
+  border-radius: 99px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+}
+.active-filter-chip:hover .active-filter-chip-x {
+  background: var(--text-muted);
+  color: var(--bg-surface);
+}
+.active-filter-clear {
+  margin-left: auto;
+  padding: 0 8px;
+  height: 26px;
+  font-size: 11px;
+  font-weight: 600;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: inherit;
+}
+.active-filter-clear:hover {
+  color: var(--error);
+  text-decoration: underline;
+}
+
 /* ── Filter Panel ── */
 .filter-panel {
   background: var(--bg-surface);

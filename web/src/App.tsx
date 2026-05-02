@@ -17,16 +17,33 @@ import { AuthContext } from './auth'
 import './App.css'
 
 const ME_CACHE_KEY = 'cached_me'
+const ME_CACHE_TTL_MS = 60 * 60 * 1000  // 60분
+
+interface CachedMeEnvelope { t: number; profile: UserProfile }
 
 function loadCachedMe(): UserProfile | null {
   try {
     const raw = localStorage.getItem(ME_CACHE_KEY)
-    return raw ? JSON.parse(raw) : null
+    if (!raw) return null
+    const obj = JSON.parse(raw)
+    // 구버전 (envelope 아님) 호환
+    if (obj && typeof obj === 'object' && 'profile' in obj && 't' in obj) {
+      return (obj as CachedMeEnvelope).profile
+    }
+    return obj as UserProfile
+  } catch { return null }
+}
+function loadCachedMeAge(): number | null {
+  try {
+    const raw = localStorage.getItem(ME_CACHE_KEY)
+    if (!raw) return null
+    const obj = JSON.parse(raw)
+    return obj && typeof obj.t === 'number' ? Date.now() - obj.t : null
   } catch { return null }
 }
 function saveCachedMe(p: UserProfile | null) {
   try {
-    if (p) localStorage.setItem(ME_CACHE_KEY, JSON.stringify(p))
+    if (p) localStorage.setItem(ME_CACHE_KEY, JSON.stringify({ t: Date.now(), profile: p }))
     else localStorage.removeItem(ME_CACHE_KEY)
   } catch {}
 }
@@ -65,10 +82,15 @@ export default function App() {
   useEffect(() => {
     if (bootstrapping) return
     if (!session) { setMeLoading(false); return }
+    // cached_me가 신선하면 (< 60분) refetch 스킵 — cold start에서 /api/me 호출 자체 회피
+    const age = loadCachedMeAge()
+    if (age !== null && age < ME_CACHE_TTL_MS) {
+      setMeLoading(false)
+      return
+    }
     setMeLoading(true)
     api.me()
       .then(p => { setMe(p); saveCachedMe(p) })
-      // api.me() 실패해도 cached me는 보존 (네트워크 일시 오류일 수 있음)
       .catch(() => {})
       .finally(() => setMeLoading(false))
   }, [session, bootstrapping])

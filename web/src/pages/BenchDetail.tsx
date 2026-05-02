@@ -104,6 +104,7 @@ export default function BenchDetail() {
   const [saving, setSaving] = useState(false)
   const [ttsScript, setTtsScript] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [transcriptOpen, setTranscriptOpen] = useState(false)
 
   // Esc로 열린 모달 닫기
   useEffect(() => {
@@ -234,24 +235,20 @@ export default function BenchDetail() {
 
       <div className="kpi-row">
         <div className="kpi-card">
-          <div className="kpi-label">Views</div>
+          <div className="kpi-label">조회수</div>
           <div className="kpi-value">{fmtNum(plays)}</div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">Likes</div>
+          <div className="kpi-label">좋아요</div>
           <div className="kpi-value">{fmtNum(likes)}</div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">ER</div>
+          <div className="kpi-label">참여율</div>
           <div className="kpi-value" style={{ color: erColor(er) }}>{er}%</div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">Duration</div>
-          <div className="kpi-value">{duration.toFixed(0)}s</div>
-        </div>
-        <div className="kpi-card">
-          <div className="kpi-label">BGM</div>
-          <div className="kpi-value" style={{ fontSize: 14 }}>{meta?.music_title || 'Original'}</div>
+          <div className="kpi-label">길이</div>
+          <div className="kpi-value">{duration.toFixed(0)}초</div>
         </div>
       </div>
 
@@ -265,6 +262,10 @@ export default function BenchDetail() {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 20 }}>
           <div>
             <Thumb src={shortcode ? thumbUrl(shortcode) : undefined} shortcode={shortcode} style={{ width: '100%', borderRadius: 'var(--radius-lg)', aspectRatio: '9/16', objectFit: 'cover' }} />
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)', display: 'flex', gap: 6, alignItems: 'baseline' }}>
+              <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase' }}>BGM</span>
+              <span style={{ color: 'var(--text-body)' }}>{meta?.music_title || '오리지널'}</span>
+            </div>
             {extra?.category && (
               <div className="section-card" style={{ marginTop: 12, padding: 12, position: 'relative' }}>
                 <button className="btn-ghost"
@@ -325,11 +326,11 @@ export default function BenchDetail() {
                 <div className="eyebrow-label">댓글 ({comments.length})</div>
                 <div className="scroll-box scroll-box--padded-x">
                   {comments.slice(0, 30).map((c, i) => (
-                    <div key={i} style={{ padding: '8px 0', borderBottom: '1px solid var(--border-subtle)', display: 'flex', gap: 8, alignItems: 'baseline' }}>
-                      <span style={{ color: 'var(--text-primary)', fontWeight: 600, fontSize: 11, flexShrink: 0 }}>@{c.comment_author}</span>
-                      <span style={{ fontSize: 12, lineHeight: 1.5 }}>
+                    <div key={i} className="comment-row">
+                      <span className="comment-author">@{c.comment_author}</span>
+                      <span className="comment-text">
                         {c.comment_text}
-                        {c.comment_likes > 0 && <span style={{ color: 'var(--text-secondary)', fontSize: 11, marginLeft: 4 }}>&#9829;{c.comment_likes}</span>}
+                        {c.comment_likes > 0 && <span className="comment-likes">&#9829;{c.comment_likes}</span>}
                       </span>
                     </div>
                   ))}
@@ -583,39 +584,17 @@ export default function BenchDetail() {
                 }
 
                 return (
-                  <div key={i} style={{
-                    display: 'flex', gap: 10, alignItems: 'flex-start',
-                    padding: '8px 12px', marginBottom: 4,
-                    borderRadius: 'var(--radius-sm)',
-                    background: 'var(--bg-elevated)',
-                  }}>
-                    <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', fontFamily: 'monospace', minWidth: 90 }}>
-                      {fmtTime(s.start)}~{fmtTime(s.end)}
-                    </span>
-                    {section && (
-                      <span style={{
-                        flexShrink: 0, fontSize: 10, fontWeight: 700, color: 'var(--text-primary)',
-                        background: 'var(--bg-surface)', border: '1px solid var(--border)', padding: '1px 6px', borderRadius: 3,
-                      }}>{section}</span>
-                    )}
-                    <span style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text-body)' }}>
+                  <div key={i} className="sentence-row">
+                    <span className="sentence-time">{fmtTime(s.start)}~{fmtTime(s.end)}</span>
+                    {section && <span className="section-badge">{section}</span>}
+                    <span className="sentence-text">
                       {direction && (
-                        <span style={{
-                          display: 'inline-block', marginRight: 6,
-                          fontSize: 11, fontWeight: 600,
-                          color: 'var(--text-primary)', background: 'var(--bg-surface)',
-                          border: '1px solid var(--border)',
-                          padding: '1px 7px', borderRadius: 999,
-                        }}>{direction}</span>
+                        <span className="tag-pill tag-pill--bordered" style={{ marginRight: 6 }}>{direction}</span>
                       )}
                       {emoLabel && (
-                        <span style={{
-                          display: 'inline-block', marginRight: 6,
-                          fontSize: 11, fontWeight: 600,
-                          color: 'var(--text-primary)', background: 'var(--bg-surface)',
-                          border: '1px solid var(--border)',
-                          padding: '1px 7px', borderRadius: 999,
-                        }}>{emoLabel}{emoConf > 0 && ` ${Math.round(emoConf * 100)}%`}</span>
+                        <span className="tag-pill tag-pill--bordered" style={{ marginRight: 6 }}>
+                          {emoLabel}{emoConf > 0 && ` ${Math.round(emoConf * 100)}%`}
+                        </span>
                       )}
                       {s.text}
                     </span>
@@ -626,8 +605,20 @@ export default function BenchDetail() {
           )}
           {transcript ? (
             <div>
-              <div className="eyebrow-label">전체 대본</div>
-              <div className="transcript-box" style={{ maxHeight: 'none' }}>{transcript.transcript}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <div className="eyebrow-label" style={{ marginBottom: 0 }}>전체 대본</div>
+                {extra?.sentences && extra.sentences.length > 0 && (
+                  <button
+                    type="button"
+                    className="btn-reveal"
+                    aria-expanded={transcriptOpen}
+                    onClick={() => setTranscriptOpen(!transcriptOpen)}
+                  >{transcriptOpen ? '접기' : '펼치기'}</button>
+                )}
+              </div>
+              {(!(extra?.sentences && extra.sentences.length > 0) || transcriptOpen) && (
+                <div className="transcript-box" style={{ maxHeight: 'none' }}>{transcript.transcript}</div>
+              )}
             </div>
           ) : (
             <div className="empty-state">대본이 없습니다</div>

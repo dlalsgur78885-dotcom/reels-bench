@@ -1,0 +1,399 @@
+import { getAccessToken } from './supabase'
+
+export const BASE = import.meta.env.VITE_API_BASE || ''
+
+async function authedHeaders(extra?: HeadersInit): Promise<HeadersInit> {
+  const token = await getAccessToken()
+  const h: Record<string, string> = { ...(extra as Record<string, string> || {}) }
+  if (token) h['Authorization'] = `Bearer ${token}`
+  return h
+}
+
+export async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = await authedHeaders(init.headers)
+  return fetch(`${BASE}${path}`, { ...init, headers })
+}
+
+async function get<T>(path: string): Promise<T> {
+  const r = await authedFetch(path)
+  if (!r.ok) throw new Error(`API ${r.status}`)
+  return r.json()
+}
+
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const r = await authedFetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) throw new Error(`API ${r.status}`)
+  return r.json()
+}
+
+async function patch<T>(path: string, body: unknown): Promise<T> {
+  const r = await authedFetch(path, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) throw new Error(`API ${r.status}`)
+  return r.json()
+}
+
+async function del<T>(path: string): Promise<T> {
+  const r = await authedFetch(path, { method: 'DELETE' })
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}))
+    throw new Error(data.detail || data.error || `API ${r.status}`)
+  }
+  return r.json()
+}
+
+export interface Reel {
+  shortcode: string
+  url: string
+  author: string
+  account_category?: string
+  collected_at: string
+}
+
+export interface Metadata {
+  shortcode: string
+  play_count: number
+  like_count: number
+  comment_count: number
+  video_duration: number
+  thumbnail_url: string
+  video_url: string
+  caption_text: string
+  author_username: string
+  author_full_name?: string
+  music_artist?: string
+  music_title?: string
+  taken_at?: string
+}
+
+export interface Transcript {
+  shortcode: string
+  transcript: string
+  duration_seconds: number
+  language: string
+}
+
+export interface Analysis {
+  shortcode: string
+  analysis: string
+  analyzed_at: string
+}
+
+export interface DashboardData {
+  reels: Reel[]
+  metadata: Metadata[]
+  transcripts: Transcript[]
+  analyses: Analysis[]
+  stats: {
+    total_reels: number
+    total_plays: number
+    total_likes: number
+    analyzed_count: number
+  }
+}
+
+export interface AnalysisStatus {
+  status: 'idle' | 'running' | 'done' | 'error'
+  step?: string
+  progress?: number
+  message?: string
+  frame_images?: Record<number, string>
+}
+
+export interface ExtraData {
+  ocr_subtitles: Record<number, string>
+  audio_emotions: Record<number, {
+    pitch: number
+    volume: number
+    silence: boolean
+    emotion: string
+    label: string
+    confidence: number
+  }>
+  script_structure: {
+    hook?: { text: string; type?: string; seconds?: string; analysis?: string }
+    intro?: { text: string; seconds?: string; analysis?: string }
+    body?: { text: string; seconds?: string; key_points?: string[]; analysis?: string }
+    cta?: { text: string; type?: string; seconds?: string; analysis?: string }
+    overall?: { flow?: string; strength?: string; weakness?: string }
+  } | null
+  bgm_changes?: { sec: number; score: number }[]
+  pro_audio?: {
+    duration_sec?: number
+    sound_effects?: { time: string; type: string; description: string }[]
+    bgm_segments?: {
+      start: string
+      end: string
+      state: 'playing' | 'muted' | 'transition'
+      mood?: string
+      genre?: string
+      tempo_bpm?: number
+      volume_level?: 'high' | 'medium' | 'low' | 'muted'
+      identified?: string
+      change_reason?: string
+    }[]
+    emotion_timeline?: {
+      start: string
+      end: string
+      emotion: string
+      intensity: number
+      source: 'speech' | 'music' | 'both'
+      reason?: string
+    }[]
+    narration?: { language?: string; tone?: string; pace?: string }
+    audio_summary?: string
+  }
+  script_by_sec: Record<number, string>
+  sentences: { start: number; end: number; text: string }[]
+  category: {
+    content_type?: string
+    content_type_detail?: string
+    industry?: string
+    industry_detail?: string
+    topic?: string
+    topic_detail?: string
+    style?: string
+    tags: string[]
+  } | null
+  comment_triggers: {
+    triggers: {
+      element: string
+      source: string
+      timestamp: string | null
+      reaction_type: string
+      sample_comments: string[]
+      comment_count: number
+      analysis: string
+    }[]
+    summary: {
+      dominant_reaction: string
+      engagement_driver: string
+      content_strength: string
+      improvement: string
+    }
+  } | null
+}
+
+export interface BenchItem {
+  shortcode: string
+  author: string
+  play_count: number
+  like_count: number
+  comment_count: number
+  thumbnail_url: string
+  collected_at: string
+  analyzed: boolean
+  ad_suitability?: string | null
+  usp_count?: number | null
+  body_structure?: string | null
+  hook_type?: string | null
+  cta_type?: string | null
+}
+
+export interface BenchPage {
+  items: BenchItem[]
+  stats: { total_reels: number; total_plays: number; total_likes: number; analyzed_count: number }
+  total: number
+  page: number
+  has_more: boolean
+}
+
+/** Build thumb URL — Supabase Storage 직접. 404 시 onError로 backend fallback. */
+const SUPABASE_URL = 'https://mrpbovbxtablvawszhey.supabase.co'
+export function thumbUrl(shortcode: string): string {
+  if (!shortcode) return ''
+  return `${SUPABASE_URL}/storage/v1/object/public/thumbs/${shortcode}.webp`
+}
+export function thumbFallbackUrl(shortcode: string): string {
+  if (!shortcode) return ''
+  return `${BASE}/api/thumb/${shortcode}`
+}
+
+export interface BenchFilters {
+  page?: number
+  limit?: number
+  sort?: string
+  q?: string
+  plays_min?: number
+  plays_max?: number
+  er_min?: number
+  er_max?: number
+  date_from?: string
+  date_to?: string
+  ad_suitability?: string
+  usp_count?: string
+  body_structure?: string
+  hook_type?: string
+  cta_type?: string
+}
+
+export const api = {
+  bench: (p: BenchFilters = {}) => {
+    const params = new URLSearchParams()
+    params.set('page', String(p.page ?? 1))
+    params.set('limit', String(p.limit ?? 30))
+    params.set('sort', p.sort ?? 'plays')
+    if (p.q) params.set('q', p.q)
+    if (p.plays_min) params.set('plays_min', String(p.plays_min))
+    if (p.plays_max) params.set('plays_max', String(p.plays_max))
+    if (p.er_min) params.set('er_min', String(p.er_min))
+    if (p.er_max) params.set('er_max', String(p.er_max))
+    if (p.date_from) params.set('date_from', p.date_from)
+    if (p.date_to) params.set('date_to', p.date_to)
+    if (p.ad_suitability) params.set('ad_suitability', p.ad_suitability)
+    if (p.usp_count) params.set('usp_count', p.usp_count)
+    if (p.body_structure) params.set('body_structure', p.body_structure)
+    if (p.hook_type) params.set('hook_type', p.hook_type)
+    if (p.cta_type) params.set('cta_type', p.cta_type)
+    return get<BenchPage>(`/api/bench?${params}`)
+  },
+  dashboard: () => get<DashboardData>('/api/dashboard'),
+  reels: () => get<Reel[]>('/api/reels'),
+  addReel: (url: string, analyze = false) => post<ReelAddResult>('/api/reels', { url, analyze }),
+  metadata: (sc: string) => get<Metadata>(`/api/metadata/${sc}`),
+  transcript: (sc: string) => get<Transcript>(`/api/transcripts/${sc}`),
+  analysis: (sc: string) => get<Analysis>(`/api/analyses/${sc}`),
+  comments: (sc: string) => get<{ comment_text: string; comment_author: string; comment_likes: number }[]>(`/api/comments/${sc}`),
+  startAnalysis: (sc: string) => post<{ message: string }>('/api/analyze', { shortcode: sc }),
+  analysisStatus: (sc: string) => get<AnalysisStatus>(`/api/analysis-status/${sc}`),
+  frameImages: (sc: string) => get<Record<number, string>>(`/api/frame-images/${sc}`),
+  extra: (sc: string) => get<ExtraData>(`/api/extra/${sc}`),
+  updateExtra: (sc: string, data: { script_structure?: any; category?: any; sentences?: any[] }) =>
+    patch<any>(`/api/extra/${sc}`, { shortcode: sc, ...data }),
+  fetchComments: (sc: string) => post<{ count: number; comments: any[] }>(`/api/comments/${sc}/fetch`, {}),
+  channels: () => get<Channel[]>('/api/channels'),
+  addChannel: (username: string) => post<{ message: string; username: string }>('/api/channels', { username }),
+  updateChannel: (username: string, data: { is_active?: boolean }) =>
+    patch<any>(`/api/channels/${username}`, data),
+  deleteChannel: (username: string) => del<{ message?: string; error?: string }>(`/api/channels/${encodeURIComponent(username)}`),
+  deleteChannelById: (id: number) => del<{ message?: string; error?: string; id?: number }>(`/api/channels/by-id/${id}`),
+  userAnalysis: (username: string, limit = 24) =>
+    get<UserAnalysis>(`/api/users/${encodeURIComponent(username)}/analysis?limit=${limit}`),
+  refineScript: (draft: any, usps: any[], reference_shortcode?: string) =>
+    post<any>('/api/script/refine', { draft, usps, reference_shortcode }),
+  extractPersonas: (usp: string, reviews: string[], pain_solved = '', product_id?: number, usp_index?: number) =>
+    post<{ personas: PersonaCandidate[]; _cached?: boolean }>('/api/script/personas', { usp, reviews, pain_solved, product_id, usp_index }),
+  updateUspPersonas: (pid: number, usp_index: number, personas: PersonaCandidate[]) =>
+    patch<{ message: string; personas: PersonaCandidate[] }>(`/api/my-products/${pid}/usp-personas`, { usp_index, personas }),
+  referenceInfo: (sc: string) =>
+    get<ReferenceInfo>(`/api/script/reference-info/${sc}`),
+  classifySentences: (sc: string) =>
+    post<{ shortcode: string; total_sentences: number; sections: Record<string, number> }>(`/api/script/classify-sentences/${sc}`, {}),
+  // Admin Secrets
+  listSecrets: () => get<{ id: string; name: string; description: string; updated_at: string }[]>('/api/admin/secrets'),
+  upsertSecret: (name: string, value: string, description = '') =>
+    post<{ id: string; name: string; message: string }>('/api/admin/secrets', { name, value, description }),
+  deleteSecret: (name: string) =>
+    del<{ deleted: boolean }>(`/api/admin/secrets/${encodeURIComponent(name)}`),
+  // My Products
+  listMyProducts: () => get<MyProduct[]>('/api/my-products'),
+  createMyProduct: (data: { name: string; persona?: string; usps?: any[] }) =>
+    post<MyProduct>('/api/my-products', data),
+  updateMyProduct: (id: number, data: { name: string; persona?: string; usps?: any[] }) =>
+    patch<MyProduct>(`/api/my-products/${id}`, data),
+  deleteMyProduct: (id: number) => del<{ message: string }>(`/api/my-products/${id}`),
+  // Auth
+  me: () => get<UserProfile>('/api/me'),
+  listUsers: () => get<UserProfile[]>('/api/users'),
+  inviteUser: (email: string, displayName?: string, role: 'admin' | 'employee' = 'employee', password?: string) =>
+    post<{ message: string; profile: UserProfile; temp_password: string }>('/api/users', {
+      email, display_name: displayName, role, password,
+    }),
+  updateUser: (id: string, data: { role?: 'admin' | 'employee'; active?: boolean; display_name?: string; can_delete_reels?: boolean }) =>
+    patch<UserProfile>(`/api/users/${id}`, data),
+  deleteUser: (id: string) => del<{ message: string }>(`/api/users/${id}`),
+  deleteReel: (shortcode: string) => del<{ message: string }>(`/api/reels/${shortcode}`),
+}
+
+export interface ReferenceInfo {
+  shortcode: string
+  duration_sec: number
+  total_sentences: number
+  body_slot_count: number
+  body_class: { type: string; guide: string }
+  recommended_usps: number
+}
+
+export interface PersonaCandidate {
+  name: string
+  scenario: string
+  signals: string[]
+  review_count: number
+  sample_reviews: string[]
+  tone_hint: string
+}
+
+export interface MyProduct {
+  id: number
+  owner_id: string
+  name: string
+  persona: string | null
+  usps: { usp: string; reviews: string[] }[]
+  created_at: string
+  updated_at: string
+}
+
+export interface UserProfile {
+  id: string
+  email: string
+  display_name: string | null
+  role: 'admin' | 'employee'
+  active: boolean
+  can_delete_reels: boolean
+  created_at: string
+  last_login_at: string | null
+}
+
+export interface Channel {
+  id: number
+  username: string
+  is_active: boolean
+  reel_count: number
+  last_collected_at: string | null
+  created_at: string
+}
+
+export interface UserAnalysisItem extends BenchItem {
+  url: string
+  taken_at?: string | null
+  analysis_excerpt: string
+  analyzed_at?: string | null
+  topic?: string | null
+  style?: string | null
+  tags: string[]
+}
+
+export interface UserAnalysis {
+  username: string
+  stats: {
+    total_reels: number
+    analyzed_count: number
+    total_plays: number
+    total_likes: number
+    avg_er: number
+    best_shortcode: string | null
+  }
+  items: UserAnalysisItem[]
+  insights: {
+    top_reel: UserAnalysisItem | null
+    top_tags: { tag: string; count: number }[]
+    latest_analyzed_at: string | null
+    summary: string
+  }
+}
+
+export interface ReelAddResult {
+  message: string
+  shortcode: string
+  url: string
+  author: string
+  has_metadata: boolean
+  analysis_started: boolean
+}

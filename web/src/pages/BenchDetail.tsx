@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, Fragment } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api, thumbUrl } from '../api'
-import type { Metadata, Transcript, Analysis, AnalysisStatus, ExtraData } from '../api'
+import type { Metadata, Transcript, Analysis, AnalysisStatus, ExtraData, UserProfile } from '../api'
 import { fmtNum, engagementRate, erColor, parseFrameAnalysis } from '../utils'
 import FrameTimeline from '../components/FrameTimeline'
 import Thumb from '../components/Thumb'
@@ -105,6 +105,24 @@ export default function BenchDetail() {
   const [ttsScript, setTtsScript] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [transcriptOpen, setTranscriptOpen] = useState(false)
+  const [me, setMe] = useState<UserProfile | null>(null)
+  const [deleting, setDeleting] = useState(false)
+
+  useEffect(() => { api.me().then(setMe).catch(() => {}) }, [])
+
+  const canDelete = !!me && (me.role === 'admin' || me.can_delete_reels)
+  const onDelete = async () => {
+    if (!shortcode || !canDelete || deleting) return
+    if (!confirm(`@${meta?.author_username || shortcode} 릴스를 DB에서 완전히 삭제할까요?\n분석·댓글·메타데이터·자막 모두 사라집니다.`)) return
+    setDeleting(true)
+    try {
+      await api.deleteReel(shortcode)
+      navigate('/bench')
+    } catch (e: any) {
+      alert(e.message || '삭제 실패')
+      setDeleting(false)
+    }
+  }
 
   // Esc로 열린 모달 닫기
   useEffect(() => {
@@ -219,6 +237,18 @@ export default function BenchDetail() {
         >
           Instagram ↗
         </a>
+        {canDelete && (
+          <button
+            onClick={onDelete}
+            disabled={deleting}
+            title="릴스 + 분석 데이터 전부 DB에서 삭제"
+            style={{
+              marginLeft: 10, padding: '6px 12px', fontSize: 12, fontWeight: 600,
+              border: '1px solid var(--error)', borderRadius: 'var(--radius-sm)',
+              background: 'transparent', color: 'var(--error)', cursor: 'pointer',
+              opacity: deleting ? 0.5 : 1,
+            }}>{deleting ? '삭제 중...' : 'DB에서 삭제'}</button>
+        )}
       </div>
 
       {analyzing?.status === 'running' && (

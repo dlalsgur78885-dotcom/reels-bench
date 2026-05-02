@@ -17,9 +17,9 @@ import './App.css'
 
 const NAV = [
   { to: '/', label: '홈', icon: '&#x2302;' },
-  { to: '/reels/new', label: '릴스 추가', icon: '&#x2795;' },
   { to: '/bench', label: '벤치마크', icon: '&#x25A6;' },
   { to: '/channels', label: '채널', icon: '&#x2631;' },
+  { to: '/reels/new', label: '릴스 추가', icon: '&#x2795;' },
   { to: '/my-products', label: '내 상품', icon: '&#x1F4E6;' },
 ]
 

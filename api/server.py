@@ -1387,12 +1387,14 @@ def _is_valid_shortcode(sc: str) -> bool:
 
 
 def _delete_one_reel(shortcode: str) -> bool:
-    """자식 → 부모 순으로 cascade. 부모 삭제 성공 시 True."""
-    for t in _REEL_CHILD_TABLES:
-        try:
-            supabase.sb_delete(t, f"shortcode=eq.{shortcode}")
-        except Exception as e:
-            logger.warning(f"[DeleteReel] {t} for {shortcode}: {e}")
+    """자식 8개 테이블 병렬 삭제 → 모두 끝나면 부모 삭제."""
+    with ThreadPoolExecutor(max_workers=len(_REEL_CHILD_TABLES)) as ex:
+        futures = [ex.submit(supabase.sb_delete, t, f"shortcode=eq.{shortcode}") for t in _REEL_CHILD_TABLES]
+        for fut, t in zip(futures, _REEL_CHILD_TABLES):
+            try:
+                fut.result()
+            except Exception as e:
+                logger.warning(f"[DeleteReel] {t} for {shortcode}: {e}")
     return supabase.sb_delete("reels", f"shortcode=eq.{shortcode}")
 
 
@@ -1414,23 +1416,26 @@ class BulkDeleteRequest(BaseModel):
 
 @app.post("/api/reels/bulk-delete")
 def bulk_delete_reels(req: BulkDeleteRequest, request: Request):
-    """다량 삭제 — admin OR can_delete_reels."""
+    """다량 삭제 — admin OR can_delete_reels. 릴스 단위로 병렬 처리."""
     auth_svc.require_can_delete_reels(request)
     valid = [sc for sc in (req.shortcodes or []) if _is_valid_shortcode(sc)]
     if not valid:
         raise HTTPException(400, "삭제할 shortcode가 없습니다")
-    if len(valid) > 200:
-        raise HTTPException(400, "한 번에 200개 이하로 요청하세요")
+    if len(valid) > 100:
+        raise HTTPException(400, "한 번에 100개 이하로 요청하세요")
 
     deleted: list[str] = []
     failed: list[str] = []
-    for sc in valid:
-        try:
-            ok = _delete_one_reel(sc)
-            (deleted if ok else failed).append(sc)
-        except Exception as e:
-            logger.warning(f"[BulkDelete] {sc}: {e}")
-            failed.append(sc)
+    # 동시 8개씩 — Vercel 타임아웃 방지
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        future_map = {ex.submit(_delete_one_reel, sc): sc for sc in valid}
+        for fut, sc in future_map.items():
+            try:
+                ok = fut.result()
+                (deleted if ok else failed).append(sc)
+            except Exception as e:
+                logger.warning(f"[BulkDelete] {sc}: {e}")
+                failed.append(sc)
     _bench_mem["ts"] = 0
     return {"deleted": deleted, "failed": failed, "deleted_count": len(deleted), "failed_count": len(failed)}
 

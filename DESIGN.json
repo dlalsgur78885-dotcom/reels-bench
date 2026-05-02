@@ -1,0 +1,229 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-04-30T00:00:00Z",
+  "title": "Design System: 릴스 벤치",
+  "extensions": {
+    "colorMeta": {
+      "pretendard-blue": {
+        "role": "primary",
+        "displayName": "Pretendard Blue",
+        "canonical": "#307df0",
+        "tonalRamp": ["#0c2b5e", "#143f87", "#1d54b0", "#2664c3", "#307df0", "#5a98f4", "#9ec0f9", "#dde8fc"]
+      },
+      "pretendard-blue-deep": {
+        "role": "primary-hover",
+        "displayName": "Pretendard Blue Deep",
+        "canonical": "#2664c3",
+        "tonalRamp": ["#0a234e", "#10336f", "#16448f", "#1c54b0", "#2664c3", "#5485d2", "#90b0e3", "#d4e0f4"]
+      },
+      "bg-base": {
+        "role": "neutral",
+        "displayName": "Page Base",
+        "canonical": "#F8F9FB",
+        "tonalRamp": ["#1a1c20", "#33363c", "#4d5158", "#666b74", "#8b94a9", "#c8ccdb", "#e5e7eb", "#F8F9FB"]
+      },
+      "bg-surface": {
+        "role": "neutral",
+        "displayName": "Surface White",
+        "canonical": "#FFFFFF",
+        "tonalRamp": ["#0d1116", "#1a1f27", "#2d333d", "#535963", "#8b94a9", "#c8ccdb", "#e5e7eb", "#FFFFFF"]
+      },
+      "bg-elevated": {
+        "role": "neutral",
+        "displayName": "Elevated Surface",
+        "canonical": "#F2F3F7",
+        "tonalRamp": ["#15171c", "#2a2c33", "#43464f", "#5e616a", "#8b94a9", "#c8ccdb", "#e5e7eb", "#F2F3F7"]
+      },
+      "bg-hover": {
+        "role": "neutral",
+        "displayName": "Hover Surface",
+        "canonical": "#F5F6FA",
+        "tonalRamp": ["#16181c", "#2c2e34", "#454751", "#5e616a", "#8b94a9", "#c8ccdb", "#e5e7eb", "#F5F6FA"]
+      },
+      "text-primary": {
+        "role": "neutral",
+        "displayName": "Ink Primary",
+        "canonical": "#121721",
+        "tonalRamp": ["#121721", "#252b38", "#3b4250", "#535b6b", "#6f7889", "#8b94a9", "#c0c5d2", "#e8ebf2"]
+      },
+      "text-body": {
+        "role": "neutral",
+        "displayName": "Ink Body",
+        "canonical": "#1A1B1C",
+        "tonalRamp": ["#1A1B1C", "#2c2d2f", "#404244", "#5a5d60", "#7c7f83", "#a3a6aa", "#cbcdd0", "#ececec"]
+      },
+      "text-secondary": {
+        "role": "neutral",
+        "displayName": "Ink Secondary",
+        "canonical": "#6B7280",
+        "tonalRamp": ["#16181c", "#2a2d33", "#42464f", "#5a5e69", "#6B7280", "#9aa0a8", "#c4c8cf", "#e8eaed"]
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "Ink Muted",
+        "canonical": "#8B94A9",
+        "tonalRamp": ["#1c1f24", "#33373e", "#4c5159", "#646a76", "#8B94A9", "#aab1bf", "#c9cdd5", "#e9ebef"]
+      },
+      "text-dim": {
+        "role": "neutral",
+        "displayName": "Ink Dim",
+        "canonical": "#A7ABB6",
+        "tonalRamp": ["#1f2125", "#3a3c41", "#54575e", "#6e717a", "#888c97", "#A7ABB6", "#c8cbd2", "#e8eaed"]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Hairline Border",
+        "canonical": "#E5E7EB",
+        "tonalRamp": ["#1c1e22", "#33363c", "#4c5057", "#666a74", "#8b8f99", "#b1b5be", "#cdd0d6", "#E5E7EB"]
+      },
+      "border-subtle": {
+        "role": "neutral",
+        "displayName": "Subtle Hairline",
+        "canonical": "#F0F1F5",
+        "tonalRamp": ["#1d1f23", "#34363d", "#4d5058", "#676b75", "#8c909a", "#b3b6bf", "#d0d2d8", "#F0F1F5"]
+      },
+      "success": {
+        "role": "semantic",
+        "displayName": "Confirm Green",
+        "canonical": "#10B981",
+        "tonalRamp": ["#053524", "#08543a", "#0c7351", "#0f9268", "#10B981", "#3fc89a", "#7dd9b9", "#bfeed9"]
+      },
+      "error": {
+        "role": "semantic",
+        "displayName": "Alert Red",
+        "canonical": "#EF4444",
+        "tonalRamp": ["#4c0f0f", "#751717", "#9c1f1f", "#c52828", "#EF4444", "#f47474", "#f9a3a3", "#fdd5d5"]
+      },
+      "warning": {
+        "role": "semantic",
+        "displayName": "Pending Amber",
+        "canonical": "#F59E0B",
+        "tonalRamp": ["#4a2f02", "#714604", "#985d06", "#bf7507", "#F59E0B", "#f7b643", "#facd83", "#fde5bd"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "KPI 값 — 단일 큰 숫자 전용" },
+      "headline": { "displayName": "Headline", "purpose": "페이지 헤더 h1, 1페이지 1회" },
+      "title": { "displayName": "Title", "purpose": "워크스페이스 섹션 제목" },
+      "body": { "displayName": "Body", "purpose": "본문 기본, 한글 line-height 1.6" },
+      "label": { "displayName": "Label", "purpose": "KPI 라벨, 칩, 작은 인터랙션 요소" },
+      "eyebrow": { "displayName": "Eyebrow", "purpose": "워크스페이스 진입 위 라벨, Pretendard Blue 전용" }
+    },
+    "shadows": [
+      { "name": "shadow-sm", "value": "0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)", "purpose": "KPI 카드·분석 카드 호버" },
+      { "name": "shadow-md", "value": "0 4px 12px rgba(0,0,0,0.06)", "purpose": "릴 카드 호버, translateY와 함께" },
+      { "name": "focus-ring", "value": "0 0 0 1px rgba(48,125,240,0.15)", "purpose": "릴 카드 호버 후광, accent를 부드럽게 알림" }
+    ],
+    "motion": [
+      { "name": "duration-fast", "value": "150ms", "purpose": "보더 전환, 텍스트 색 전환, 사이드바 호버" },
+      { "name": "duration-base", "value": "200ms", "purpose": "카드 보더·그림자 전환" },
+      { "name": "ease-default", "value": "cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "기본 ease-out-expo. layout 속성에는 적용하지 않는다" }
+    ],
+    "breakpoints": [
+      { "name": "mobile", "value": "560px", "purpose": "그리드 → 단일 컬럼" },
+      { "name": "tablet", "value": "900px", "purpose": "사이드바 fixed → static 전환" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "주력 액션 전용. 한 화면에 1–2개. Pretendard Blue 배경.",
+      "html": "<button class=\"ds-btn-primary\">분석 시작</button>",
+      "css": ".ds-btn-primary { background: #307df0; color: #ffffff; padding: 8px 20px; border-radius: 10px; border: none; font-family: 'Pretendard Variable', 'Pretendard', -apple-system, sans-serif; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 150ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-btn-primary:hover { background: #2664c3; } .ds-btn-primary:focus-visible { outline: 2px solid rgba(48,125,240,0.4); outline-offset: 2px; } .ds-btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "비주력 액션. 흰 배경 + 1px border. '뒤로가기' 류.",
+      "html": "<button class=\"ds-btn-ghost\">← 뒤로</button>",
+      "css": ".ds-btn-ghost { background: #ffffff; color: #1A1B1C; padding: 6px 14px; border: 1px solid #E5E7EB; border-radius: 6px; font-family: 'Pretendard Variable', 'Pretendard', -apple-system, sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; transition: background 150ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-btn-ghost:hover { background: #F5F6FA; }"
+    },
+    {
+      "name": "KPI Card",
+      "kind": "card",
+      "refersTo": "kpi-card",
+      "description": "단일 KPI 값과 라벨. 5개 가로 행으로 배치.",
+      "html": "<div class=\"ds-kpi-card\"><div class=\"ds-kpi-label\">조회수</div><div class=\"ds-kpi-value\">1.2M</div></div>",
+      "css": ".ds-kpi-card { background: #ffffff; border: 1px solid #E5E7EB; border-radius: 14px; padding: 18px 20px; transition: border-color 200ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 200ms cubic-bezier(0.16, 1, 0.3, 1); font-family: 'Pretendard Variable', 'Pretendard', -apple-system, sans-serif; } .ds-kpi-card:hover { border-color: #d1d5db; box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04); } .ds-kpi-label { color: #8B94A9; font-size: 12px; font-weight: 500; margin-bottom: 8px; } .ds-kpi-value { color: #121721; font-size: 24px; font-weight: 700; letter-spacing: -0.03em; line-height: 1.2; }"
+    },
+    {
+      "name": "Tab Bar",
+      "kind": "nav",
+      "refersTo": "tab",
+      "description": "하단 보더 only. 활성 탭만 Pretendard Blue 2px 보더.",
+      "html": "<div class=\"ds-tabs\"><button class=\"ds-tab ds-tab-active\">개요</button><button class=\"ds-tab\">프레임</button><button class=\"ds-tab\">스크립트</button></div>",
+      "css": ".ds-tabs { display: flex; border-bottom: 1px solid #E5E7EB; gap: 0; font-family: 'Pretendard Variable', 'Pretendard', -apple-system, sans-serif; } .ds-tab { padding: 10px 20px; font-size: 14px; font-weight: 500; color: #8B94A9; cursor: pointer; border: none; background: none; border-bottom: 2px solid transparent; transition: color 150ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-tab:hover { color: #6B7280; } .ds-tab-active { color: #121721; border-bottom-color: #307df0; font-weight: 600; }"
+    },
+    {
+      "name": "Search Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "기본 텍스트 인풋. 포커스 시 보더만 accent로.",
+      "html": "<input class=\"ds-input\" placeholder=\"릴스 검색\" />",
+      "css": ".ds-input { width: 100%; padding: 11px 13px; background: #F8F9FB; border: 1px solid #E5E7EB; border-radius: 6px; font-family: 'Pretendard Variable', 'Pretendard', -apple-system, sans-serif; font-size: 14px; color: #121721; outline: none; transition: border-color 150ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-input:focus { border-color: #307df0; } .ds-input::placeholder { color: #8B94A9; }"
+    },
+    {
+      "name": "Status Pill (Confirmed)",
+      "kind": "chip",
+      "refersTo": "status-pill-ok",
+      "description": "분석 완료 등 시맨틱 성공. 배경은 success 10% 알파.",
+      "html": "<span class=\"ds-status-ok\">완료</span>",
+      "css": ".ds-status-ok { padding: 2px 7px; border-radius: 6px; background: rgba(16,185,129,0.10); color: #10B981; font-family: 'Pretendard Variable', 'Pretendard', -apple-system, sans-serif; font-size: 11px; font-weight: 700; }"
+    },
+    {
+      "name": "Tag Chip",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "메타정보 태그. 카테고리·해시태그 등.",
+      "html": "<span class=\"ds-chip\">코미디</span>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; padding: 5px 9px; background: #F8F9FB; border: 1px solid #E5E7EB; border-radius: 6px; color: #6B7280; font-family: 'Pretendard Variable', 'Pretendard', -apple-system, sans-serif; font-size: 12px; font-weight: 500; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Studio Console",
+    "overview": "이 시스템은 정밀 콘트롤판이다. 사용자는 마케팅 실무자라는 제작자이고, 화면은 그가 손에 쥔 음향 콘솔처럼 정확하게 반응해야 한다. 콘솔의 미덕은 자기를 드러내지 않는 것이다. 같은 자세로, 이 대시보드는 데이터(프레임, 감정 곡선, 댓글)가 주인공이 되도록 자기를 비운다.",
+    "keyCharacteristics": [
+      "한글 본문이 시각의 기준점. 라틴 폰트 fallback은 보조 역할",
+      "강조색은 Pretendard Blue 단 하나, 행동 가능한 요소에만",
+      "Surface는 평면, 깊이는 호버 시점에만 1px ring + soft shadow로 짧게",
+      "컬러 배지나 아이콘 대신 폰트 굵기·크기·여백으로 위계",
+      "모든 픽셀 단위는 4의 배수 + 의도적 예외 (11px eyebrow, 99px pill)"
+    ],
+    "rules": [
+      { "name": "The Single-Voice Rule", "body": "한 화면에 강조색은 Pretendard Blue 단 하나, 그것도 행동 가능한 요소에만. 라벨·카테고리·구분 표시에는 절대 쓰지 않는다.", "section": "colors" },
+      { "name": "The Tint, Not Stripe Rule", "body": "그룹 정체성을 컬러로 표시할 때는 면 전체를 8% 이하 알파로 칠한다. 사이드 보더 스트라이프(2px+ colored side border)는 절대 금지.", "section": "colors" },
+      { "name": "The 10% Ceiling Rule", "body": "Pretendard Blue가 화면 면적의 10%를 넘으면 디자인이 망가진 것이다.", "section": "colors" },
+      { "name": "The Korean-First Rule", "body": "본문은 한글이 끊기지 않게 word-break, 줄바꿈, max-width 검토. 한글은 45–55em으로 끊는 편이 가독성이 좋다.", "section": "typography" },
+      { "name": "The Weight-Over-Color Rule", "body": "강조는 굵기 변화(400→600→700)로. 색상은 행동 가능 요소에만.", "section": "typography" },
+      { "name": "The Single-Family Rule", "body": "Pretendard Variable 외의 폰트를 추가하지 않는다.", "section": "typography" },
+      { "name": "The Stillness-At-Rest Rule", "body": "어떤 요소도 휴식 상태에서 그림자를 갖지 않는다. 그림자는 상호작용의 보상.", "section": "elevation" },
+      { "name": "The Hover-Only Rule", "body": "호버 그림자는 200ms 안에 들어왔다 나가야 하고, 한 번에 하나의 요소에만.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do Pretendard Blue를 행동 가능한 요소에만 쓴다",
+      "Do 위계를 폰트 굵기와 크기 비율로 만든다",
+      "Do 카드 보더는 1px solid border 토큰만",
+      "Do 한국어 본문은 line-height 1.6, max-width 45–55em",
+      "Do 그림자는 호버에만, 200ms 안에",
+      "Do radius-sm 6 / md 10 / lg 14 / xl 18만 사용한다",
+      "Do 시맨틱 색은 텍스트 + 동일 색 10–12% 알파 배경으로만"
+    ],
+    "donts": [
+      "Don't 보라·청록 그라데이션, 형광 글로우, glassmorphism",
+      "Don't hero-metric 카드 템플릿(big number + 보조 stat 3개)",
+      "Don't 컬러 사이드 스트라이프 보더(border-left 2px+)",
+      "Don't 이모지를 버튼·라벨·헤더 장식으로",
+      "Don't TikTok·Instagram 공식 UI 모사",
+      "Don't 강조색을 Pretendard Blue 외 hue로 추가",
+      "Don't Pretendard 외 폰트 도입(모노스페이스 포함)",
+      "Don't gradient text",
+      "Don't 둥근 일러스트, 친근한 마스코트, 마케팅 카피",
+      "Don't 휴식 상태 카드에 그림자",
+      "Don't 인풋 에러를 빨간 테두리로",
+      "Don't nested 카드"
+    ]
+  }
+}

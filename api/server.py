@@ -459,27 +459,32 @@ def list_my_products(request: Request):
     import requests as _r
     H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
 
-    # 1. 소유 상품
-    own = _r.get(
-        f"{SUPA}/rest/v1/my_products?owner_id=eq.{me['id']}&select=*&order=updated_at.desc",
-        headers=H, timeout=10,
-    ).json() or []
+    # 소유 + 공유받은 상품을 병렬로 조회
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_own = ex.submit(
+            _r.get,
+            f"{SUPA}/rest/v1/my_products?owner_id=eq.{me['id']}&select=*&order=updated_at.desc",
+            headers=H, timeout=10,
+        )
+        f_shared = ex.submit(
+            _r.get,
+            f"{SUPA}/rest/v1/my_product_shares?shared_with_id=eq.{me['id']}"
+            f"&select=permission,product:my_products(*)",
+            headers=H, timeout=10,
+        )
+
+    own = f_own.result().json() or []
+    shared_rows = f_shared.result().json() or []
+
     me_name = (me.get("display_name") or (me.get("email") or "").split("@")[0])
     for p in own:
         p["is_shared"] = False
         p["permission"] = "owner"
         p["owner_name"] = me_name
 
-    # 2. 공유받은 상품
-    shared_rows = _r.get(
-        f"{SUPA}/rest/v1/my_product_shares?shared_with_id=eq.{me['id']}"
-        f"&select=permission,product:my_products(*)",
-        headers=H, timeout=10,
-    ).json() or []
-
-    # 소유자 이름 매핑 (한 번에 fetch)
-    owner_ids = list({row["product"]["owner_id"] for row in shared_rows if row.get("product")})
+    # 소유자 이름 매핑 (공유받은 상품이 있을 때만)
     name_map: dict[str, str] = {}
+    owner_ids = list({row["product"]["owner_id"] for row in shared_rows if row.get("product")})
     if owner_ids:
         prof = _r.get(
             f"{SUPA}/rest/v1/profiles?id=in.({','.join(owner_ids)})&select=id,display_name,email",
@@ -498,7 +503,6 @@ def list_my_products(request: Request):
         prod["owner_name"] = name_map.get(prod["owner_id"], "?")
         shared.append(prod)
 
-    # 최신순으로 합쳐서 반환
     merged = own + shared
     merged.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
     return merged

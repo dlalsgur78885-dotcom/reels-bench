@@ -143,14 +143,39 @@ def get_profile(user_id: str) -> dict | None:
         return None
 
 
+def _decode_jwt_sub(token: str) -> str | None:
+    """JWT payload의 sub (user_id) 만 로컬 디코드. 서명 검증은 안 함."""
+    try:
+        import base64, json
+        parts = token.split(".")
+        if len(parts) < 2:
+            return None
+        # base64url decode (padding 보정)
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64).decode())
+        return payload.get("sub")
+    except Exception:
+        return None
+
+
 def require_user(request: Request) -> dict:
-    """JWT 검증 → profile 반환. 없으면 401."""
+    """JWT 검증 + profile 반환을 병렬로. JWT 검증은 supabase에 위임."""
+    from concurrent.futures import ThreadPoolExecutor
     auth = request.headers.get("Authorization", "")
     token = auth.split(" ", 1)[1] if auth.lower().startswith("bearer ") else None
-    user = verify_jwt(token)
+    if not token:
+        raise HTTPException(401, "missing JWT")
+    user_id = _decode_jwt_sub(token)
+    if not user_id:
+        raise HTTPException(401, "invalid JWT format")
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_verify = ex.submit(verify_jwt, token)
+        f_profile = ex.submit(get_profile, user_id)
+    user = f_verify.result()
     if not user:
-        raise HTTPException(401, "invalid or missing JWT")
-    profile = get_profile(user.get("id"))
+        raise HTTPException(401, "invalid or expired JWT")
+    profile = f_profile.result()
     if not profile or not profile.get("active"):
         raise HTTPException(403, "profile not found or inactive")
     return profile

@@ -372,6 +372,10 @@ export const api = {
     patch<UserProfile>(`/api/users/${id}`, data),
   deleteUser: (id: string) => del<{ message: string }>(`/api/users/${id}`),
   deleteReel: (shortcode: string) => del<{ message: string }>(`/api/reels/${shortcode}`),
+  bulkDeleteReels: (shortcodes: string[]) =>
+    post<{ deleted: string[]; failed: string[]; deleted_count: number; failed_count: number }>(
+      '/api/reels/bulk-delete', { shortcodes },
+    ),
 }
 
 export interface ReferenceInfo {

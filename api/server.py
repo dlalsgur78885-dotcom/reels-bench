@@ -1366,34 +1366,69 @@ def get_phrases(
     }
 
 
+_REEL_CHILD_TABLES = [
+    "reels_pro_audio",
+    "reels_comment_analysis",
+    "reels_script_structure",
+    "reels_category",
+    "reels_comments",
+    "reels_transcripts",
+    "reels_metadata",
+    "opus_analyses",
+]
+
+
+def _is_valid_shortcode(sc: str) -> bool:
+    return bool(sc) and sc.replace("_", "").replace("-", "").isalnum()
+
+
+def _delete_one_reel(shortcode: str) -> bool:
+    """자식 → 부모 순으로 cascade. 부모 삭제 성공 시 True."""
+    for t in _REEL_CHILD_TABLES:
+        try:
+            supabase.sb_delete(t, f"shortcode=eq.{shortcode}")
+        except Exception as e:
+            logger.warning(f"[DeleteReel] {t} for {shortcode}: {e}")
+    return supabase.sb_delete("reels", f"shortcode=eq.{shortcode}")
+
+
 @app.delete("/api/reels/{shortcode}")
 def delete_reel(shortcode: str, request: Request):
     """admin 또는 can_delete_reels 권한자: 릴스 + 모든 자식 테이블 정리."""
     auth_svc.require_can_delete_reels(request)
-    if not shortcode or not shortcode.replace("_", "").replace("-", "").isalnum():
+    if not _is_valid_shortcode(shortcode):
         raise HTTPException(400, "invalid shortcode")
-    # 자식 → 부모 순으로 삭제 (FK가 RESTRICT라서 순서 중요)
-    child_tables = [
-        "reels_pro_audio",
-        "reels_comment_analysis",
-        "reels_script_structure",
-        "reels_category",
-        "reels_comments",
-        "reels_transcripts",
-        "reels_metadata",
-        "opus_analyses",
-    ]
-    for t in child_tables:
-        try:
-            supabase.sb_delete(t, f"shortcode=eq.{shortcode}")
-        except Exception as e:
-            logger.warning(f"[DeleteReel] {t} delete failed for {shortcode}: {e}")
-    ok = supabase.sb_delete("reels", f"shortcode=eq.{shortcode}")
-    if not ok:
+    if not _delete_one_reel(shortcode):
         raise HTTPException(500, "릴스 삭제 실패")
-    # bench 캐시 무효화
     _bench_mem["ts"] = 0
     return {"message": f"{shortcode} 삭제 완료"}
+
+
+class BulkDeleteRequest(BaseModel):
+    shortcodes: list[str]
+
+
+@app.post("/api/reels/bulk-delete")
+def bulk_delete_reels(req: BulkDeleteRequest, request: Request):
+    """다량 삭제 — admin OR can_delete_reels."""
+    auth_svc.require_can_delete_reels(request)
+    valid = [sc for sc in (req.shortcodes or []) if _is_valid_shortcode(sc)]
+    if not valid:
+        raise HTTPException(400, "삭제할 shortcode가 없습니다")
+    if len(valid) > 200:
+        raise HTTPException(400, "한 번에 200개 이하로 요청하세요")
+
+    deleted: list[str] = []
+    failed: list[str] = []
+    for sc in valid:
+        try:
+            ok = _delete_one_reel(sc)
+            (deleted if ok else failed).append(sc)
+        except Exception as e:
+            logger.warning(f"[BulkDelete] {sc}: {e}")
+            failed.append(sc)
+    _bench_mem["ts"] = 0
+    return {"deleted": deleted, "failed": failed, "deleted_count": len(deleted), "failed_count": len(failed)}
 
 
 # ── Dashboard (legacy, kept for other pages) ──

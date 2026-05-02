@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, thumbUrl } from '../api'
 import type { BenchItem, BenchFilters } from '../api'
@@ -6,6 +6,7 @@ import { fmtNum, engagementRate } from '../utils'
 import Thumb from '../components/Thumb'
 import Pagination from '../components/Pagination'
 import BenchFilterControls from '../components/BenchFilterControls'
+import { useMe } from '../auth'
 
 const PAGE_SIZE = 50
 
@@ -16,8 +17,13 @@ export default function Bench() {
   const [currentPage, setCurrentPage] = useState(1)
   const [params, setParams] = useState<BenchFilters>({ sort: 'plays' })
   const [loading, setLoading] = useState(false)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [deleting, setDeleting] = useState(false)
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
+  const me = useMe()
+  const canDelete = !!me && (me.role === 'admin' || me.can_delete_reels)
   const navigate = useNavigate()
 
   const load = useCallback(async (page: number, p: BenchFilters) => {
@@ -43,6 +49,59 @@ export default function Bench() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
+  const toggleSelect = (sc: string) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(sc)) next.delete(sc); else next.add(sc)
+      return next
+    })
+  }
+
+  const exitSelectMode = () => {
+    setSelectMode(false)
+    setSelected(new Set())
+  }
+
+  const allOnPageSelected = useMemo(
+    () => items.length > 0 && items.every(i => selected.has(i.shortcode)),
+    [items, selected],
+  )
+  const togglePageAll = () => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (allOnPageSelected) {
+        items.forEach(i => next.delete(i.shortcode))
+      } else {
+        items.forEach(i => next.add(i.shortcode))
+      }
+      return next
+    })
+  }
+
+  const onCardClick = (r: BenchItem) => {
+    if (selectMode) toggleSelect(r.shortcode)
+    else navigate(`/bench/${r.shortcode}`)
+  }
+
+  const bulkDelete = async () => {
+    if (selected.size === 0 || deleting) return
+    if (!confirm(`선택한 ${selected.size}개 릴스를 DB에서 완전히 삭제할까요?\n분석·댓글·메타데이터·자막 모두 사라집니다.`)) return
+    setDeleting(true)
+    try {
+      const scs = Array.from(selected)
+      const res = await api.bulkDeleteReels(scs)
+      const msg = res.failed_count > 0
+        ? `${res.deleted_count}개 삭제 완료. ${res.failed_count}개 실패.`
+        : `${res.deleted_count}개 삭제 완료.`
+      alert(msg)
+      exitSelectMode()
+      load(currentPage, params)
+    } catch (e: any) {
+      alert(e.message || '삭제 실패')
+    }
+    setDeleting(false)
+  }
+
   const subtitleParts: string[] = []
   if (stats) {
     subtitleParts.push(`${fmtNum(stats.total_reels)}개`)
@@ -59,16 +118,71 @@ export default function Bench() {
 
       <BenchFilterControls onChange={setParams} />
 
+      {canDelete && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap',
+        }}>
+          {!selectMode ? (
+            <button
+              type="button"
+              onClick={() => setSelectMode(true)}
+              style={{
+                padding: '6px 12px', fontSize: 12, fontWeight: 600,
+                border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                background: 'var(--bg-surface)', color: 'var(--text-secondary)', cursor: 'pointer',
+              }}
+            >선택</button>
+          ) : (
+            <>
+              <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>
+                {selected.size}개 선택
+              </span>
+              <button type="button" onClick={togglePageAll} style={{
+                padding: '6px 12px', fontSize: 12, border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-sm)', background: 'var(--bg-surface)',
+                color: 'var(--text-secondary)', cursor: 'pointer',
+              }}>{allOnPageSelected ? '이 페이지 해제' : '이 페이지 전체'}</button>
+              <button
+                type="button"
+                onClick={bulkDelete}
+                disabled={selected.size === 0 || deleting}
+                style={{
+                  padding: '6px 12px', fontSize: 12, fontWeight: 600,
+                  border: '1px solid var(--error)', borderRadius: 'var(--radius-sm)',
+                  background: selected.size > 0 ? 'var(--error)' : 'transparent',
+                  color: selected.size > 0 ? '#fff' : 'var(--error)',
+                  cursor: selected.size > 0 ? 'pointer' : 'not-allowed',
+                  opacity: deleting ? 0.5 : 1,
+                }}
+              >{deleting ? '삭제 중...' : `삭제 (${selected.size})`}</button>
+              <button type="button" onClick={exitSelectMode} disabled={deleting} style={{
+                padding: '6px 12px', fontSize: 12, border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-sm)', background: 'var(--bg-surface)',
+                color: 'var(--text-secondary)', cursor: 'pointer',
+              }}>취소</button>
+            </>
+          )}
+        </div>
+      )}
+
       <div className="reel-grid">
         {items.map(r => {
           const er = engagementRate(r.like_count, r.play_count)
+          const checked = selected.has(r.shortcode)
           return (
             <button
               key={r.shortcode}
               type="button"
               className="reel-card"
-              onClick={() => navigate(`/bench/${r.shortcode}`)}
-              aria-label={`@${r.author || '알 수 없음'} 릴스 분석 보기`}
+              onClick={() => onCardClick(r)}
+              aria-label={selectMode
+                ? `@${r.author || '알 수 없음'} ${checked ? '선택 해제' : '선택'}`
+                : `@${r.author || '알 수 없음'} 릴스 분석 보기`}
+              aria-pressed={selectMode ? checked : undefined}
+              style={selectMode && checked ? {
+                outline: '2px solid var(--accent)',
+                outlineOffset: -2,
+              } : undefined}
             >
               <div style={{ position: 'relative' }}>
                 <Thumb
@@ -81,6 +195,16 @@ export default function Bench() {
                 )}
                 {r.analyzed && (
                   <span className="reel-overlay-tr">분석완료</span>
+                )}
+                {selectMode && (
+                  <span aria-hidden="true" style={{
+                    position: 'absolute', top: 8, right: 8,
+                    width: 22, height: 22, borderRadius: '50%',
+                    border: `2px solid ${checked ? 'var(--accent)' : 'rgba(255,255,255,0.85)'}`,
+                    background: checked ? 'var(--accent)' : 'rgba(0,0,0,0.35)',
+                    color: '#fff', fontSize: 13, fontWeight: 700, lineHeight: '18px',
+                    textAlign: 'center', boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                  }}>{checked ? '✓' : ''}</span>
                 )}
               </div>
               <div className="card-info">

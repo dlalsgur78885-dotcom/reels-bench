@@ -66,9 +66,11 @@ export default function App() {
       .finally(() => setMeLoading(false))
   }, [session, bootstrapping])
 
-  if (bootstrapping) return null
+  // 캐시된 me가 있으면 부트스트랩 완료 전에 낙관적으로 레이아웃 렌더 → 즉시 권한 버튼 노출.
+  // 세션이 유효하지 않으면 bootstrap 종료 후 다음 분기에서 로그인으로 라우팅.
+  if (bootstrapping && !me) return null
 
-  if (!session) {
+  if (!bootstrapping && !session) {
     return (
       <Routes>
         <Route path="/login" element={<Login />} />

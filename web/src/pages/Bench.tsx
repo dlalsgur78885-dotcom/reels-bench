@@ -192,13 +192,19 @@ export default function Bench() {
       </div>
 
       <div className={`bench-toolbar${showFilters ? ' with-filters' : ''}`}>
-        <input
-          className="search-input bench-search"
-          placeholder="작성자·코드 검색"
-          value={search}
-          onChange={e => onSearch(e.target.value)}
-          aria-label="작성자 또는 코드로 검색"
-        />
+        <div className="bench-search-wrap">
+          <svg className="bench-search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
+            <circle cx="7" cy="7" r="5" />
+            <path d="M11 11l3.5 3.5" />
+          </svg>
+          <input
+            className="search-input bench-search"
+            placeholder="작성자, shortcode, 키워드로 검색"
+            value={search}
+            onChange={e => onSearch(e.target.value)}
+            aria-label="작성자, shortcode, 키워드로 검색"
+          />
+        </div>
         <div className="bench-toolbar-spacer" />
         <div className="segment-group" role="tablist" aria-label="정렬 기준">
           {([['plays', '조회수'], ['likes', '좋아요'], ['er', 'ER'], ['recent', '최신순']] as const).map(([k, l]) => (
@@ -229,46 +235,54 @@ export default function Bench() {
 
       {showFilters && (
         <div id="filter-panel" className="filter-panel">
-          <div>
-            <label className="filter-field-label" htmlFor="bench-plays-min">최소 조회수</label>
-            <input id="bench-plays-min" className="filter-input" type="number" inputMode="numeric"
-              placeholder="예: 10000" value={playsMin}
-              onChange={e => setPlaysMin(e.target.value)} />
-          </div>
-          <div>
-            <label className="filter-field-label" htmlFor="bench-plays-max">최대 조회수</label>
-            <input id="bench-plays-max" className="filter-input" type="number" inputMode="numeric"
-              placeholder="예: 1000000" value={playsMax}
-              onChange={e => setPlaysMax(e.target.value)} />
-          </div>
-          <div>
-            <label className="filter-field-label" htmlFor="bench-er-min">최소 ER (%)</label>
-            <input id="bench-er-min" className="filter-input" type="number" inputMode="decimal" step="0.1"
-              placeholder="예: 1.0" value={erMin}
-              onChange={e => setErMin(e.target.value)} />
-          </div>
-          <div>
-            <label className="filter-field-label" htmlFor="bench-er-max">최대 ER (%)</label>
-            <input id="bench-er-max" className="filter-input" type="number" inputMode="decimal" step="0.1"
-              placeholder="예: 10.0" value={erMax}
-              onChange={e => setErMax(e.target.value)} />
-          </div>
-          <div>
-            <label className="filter-field-label" htmlFor="bench-date-from">시작일</label>
-            <input id="bench-date-from" className="filter-input" type="date" value={dateFrom}
-              onChange={e => setDateFrom(e.target.value)} />
-          </div>
-          <div>
-            <label className="filter-field-label" htmlFor="bench-date-to">종료일</label>
-            <input id="bench-date-to" className="filter-input" type="date" value={dateTo}
-              onChange={e => setDateTo(e.target.value)} />
-          </div>
-          {activeFilterCount > 0 && (
-            <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-              <button type="button" className="btn-reset" onClick={clearFilters}>초기화</button>
+          <section>
+            <div className="filter-section-title">
+              범위
+              <span className="filter-section-title-helper">조회수·참여율·기간</span>
             </div>
-          )}
-          <div className="filter-panel-section">
+            <div className="filter-section-grid">
+              <div>
+                <label className="filter-field-label" htmlFor="bench-plays-min">최소 조회수</label>
+                <input id="bench-plays-min" className="filter-input" type="number" inputMode="numeric"
+                  placeholder="예: 10000" value={playsMin}
+                  onChange={e => setPlaysMin(e.target.value)} />
+              </div>
+              <div>
+                <label className="filter-field-label" htmlFor="bench-plays-max">최대 조회수</label>
+                <input id="bench-plays-max" className="filter-input" type="number" inputMode="numeric"
+                  placeholder="예: 1000000" value={playsMax}
+                  onChange={e => setPlaysMax(e.target.value)} />
+              </div>
+              <div>
+                <label className="filter-field-label" htmlFor="bench-er-min">최소 ER (%)</label>
+                <input id="bench-er-min" className="filter-input" type="number" inputMode="decimal" step="0.1"
+                  placeholder="예: 1.0" value={erMin}
+                  onChange={e => setErMin(e.target.value)} />
+              </div>
+              <div>
+                <label className="filter-field-label" htmlFor="bench-er-max">최대 ER (%)</label>
+                <input id="bench-er-max" className="filter-input" type="number" inputMode="decimal" step="0.1"
+                  placeholder="예: 10.0" value={erMax}
+                  onChange={e => setErMax(e.target.value)} />
+              </div>
+              <div>
+                <label className="filter-field-label" htmlFor="bench-date-from">시작일</label>
+                <input id="bench-date-from" className="filter-input" type="date" value={dateFrom}
+                  onChange={e => setDateFrom(e.target.value)} />
+              </div>
+              <div>
+                <label className="filter-field-label" htmlFor="bench-date-to">종료일</label>
+                <input id="bench-date-to" className="filter-input" type="date" value={dateTo}
+                  onChange={e => setDateTo(e.target.value)} />
+              </div>
+            </div>
+          </section>
+
+          <section className="filter-section-divider">
+            <div className="filter-section-title">
+              분류
+              <span className="filter-section-title-helper">광고 적합성·USP·구조·Hook·CTA</span>
+            </div>
             <FilterChips title="광고 적합성" options={['광고형','정보형','후기형','브랜딩형','유머형','일상형']}
               selected={adSuit} onToggle={v => toggle(adSuit, v, setAdSuit)} />
             <FilterChips title="USP 개수" options={['1','2','3','4','5']}
@@ -279,7 +293,13 @@ export default function Bench() {
               selected={hookT} onToggle={v => toggle(hookT, v, setHookT)} />
             <FilterChips title="CTA 유형" options={['댓글유도','행동촉구','저장유도','링크유도','정보제공','없음']}
               selected={ctaT} onToggle={v => toggle(ctaT, v, setCtaT)} />
-          </div>
+          </section>
+
+          {activeFilterCount > 0 && (
+            <div className="filter-actions">
+              <button type="button" className="btn-reset" onClick={clearFilters}>초기화</button>
+            </div>
+          )}
         </div>
       )}
 

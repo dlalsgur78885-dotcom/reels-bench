@@ -15,6 +15,7 @@ const ReelIntake = lazy(() => import('./pages/ReelIntake'))
 const Login = lazy(() => import('./pages/Login'))
 const ScriptGen = lazy(() => import('./pages/ScriptGen'))
 const MyProducts = lazy(() => import('./pages/MyProducts'))
+const MyProductEdit = lazy(() => import('./pages/MyProductEdit'))
 const Phrases = lazy(() => import('./pages/Phrases'))
 const Settings = lazy(() => import('./pages/Settings'))
 
@@ -148,6 +149,8 @@ export default function App() {
           <Route path="/channels" element={<Channels />} />
           <Route path="/script" element={<ScriptGen />} />
           <Route path="/my-products" element={<MyProducts />} />
+          <Route path="/my-products/new" element={<MyProductEdit />} />
+          <Route path="/my-products/:id/edit" element={<MyProductEdit />} />
           <Route path="/login" element={<Navigate to="/" replace />} />
           <Route path="/settings" element={
             meLoading ? <div style={{ padding: 40, color: 'var(--text-muted)' }}>로딩...</div>

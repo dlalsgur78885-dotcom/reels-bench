@@ -1,20 +1,26 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, lazy, Suspense } from 'react'
 import { Routes, Route, NavLink, Navigate, useNavigate } from 'react-router-dom'
-import Home from './pages/Home'
-import Bench from './pages/Bench'
-import BenchDetail from './pages/BenchDetail'
-import AnalysisPage from './pages/AnalysisPage'
-import Channels from './pages/Channels'
-import ReelIntake from './pages/ReelIntake'
-import Login from './pages/Login'
-import ScriptGen from './pages/ScriptGen'
-import MyProducts from './pages/MyProducts'
-import Phrases from './pages/Phrases'
-import Settings from './pages/Settings'
 import { supabase } from './supabase'
 import { api, type UserProfile } from './api'
 import { AuthContext } from './auth'
 import './App.css'
+
+// 라우트 코드 스플리팅 — 각 페이지는 첫 진입 시 별도 청크로 로드
+const Home = lazy(() => import('./pages/Home'))
+const Bench = lazy(() => import('./pages/Bench'))
+const BenchDetail = lazy(() => import('./pages/BenchDetail'))
+const AnalysisPage = lazy(() => import('./pages/AnalysisPage'))
+const Channels = lazy(() => import('./pages/Channels'))
+const ReelIntake = lazy(() => import('./pages/ReelIntake'))
+const Login = lazy(() => import('./pages/Login'))
+const ScriptGen = lazy(() => import('./pages/ScriptGen'))
+const MyProducts = lazy(() => import('./pages/MyProducts'))
+const Phrases = lazy(() => import('./pages/Phrases'))
+const Settings = lazy(() => import('./pages/Settings'))
+
+function RouteFallback() {
+  return <div style={{ padding: 40, color: 'var(--text-muted)' }}>불러오는 중…</div>
+}
 
 const ME_CACHE_KEY = 'cached_me'
 const ME_CACHE_TTL_MS = 60 * 60 * 1000  // 60분
@@ -101,10 +107,12 @@ export default function App() {
 
   if (!bootstrapping && !session) {
     return (
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
-      </Routes>
+      <Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="*" element={<Navigate to="/login" replace />} />
+        </Routes>
+      </Suspense>
     )
   }
 
@@ -129,6 +137,7 @@ export default function App() {
         <UserMenu me={me} />
       </aside>
       <main className="main">
+        <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/reels/new" element={<ReelIntake />} />
@@ -150,6 +159,7 @@ export default function App() {
           <Route path="/admin/secrets" element={<Navigate to="/settings?tab=secrets" replace />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
+        </Suspense>
       </main>
     </div>
     </AuthContext.Provider>

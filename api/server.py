@@ -741,18 +741,14 @@ def list_shareable_users(request: Request):
 
 # ── Auth ──
 
-@app.get("/api/me")
-def get_me(request: Request):
-    """현재 로그인한 사용자 profile."""
-    profile = auth_svc.require_user(request)
-    # last_login_at 갱신 (best-effort)
+def _update_last_login(user_id: str) -> None:
+    """응답을 막지 않도록 background에서 실행."""
     try:
-        from datetime import datetime, timezone
         SUPA = (os.getenv("SUPABASE_URL") or "").strip()
         KEY = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or "").strip()
         _r = supabase.get_session()
         _r.patch(
-            f"{SUPA}/rest/v1/profiles?id=eq.{profile['id']}",
+            f"{SUPA}/rest/v1/profiles?id=eq.{user_id}",
             headers={"apikey": KEY, "Authorization": f"Bearer {KEY}",
                      "Content-Type": "application/json", "Prefer": "return=minimal"},
             json={"last_login_at": datetime.now(timezone.utc).isoformat()},
@@ -760,6 +756,13 @@ def get_me(request: Request):
         )
     except Exception:
         pass
+
+
+@app.get("/api/me")
+def get_me(request: Request, background_tasks: BackgroundTasks):
+    """현재 로그인한 사용자 profile. last_login_at은 응답 후 background로 갱신."""
+    profile = auth_svc.require_user(request)
+    background_tasks.add_task(_update_last_login, profile["id"])
     return profile
 
 

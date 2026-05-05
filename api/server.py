@@ -287,6 +287,39 @@ def rebuild_transcript_from_ocr(shortcode: str, request: Request, force: bool = 
     }
 
 
+@app.post("/api/script/analyze-body-chunks/{shortcode}")
+def analyze_body_chunks_for_reel(shortcode: str, request: Request):
+    """body_N 각 chunk별 토픽·USP·역할 분석. overall.body_chunks에 저장."""
+    auth_svc.require_user(request)
+    ref = script_gen.fetch_reference(shortcode)
+    if not ref:
+        raise HTTPException(404, "참고 릴스 없음")
+    sentences = ref.get("sentences") or []
+    if not any((s.get("section") or "").lower().startswith("body") for s in sentences):
+        raise HTTPException(400, "body_N 라벨된 sentences 필요 (먼저 classify-sentences 실행)")
+    chunks = script_gen.analyze_body_chunks(ref)
+    if not chunks:
+        raise HTTPException(500, "body chunk 분석 실패")
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    rows = _r.get(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=overall&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    if not rows:
+        raise HTTPException(404, "script_structure 없음")
+    overall = rows[0].get("overall") or {}
+    overall["body_chunks"] = chunks
+    _r.patch(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
+        headers={**H, "Prefer": "return=minimal"},
+        json={"overall": overall}, timeout=15,
+    )
+    return {"shortcode": shortcode, "chunks": chunks, "count": len(chunks)}
+
+
 @app.post("/api/script/extract-roles/{shortcode}")
 def extract_roles_for_reel(shortcode: str, request: Request):
     """참고 릴스의 섹션별 narrative role을 추출해 script_structure.overall.section_roles에 저장."""

@@ -178,6 +178,108 @@ JSON만 출력. 빈 섹션은 제외.
         return {}
 
 
+def analyze_body_chunks(ref: dict) -> list[dict]:
+    """body_N 각 chunk별 상세 분석.
+
+    각 chunk마다:
+    - body_n: chunk 라벨
+    - sentences: 이 chunk의 문장들 (start/end/text)
+    - topic: 한 문장 요약 (이 chunk가 무엇을 다루는지)
+    - primary_usp_id: usp_layout에서 이 chunk를 appears_in으로 가진 USP id (없으면 null)
+    - role: 이 chunk의 narrative 역할 (시연/비교/proof/전환/요약/감성/디테일)
+    - relation_to_prev: 이전 chunk와의 관계 (확장/대조/심화/전환)
+
+    Returns: [{body_n, sentences, topic, primary_usp_id, role, relation_to_prev}, ...]
+    """
+    sentences = ref.get("sentences") or []
+    if not sentences:
+        return []
+
+    # body_N별 grouping (시간순)
+    body_groups: dict[str, list[dict]] = {}
+    for s in sentences:
+        sec = (s.get("section") or "").lower()
+        if sec.startswith("body_") or sec == "body":
+            body_groups.setdefault(sec, []).append(s)
+    if not body_groups:
+        return []
+    sorted_keys = sorted(body_groups.keys())
+
+    # usp_layout 매핑 — body_N → usp_id
+    structure = ref.get("structure") or {}
+    overall = structure.get("overall") or {}
+    usp_layout = overall.get("usp_layout") or []
+    body_to_usp: dict[str, list[int]] = {}
+    for u in usp_layout:
+        for sec in (u.get("appears_in") or []):
+            sec_l = sec.lower()
+            body_to_usp.setdefault(sec_l, []).append(u.get("id"))
+
+    # Gemini 프롬프트 — chunk별 분석 요청
+    chunk_lines = []
+    for k in sorted_keys:
+        sents = body_groups[k]
+        chunk_lines.append(f"\n[{k.upper()}]")
+        for s in sents:
+            chunk_lines.append(f"  ({float(s.get('start',0)):.1f}-{float(s.get('end',0)):.1f}s) \"{s.get('text','')}\"")
+
+    usp_block = ""
+    if usp_layout:
+        usp_block = "\n## 분석된 USP layout (참고용 — 어느 chunk에 어느 USP가 배치됐는지 이미 알려져 있음)\n"
+        for u in usp_layout:
+            usp_block += f"- USP {u.get('id')} [{u.get('label')}]: {u.get('description', '')} (등장: {', '.join(u.get('appears_in') or [])})\n"
+
+    prompt = f"""광고 릴스의 body 분절(body_N)별로 무엇을 다루는지 상세 분석하세요.
+
+{usp_block}
+## body 분절들
+{chr(10).join(chunk_lines)}
+
+## 각 body_N마다 출력
+- topic: 한 줄로 — 이 chunk가 다루는 핵심 토픽 (15자 이내)
+- primary_usp_id: usp_layout 중 이 chunk를 대표하는 USP id (정수). 위 layout의 appears_in 정보를 우선 신뢰. 매핑 없으면 null
+- role: 다음 중 하나 — '시연' / '비교' / 'proof' / '전환' / '요약' / '감성' / '디테일'
+- relation_to_prev: 이전 chunk와의 관계 — '확장' / '대조' / '심화' / '새토픽' / '요약' (body_1은 'start')
+- summary: 한 줄 — 이 chunk의 분석 요약 (어떻게 시청자에게 작용하는지)
+
+JSON만 출력 (chunk 시간순):
+{{
+  "chunks": [
+    {{"body_n": "body_1", "topic": "...", "primary_usp_id": 2, "role": "디테일", "relation_to_prev": "start", "summary": "..."}},
+    ...
+  ]
+}}"""
+
+    try:
+        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=4096)
+        if isinstance(result, list) and result:
+            result = result[0]
+        chunks_raw = (result or {}).get("chunks") or []
+    except Exception as e:
+        logger.warning("analyze_body_chunks Gemini failed: %s", e)
+        chunks_raw = []
+
+    # 결과를 sorted_keys 순으로 정합 + sentences 첨부
+    by_key = {c.get("body_n", "").lower(): c for c in chunks_raw}
+    out = []
+    for k in sorted_keys:
+        c = by_key.get(k, {})
+        # primary_usp_id 보정 — Gemini가 빠뜨렸으면 body_to_usp에서 채움
+        primary = c.get("primary_usp_id")
+        if primary is None and k in body_to_usp:
+            primary = body_to_usp[k][0] if body_to_usp[k] else None
+        out.append({
+            "body_n": k,
+            "sentences": [{"start": s.get("start"), "end": s.get("end"), "text": s.get("text")} for s in body_groups[k]],
+            "topic": c.get("topic", ""),
+            "primary_usp_id": primary,
+            "role": c.get("role", ""),
+            "relation_to_prev": c.get("relation_to_prev", "start" if k == sorted_keys[0] else ""),
+            "summary": c.get("summary", ""),
+        })
+    return out
+
+
 def parse_frame_ocr_from_analysis(analysis_text: str) -> list[tuple[int, str]]:
     """opus_analyses.analysis에서 [N초] ... 화면텍스트: \"TEXT\" 형식 파싱.
 

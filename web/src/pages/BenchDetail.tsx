@@ -630,6 +630,80 @@ export default function BenchDetail() {
                         </div>
                       </div>
                     ))}
+
+                    {/* Body chunk 상세 분석 (overall.body_chunks) */}
+                    {(() => {
+                      const chunks = (extra.script_structure?.overall as any)?.body_chunks as Array<{
+                        body_n: string; topic: string; primary_usp_id: number | null;
+                        role: string; relation_to_prev: string; summary: string;
+                        sentences: { start: number; end: number; text: string }[]
+                      }> | undefined
+                      if (!chunks || !chunks.length) return null
+                      const roleColor: Record<string, string> = {
+                        '시연': '#3b82f6', '비교': '#8b5cf6', 'proof': '#10b981',
+                        '전환': '#6b7280', '요약': '#f59e0b', '감성': '#ec4899', '디테일': '#0ea5e9',
+                      }
+                      return (
+                        <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px dashed var(--border)' }}>
+                          <div className="eyebrow-label" style={{ marginBottom: 8 }}>
+                            🧩 Body 분절별 상세 — {chunks.length}개 chunk
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            {chunks.map((c) => {
+                              const rc = roleColor[c.role] || 'var(--text-muted)'
+                              const usp_id = c.primary_usp_id
+                              return (
+                                <div key={c.body_n} style={{
+                                  background: 'var(--bg-surface)', border: '1px solid var(--border)',
+                                  borderRadius: 6, padding: 10, fontSize: 12, lineHeight: 1.5,
+                                }}>
+                                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap', marginBottom: 4 }}>
+                                    <span style={{
+                                      background: '#1e40af', color: '#fff',
+                                      fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
+                                      textTransform: 'uppercase', letterSpacing: 0.04,
+                                    }}>{c.body_n.replace('_', ' ')}</span>
+                                    {usp_id != null && (
+                                      <span style={{
+                                        background: colorOf(usp_id), color: '#fff',
+                                        fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
+                                      }}>USP{usp_id}</span>
+                                    )}
+                                    {c.role && (
+                                      <span style={{
+                                        fontSize: 10, fontWeight: 700, padding: '1px 6px',
+                                        border: `1px solid ${rc}`, color: rc, borderRadius: 3,
+                                      }}>{c.role}</span>
+                                    )}
+                                    {c.relation_to_prev && c.relation_to_prev !== 'start' && (
+                                      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                                        ↳ {c.relation_to_prev}
+                                      </span>
+                                    )}
+                                    <span style={{ fontWeight: 600 }}>{c.topic}</span>
+                                  </div>
+                                  {c.summary && (
+                                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', fontStyle: 'italic', marginBottom: 4 }}>
+                                      {c.summary}
+                                    </div>
+                                  )}
+                                  <div style={{ paddingLeft: 10, borderLeft: `2px solid ${usp_id != null ? colorOf(usp_id) + '40' : 'var(--border)'}` }}>
+                                    {c.sentences.map((s, i) => (
+                                      <div key={i} style={{ fontSize: 11, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+                                        <span style={{ fontFamily: 'monospace', color: 'var(--text-muted)', marginRight: 6 }}>
+                                          {s.start.toFixed(1)}-{s.end.toFixed(1)}s
+                                        </span>
+                                        {s.text}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )
+                    })()}
                   </div>
                 )
               })()}

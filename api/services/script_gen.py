@@ -2125,24 +2125,50 @@ def classify_sentence_sections(sentences: list[dict], structure: dict) -> list[d
     else:
         valid_sections.add("body")
     def _time_range_fallback() -> dict[int, str]:
-        """Gemini 실패 시 structure의 hook/intro/body/cta 시간 범위로 분류."""
-        ranges: list[tuple[float, float, str]] = []
+        """Gemini 실패 시 structure의 hook/intro/body/cta 시간 범위로 분류.
+
+        - hook/cta seconds가 빠져 있으면 다른 섹션 경계로 추정
+        - body는 key_points 수만큼 균등 분할
+        - sentences 끝까지 무라벨 안 남도록 마지막 범위 늘림
+        """
+        # 영상 끝 시각 추정 (문장 마지막 end)
+        max_end = max((float(s.get("end", 0) or 0) for s in sentences), default=0.0)
+        sec_ranges: dict[str, tuple[float, float]] = {}
         for k in ("hook", "intro", "body", "cta"):
             sec = (structure or {}).get(k) or {}
             r = _parse_section_seconds(sec.get("seconds"))
             if r:
-                ranges.append((r[0], r[1], k))
-        if not ranges:
+                sec_ranges[k] = r
+        if not sec_ranges:
             return {}
-        # body는 시간순으로 N개 균등 분할 (key_points 개수만큼)
-        body_range = next((r for r in ranges if r[2] == "body"), None)
-        body_subdivisions: list[tuple[float, float, str]] = []
-        if body_range and n_body_slots >= 2:
-            bs, be = body_range[0], body_range[1]
+
+        # 누락된 hook/cta 추정
+        intro_or_body_start = (sec_ranges.get("intro") or sec_ranges.get("body") or (0, 0))[0]
+        if "hook" not in sec_ranges and intro_or_body_start > 0:
+            sec_ranges["hook"] = (0.0, intro_or_body_start)
+        body_or_intro_end = (sec_ranges.get("body") or sec_ranges.get("intro") or (0, 0))[1]
+        if "cta" not in sec_ranges and max_end > body_or_intro_end:
+            sec_ranges["cta"] = (body_or_intro_end, max_end + 0.01)
+        # body 끝이 영상 길이를 초과하면 cap
+        if "body" in sec_ranges:
+            bs, be = sec_ranges["body"]
+            if be > max_end + 1:
+                sec_ranges["body"] = (bs, max_end + 0.01)
+
+        ranges: list[tuple[float, float, str]] = []
+        # body 분할
+        if "body" in sec_ranges and n_body_slots >= 2:
+            bs, be = sec_ranges["body"]
             span = (be - bs) / n_body_slots
             for k in range(n_body_slots):
-                body_subdivisions.append((bs + k*span, bs + (k+1)*span, f"body_{k+1}"))
-            ranges = [r for r in ranges if r[2] != "body"] + body_subdivisions
+                ranges.append((bs + k*span, bs + (k+1)*span, f"body_{k+1}"))
+        for name in ("hook", "intro", "cta"):
+            if name in sec_ranges:
+                rs, re_ = sec_ranges[name]
+                ranges.append((rs, re_, name))
+        if "body" in sec_ranges and n_body_slots < 2:
+            ranges.append((*sec_ranges["body"], "body"))
+
         out: dict[int, str] = {}
         for i, sent in enumerate(sentences, 1):
             st = float(sent.get("start", 0) or 0)
@@ -2156,10 +2182,14 @@ def classify_sentence_sections(sentences: list[dict], structure: dict) -> list[d
                     best_overlap = ov
                     best_sec = sec_name
             if not best_sec:
-                # mid가 어느 범위에 가장 가까운지
+                # 가장 가까운 범위 (mid 기준)
+                best_dist = float("inf")
                 for rs, re_, sec_name in ranges:
                     if rs <= mid <= re_:
                         best_sec = sec_name; break
+                    dist = min(abs(mid - rs), abs(mid - re_))
+                    if dist < best_dist:
+                        best_dist = dist; best_sec = sec_name
             if best_sec and best_sec in valid_sections:
                 out[i] = best_sec
         return out

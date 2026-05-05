@@ -2814,80 +2814,19 @@ def _section_specific_guidance(section_name: str, has_destination: bool = False)
     """섹션 타입별 미러링 가이드 — 톤·종결 prescription 없음, 참고 그대로."""
     name = (section_name or "").lower()
     if name == "hook":
-        dest_rule = (
-            "- **Hook에 destination(여행지) 1번 무조건 등장** — \"해외/세계/외국\" 같은 일반어 금지\n"
-            if has_destination else ""
-        )
-        return """## 🎣 HOOK 자유 Transform 모드 (첫 3초) ⭐
-
-⚠️ Hook은 **skeleton 강제 X — 자유 재작성**. **단, ref Hook의 구조·말투를 그대로 미러링** (페인 강제 X).
-
-### ⭐⭐⭐ 가장 중요 — ref Hook 구조를 그대로 따라감
-- ref가 **"조건/도입 → 행동 명령"**이면 우리도 **조건+명령**으로
-- ref가 **"상황 + 공감 질문"**이면 우리도 **상황+질문**으로
-- ref가 **"숫자/일화 도입"**이면 우리도 **숫자/일화**로
-- ref가 **pain 톤**이면 우리도 **pain**으로
-- ⚠️ ref에 페인 없으면 **억지로 페인 깔지 말 것** — ref 톤 그대로
-
-### ⭐⭐ Hook 의무 룰
-""" + dest_rule + """- **플랫폼 맥락어 (릴스/피드/화면/영상/스크롤) ref 그대로 유지** — product 도메인으로 치환 X
-
-### 보존 (필수)
-- **어절 수 + 어절별 음절 패턴 강제** (각 ±2 자 허용)
-- **role은 ref에서 분류된 그대로** — pain·transition·spec·cta 모두 OK
-- **종결 형태**(질문/명령/평서)는 ref 그대로
-
-### 자유롭게
-- skeleton·[SLOT] 골격 안 따라도 됨 — 단어·동사 자유 변형
-- 우리 도메인 단어로 치환 (USP/페르소나/여행지)
-
-### 예시 — ref 미러링
-- ref: "일본 여행 가기 전에 당신의 피드에 이 릴스가 떴다면 / 지금 바로 저장하고 친구한테 공유해" (조건+명령)
-  → 우리: "다낭 호텔 예약 전에 당신의 피드에 이 릴스가 떴다면 / 지금 바로 저장하고 친구한테 공유해" (조건+명령 미러, 릴스 보존)
-- ref: "한 여름에 자다가 / 땀 때문에 찝찝해서 / 잠 깰 때 있지?" (pain+질문)
-  → 우리: "여행 갈 때마다 / 호텔 비교 어려워서 / 가격 헷갈릴 때 있지?" (pain+질문 미러)
-
-### 절대 금지
-- ref가 명령형인데 우리가 pain 질문으로 바꿈 ❌
-- ref가 도입형인데 우리가 pain 트리거 강제 ❌
-- 마케팅 톤 ("최고잖아요/딱이죠")
-- 도메인 충돌 비유 ("촉감/모찌/실크" 같은 잠옷 어휘를 여행앱에 박기)
+        return """## 🎣 HOOK 자유 Transform — 어절·음절·플랫폼어 보존
+- **어절 수 + 어절별 음절 패턴** ±2 강제
+- **종결 형태** ref 그대로 (질문/명령/평서)
+- **플랫폼 맥락어** (릴스/피드/화면/영상/스크롤) ref 그대로 — product 도메인으로 치환 X
+- 비유가 우리 도메인과 충돌하면 비유 빼고 직접 묘사
+- (톤·desire는 위 페르소나 block의 LF8/scene 룰 적용)
 """
     if name == "intro":
-        return """## 🚪 INTRO 자유 Transform 모드 ⭐ — ref 톤 미러링 + main USP 키워드 포함
-
-⚠️ Intro는 **skeleton 강제 X — 자유 재작성**. 단, **ref Intro의 톤·구조·역할 그대로 미러링** (pain 강제 X).
-⚠️ **각 Intro 문장에 main USP 핵심 키워드 1개 이상 자연스럽게 포함 필수**.
-
-### ⭐⭐⭐ 가장 중요 — ref Intro 톤을 그대로 따라감
-- ref가 **"자랑/강조"** ("~거든요", "~코드", "DM 폭주") → 우리도 **자랑/강조**
-- ref가 **"제품 도입/소개"** ("~보여줄게", "~어플이야") → 우리도 **소개**
-- ref가 **"pain 깔기"** ("~귀찮잖아", "~답답하지?") → 우리도 **pain**
-- ref가 **"수치/근거"** ("3년 동안", "200만 다운") → 우리도 **수치**
-- ⚠️ ref에 페인 없으면 **억지로 페인 깔지 말 것** — ref 톤 그대로
-
-### 보존 (필수)
-- **어절 수 + 어절별 음절 패턴 강제** (각 ±2 자 허용)
-- **role은 ref에서 분류된 그대로** — pain·transition·spec·benefit 모두 OK
-- **종결 형태**(평서/감탄/자랑) ref 그대로
-- **main USP 키워드 매 문장 1개 이상**
-
-### ⚠️ 비유·메타포 처리
-ref Intro의 물리·감각 비유 ("모찌 같은")가 우리 도메인과 안 맞으면:
-- ❌ 단어만 바꿔 미러 X ("주식 같은 가격")
-- ✅ 비유 빼고 **제품 기능 직접 묘사**
-
-### 예시 — ref 미러링
-- ref: "여행 경비를 반이나 아껴줄 거거든." (자랑형, ~거든)
-  → 우리: "**숙소값**을 반이나 아껴줄 거거든." (자랑 그대로 미러, main USP 키워드 포함)
-- ref: "DM 폭주했던 일본 후보 할인 코드." (강조 명사구)
-  → 우리: "DM 폭주했던 **다낭 숙소 가격 알람**." (강조 명사구 미러)
-- ❌ "혹시 숙소값 손해볼 걱정에 찝찝해요?" (ref가 자랑인데 pain 질문 — ref 톤 위반)
-
-### 절대 금지
-- ref가 자랑/강조인데 우리가 pain 질문으로 바꿈 ❌
-- main USP 키워드 누락된 문장
-- 도메인 충돌 비유 (ref 비유를 단어 바꿔 강제 미러)
+        return """## 🚪 INTRO 자유 Transform — 어절·음절 보존 + 비유 처리
+- **어절 수 + 어절별 음절 패턴** ±2 강제
+- **종결 형태** ref 그대로
+- **비유·메타포 처리**: ref의 물리·감각 비유 ("모찌 같은")가 우리 도메인과 안 맞으면 비유 빼고 제품 기능 직접 묘사 (단어만 바꿔 미러 X)
+- (톤·desire는 위 페르소나 block의 LF8/scene 룰 적용)
 """
     if name.startswith("body"):
         return """## 💪 BODY 자유 Transform 모드 (USP 분절) ⭐
@@ -3210,61 +3149,9 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
 - ref가 절약 angle인데 우리가 매력 어필로 빠짐 (LF8 변경 X)
 - ref 도메인 단어 그대로 박힘 ("일본 우버" 같은 단어가 잠옷 광고에 등장)
 """
-        _dests = target_persona.get("destinations") or []
-        if _dests:
-            chosen_dest = _dests[0]  # _generate_multistep에서 이미 1개로 선택됨
-            persona_str += f"""
-⭐ **이 대본의 여행지 = "{chosen_dest}"** ⭐
 
-⚠️ 반복 방지 룰 — **각 섹션마다 도메인 키워드 딱 1번**:
-- **다른 장소 (푸꾸옥/나트랑/다낭/보라카이) 절대 X**
-- **"{chosen_dest}"는 Hook에서 1번만** (맥락 셋업)
-- **각 body 섹션 내에서 도메인 핵심명사("{chosen_dest}", "호텔", "숙소") 통틀어 1번만 등장**
-  - body_1 첫 문장에 "호텔" 1번 → body_1의 다른 문장은 도메인 명사 생략 (기능명/대명사만)
-  - body_2 첫 문장에 "{chosen_dest}" 또는 "호텔" 1번 → 나머지는 생략
-  - body_3 첫 문장에 1번 → 나머지는 생략
-- Hook이 맥락 깔아주니까 뒷 문장에서 명사 통째로 빼도 의미 통함
-
-### ✅ 좋은 예 (각 섹션 1번)
-- Hook: "**{chosen_dest} 호텔** 예약 전에 당신의 화면에 이 영상이 떴다면" ({chosen_dest}+호텔 1회 — 맥락 셋업)
-- Hook 2: "지금 당장 확인하고 친구한테 알려줘" (생략)
-- Intro: "비싼 **숙소값** 새는 거 막아줄 거거든" (숙소 1회)
-- Body_1 문장1: "예약 폭주했던 **호텔 가격 알람**" (호텔 1회)
-- Body_1 문장2: "매일 가격 바뀌는 거 알지?" (생략 — 알람 맥락 이미 깔림)
-- Body_1 문장3: "여기 알람 설정하고 새로고침은 말자" (생략)
-- Body_2 문장1: "여행 가면 **특가** 잡아야 되잖아" (특가 1회)
-- Body_2 문장2-3: 생략
-- Body_3 문장1: "**가격 그래프** 한눈에 비교" (그래프 1회)
-- Body_3 문장2-3: 생략
-
-### ❌ 나쁜 예 (반복 지루)
-- "{chosen_dest} 숙소 매일 비싸" · "{chosen_dest} 호텔 가격 그래프" · "{chosen_dest} 숙소 알람" — 매 문장 도메인 명사 박힘 → 지루
-"""
-
-    has_dest = bool((target_persona or {}).get("destinations"))
-    section_guidance = _section_specific_guidance(section_name, has_destination=has_dest)
+    section_guidance = _section_specific_guidance(section_name, has_destination=False)
     _sn = section_name.lower()
-    is_free = _sn in ("hook", "intro", "cta") or _sn.startswith("body")
-
-    # Hook은 skeleton 강제 우회 — section_guidance에 자유 transform 룰 명시됨
-    skeleton_mode_block = "" if is_free else """
-
-## 작성 방식 — Skeleton 조립 + Slot Fill (당신이 단어 선택)"""
-
-    # Intro 섹션 한정 — main USP 키워드 명시 (사용자가 입력한 main USP 텍스트 + 페르소나 시그널)
-    main_kw_block = ""
-    if _sn == "intro":
-        main_kws = _extract_main_usp_keywords(usps, target_persona)
-        main_usp_text = (usps[0].get("usp", "") if usps else "")
-        if main_kws or main_usp_text:
-            kw_str = ", ".join(f'"{k}"' for k in main_kws[:6])
-            main_kw_block = f"""
-## ⭐⭐ Intro 한정 — Main USP 키워드 강제 ⭐⭐
-- main USP: "{main_usp_text}"
-- 핵심 키워드: {kw_str}
-- **각 Intro 문장 출력에 위 키워드 중 1개 이상 자연스럽게 포함 필수** (음절·어절 보존하면서)
-- 예: main USP="숙소 알람" → 모든 Intro 문장에 "알람/알림/숙소/푸쉬" 중 1개 등장
-"""
 
     # 어투 강제 블록
     speech_block = ""
@@ -3302,8 +3189,6 @@ direction은 **성우가 어떻게 읽을지**만. 마케팅 전략 X.
 
 {speech_block}
 {section_guidance}
-{main_kw_block}
-{skeleton_mode_block}
 
 ## 🔢 숫자 구체성 (⭐⭐ ref에 숫자 있으면 미러링 권장)
 

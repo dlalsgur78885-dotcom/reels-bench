@@ -42,8 +42,8 @@ export default function ScriptGenWizard() {
   const [overrides, setOverrides] = useState<Record<number, number>>({})
   // chunk별 override (chunk.section → user_usp_id) — body 분석 결과 직접 변경
   const [chunkOverrides, setChunkOverrides] = useState<Record<string, number>>({})
-  // chunk metadata 수정 (topic/role) — 이번 generation에만 적용
-  const [chunkEdits, setChunkEdits] = useState<Record<string, { topic: string; role: string }>>({})
+  // chunk metadata 수정 (topic/role/section) — 이번 generation에만 적용
+  const [chunkEdits, setChunkEdits] = useState<Record<string, { topic: string; role: string; section?: string }>>({})
   const [editingChunk, setEditingChunk] = useState<Record<string, boolean>>({})
 
   // 3. 페르소나
@@ -595,7 +595,7 @@ function StepMapping({
   getEffectiveChunkUspId: (chunk: MappingPreview['section_chunks'][number]) => number | null
   chunkEdits: Record<string, { topic: string; role: string }>
   editingChunk: Record<string, boolean>
-  setChunkEdits: React.Dispatch<React.SetStateAction<Record<string, { topic: string; role: string }>>>
+  setChunkEdits: React.Dispatch<React.SetStateAction<Record<string, { topic: string; role: string; section?: string }>>>
   toggleChunkEdit: (section: string, currentTopic: string, currentRole: string) => void
   onCreateUsp: (refUspId: number, name: string, description: string, reviews: string[]) => Promise<{ ok: boolean; error?: string }>
   onBack: () => void
@@ -719,9 +719,25 @@ function StepMapping({
                   <div style={{ marginBottom: 10, padding: 10, background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)' }}>
                     <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
                       <input
+                        value={chunkEdits[chunk.section]?.section ?? chunk.section ?? ''}
+                        onChange={(e) => setChunkEdits(prev => ({
+                          ...prev, [chunk.section]: {
+                            topic: prev[chunk.section]?.topic ?? chunk.topic ?? '',
+                            role: prev[chunk.section]?.role ?? chunk.role ?? '',
+                            section: e.target.value,
+                          },
+                        }))}
+                        placeholder="섹션 (예: body_2)"
+                        style={{ flex: 1, padding: '6px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-surface)' }}
+                      />
+                      <input
                         value={chunkEdits[chunk.section]?.topic ?? chunk.topic ?? ''}
                         onChange={(e) => setChunkEdits(prev => ({
-                          ...prev, [chunk.section]: { ...prev[chunk.section], topic: e.target.value, role: prev[chunk.section]?.role ?? chunk.role ?? '' },
+                          ...prev, [chunk.section]: {
+                            topic: e.target.value,
+                            role: prev[chunk.section]?.role ?? chunk.role ?? '',
+                            section: prev[chunk.section]?.section,
+                          },
                         }))}
                         placeholder="토픽 (예: 셔링 가슴 보정)"
                         style={{ flex: 2, padding: '6px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-surface)' }}
@@ -729,14 +745,18 @@ function StepMapping({
                       <input
                         value={chunkEdits[chunk.section]?.role ?? chunk.role ?? ''}
                         onChange={(e) => setChunkEdits(prev => ({
-                          ...prev, [chunk.section]: { ...prev[chunk.section], role: e.target.value, topic: prev[chunk.section]?.topic ?? chunk.topic ?? '' },
+                          ...prev, [chunk.section]: {
+                            topic: prev[chunk.section]?.topic ?? chunk.topic ?? '',
+                            role: e.target.value,
+                            section: prev[chunk.section]?.section,
+                          },
                         }))}
-                        placeholder="역할 (디테일/시연/proof 등)"
+                        placeholder="역할 (디테일/시연/proof)"
                         style={{ flex: 1, padding: '6px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-surface)' }}
                       />
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                      변경한 값은 이번 대본 생성에만 적용됩니다.
+                      변경한 값은 이번 대본 생성에만 적용됩니다. 섹션 변경 (예: body_2 → body_3)은 writer 호출 그룹을 바꿉니다.
                     </div>
                   </div>
                 )}

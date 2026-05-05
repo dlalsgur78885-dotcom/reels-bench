@@ -891,6 +891,63 @@ export default function ScriptGen() {
                 {(displayed as any)._target_persona.scenario && <> — {(displayed as any)._target_persona.scenario}</>}
               </div>
             )}
+            {Array.isArray((displayed as any)._usp_mapping) && (displayed as any)._usp_mapping.length > 0 && (
+              <div style={{
+                background: 'var(--bg-surface)', border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-md)', padding: 14, marginBottom: 14,
+              }}>
+                <div style={{
+                  fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
+                  color: 'var(--text-muted)', marginBottom: 10,
+                }}>
+                  USP 매핑 (참고 릴스 → 우리 제품)
+                </div>
+                <div style={{ display: 'grid', gap: 8 }}>
+                  {((displayed as any)._usp_mapping as Array<{
+                    ref_usp_id: number; ref_label: string; ref_description: string;
+                    ref_appears_in: string[]; user_usp_id: number | null; user_usp_name: string | null; reason: string;
+                  }>).map((m) => {
+                    const matched = m.user_usp_id !== null
+                    return (
+                      <div key={m.ref_usp_id} style={{
+                        display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) 16px minmax(180px, 1fr) 2fr',
+                        gap: 10, alignItems: 'start', fontSize: 13, lineHeight: 1.5,
+                        padding: '8px 0', borderTop: '1px solid var(--border-subtle)',
+                      }}>
+                        <div>
+                          <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                            ref USP{m.ref_usp_id}{m.ref_label ? ` · ${m.ref_label}` : ''}
+                          </div>
+                          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
+                            {m.ref_description}
+                          </div>
+                          {m.ref_appears_in.length > 0 && (
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                              {m.ref_appears_in.join(', ')}
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ color: 'var(--text-muted)', fontSize: 14, paddingTop: 2 }}>→</div>
+                        <div>
+                          {matched ? (
+                            <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                              USP{m.user_usp_id} · {m.user_usp_name}
+                            </div>
+                          ) : (
+                            <div style={{ fontWeight: 500, color: 'var(--text-muted)' }}>
+                              매칭 없음
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                          {m.reason}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
               <h2 style={{ fontSize: 16, fontWeight: 700 }}>{isDraft ? '1차 초안' : '생성된 대본'} ({displayed.duration_target_sec}초)</h2>
               <button onClick={async () => {

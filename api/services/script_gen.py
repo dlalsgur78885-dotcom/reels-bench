@@ -3820,17 +3820,33 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
 
     # Pre-planner 호출 — ref_usp → user_usp 매핑
     usp_mapping: dict[int, int | None] = {}
+    usp_mapping_full: list[dict] = []  # UI 노출용 (ref/user 라벨 + reason)
     if ref_usps_layout:
         try:
             pre_prompt = _build_pre_planner_prompt(usps, ref_usps_layout, section_chunks or [])
             pre_result = call_gemini(pre_prompt, model="gemini-3-flash-preview", max_tokens=2048)
             if isinstance(pre_result, list) and pre_result:
                 pre_result = pre_result[0]
+            ref_by_id = {ru.get("id"): ru for ru in ref_usps_layout if isinstance(ru.get("id"), int)}
             for m in (pre_result.get("usp_mapping") or []):
                 rid = m.get("ref_usp_id")
                 uid = m.get("user_usp_id")
-                if isinstance(rid, int):
-                    usp_mapping[rid] = uid if isinstance(uid, int) and 1 <= uid <= len(usps) else None
+                reason = m.get("reason", "")
+                if not isinstance(rid, int):
+                    continue
+                resolved_uid = uid if isinstance(uid, int) and 1 <= uid <= len(usps) else None
+                usp_mapping[rid] = resolved_uid
+                ref_meta = ref_by_id.get(rid) or {}
+                user_name = usps[resolved_uid - 1].get("usp", "") if resolved_uid else None
+                usp_mapping_full.append({
+                    "ref_usp_id": rid,
+                    "ref_label": ref_meta.get("label", ""),
+                    "ref_description": ref_meta.get("description", ""),
+                    "ref_appears_in": ref_meta.get("appears_in") or [],
+                    "user_usp_id": resolved_uid,
+                    "user_usp_name": user_name,
+                    "reason": reason,
+                })
             logger.info("[pre-planner] %d USP mappings: %s", len(usp_mapping), usp_mapping)
         except Exception as e:
             logger.warning("[pre-planner] failed: %s — usp_mapping empty", e)
@@ -4114,6 +4130,7 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
         "duration_target_sec": round(total_duration, 1),
         "sentences": final_sents,
         "_plan": plan,
+        "_usp_mapping": usp_mapping_full,
     }
 
     # 4. CRITIC + 5. REFINER — 제거됨 (별도 /api/script/refine 2차 단계가 동일 역할)
@@ -4166,8 +4183,12 @@ def generate(product_name: str, pain: str, desire: str, usps: list[dict], refere
                 refined = refined[0]
             # 다듬기 결과가 정상이면 사용, 실패하면 draft 유지
             if isinstance(refined, dict) and refined.get("sentences"):
+                # _usp_mapping은 refine pass가 만들어내지 않으므로 draft에서 보존
+                preserved_mapping = draft.get("_usp_mapping")
                 draft = refined
                 draft["_refined"] = True
+                if preserved_mapping is not None and "_usp_mapping" not in draft:
+                    draft["_usp_mapping"] = preserved_mapping
         except Exception as e:
             logger.warning("Refine pass failed: %s", e)
             draft["_refine_error"] = str(e)

@@ -45,5 +45,6 @@ docs/
 
 # Render/Worker artifacts
 .browser_profile/
+.browser_profile_render/
 fb_storage_state.json
 fb_ads_output/

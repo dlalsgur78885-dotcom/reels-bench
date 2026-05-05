@@ -377,6 +377,19 @@ export const api = {
     patch<{ message: string; personas: PersonaCandidate[] }>(`/api/my-products/${pid}/usp-personas`, { usp_index, personas }),
   referenceInfo: (sc: string) =>
     get<ReferenceInfo>(`/api/script/reference-info/${sc}`),
+  previewMapping: (sc: string, product_id: number) =>
+    post<{
+      shortcode: string
+      product: { id: number; name: string; usps: any[] }
+      ref_usps: Array<{ id: number; label: string; description: string; appears_in: string[] }>
+      section_chunks: Array<{ section: string; topic: string; role: string; primary_usp_id: number | null; summary: string; sentences?: { start: number; end: number; text: string }[] }>
+      usp_mapping: Array<{
+        ref_usp_id: number; ref_label: string; ref_description: string; ref_appears_in: string[]
+        user_usp_id: number | null; user_usp_name: string | null; reason: string
+      }>
+      unused_user_usps: Array<{ user_usp_id: number; user_usp_name: string }>
+      unmatched_ref_usps: Array<{ ref_usp_id: number; ref_label: string; ref_description: string; reason: string }>
+    }>(`/api/script/preview-mapping/${sc}`, { product_id }),
   classifySentences: (sc: string) =>
     post<{ shortcode: string; total_sentences: number; sections: Record<string, number> }>(`/api/script/classify-sentences/${sc}`, {}),
   // Admin Secrets

@@ -14,11 +14,16 @@ const Channels = lazy(() => import('./pages/Channels'))
 const ReelIntake = lazy(() => import('./pages/ReelIntake'))
 const Login = lazy(() => import('./pages/Login'))
 const ScriptGen = lazy(() => import('./pages/ScriptGen'))
+const ScriptGenWizard = lazy(() => import('./pages/ScriptGenWizard'))
 const MyProducts = lazy(() => import('./pages/MyProducts'))
 const MyProductEdit = lazy(() => import('./pages/MyProductEdit'))
 const Phrases = lazy(() => import('./pages/Phrases'))
 const Ads = lazy(() => import('./pages/Ads'))
 const Settings = lazy(() => import('./pages/Settings'))
+const Youtubers = lazy(() => import('./pages/Youtubers'))
+const FbAdvertisers = lazy(() => import('./pages/FbAdvertisers'))
+const FbSearchAdvertisers = lazy(() => import('./pages/FbSearchAdvertisers'))
+const FbSearchAds = lazy(() => import('./pages/FbSearchAds'))
 
 function RouteFallback() {
   return <div style={{ padding: 40, color: 'var(--text-muted)' }}>불러오는 중…</div>
@@ -56,21 +61,56 @@ function saveCachedMe(p: UserProfile | null) {
   } catch {}
 }
 
-const NAV = [
-  { to: '/', label: '홈', icon: '&#x2302;' },
-  { to: '/bench', label: '벤치마크', icon: '&#x25A6;' },
-  { to: '/ads', label: '광고', icon: '&#x25B6;' },
-  { to: '/channels', label: '채널', icon: '&#x2631;' },
-  { to: '/reels/new', label: '릴스 추가', icon: '&#x2795;' },
-  { to: '/my-products', label: '내 상품', icon: '&#x1F4E6;' },
-  { to: '/phrases', label: '문구별 보기', icon: '&#x201C;' },
+type Platform = 'ig' | 'yt' | 'fb'
+
+const PLATFORM_KEY = 'selected_platform'
+const PLATFORMS: { key: Platform; label: string }[] = [
+  { key: 'ig', label: '인스타' },
+  { key: 'yt', label: '유튜브' },
+  { key: 'fb', label: '페북 라이브러리' },
 ]
+
+const NAV_BY_PLATFORM: Record<Platform, { to: string; label: string; icon: string }[]> = {
+  ig: [
+    { to: '/', label: '홈', icon: '&#x2302;' },
+    { to: '/bench', label: '벤치마크', icon: '&#x25A6;' },
+    { to: '/channels', label: '채널', icon: '&#x2631;' },
+    { to: '/reels/new', label: '릴스 추가', icon: '&#x2795;' },
+    { to: '/my-products', label: '내 상품', icon: '&#x1F4E6;' },
+    { to: '/phrases', label: '문구별 보기', icon: '&#x201C;' },
+  ],
+  yt: [
+    { to: '/', label: '홈', icon: '&#x2302;' },
+    { to: '/yt/channels', label: '채널', icon: '&#x2631;' },
+  ],
+  fb: [
+    { to: '/', label: '홈', icon: '&#x2302;' },
+    { to: '/fb/advertisers', label: '광고주', icon: '&#x2631;' },
+    { to: '/fb/search/ads', label: '광고 검색', icon: '&#x1F50D;' },
+  ],
+}
+
+function loadPlatform(): Platform {
+  try {
+    const v = localStorage.getItem(PLATFORM_KEY)
+    if (v === 'ig' || v === 'yt' || v === 'fb') return v
+  } catch {}
+  return 'ig'
+}
+function savePlatform(p: Platform) {
+  try { localStorage.setItem(PLATFORM_KEY, p) } catch {}
+}
 
 export default function App() {
   const [session, setSession] = useState<any>(null)
   const [me, setMe] = useState<UserProfile | null>(loadCachedMe)
   const [bootstrapping, setBootstrapping] = useState(true)
   const [meLoading, setMeLoading] = useState(false)
+  const [platform, setPlatform] = useState<Platform>(loadPlatform)
+  const onPlatformChange = (p: Platform) => {
+    setPlatform(p)
+    savePlatform(p)
+  }
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -124,8 +164,28 @@ export default function App() {
     <div className="layout">
       <aside className="sidebar">
         <div className="sb-logo">릴스 벤치</div>
+        <div style={{ padding: '0 12px 10px', display: 'flex', flexDirection: 'column', gap: 4, borderBottom: '1px solid var(--border-subtle)' }}>
+          {PLATFORMS.map(p => (
+            <button
+              key={p.key}
+              type="button"
+              onClick={() => onPlatformChange(p.key)}
+              style={{
+                padding: '8px 10px', textAlign: 'left',
+                fontSize: 13, fontWeight: platform === p.key ? 700 : 500,
+                background: platform === p.key ? 'var(--accent)' : 'transparent',
+                color: platform === p.key ? '#fff' : 'var(--text-secondary)',
+                border: '1px solid',
+                borderColor: platform === p.key ? 'var(--accent)' : 'var(--border-subtle)',
+                borderRadius: 6, cursor: 'pointer',
+              }}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
         <nav className="sb-nav">
-          {NAV.map(n => (
+          {NAV_BY_PLATFORM[platform].map(n => (
             <NavLink
               key={n.to}
               to={n.to}
@@ -142,7 +202,7 @@ export default function App() {
       <main className="main">
         <Suspense fallback={<RouteFallback />}>
         <Routes>
-          <Route path="/" element={<Home />} />
+          <Route path="/" element={<Home platform={platform} />} />
           <Route path="/reels/new" element={<ReelIntake />} />
           <Route path="/bench" element={<Bench />} />
           <Route path="/bench/:shortcode" element={<BenchDetail />} />
@@ -150,7 +210,12 @@ export default function App() {
           <Route path="/ads" element={<Ads />} />
           <Route path="/analysis" element={<AnalysisPage />} />
           <Route path="/channels" element={<Channels />} />
+          <Route path="/yt/channels" element={<Youtubers />} />
+          <Route path="/fb/advertisers" element={<FbAdvertisers />} />
+          <Route path="/fb/search/advertisers" element={<FbSearchAdvertisers />} />
+          <Route path="/fb/search/ads" element={<FbSearchAds />} />
           <Route path="/script" element={<ScriptGen />} />
+          <Route path="/script/new/:shortcode" element={<ScriptGenWizard />} />
           <Route path="/my-products" element={<MyProducts />} />
           <Route path="/my-products/new" element={<MyProductEdit />} />
           <Route path="/my-products/:id/edit" element={<MyProductEdit />} />

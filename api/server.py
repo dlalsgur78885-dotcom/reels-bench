@@ -534,6 +534,95 @@ def analyze_section_chunks_for_reel(shortcode: str, request: Request):
     return {"shortcode": shortcode, "chunks": chunks, "count": len(chunks)}
 
 
+class PreviewMappingRequest(BaseModel):
+    product_id: int
+
+
+@app.post("/api/script/preview-mapping/{shortcode}")
+def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Request):
+    """대본 생성 wizard용 — pre-planner만 돌려서 ref USP ↔ user USP 매핑 미리보기.
+
+    전체 생성을 안 돌리므로 빠름 (Gemini 1회). 매칭/미매칭 USP 분석 + chunk 컨텍스트 같이 반환.
+    """
+    auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+
+    # 1. ref + section_chunks + usp_layout 로드
+    ref = script_gen.fetch_reference(shortcode)
+    if not ref:
+        raise HTTPException(404, "참고 릴스 없음")
+    overall = ((ref.get("structure") or {}).get("overall") or {})
+    ref_usps = overall.get("usp_layout") or []
+    section_chunks = overall.get("section_chunks") or []
+    if not section_chunks:
+        section_chunks = script_gen.analyze_section_chunks(ref) or []
+    if not ref_usps:
+        raise HTTPException(400, "usp_layout 없음 — 먼저 reanalyze-usp-layout 실행 필요")
+
+    # 2. product USPs 로드
+    rows = _r.get(
+        f"{SUPA}/rest/v1/my_products?id=eq.{body.product_id}&select=id,name,usps,persona",
+        headers=H, timeout=10,
+    ).json()
+    if not rows:
+        raise HTTPException(404, f"product {body.product_id} 없음")
+    product = rows[0]
+    user_usps = product.get("usps") or []
+    if not user_usps:
+        raise HTTPException(400, "product에 USP 없음")
+
+    # 3. pre-planner 호출
+    prompt = script_gen._build_pre_planner_prompt(user_usps, ref_usps, section_chunks)
+    try:
+        result = script_gen.call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=2048)
+        if isinstance(result, list) and result:
+            result = result[0]
+    except Exception as e:
+        raise HTTPException(500, f"pre-planner 실패: {e}")
+
+    # 4. mapping 보강 (ref/user 라벨 + reason)
+    ref_by_id = {ru.get("id"): ru for ru in ref_usps if isinstance(ru.get("id"), int)}
+    raw_map = result.get("usp_mapping") or []
+    mapping_full: list[dict] = []
+    for m in raw_map:
+        rid = m.get("ref_usp_id")
+        uid = m.get("user_usp_id")
+        if not isinstance(rid, int):
+            continue
+        resolved_uid = uid if isinstance(uid, int) and 1 <= uid <= len(user_usps) else None
+        ref_meta = ref_by_id.get(rid) or {}
+        mapping_full.append({
+            "ref_usp_id": rid,
+            "ref_label": ref_meta.get("label", ""),
+            "ref_description": ref_meta.get("description", ""),
+            "ref_appears_in": ref_meta.get("appears_in") or [],
+            "user_usp_id": resolved_uid,
+            "user_usp_name": user_usps[resolved_uid - 1].get("usp", "") if resolved_uid else None,
+            "reason": m.get("reason", ""),
+        })
+
+    # 5. gap 분석
+    matched_user_ids = {m["user_usp_id"] for m in mapping_full if m["user_usp_id"]}
+    unused_user = [
+        {"user_usp_id": i + 1, "user_usp_name": u.get("usp", "")}
+        for i, u in enumerate(user_usps) if (i + 1) not in matched_user_ids
+    ]
+    unmatched_ref = [m for m in mapping_full if m["user_usp_id"] is None]
+
+    return {
+        "shortcode": shortcode,
+        "product": {"id": product["id"], "name": product.get("name", ""), "usps": user_usps},
+        "ref_usps": ref_usps,
+        "section_chunks": section_chunks,
+        "usp_mapping": mapping_full,
+        "unused_user_usps": unused_user,
+        "unmatched_ref_usps": unmatched_ref,
+    }
+
+
 @app.post("/api/script/analyze-body-chunks/{shortcode}")
 def analyze_body_chunks_for_reel(shortcode: str, request: Request):
     """deprecated — analyze-section-chunks와 동일 동작."""
@@ -857,9 +946,38 @@ class MyProductIn(BaseModel):
     usps: list[dict] = []
 
 
+_MY_PRODUCTS_CACHE_TTL = 20
+_my_products_cache: dict[str, tuple[float, list]] = {}
+_shareable_users_cache: dict[str, tuple[float, list]] = {}
+
+
+def _cache_get(cache: dict, key: str, ttl: int):
+    item = cache.get(key)
+    if not item:
+        return None
+    ts, data = item
+    if time.time() - ts > ttl:
+        cache.pop(key, None)
+        return None
+    return data
+
+
+def _cache_set(cache: dict, key: str, data):
+    cache[key] = (time.time(), data)
+    return data
+
+
+def _invalidate_my_products_cache():
+    _my_products_cache.clear()
+    _shareable_users_cache.clear()
+
+
 @app.get("/api/my-products")
 def list_my_products(request: Request):
     me = auth_svc.require_user(request)
+    cached = _cache_get(_my_products_cache, me["id"], _MY_PRODUCTS_CACHE_TTL)
+    if cached is not None:
+        return cached
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
@@ -911,7 +1029,7 @@ def list_my_products(request: Request):
 
     merged = own + shared
     merged.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
-    return merged
+    return _cache_set(_my_products_cache, me["id"], merged)
 
 
 @app.post("/api/my-products")
@@ -931,6 +1049,7 @@ def create_my_product(req: MyProductIn, request: Request):
     )
     if r.status_code not in (200, 201):
         raise HTTPException(r.status_code, r.text[:200])
+    _invalidate_my_products_cache()
     return r.json()[0] if r.json() else {}
 
 
@@ -963,6 +1082,7 @@ def update_my_product(pid: int, req: MyProductIn, request: Request):
     )
     if r.status_code not in (200, 204):
         raise HTTPException(r.status_code, r.text[:200])
+    _invalidate_my_products_cache()
     return r.json()[0] if r.json() else {}
 
 
@@ -1060,6 +1180,7 @@ def create_product_shares(pid: int, req: ShareCreateRequest, request: Request):
     )
     if r.status_code not in (200, 201):
         raise HTTPException(r.status_code, r.text[:200])
+    _invalidate_my_products_cache()
     return {"message": f"{len(rows)}명에게 공유", "count": len(rows)}
 
 
@@ -1082,6 +1203,9 @@ def delete_product_share(pid: int, user_id: str, request: Request):
 def list_shareable_users(request: Request):
     """공유 대상 picker용 — 활성 사용자 (자기 제외). 일반 직원도 호출 가능."""
     me = auth_svc.require_user(request)
+    cached = _cache_get(_shareable_users_cache, me["id"], 60)
+    if cached is not None:
+        return cached
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
@@ -1091,7 +1215,7 @@ def list_shareable_users(request: Request):
         headers={"apikey": SK, "Authorization": f"Bearer {SK}"},
         timeout=10,
     ).json() or []
-    return [u for u in rows if u["id"] != me["id"]]
+    return _cache_set(_shareable_users_cache, me["id"], [u for u in rows if u["id"] != me["id"]])
 
 
 # ── Auth ──
@@ -1502,10 +1626,12 @@ def get_frame_images(shortcode: str):
 _BENCH_CACHE_TTL = 120  # seconds
 _bench_mem: dict = {"data": None, "ts": 0.0}
 _bench_lock = threading.Lock()
+_bench_refreshing = False
 
 
 def _refresh_bench():
     """Fetch from Supabase, build merged list, store in module-level dict."""
+    global _bench_refreshing
     try:
         with ThreadPoolExecutor(max_workers=6) as ex:
             f_reels = ex.submit(supabase.sb_get, "reels",
@@ -1580,11 +1706,18 @@ def _refresh_bench():
         threading.Thread(target=thumb.download_batch, args=(thumb_items,), daemon=True).start()
     except Exception as e:
         logger.error(f"[BenchCache] refresh failed: {e}")
+    finally:
+        _bench_refreshing = False
 
 
 def _get_bench() -> dict:
-    if time.time() - _bench_mem["ts"] > _BENCH_CACHE_TTL or _bench_mem["data"] is None:
+    global _bench_refreshing
+    now = time.time()
+    if _bench_mem["data"] is None:
         _refresh_bench()
+    elif now - _bench_mem["ts"] > _BENCH_CACHE_TTL and not _bench_refreshing:
+        _bench_refreshing = True
+        threading.Thread(target=_refresh_bench, daemon=True).start()
     with _bench_lock:
         return _bench_mem["data"]
 
@@ -2266,6 +2399,12 @@ def fetch_and_save_comments(shortcode: str):
 
 # ── Channels (monitored_channels) ──
 
+_channels_cache: dict[str, tuple[float, list]] = {}
+_user_analysis_cache: dict[str, tuple[float, dict]] = {}
+_CHANNELS_CACHE_TTL = 60
+_USER_ANALYSIS_CACHE_TTL = 60
+
+
 def _normalize_instagram_username(value: str) -> str:
     raw = (value or "").strip()
     if not raw:
@@ -2283,7 +2422,10 @@ def _normalize_instagram_username(value: str) -> str:
 
 @app.get("/api/channels")
 def get_channels():
-    return supabase.sb_get("monitored_channels", "select=*&order=created_at.desc&limit=500")
+    cached = _cache_get(_channels_cache, "all", _CHANNELS_CACHE_TTL)
+    if cached is not None:
+        return cached
+    return _cache_set(_channels_cache, "all", supabase.sb_get("monitored_channels", "select=*&order=created_at.desc&limit=500"))
 
 
 @app.get("/api/fb/advertisers")
@@ -2533,17 +2675,15 @@ def fb_scrape_keyword(request: Request, keyword: str = Query(...), country: str 
 
 
 def _trigger_render_scraper():
-    """Render fb-ads-web /trigger 호출 (fire-and-forget). 사용자 액션 시 즉시 스크래핑."""
+    """Render fb-ads-web /trigger 호출 — Vercel Lambda는 thread freeze되니 sync로."""
     fb_web = os.getenv("FB_ADS_WEB_URL", "https://fb-ads-web.onrender.com")
     secret = os.getenv("TRIGGER_SECRET", "")
     url = f"{fb_web}/trigger" + (f"?key={secret}" if secret else "")
-    import threading
-    def _go():
-        try:
-            requests.get(url, timeout=15)
-        except Exception:
-            pass
-    threading.Thread(target=_go, daemon=True).start()
+    try:
+        requests.get(url, timeout=5)
+        logger.info("[render-trigger] sent: %s", url[:80])
+    except Exception as e:
+        logger.warning("[render-trigger] failed: %s", e)
 
 
 @app.get("/api/youtubers")
@@ -2582,6 +2722,7 @@ def add_channel(req: ChannelAddRequest):
         raise HTTPException(400, "username이 필요합니다")
     ok = supabase.sb_post("monitored_channels", {"username": username, "is_active": True})
     if ok:
+        _channels_cache.clear()
         return {"message": f"@{username} 추가 완료", "username": username}
     raise HTTPException(500, "추가 실패")
 
@@ -2596,6 +2737,7 @@ def update_channel(username: str, req: ChannelUpdateRequest):
         data["is_active"] = req.is_active
     if data:
         supabase.sb_patch("monitored_channels", f"username=eq.{username}", data)
+        _channels_cache.clear()
     return {"message": "수정 완료", "username": username}
 
 
@@ -2607,6 +2749,7 @@ def delete_channel(username: str):
 
     ok = supabase.sb_delete("monitored_channels", f"username=eq.{username}")
     if ok:
+        _channels_cache.clear()
         return {"message": f"@{username} 삭제 완료"}
     raise HTTPException(500, "삭제 실패 (DB 오류)")
 
@@ -2615,6 +2758,7 @@ def delete_channel(username: str):
 def delete_channel_by_id(channel_id: int):
     ok = supabase.sb_delete("monitored_channels", f"id=eq.{channel_id}")
     if ok:
+        _channels_cache.clear()
         return {"message": "삭제 완료", "id": channel_id}
     raise HTTPException(500, "삭제 실패 (DB 오류)")
 
@@ -2624,6 +2768,10 @@ def get_user_analysis(username: str, limit: int = Query(24, ge=1, le=100)):
     username = _normalize_instagram_username(username)
     if not username:
         raise HTTPException(400, "username이 필요합니다")
+    cache_key = f"{username}:{limit}"
+    cached = _cache_get(_user_analysis_cache, cache_key, _USER_ANALYSIS_CACHE_TTL)
+    if cached is not None:
+        return cached
 
     # 1. metadata에서 author 필터로 한 번에 모든 필드 (이전: shortcode만 조회 후 재조회)
     meta = supabase.sb_get(
@@ -2726,7 +2874,7 @@ def get_user_analysis(username: str, limit: int = Query(24, ge=1, le=100)):
     if best and analyzed_count:
         summary = f"가장 강한 릴스는 {best['play_count']:,} 조회의 {best['shortcode']}이며, 평균 ER은 {avg_er}%입니다."
 
-    return {
+    result = {
         "username": username,
         "stats": {
             "total_reels": len(items),
@@ -2744,6 +2892,7 @@ def get_user_analysis(username: str, limit: int = Query(24, ge=1, le=100)):
             "summary": summary,
         },
     }
+    return _cache_set(_user_analysis_cache, cache_key, result)
 
 
 @app.get("/api/_debug/auth")

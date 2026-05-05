@@ -222,7 +222,7 @@ export default function BenchDetail() {
         <h1>@{meta?.author_username || shortcode}</h1>
         <button
           className="btn-primary btn-primary--sm"
-          onClick={() => navigate(`/script?ref=${shortcode}`)}
+          onClick={() => navigate(`/script/new/${shortcode}`)}
           disabled={!hasAnalysis}
           title={hasAnalysis ? '이 릴스를 참고로 새 광고 대본 만들기' : '분석이 완료되어야 사용 가능'}
           style={{ marginRight: 10 }}>

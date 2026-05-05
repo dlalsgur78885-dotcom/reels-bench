@@ -3662,19 +3662,26 @@ ref USP는 이미 분석되어 있고, 각 chunk가 어느 ref USP를 다루는�
 1. **각 ref USP id별로 1개의 user_usp_id 선택** (또는 null = 매칭 불가)
 2. 의미·기능이 가까운 USP를 매칭. 표면 키워드보다 **mechanism/혜택의 일치**.
 3. ref MAIN이라고 무조건 우리 USP1로 가지 말 것 — 우리 USP 중 의미가 가장 가까운 것이 sub여도 OK.
-4. 여러 ref USP가 같은 user USP로 매핑돼도 OK (우리 카피가 그 angle을 강조).
+4. 여러 ref USP가 같은 user USP로 매핑돼도 OK.
 5. **ref USP가 우리 어느 USP와도 안 맞으면 null** — null인 ref USP의 chunks는 generic 시나리오로 처리됨.
-6. 우리 USP 중 매핑 안 받는 게 있어도 OK (writer 단계에서 보강 가능).
+
+## ⭐ confidence (매칭 강도 — 필수)
+각 매핑마다 **얼마나 잘 맞는지** 솔직하게 평가:
+- **strong** — mechanism + 효과 + 도메인 모두 일치. ex) ref "노출 방지 브이넥" → 우리 "노브라 잠옷"
+- **loose** — angle/효과는 비슷하나 **도메인·메커니즘 차이가 있음**. writer가 풀기 어려울 수 있음. ex) ref "결항 정보 수시 업데이트" → 우리 "숙소 가격 알람" (둘 다 알림이지만 도메인 다름)
+- **none** — user_usp_id가 null인 경우
+
+⚠️ user에게 약한 매칭을 알려야 함 — loose는 솔직히 loose로 표시.
 
 ## 출력 JSON
 {{
   "usp_mapping": [
-    {{"ref_usp_id": 1, "user_usp_id": 1, "reason": "..."}},
+    {{"ref_usp_id": 1, "user_usp_id": 1, "confidence": "strong", "reason": "..."}},
     ...
   ]
 }}
 
-⚠️ reason은 **40자 이내** 한 줄. 모든 ref_usp_id 포함 (총 {len(ref_usps or [])}개). JSON만, 설명 X."""
+⚠️ reason은 **40자 이내** 한 줄. confidence는 strong/loose/none 중 하나. 모든 ref_usp_id 포함 (총 {len(ref_usps or [])}개). JSON만, 설명 X."""
 
 
 def _build_section_planner_prompt(section_name: str, ref_subset: list[dict], usps: list[dict], product_name: str, target_persona: dict | None, pain: str, desire: str) -> str:
@@ -3880,7 +3887,7 @@ def _classify_ref_sections(primary: dict) -> list[tuple[str, list[dict]]]:
     ]
 
 
-def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None) -> dict:
+def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None) -> dict:
     """v4 = B버전: Pre-Planner Flash + Section Planners parallel + Writers parallel."""
     import concurrent.futures as _cf
 
@@ -3929,6 +3936,15 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
         except Exception as e:
             logger.warning("[multistep-B] analyze_section_chunks 실패: %s", e)
             section_chunks = []
+    # chunk_meta_override 적용 (사용자 수정 topic/role)
+    if chunk_meta_override and section_chunks:
+        for c in section_chunks:
+            sec = c.get("section")
+            if sec and sec in chunk_meta_override:
+                m = chunk_meta_override[sec] or {}
+                if m.get("topic"): c["topic"] = m["topic"]
+                if m.get("role"): c["role"] = m["role"]
+                logger.info("[chunk-meta-override] %s: topic=%s role=%s", sec, m.get("topic"), m.get("role"))
     logger.info("[multistep-B] ref USPs: %d, chunks: %d",
                 len(ref_usps_layout or []), len(section_chunks or []))
 
@@ -4307,11 +4323,12 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     return draft
 
 
-def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None) -> dict:
+def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None) -> dict:
     """엔드투엔드 — 참고 릴스 fetch → 1차 생성 → (선택) 2차 다듬기 → 최종.
 
     usp_mapping_override: ref_usp_id → user_usp_id 수동 매핑 (ref USP 단위).
     chunk_usp_override: chunk.section → user_usp_id 수동 매핑 (chunk 단위, 더 우선).
+    chunk_meta_override: chunk.section → {topic, role} 수동 수정 (분석 결과 보정).
     """
     refs = []
     for sc in reference_shortcodes:
@@ -4324,7 +4341,8 @@ def generate(product_name: str, pain: str, desire: str, usps: list[dict], refere
     # 1차 생성 (멀티스텝: 플래너 → 섹션 작성자 → 어셈블 → 비평 → 리파이너)
     draft = _generate_multistep(product_name, pain, desire, usps, primary, target_persona,
                                 usp_mapping_override=usp_mapping_override,
-                                chunk_usp_override=chunk_usp_override)
+                                chunk_usp_override=chunk_usp_override,
+                                chunk_meta_override=chunk_meta_override)
 
     # 2차 다듬기 (선택)
     if refine:

@@ -42,6 +42,9 @@ export default function ScriptGenWizard() {
   const [overrides, setOverrides] = useState<Record<number, number>>({})
   // chunk별 override (chunk.section → user_usp_id) — body 분석 결과 직접 변경
   const [chunkOverrides, setChunkOverrides] = useState<Record<string, number>>({})
+  // chunk metadata 수정 (topic/role) — 이번 generation에만 적용
+  const [chunkEdits, setChunkEdits] = useState<Record<string, { topic: string; role: string }>>({})
+  const [editingChunk, setEditingChunk] = useState<Record<string, boolean>>({})
 
   // 3. 페르소나
   const [allPersonas, setAllPersonas] = useState<Array<PersonaCandidate & { _uspIndex: number; _uspName: string }>>([])
@@ -338,6 +341,9 @@ export default function ScriptGenWizard() {
             chunk_usp_override: Object.keys(chunkOverrides).length
               ? chunkOverrides
               : undefined,
+            chunk_meta_override: Object.keys(chunkEdits).length
+              ? chunkEdits
+              : undefined,
           }),
         })
         if (!r.ok) throw new Error(`${r.status} ${await r.text()}`)
@@ -396,6 +402,24 @@ export default function ScriptGenWizard() {
             setChunkOverrides(next)
           }}
           getEffectiveChunkUspId={effectiveChunkUspId}
+          chunkEdits={chunkEdits}
+          editingChunk={editingChunk}
+          setChunkEdits={setChunkEdits}
+          toggleChunkEdit={(section, currentTopic, currentRole) => {
+            setEditingChunk(prev => {
+              const next = { ...prev }
+              if (next[section]) delete next[section]
+              else {
+                next[section] = true
+                // 편집 시작 시 현재 값을 default로 채워줌
+                setChunkEdits(p => ({
+                  ...p,
+                  [section]: p[section] || { topic: currentTopic, role: currentRole },
+                }))
+              }
+              return next
+            })
+          }}
           onCreateUsp={createUspForRef}
           onBack={() => setStep('product')}
           onNext={goToPersona}
@@ -558,7 +582,8 @@ function StepProduct({
 
 function StepMapping({
   mapping, loading, error, overrides, chunkOverrides, unusedUsps, onChunkOverride,
-  getEffectiveChunkUspId, onCreateUsp, onBack, onNext,
+  getEffectiveChunkUspId, chunkEdits, editingChunk, setChunkEdits, toggleChunkEdit,
+  onCreateUsp, onBack, onNext,
 }: {
   mapping: MappingPreview | null
   loading: boolean
@@ -568,6 +593,10 @@ function StepMapping({
   unusedUsps: { user_usp_id: number; user_usp_name: string }[]
   onChunkOverride: (section: string, userId: number | null) => void
   getEffectiveChunkUspId: (chunk: MappingPreview['section_chunks'][number]) => number | null
+  chunkEdits: Record<string, { topic: string; role: string }>
+  editingChunk: Record<string, boolean>
+  setChunkEdits: React.Dispatch<React.SetStateAction<Record<string, { topic: string; role: string }>>>
+  toggleChunkEdit: (section: string, currentTopic: string, currentRole: string) => void
   onCreateUsp: (refUspId: number, name: string, description: string, reviews: string[]) => Promise<{ ok: boolean; error?: string }>
   onBack: () => void
   onNext: () => void
@@ -644,7 +673,7 @@ function StepMapping({
                 background: 'var(--bg-surface)', border: '1px solid var(--border)',
                 borderRadius: 'var(--radius-md)', padding: 14,
               }}>
-                {/* 헤더: 섹션 라벨 + 토픽 + 역할 */}
+                {/* 헤더: 섹션 라벨 + 토픽 + 역할 + 약한매칭 경고 */}
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
                   <span style={{
                     fontSize: 11, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
@@ -653,17 +682,64 @@ function StepMapping({
                   }}>
                     {chunk.section}
                   </span>
-                  {chunk.role && (
+                  {chunk.role && !editingChunk[chunk.section] && (
                     <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                       {chunk.role}
                     </span>
                   )}
-                  {chunk.topic && (
+                  {chunk.topic && !editingChunk[chunk.section] && (
                     <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
                       {chunk.topic}
                     </span>
                   )}
+                  {mappingRec?.confidence === 'loose' && (
+                    <span title="ref USP와 우리 USP의 도메인·메커니즘 차이가 있어 writer가 풀기 어려울 수 있습니다" style={{
+                      fontSize: 10, fontWeight: 700, padding: '2px 7px',
+                      background: 'rgba(245,158,11,0.15)', color: 'var(--warning)',
+                      borderRadius: 'var(--radius-sm)', letterSpacing: '0.03em',
+                      border: '1px solid var(--warning)',
+                    }}>
+                      ⚠ 약한 매칭
+                    </span>
+                  )}
+                  {!isPersonaSlot && (
+                    <button
+                      onClick={() => toggleChunkEdit(chunk.section, chunk.topic || '', chunk.role || '')}
+                      style={{
+                        marginLeft: 'auto', padding: '2px 8px', fontSize: 11,
+                        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                        background: 'var(--bg-surface)', color: 'var(--text-body)',
+                        cursor: 'pointer',
+                      }}>
+                      {editingChunk[chunk.section] ? '저장' : '✏ 분석 수정'}
+                    </button>
+                  )}
                 </div>
+                {editingChunk[chunk.section] && (
+                  <div style={{ marginBottom: 10, padding: 10, background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)' }}>
+                    <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+                      <input
+                        value={chunkEdits[chunk.section]?.topic ?? chunk.topic ?? ''}
+                        onChange={(e) => setChunkEdits(prev => ({
+                          ...prev, [chunk.section]: { ...prev[chunk.section], topic: e.target.value, role: prev[chunk.section]?.role ?? chunk.role ?? '' },
+                        }))}
+                        placeholder="토픽 (예: 셔링 가슴 보정)"
+                        style={{ flex: 2, padding: '6px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-surface)' }}
+                      />
+                      <input
+                        value={chunkEdits[chunk.section]?.role ?? chunk.role ?? ''}
+                        onChange={(e) => setChunkEdits(prev => ({
+                          ...prev, [chunk.section]: { ...prev[chunk.section], role: e.target.value, topic: prev[chunk.section]?.topic ?? chunk.topic ?? '' },
+                        }))}
+                        placeholder="역할 (디테일/시연/proof 등)"
+                        style={{ flex: 1, padding: '6px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-surface)' }}
+                      />
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      변경한 값은 이번 대본 생성에만 적용됩니다.
+                    </div>
+                  </div>
+                )}
 
                 {/* ref 대본 */}
                 {chunk.sentences && chunk.sentences.length > 0 && (

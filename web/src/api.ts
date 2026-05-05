@@ -396,6 +396,7 @@ export const api = {
       usp_mapping: Array<{
         ref_usp_id: number; ref_label: string; ref_description: string; ref_appears_in: string[]
         user_usp_id: number | null; user_usp_name: string | null; reason: string
+        confidence?: 'strong' | 'loose' | 'none'
       }>
       unused_user_usps: Array<{ user_usp_id: number; user_usp_name: string }>
       unmatched_ref_usps: Array<{ ref_usp_id: number; ref_label: string; ref_description: string; reason: string }>

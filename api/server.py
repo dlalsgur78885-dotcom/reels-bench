@@ -76,6 +76,7 @@ class ScriptGenRequest(BaseModel):
     target_persona: dict | None = None  # { name, scenario, signals, tone_hint }
     usp_mapping_override: dict[str, int] | None = None  # ref_usp_id(str)→user_usp_id (wizard 수동 매핑)
     chunk_usp_override: dict[str, int] | None = None  # chunk.section→user_usp_id (chunk별 수동 매핑)
+    chunk_meta_override: dict[str, dict] | None = None  # chunk.section→{topic, role} (분석 metadata 수정)
 
 
 @app.post("/api/script/generate")
@@ -102,6 +103,7 @@ def gen_script(req: ScriptGenRequest):
         chunk_override = None
         if req.chunk_usp_override:
             chunk_override = {k: v for k, v in req.chunk_usp_override.items() if v is not None}
+        meta_override = req.chunk_meta_override or None
         result = script_gen.generate(
             product_name=req.product_name,
             pain=req.pain,
@@ -112,6 +114,7 @@ def gen_script(req: ScriptGenRequest):
             target_persona=req.target_persona,
             usp_mapping_override=override,
             chunk_usp_override=chunk_override,
+            chunk_meta_override=meta_override,
         )
         n_sentences = len(result.get("sentences") or [])
         cost = script_gen.summarize_cost()
@@ -602,7 +605,7 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
     except Exception as e:
         raise HTTPException(500, f"pre-planner 실패: {e}")
 
-    # 4. mapping 보강 (ref/user 라벨 + reason)
+    # 4. mapping 보강 (ref/user 라벨 + reason + confidence)
     ref_by_id = {ru.get("id"): ru for ru in ref_usps if isinstance(ru.get("id"), int)}
     raw_map = result.get("usp_mapping") or []
     mapping_full: list[dict] = []
@@ -613,6 +616,9 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
             continue
         resolved_uid = uid if isinstance(uid, int) and 1 <= uid <= len(user_usps) else None
         ref_meta = ref_by_id.get(rid) or {}
+        confidence = (m.get("confidence") or "").strip().lower()
+        if confidence not in ("strong", "loose", "none"):
+            confidence = "none" if resolved_uid is None else "strong"
         mapping_full.append({
             "ref_usp_id": rid,
             "ref_label": ref_meta.get("label", ""),
@@ -620,6 +626,7 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
             "ref_appears_in": ref_meta.get("appears_in") or [],
             "user_usp_id": resolved_uid,
             "user_usp_name": user_usps[resolved_uid - 1].get("usp", "") if resolved_uid else None,
+            "confidence": confidence,
             "reason": m.get("reason", ""),
         })
 

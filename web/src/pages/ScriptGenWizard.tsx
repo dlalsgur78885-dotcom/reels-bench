@@ -120,16 +120,63 @@ export default function ScriptGenWizard() {
       .filter(u => !used.has(u.user_usp_id))
   })()
 
-  const goToPersona = () => {
+  const [personaRefreshing, setPersonaRefreshing] = useState(false)
+
+  const goToPersona = async () => {
     if (!mapping) return
-    // override 반영한 effective 매핑 기준
+    setStep('persona')
+
+    // override 반영한 매칭된 user USP 인덱스
     const matched = new Set<number>()
     mapping.usp_mapping.forEach(m => {
       const eff = effectiveUserUspId(m)
       if (eff) matched.add(eff)
     })
-    const collected: typeof allPersonas = []
+
+    // pain/desire 없는 USP를 식별하고 재추출 (병렬)
+    const stale: { idx: number; usp: any }[] = []
     mapping.product.usps.forEach((u: any, i: number) => {
+      if (!matched.has(i + 1)) return
+      const personas: PersonaCandidate[] = (u.personas as PersonaCandidate[]) || []
+      const missing = personas.length === 0 || personas.some(p => !p.pain || !p.desire)
+      if (missing && (u.reviews?.length || 0) > 0) {
+        stale.push({ idx: i, usp: u })
+      }
+    })
+
+    let refreshedUsps = mapping.product.usps
+    if (stale.length > 0) {
+      setPersonaRefreshing(true)
+      try {
+        const results = await Promise.all(
+          stale.map(({ idx, usp }) =>
+            api.extractPersonas(
+              usp.usp || '',
+              usp.reviews || [],
+              '',
+              productId || undefined,
+              idx,
+            ).then(r => ({ idx, personas: r.personas })).catch(() => ({ idx, personas: [] as PersonaCandidate[] })),
+          ),
+        )
+        refreshedUsps = mapping.product.usps.map((u: any, i: number) => {
+          const found = results.find(r => r.idx === i)
+          if (found && found.personas.length > 0) {
+            return { ...u, personas: found.personas }
+          }
+          return u
+        })
+        setMapping({ ...mapping, product: { ...mapping.product, usps: refreshedUsps } })
+      } catch (e) {
+        // ignore — 기존 데이터로 진행
+      } finally {
+        setPersonaRefreshing(false)
+      }
+    }
+
+    // 페르소나 모으기
+    const collected: typeof allPersonas = []
+    refreshedUsps.forEach((u: any, i: number) => {
       if (!matched.has(i + 1)) return
       const personas: PersonaCandidate[] = (u.personas as PersonaCandidate[]) || []
       personas.forEach(p => {
@@ -138,7 +185,6 @@ export default function ScriptGenWizard() {
     })
     setAllPersonas(collected)
     setSelectedPersonaIdx(new Set())
-    setStep('persona')
   }
 
   const generate = async () => {
@@ -238,7 +284,17 @@ export default function ScriptGenWizard() {
         />
       )}
 
-      {step === 'persona' && (
+      {step === 'persona' && personaRefreshing && (
+        <div style={{
+          background: 'var(--bg-surface)', border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-md)', padding: 18, marginBottom: 14,
+          textAlign: 'center', color: 'var(--text-secondary)', fontSize: 13,
+        }}>
+          페르소나 pain/desire 재추출 중…
+        </div>
+      )}
+
+      {step === 'persona' && !personaRefreshing && (
         <StepPersona
           mapping={mapping}
           personas={allPersonas}

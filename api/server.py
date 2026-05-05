@@ -152,8 +152,16 @@ def extract_personas(req: PersonaExtractRequest):
                 if 0 <= req.usp_index < len(usps):
                     cached = usps[req.usp_index].get("personas")
                     if cached and isinstance(cached, list) and len(cached) > 0:
-                        logger.info("[personas] CACHE HIT product=%s usp_idx=%s", req.product_id, req.usp_index)
-                        return {"personas": cached, "_cached": True}
+                        # pain/desire 필드가 모든 페르소나에 있는지 검사 — 없으면 stale cache로 간주, 재추출
+                        all_have_pain_desire = all(
+                            (p.get("pain") and p.get("desire")) for p in cached
+                        )
+                        if all_have_pain_desire:
+                            logger.info("[personas] CACHE HIT product=%s usp_idx=%s", req.product_id, req.usp_index)
+                            return {"personas": cached, "_cached": True}
+                        else:
+                            logger.info("[personas] CACHE STALE (no pain/desire) — re-extract product=%s usp_idx=%s",
+                                        req.product_id, req.usp_index)
         except Exception as e:
             logger.warning("personas cache lookup failed: %s", e)
 
@@ -1608,15 +1616,11 @@ def get_detail(shortcode: str):
     if cached is not None:
         return cached
     result: dict = {}
-    class _NoFresh:
-        query_params = {}
-    with ThreadPoolExecutor(max_workers=5) as ex:
+    with ThreadPoolExecutor(max_workers=3) as ex:
         tasks = {
             "metadata": ex.submit(supabase.sb_get, "reels_metadata", f"shortcode=eq.{shortcode}&limit=1"),
             "transcript": ex.submit(supabase.sb_get, "reels_transcripts", f"shortcode=eq.{shortcode}&limit=1"),
             "analysis": ex.submit(supabase.sb_get, "opus_analyses", f"shortcode=eq.{shortcode}&limit=1"),
-            "comments": ex.submit(supabase.sb_get, "reels_comments", f"shortcode=eq.{shortcode}&limit=500"),
-            "extra": ex.submit(lambda: __import__("json").loads(get_extra(shortcode, _NoFresh()).body)),
         }
     meta = tasks["metadata"].result() or []
     transcript = tasks["transcript"].result() or []
@@ -1624,9 +1628,9 @@ def get_detail(shortcode: str):
     result["metadata"] = meta[0] if meta else None
     result["transcript"] = transcript[0] if transcript else None
     result["analysis"] = (analysis[0] if analysis else pipeline.analysis_cache.get(shortcode))
-    result["comments"] = tasks["comments"].result() or []
-    result["extra"] = tasks["extra"].result() or {}
-    result["frame_images"] = (result["extra"] or {}).get("frame_images") or _frame_image_urls(shortcode)
+    result["comments"] = []
+    result["extra"] = {}
+    result["frame_images"] = {}
     return _cache_set(_detail_cache, shortcode, result)
 
 

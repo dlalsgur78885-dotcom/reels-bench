@@ -1390,6 +1390,18 @@ def build_prompt(product_name: str, pain: str, desire: str, usps: list[dict], re
     hook_sents = props.get("hook_sents_all") or []
     intro_sents = props.get("intro_sents_all") or []
     cta_sents = props.get("cta_sents_all") or []
+    import re as _re_mod
+    def _extract_actual_ending(text: str) -> str:
+        """문장 마지막 어미를 그대로 추출 (예: '편하잖아' → '~잖아', '보여줄게~' → '~줄게~')."""
+        if not text:
+            return ""
+        s = text.strip()
+        # 마지막 어절
+        last_word = s.split()[-1] if s.split() else s
+        # 길이 제한 — 마지막 4-6자만 (한국어 어미 길이)
+        suffix = last_word[-6:] if len(last_word) > 6 else last_word
+        return f"~{suffix}"
+
     def _scaffold_line(j: int, ref_t: str, role: str, ending: str, default_instr: str) -> tuple[str, str]:
         """참고 문장 j에 대한 우리 문장 j 가이드 라인 두 개 반환 (참고 표시 / 우리 지침)."""
         ref_label = f"  {j}) 참고: \"{ref_t}\" [역할={role}]"
@@ -1400,7 +1412,10 @@ def build_prompt(product_name: str, pain: str, desire: str, usps: list[dict], re
                 f"제품 기능·USP·CTA 등 정보성 내용 절대 채우지 말 것. 참고와 같은 길이·리듬 유지."
             )
         else:
+            actual_end = _extract_actual_ending(ref_t)
             instr = default_instr
+            if actual_end:
+                instr += f" 종결어 강제: 참고 끝 '{actual_end}' — **같은 종결어로 끝내기**. '~잖아'·'~지'·'~네' 같은 다른 어미로 평탄화 금지."
         return ref_label, instr
 
     if hook_sents:
@@ -2078,12 +2093,18 @@ def analyze_usp_layout(sentences: list[dict]) -> dict | None:
 {sec_block}
 
 ## 작업 1: USP 배치 분석
-1. ref가 강조하는 핵심 메시지(USP)들을 식별 — **각 body 섹션은 일반적으로 다른 USP/angle 다룸**
-2. 각 USP가 어느 섹션들에서 등장하는지 (hook/intro/body_N/cta)
-3. MAIN USP = 가장 많은 섹션에 등장하거나 hook+intro로 시작하는 메시지
-4. SUB USP = 추가 angle/feature
-5. 각 USP description = 구체 키워드 포함 한 줄 요약
-6. evidence = 핵심 어구 인용 (50자 이내)
+1. **USP = 제품의 구체 feature/혜택** (예: "우버 할인 코드", "모달 안감", "푸시 알림 기능"). 추상 카테고리·umbrella 약속 X.
+2. ⚠️ **Hook/Intro/CTA는 USP가 아닐 수 있음 — appears_in에 강제 포함 금지**
+   - Hook이 호기심 유도·저장권유·스크롤멈추기·페인 제기 같은 **engagement** 역할이면 → 어느 USP의 appears_in에도 hook 추가 금지
+   - Intro가 혜택 약속·티저·맥락 도입 (구체 feature 언급 X)이면 → appears_in에 intro 추가 금지
+   - CTA는 행동 유도 — USP 명시적 재언급 없으면 appears_in 비움
+   - 단, 해당 섹션에서 **구체 USP feature를 직접 명시·시연**하면 그때만 추가
+3. 각 body 섹션은 일반적으로 다른 USP/angle 다룸 — body마다 다른 USP가 default
+4. MAIN USP = 시간 비중 가장 큰 / 댓글 트리거 / 카피의 핵심 약속을 실제 구현하는 USP
+5. SUB USP = 보조 feature
+6. 각 USP description = 구체 키워드 포함 한 줄 요약 (umbrella·추상 카테고리 금지)
+7. evidence = 핵심 어구 인용 (50자 이내)
+8. ⚠️ **umbrella USP 만들지 말 것** — 예: "할인 정보 모음" (X) → 우버/쇼핑/클룩 각각의 USP로 분리 (O)
 
 ### USP 세분화 룰 (⚠️ 엄격 준수)
 **한 USP = 한 기능 차원**. 차원이 다르면 **무조건 분리**.

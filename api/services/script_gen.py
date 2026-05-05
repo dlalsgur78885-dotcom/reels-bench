@@ -75,6 +75,26 @@ _INTERJECTION_TOKENS = {
     "응", "아니", "어", "ㅇㅇ",
 }
 
+def _detect_ending(text: str) -> str:
+    """문장 끝 형태 판정 — 'terminator' (종결) 또는 'connector' (연결).
+
+    종결: 마침표/물음표/느낌표로 끝남 → 다음 문장과 분리
+    연결: 마침표 없이 끝남 (또는 쉼표/연결어미) → 다음 문장과 한 호흡
+    """
+    if not text:
+        return "connector"
+    import re as _re_end
+    # 끝의 이모지·공백·~·.뒤 따라오는 추가 부호 제거
+    cleaned = _re_end.sub(
+        r'[\U0001F000-\U0001FFFF\u2600-\u27BF\s~]+$', '', text,
+    ).rstrip()
+    if not cleaned:
+        return "connector"
+    if cleaned[-1] in ".?!":
+        return "terminator"
+    return "connector"
+
+
 def _is_interjection_text(text: str) -> bool:
     """짧은 감탄어/호응어인지 판정. True면 LLM이 제품 기능을 채우지 않도록."""
     if not text:
@@ -488,7 +508,12 @@ JSON만:
 
         out.append({
             "section": sec,
-            "sentences": [{"start": s.get("start"), "end": s.get("end"), "text": s.get("text")} for s in chunk_sents],
+            "sentences": [{
+                "start": s.get("start"),
+                "end": s.get("end"),
+                "text": s.get("text"),
+                "ending": _detect_ending(s.get("text", "")),  # terminator / connector
+            } for s in chunk_sents],
             "topic": c.get("topic", ""),
             "usp_ids": usp_ids,
             "primary_usp_id": primary,
@@ -3081,9 +3106,12 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
             ref_syl = _count_kor_syllables(ref_text) if ref_text else (s.get('syllables', 10))
             ref_eojeol_pattern = _eojeol_syllable_pattern(ref_text)
             ref_eojeol_n = len(ref_eojeol_pattern)
+            ending = s.get("ending") or _detect_ending(ref_text)
+            ending_marker = "🔵 종결 (마침표·?·! 필수)" if ending == "terminator" else "🟡 연결 (마침표 X — 다음 문장과 한 호흡)"
             spec_block += f"\n  문장 {s['position']}{usp_tag}{slot_tag}\n"
             spec_block += f"    역할: {s.get('role','')}\n"
             spec_block += f"    토픽: {s.get('topic','')}\n"
+            spec_block += f"    종결 형태: {ending_marker}\n"
             spec_block += f"    음절 합계: {ref_syl}\n"
             if ref_eojeol_pattern:
                 pattern_str = "-".join(str(p) for p in ref_eojeol_pattern)
@@ -3213,27 +3241,39 @@ ref 문장에 **숫자(%, 만원, 일, 번, 분, 시간, kg, cm 등)**가 있으
 - 숫자는 **USP description · 리뷰 · persona signals**에서 차용
 - 가짜 숫자·과장 숫자 X (브랜드 신뢰 깨짐)
 
-## 🔗 문장 종결 형태 보존 (⭐⭐⭐ 매우 중요)
-ref 각 spec의 ref_text 끝 어미를 보고 **종결인지 연결인지** 정확히 미러링.
+## 🔗 문장 종결 형태 보존 (⭐⭐⭐⭐ 매우 중요 — spec_block의 종결 형태 마커 필수 준수)
 
-### 종결 vs 연결 — 끝나면 마침표·물음표·느낌표, 안 끝나면 마침표 없이 연결
-- **종결 어미 (다음 문장과 분리)**: ~다 / ~요 / ~지 / ~까? / ~네 / ~어 / ~네요 / ~잖아 / ~거든 / ~봐 / ~줘 등
-- **연결 어미 (다음 문장과 한 호흡)**: ~면 / ~서 / ~고 / ~데 / ~며 / ~지만 / ~니까 / ~려고 / ~다가 등
+### spec_block의 마커가 권한
+각 spec에 **`종결 형태`** 라인이 있음. 이 마커가 정답이고 무조건 따름:
+- **🔵 종결 (마침표·?·! 필수)** → 출력 끝에 `.` `?` `!` 중 하나 박음. 종결 어미 (~요/~다/~지/~네/~잖아/~거든/~봐/~줘 등)
+- **🟡 연결 (마침표 X — 다음 문장과 한 호흡)** → 출력 끝에 마침표·?·! **절대 X**. 연결 어미 (~면/~서/~고/~며/~데/~니까/~려고/~다가/~ㄴ/~는/체언종결 등)
 
-### 룰
-- ref spec의 ref_text가 **연결 어미**로 끝나면 → 우리 출력도 **연결 어미** 유지 (마침표 X)
-- ref spec의 ref_text가 **종결 어미**로 끝나면 → 우리도 **종결 어미** + 마침표·?·!
-- ⚠️ 연결 → 종결로 임의 변환 금지 — 연결되어야 할 두 spec이 분리되면 의미 흐름 깨짐
+### ⚠️⚠️ 가장 빈번한 위반 — 모든 spec을 종결로 처리
+LLM의 default 경향: 각 spec을 독립 문장으로 보고 마침표 박음. **이 경향을 의식적으로 거슬러야 함**.
 
-### 예시
-- ref spec1 = "잠옷을 **입으면**" (연결) / spec2 = "집중하게 **돼요**." (종결)
-  → ref의 1문장 = spec1 + spec2 합쳐서 1문장
-  - ✅ 우리 spec1 = "잠옷을 **입으면**" (연결, 마침표 X) / spec2 = "집중하게 **돼요**." (종결)
-  - ❌ 우리 spec1 = "잠옷을 **입어요**." (연결을 종결로 바꿔서 분리) / spec2 = "안 답답해서 **좋아요**." (별개 문장)
+ref가 "연결 5개 + 종결 1개" 구조면 우리도 **정확히** 그 구조 유지.
 
-### 어절 패턴 충돌 시
-- ref spec의 마지막 어절이 "입으면"(3음절)이면 우리도 3음절 ±2 + **연결 어미** 유지 (예: "신으면" / "쓰면" / "입으면")
-- 어절·음절 허용 범위와 종결 형태 둘 다 충족 권장
+### 실제 케이스 예시 (DWYbUQXkQKS — ref 8 segments, 3 sentences)
+ref:
+- segment 1: "일본 여행 망했어요." 🔵 종결
+- segment 2: "지금 기름값이 올라서" 🟡 연결
+- segment 3: "줄줄이 결항 중이에요." 🔵 종결
+- segment 4: "갑자기 결항 통보한" 🟡 연결 (관형형)
+- segment 5: "항공사와 타격 입은 노선" 🟡 연결 (체언 종결)
+- segment 6: "노션으로 정리해놓고" 🟡 연결 (~고)
+- segment 7: "수시로 업데이트 할 테니" 🟡 연결 (~테니)
+- segment 8: "이 영상 저장해주세요." 🔵 종결
+
+→ ref는 마침표 3개만 (1, 3, 8 위치). 나머지 5개는 **마침표 없이** 다음으로 흘러감.
+
+❌ 잘못 (생성된 사례 — 모든 segment에 마침표): "특가 찾다 지치셨죠?" / "매일 비행기표 찾느라" / "시간만 낭비 중이에요." / "일일이 서치 힘들죠?" / ... (5개 segment에 모두 ?·.) — ref와 종결 위치 다름
+✅ 정답 (마커 따름): seg4 "갑자기 결항 통보한" → 우리 "특가 일일이 모았던" (관형형 유지, 마침표 X). seg5 "항공사와 타격 입은 노선" → 우리 "땡처리 항공사 모아둔 앱" (체언 종결, 마침표 X)
+
+### 룰 (절대 어길 수 없음)
+1. spec의 마커가 🟡 연결 → 출력 끝에 마침표·?·! **절대 출력 금지**
+2. spec의 마커가 🔵 종결 → 출력 끝에 마침표·?·! **반드시 출력**
+3. 연결 → 종결로 임의 변환 금지 — 의미 흐름 깨짐
+4. 어절·음절 허용 범위와 충돌 시 → **종결 형태 우선**, 어휘 다시 고름
 
 ## 📐 ref 의미 구조 보존 (⭐⭐⭐⭐ 가장 빈번한 위반)
 

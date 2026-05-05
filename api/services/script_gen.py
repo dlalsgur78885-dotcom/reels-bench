@@ -257,14 +257,21 @@ def analyze_section_chunks(ref: dict) -> list[dict]:
 ## 모든 문장 (idx 0-based, 시간순)
 {chr(10).join(sent_with_idx)}
 
-## 분할 룰
+## 분할 룰 (⚠️ 적극적으로 split — usp_layout이 합쳐놨더라도)
 1. **Hook/Intro/CTA**는 보통 분할 X (engagement·promise·callback이면 그대로)
-2. **Body_N** 내부에서 USP가 바뀌면 sub-chunk로 분할:
-   - 같은 USP 다루는 연속 문장 = 하나의 chunk
-   - USP가 바뀌는 순간 = 새 chunk 시작
+2. **Body_N** 내부에서 **다른 feature angle이 등장하면 sub-chunk로 분할**:
+   - 같은 feature angle 연속 문장 = 하나의 chunk
+   - **feature angle이 바뀌는 순간 = 새 chunk 시작** (usp_layout이 두 angle을 한 USP로 묶었어도 split 권장)
    - 라벨: body_1a, body_1b, body_2a 등 (원래 body_N 유지 + 알파벳 suffix)
    - 분할 안 되면 그냥 body_1 (suffix 없음)
-3. 각 chunk 내부는 단일 USP만 가짐 (또는 USP 없음)
+3. 각 chunk 내부는 단일 feature angle만 가짐
+4. usp_layout의 USP가 split된 angle을 포함 못 하면:
+   - usp_ids에 가장 가까운 USP id만 넣어도 OK
+   - topic + summary로 angle 구분 명시
+5. 예시:
+   - body_1 = "브이넥 노출 방지 + 부유방 커버" → split into body_1a (가슴라인 미관) / body_1b (부유방 측면 보정)
+   - body_1 = "스트랩 조절 + 모달 안감" → split into body_1a (스트랩) / body_1b (모달)
+   - body_2 = "리본 + 단추" 가 둘 다 디자인 포인트라면 split X (같은 angle)
 
 ## 각 chunk 출력
 - section: 분할된 라벨 (hook / intro / body_1 / body_1a / body_2b / cta 등)

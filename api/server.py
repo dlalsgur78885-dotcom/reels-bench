@@ -583,7 +583,7 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
     # 3. pre-planner 호출 (truncation 방지 — max_tokens 넉넉히)
     prompt = script_gen._build_pre_planner_prompt(user_usps, ref_usps, section_chunks)
     try:
-        result = script_gen.call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=4096)
+        result = script_gen.call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=4096)
         if isinstance(result, list) and result:
             result = result[0]
     except Exception as e:
@@ -1512,6 +1512,10 @@ def get_comments(shortcode: str):
     return supabase.sb_get("reels_comments", f"shortcode=eq.{shortcode}&limit=500")
 
 
+_detail_cache: dict[str, tuple[float, dict]] = {}
+_DETAIL_CACHE_TTL = 60
+
+
 @app.get("/api/extra/{shortcode}")
 def get_extra(shortcode: str, request: Request):
     # ?_t=... 또는 ?fresh=1 → 캐시 무시 + 응답 캐시 헤더 no-store
@@ -1598,6 +1602,34 @@ def get_extra(shortcode: str, request: Request):
     )
 
 
+@app.get("/api/detail/{shortcode}")
+def get_detail(shortcode: str):
+    cached = _cache_get(_detail_cache, shortcode, _DETAIL_CACHE_TTL)
+    if cached is not None:
+        return cached
+    result: dict = {}
+    class _NoFresh:
+        query_params = {}
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        tasks = {
+            "metadata": ex.submit(supabase.sb_get, "reels_metadata", f"shortcode=eq.{shortcode}&limit=1"),
+            "transcript": ex.submit(supabase.sb_get, "reels_transcripts", f"shortcode=eq.{shortcode}&limit=1"),
+            "analysis": ex.submit(supabase.sb_get, "opus_analyses", f"shortcode=eq.{shortcode}&limit=1"),
+            "comments": ex.submit(supabase.sb_get, "reels_comments", f"shortcode=eq.{shortcode}&limit=500"),
+            "extra": ex.submit(lambda: __import__("json").loads(get_extra(shortcode, _NoFresh()).body)),
+        }
+    meta = tasks["metadata"].result() or []
+    transcript = tasks["transcript"].result() or []
+    analysis = tasks["analysis"].result() or []
+    result["metadata"] = meta[0] if meta else None
+    result["transcript"] = transcript[0] if transcript else None
+    result["analysis"] = (analysis[0] if analysis else pipeline.analysis_cache.get(shortcode))
+    result["comments"] = tasks["comments"].result() or []
+    result["extra"] = tasks["extra"].result() or {}
+    result["frame_images"] = (result["extra"] or {}).get("frame_images") or _frame_image_urls(shortcode)
+    return _cache_set(_detail_cache, shortcode, result)
+
+
 @app.get("/api/frame-images/{shortcode}")
 def get_frame_images(shortcode: str):
     """Return frame images as {sec: url} from Supabase Storage. HEAD 체크 없이 URL만 구성 (브라우저가 404 처리)."""
@@ -1665,7 +1697,10 @@ def _refresh_bench():
         items = []
         total_plays = total_likes = 0
         for r in reels:
-            m = meta_map.get(r["shortcode"], {})
+            sc = r["shortcode"]
+            if sc.startswith("fb_"):
+                continue
+            m = meta_map.get(sc, {})
             plays = m.get("play_count") or 0
             likes = m.get("like_count") or 0
             total_plays += plays

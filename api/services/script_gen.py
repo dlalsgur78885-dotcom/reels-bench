@@ -169,7 +169,7 @@ JSON만 출력. 빈 섹션은 제외.
   "cta": {{...}}
 }}"""
     try:
-        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=2048)
+        result = call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=2048)
         if isinstance(result, list) and result:
             result = result[0]
         return result if isinstance(result, dict) else {}
@@ -329,7 +329,7 @@ JSON만:
 }}"""
 
     try:
-        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=8192)
+        result = call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=8192)
         if isinstance(result, list) and result:
             result = result[0]
         chunks_raw = (result or {}).get("chunks") or []
@@ -1328,7 +1328,7 @@ def extract_personas(usp: str, reviews: list[str], pain_solved: str = "") -> lis
 JSON만 출력. 설명 금지.
 """
     try:
-        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=4096)
+        result = call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=4096)
         if isinstance(result, list) and result:
             result = result[0]
         if isinstance(result, dict):
@@ -1991,7 +1991,7 @@ def detect_awkward_sentences(sentences: list[dict], ref_sents: list[dict] | None
 JSON만. 설명 X."""
 
     try:
-        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=2048)
+        result = call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=2048)
         if isinstance(result, dict):
             return result.get("awkward") or []
     except Exception as e:
@@ -2267,7 +2267,7 @@ JSON만. 설명 X."""
             "ad_format_reason": d.get("ad_format_reason"),
         }
     try:
-        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=4096)
+        result = call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=4096)
         if isinstance(result, list) and result:
             result = result[0]
         out = _extract(result)
@@ -2278,7 +2278,7 @@ JSON만. 설명 X."""
         try:
             import re as _re, json as _json, requests as _req, os as _os
             key = _os.getenv("GEMINI_API_KEY") or _gemini_key()
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent"
             body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
                     "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4096, "responseMimeType": "application/json"}}
             r = _req.post(url, params={"key": key}, json=body, timeout=120)
@@ -2468,7 +2468,7 @@ def classify_sentence_sections(sentences: list[dict], structure: dict) -> list[d
     try:
         # 큰 문장 수에는 더 많은 토큰 (assignment 1개 ≈ 30 토큰)
         max_t = max(4096, len(sentences) * 60)
-        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=max_t)
+        result = call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=max_t)
         if isinstance(result, list) and result:
             result = result[0]
         assignments = (result or {}).get("assignments") or []
@@ -3864,7 +3864,7 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     if ref_usps_layout:
         try:
             pre_prompt = _build_pre_planner_prompt(usps, ref_usps_layout, section_chunks or [])
-            pre_result = call_gemini(pre_prompt, model="gemini-3-flash-preview", max_tokens=2048)
+            pre_result = call_gemini(pre_prompt, model="gemini-3.1-pro-preview", max_tokens=2048)
             if isinstance(pre_result, list) and pre_result:
                 pre_result = pre_result[0]
             ref_by_id = {ru.get("id"): ru for ru in ref_usps_layout if isinstance(ru.get("id"), int)}

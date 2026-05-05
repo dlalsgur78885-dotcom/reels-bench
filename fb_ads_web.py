@@ -67,7 +67,12 @@ def insert_ad_to_reels(ad: dict, page_name: str) -> bool:
     r1 = requests.post(
         f"{SUPA}/rest/v1/reels?on_conflict=shortcode",
         headers={**H, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"},
-        json={"shortcode": shortcode, "url": ad.get("snapshot_url") or "", "source": "fb_ad"},
+        json={
+            "shortcode": shortcode,
+            "url": ad.get("snapshot_url") or f"https://www.facebook.com/ads/library/?id={ad_id}",
+            "source": "fb_ad",
+            "collected_at": datetime.now(timezone.utc).isoformat(),
+        },
         timeout=15,
     )
     if r1.status_code not in (200, 201, 204):

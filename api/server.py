@@ -287,6 +287,63 @@ def rebuild_transcript_from_ocr(shortcode: str, request: Request, force: bool = 
     }
 
 
+@app.post("/api/script/reanalyze-usp-layout/{shortcode}")
+def reanalyze_usp_layout_for_reel(shortcode: str, request: Request):
+    """analyze_usp_layout 강화된 룰(1 USP = 1 차원)로 재실행 → overall.usp_layout 갱신.
+    body_chunks도 함께 재분석해 정합성 유지.
+    """
+    auth_svc.require_user(request)
+    ref = script_gen.fetch_reference(shortcode)
+    if not ref:
+        raise HTTPException(404, "참고 릴스 없음")
+    sentences = ref.get("sentences") or []
+    if not sentences or not any(s.get("section") for s in sentences):
+        raise HTTPException(400, "section 라벨된 sentences 필요")
+
+    layout = script_gen.analyze_usp_layout(sentences)
+    if not layout:
+        raise HTTPException(500, "usp_layout 재분석 실패")
+
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    rows = _r.get(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=overall&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    if not rows:
+        raise HTTPException(404, "script_structure 없음")
+    overall = rows[0].get("overall") or {}
+    overall["usp_layout"] = layout["ref_usps"]
+    if layout.get("ad_format"):
+        overall["ad_format"] = layout["ad_format"]
+    if layout.get("ad_suitability_score") is not None:
+        overall["ad_suitability_score"] = layout["ad_suitability_score"]
+    if layout.get("ad_format_reason"):
+        overall["ad_format_reason"] = layout["ad_format_reason"]
+
+    # body_chunks도 재분석 (새 layout에 맞춰 매핑 갱신)
+    ref_updated = dict(ref)
+    ref_updated["structure"] = dict(ref.get("structure") or {})
+    ref_updated["structure"]["overall"] = overall
+    chunks = script_gen.analyze_body_chunks(ref_updated)
+    if chunks:
+        overall["body_chunks"] = chunks
+
+    _r.patch(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
+        headers={**H, "Prefer": "return=minimal"},
+        json={"overall": overall}, timeout=15,
+    )
+    return {
+        "shortcode": shortcode,
+        "usp_layout": layout["ref_usps"],
+        "usp_count": len(layout["ref_usps"]),
+        "body_chunks": chunks if chunks else [],
+    }
+
+
 @app.post("/api/script/analyze-body-chunks/{shortcode}")
 def analyze_body_chunks_for_reel(shortcode: str, request: Request):
     """body_N 각 chunk별 토픽·USP·역할 분석. overall.body_chunks에 저장."""

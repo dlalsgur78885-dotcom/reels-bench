@@ -75,6 +75,7 @@ class ScriptGenRequest(BaseModel):
     refine: bool = True  # False = 1차만 (draft), True = 1차+2차
     target_persona: dict | None = None  # { name, scenario, signals, tone_hint }
     usp_mapping_override: dict[str, int] | None = None  # ref_usp_id(str)→user_usp_id (wizard 수동 매핑)
+    chunk_usp_override: dict[str, int] | None = None  # chunk.section→user_usp_id (chunk별 수동 매핑)
 
 
 @app.post("/api/script/generate")
@@ -98,6 +99,9 @@ def gen_script(req: ScriptGenRequest):
         override = None
         if req.usp_mapping_override:
             override = {int(k): v for k, v in req.usp_mapping_override.items() if v is not None}
+        chunk_override = None
+        if req.chunk_usp_override:
+            chunk_override = {k: v for k, v in req.chunk_usp_override.items() if v is not None}
         result = script_gen.generate(
             product_name=req.product_name,
             pain=req.pain,
@@ -107,6 +111,7 @@ def gen_script(req: ScriptGenRequest):
             refine=req.refine,
             target_persona=req.target_persona,
             usp_mapping_override=override,
+            chunk_usp_override=chunk_override,
         )
         n_sentences = len(result.get("sentences") or [])
         cost = script_gen.summarize_cost()

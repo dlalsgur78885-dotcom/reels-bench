@@ -40,6 +40,8 @@ export default function ScriptGenWizard() {
   const [mappingError, setMappingError] = useState('')
   // 사용자 수동 override (ref_usp_id → user_usp_id) — null 매칭 자리 채우기
   const [overrides, setOverrides] = useState<Record<number, number>>({})
+  // chunk별 override (chunk.section → user_usp_id) — body 분석 결과 직접 변경
+  const [chunkOverrides, setChunkOverrides] = useState<Record<string, number>>({})
 
   // 3. 페르소나
   const [allPersonas, setAllPersonas] = useState<Array<PersonaCandidate & { _uspIndex: number; _uspName: string }>>([])
@@ -62,6 +64,7 @@ export default function ScriptGenWizard() {
     setMappingLoading(true)
     setMappingError('')
     setOverrides({})
+    setChunkOverrides({})
     try {
       const r = await api.previewMapping(shortcode, pid)
       setMapping(r)
@@ -109,10 +112,26 @@ export default function ScriptGenWizard() {
     return m.user_usp_id
   }
 
-  // override 적용 후 unused user USPs 재계산
+  // chunk별 effective user_usp_id (precedence: chunkOverride > refUspOverride > auto)
+  const effectiveChunkUspId = (chunk: MappingPreview['section_chunks'][number]): number | null => {
+    const sec = chunk.section || ''
+    if (chunkOverrides[sec]) return chunkOverrides[sec]
+    const refId = chunk.primary_usp_id
+    if (!refId) return null
+    if (overrides[refId]) return overrides[refId]
+    const m = mapping?.usp_mapping.find(x => x.ref_usp_id === refId)
+    return m ? m.user_usp_id : null
+  }
+
+  // override 적용 후 unused user USPs 재계산 (chunk-level 사용 우선)
   const effectiveUnusedUsps = (() => {
     if (!mapping) return []
     const used = new Set<number>()
+    mapping.section_chunks.forEach(c => {
+      const eff = effectiveChunkUspId(c)
+      if (eff) used.add(eff)
+    })
+    // chunk가 ref USP 없는 (hook/intro/cta) 경우는 ref USP override도 고려
     mapping.usp_mapping.forEach(m => {
       const eff = effectiveUserUspId(m)
       if (eff) used.add(eff)
@@ -163,6 +182,10 @@ export default function ScriptGenWizard() {
   const matchedUserUspsInfo = (() => {
     if (!mapping) return [] as Array<{ idx: number; name: string; personaCount: number; reviewCount: number }>
     const matched = new Set<number>()
+    mapping.section_chunks.forEach(c => {
+      const eff = effectiveChunkUspId(c)
+      if (eff) matched.add(eff)
+    })
     mapping.usp_mapping.forEach(m => {
       const eff = effectiveUserUspId(m)
       if (eff) matched.add(eff)
@@ -183,8 +206,12 @@ export default function ScriptGenWizard() {
     if (!mapping) return
     setStep('persona')
 
-    // override 반영한 매칭된 user USP 인덱스
+    // override 반영한 매칭된 user USP 인덱스 (chunk-level + ref-level)
     const matched = new Set<number>()
+    mapping.section_chunks.forEach(c => {
+      const eff = effectiveChunkUspId(c)
+      if (eff) matched.add(eff)
+    })
     mapping.usp_mapping.forEach(m => {
       const eff = effectiveUserUspId(m)
       if (eff) matched.add(eff)
@@ -308,6 +335,9 @@ export default function ScriptGenWizard() {
             usp_mapping_override: Object.keys(overrides).length
               ? Object.fromEntries(Object.entries(overrides).map(([k, v]) => [k, v]))
               : undefined,
+            chunk_usp_override: Object.keys(chunkOverrides).length
+              ? chunkOverrides
+              : undefined,
           }),
         })
         if (!r.ok) throw new Error(`${r.status} ${await r.text()}`)
@@ -357,6 +387,7 @@ export default function ScriptGenWizard() {
           loading={mappingLoading}
           error={mappingError}
           overrides={overrides}
+          chunkOverrides={chunkOverrides}
           unusedUsps={effectiveUnusedUsps}
           onOverride={(refId, userId) => {
             const next = { ...overrides }
@@ -364,6 +395,13 @@ export default function ScriptGenWizard() {
             else next[refId] = userId
             setOverrides(next)
           }}
+          onChunkOverride={(section, userId) => {
+            const next = { ...chunkOverrides }
+            if (userId === null) delete next[section]
+            else next[section] = userId
+            setChunkOverrides(next)
+          }}
+          getEffectiveChunkUspId={effectiveChunkUspId}
           onCreateUsp={createUspForRef}
           onBack={() => setStep('product')}
           onNext={goToPersona}
@@ -525,14 +563,18 @@ function StepProduct({
 }
 
 function StepMapping({
-  mapping, loading, error, overrides, unusedUsps, onOverride, onCreateUsp, onBack, onNext,
+  mapping, loading, error, overrides, chunkOverrides, unusedUsps, onOverride, onChunkOverride,
+  getEffectiveChunkUspId, onCreateUsp, onBack, onNext,
 }: {
   mapping: MappingPreview | null
   loading: boolean
   error: string
   overrides: Record<number, number>
+  chunkOverrides: Record<string, number>
   unusedUsps: { user_usp_id: number; user_usp_name: string }[]
   onOverride: (refId: number, userId: number | null) => void
+  onChunkOverride: (section: string, userId: number | null) => void
+  getEffectiveChunkUspId: (chunk: MappingPreview['section_chunks'][number]) => number | null
   onCreateUsp: (refUspId: number, name: string, description: string, reviews: string[]) => Promise<{ ok: boolean; error?: string }>
   onBack: () => void
   onNext: () => void
@@ -667,10 +709,17 @@ function StepMapping({
                   }}>
                     이 chunk는 특정 USP에 묶이지 않습니다 — <b>페르소나 톤 + ref 구조</b>로 작성됩니다.
                   </div>
-                ) : mappingRec && (
+                ) : mappingRec && (() => {
+                  const chunkUserId = getEffectiveChunkUspId(chunk)
+                  const isChunkOverride = chunkOverrides[chunk.section] !== undefined
+                  // 모든 user USP 옵션 (chunk별로 자유롭게 다 선택 가능 — unused 제한 X)
+                  const allUserUsps = mapping.product.usps.map((u: any, i: number) => ({
+                    user_usp_id: i + 1, user_usp_name: u.usp,
+                  }))
+                  return (
                   <div style={{
                     display: 'grid',
-                    gridTemplateColumns: 'minmax(180px, 1fr) 16px minmax(200px, 1fr) 1.4fr',
+                    gridTemplateColumns: 'minmax(180px, 1fr) 16px minmax(220px, 1fr) 1.3fr',
                     gap: 10, alignItems: 'start', fontSize: 13,
                     padding: '8px 0',
                   }}>
@@ -684,116 +733,113 @@ function StepMapping({
                     </div>
                     <div style={{ color: 'var(--text-muted)', paddingTop: 2 }}>→</div>
                     <div>
-                      {mappingRec.user_usp_id !== null ? (
-                        <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-                          USP{mappingRec.user_usp_id} · {mappingRec.user_usp_name}
+                      <div style={{
+                        fontWeight: 600,
+                        color: chunkUserId ? 'var(--text-primary)' : 'var(--warning)',
+                        marginBottom: 6, fontSize: 12,
+                      }}>
+                        {chunkUserId
+                          ? (() => {
+                            const u = allUserUsps.find(x => x.user_usp_id === chunkUserId)
+                            const tag = isChunkOverride ? ' (chunk 수동)' : (overrides[mappingRec.ref_usp_id] ? ' (ref 수동)' : '')
+                            return `USP${chunkUserId} · ${u?.user_usp_name || ''}${tag}`
+                          })()
+                          : '매칭 없음'}
+                      </div>
+                      <select
+                        value={chunkUserId || ''}
+                        onChange={(e) => {
+                          const v = e.target.value
+                          onChunkOverride(chunk.section, v ? Number(v) : null)
+                        }}
+                        style={{
+                          width: '100%', padding: '6px 10px', fontSize: 12,
+                          border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                          background: 'var(--bg-base)', color: 'var(--text-primary)',
+                        }}>
+                        <option value="">— 매핑 없음 (페르소나로 풀기) —</option>
+                        {allUserUsps.map(u => (
+                          <option key={u.user_usp_id} value={u.user_usp_id}>
+                            USP{u.user_usp_id} · {u.user_usp_name}
+                          </option>
+                        ))}
+                      </select>
+                      {creatingFor === mappingRec.ref_usp_id ? (
+                        <div style={{
+                          marginTop: 8, padding: 10,
+                          background: 'var(--bg-base)', border: '1px solid var(--accent)',
+                          borderRadius: 'var(--radius-sm)',
+                        }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)', marginBottom: 6 }}>
+                            새 USP 만들기 (저장하면 내 상품 DB에 추가됨)
+                          </div>
+                          <input
+                            value={newName}
+                            onChange={(e) => setNewName(e.target.value)}
+                            placeholder="USP 이름 (예: 노카라잠옷)"
+                            style={{
+                              width: '100%', padding: '7px 10px', fontSize: 12, marginBottom: 6,
+                              border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                              background: 'var(--bg-surface)',
+                            }}
+                          />
+                          <textarea
+                            value={newDesc}
+                            onChange={(e) => setNewDesc(e.target.value)}
+                            placeholder="설명 (선택, 한 줄. 형식 예: 문제: ... / 해결: ... / 혜택: ...)"
+                            rows={2}
+                            style={{
+                              width: '100%', padding: '7px 10px', fontSize: 12, marginBottom: 6,
+                              border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                              background: 'var(--bg-surface)', resize: 'vertical', fontFamily: 'inherit',
+                            }}
+                          />
+                          <textarea
+                            value={newReviews}
+                            onChange={(e) => setNewReviews(e.target.value)}
+                            placeholder={'리뷰 (한 줄에 하나씩)\n예: 부드러운 촉감이 정말 좋아요\n예: 잘 때 편해서 매일 입어요'}
+                            rows={4}
+                            style={{
+                              width: '100%', padding: '7px 10px', fontSize: 12, marginBottom: 6,
+                              border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                              background: 'var(--bg-surface)', resize: 'vertical', fontFamily: 'inherit',
+                            }}
+                          />
+                          {createErr && (
+                            <div style={{ fontSize: 11, color: 'var(--error)', marginBottom: 6 }}>{createErr}</div>
+                          )}
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button onClick={submitCreate} disabled={creating || !newName.trim()} style={{
+                              ...primaryBtnSt, padding: '6px 14px', fontSize: 12,
+                              opacity: (creating || !newName.trim()) ? 0.5 : 1,
+                              cursor: (creating || !newName.trim()) ? 'not-allowed' : 'pointer',
+                            }}>
+                              {creating ? '저장 중…' : '저장 + 매핑'}
+                            </button>
+                            <button onClick={cancelCreate} disabled={creating} style={{
+                              ...ghostBtnSt, padding: '6px 14px', fontSize: 12,
+                            }}>취소</button>
+                          </div>
                         </div>
                       ) : (
-                        <div>
-                          <div style={{
-                            fontWeight: 600,
-                            color: effectiveUserId ? 'var(--text-primary)' : 'var(--warning)',
-                            marginBottom: 6,
+                        <button
+                          onClick={() => startCreate(mappingRec.ref_usp_id, mappingRec.ref_description)}
+                          style={{
+                            marginTop: 6, padding: '6px 12px', fontSize: 11, fontWeight: 500,
+                            background: 'transparent', color: 'var(--accent)',
+                            border: '1px dashed var(--accent)', borderRadius: 'var(--radius-sm)',
+                            cursor: 'pointer',
                           }}>
-                            {effectiveUserId
-                              ? `USP${effectiveUserId} · ${effectiveUserName} (수동)`
-                              : '매칭 없음 — 직접 선택 가능'}
-                          </div>
-                          <select
-                            value={overrideId || ''}
-                            onChange={(e) => {
-                              const v = e.target.value
-                              onOverride(mappingRec.ref_usp_id, v ? Number(v) : null)
-                            }}
-                            style={{
-                              width: '100%', padding: '6px 10px', fontSize: 12,
-                              border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                              background: 'var(--bg-base)', color: 'var(--text-primary)',
-                            }}>
-                            <option value="">— 미매칭 (페르소나로 풀기) —</option>
-                            {dropdownOptions.map(u => (
-                              <option key={u.user_usp_id} value={u.user_usp_id}>
-                                USP{u.user_usp_id} · {u.user_usp_name}
-                              </option>
-                            ))}
-                          </select>
-                          {creatingFor === mappingRec.ref_usp_id ? (
-                            <div style={{
-                              marginTop: 8, padding: 10,
-                              background: 'var(--bg-base)', border: '1px solid var(--accent)',
-                              borderRadius: 'var(--radius-sm)',
-                            }}>
-                              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)', marginBottom: 6 }}>
-                                새 USP 만들기 (저장하면 내 상품 DB에 추가됨)
-                              </div>
-                              <input
-                                value={newName}
-                                onChange={(e) => setNewName(e.target.value)}
-                                placeholder="USP 이름 (예: 노카라잠옷)"
-                                style={{
-                                  width: '100%', padding: '7px 10px', fontSize: 12, marginBottom: 6,
-                                  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                                  background: 'var(--bg-surface)',
-                                }}
-                              />
-                              <textarea
-                                value={newDesc}
-                                onChange={(e) => setNewDesc(e.target.value)}
-                                placeholder="설명 (선택, 한 줄. 형식 예: 문제: ... / 해결: ... / 혜택: ...)"
-                                rows={2}
-                                style={{
-                                  width: '100%', padding: '7px 10px', fontSize: 12, marginBottom: 6,
-                                  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                                  background: 'var(--bg-surface)', resize: 'vertical', fontFamily: 'inherit',
-                                }}
-                              />
-                              <textarea
-                                value={newReviews}
-                                onChange={(e) => setNewReviews(e.target.value)}
-                                placeholder={'리뷰 (한 줄에 하나씩)\n예: 부드러운 촉감이 정말 좋아요\n예: 잘 때 편해서 매일 입어요'}
-                                rows={4}
-                                style={{
-                                  width: '100%', padding: '7px 10px', fontSize: 12, marginBottom: 6,
-                                  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                                  background: 'var(--bg-surface)', resize: 'vertical', fontFamily: 'inherit',
-                                }}
-                              />
-                              {createErr && (
-                                <div style={{ fontSize: 11, color: 'var(--error)', marginBottom: 6 }}>{createErr}</div>
-                              )}
-                              <div style={{ display: 'flex', gap: 6 }}>
-                                <button onClick={submitCreate} disabled={creating || !newName.trim()} style={{
-                                  ...primaryBtnSt, padding: '6px 14px', fontSize: 12,
-                                  opacity: (creating || !newName.trim()) ? 0.5 : 1,
-                                  cursor: (creating || !newName.trim()) ? 'not-allowed' : 'pointer',
-                                }}>
-                                  {creating ? '저장 중…' : '저장 + 매핑'}
-                                </button>
-                                <button onClick={cancelCreate} disabled={creating} style={{
-                                  ...ghostBtnSt, padding: '6px 14px', fontSize: 12,
-                                }}>취소</button>
-                              </div>
-                            </div>
-                          ) : (
-                            <button
-                              onClick={() => startCreate(mappingRec.ref_usp_id, mappingRec.ref_description)}
-                              style={{
-                                marginTop: 6, padding: '6px 12px', fontSize: 11, fontWeight: 500,
-                                background: 'transparent', color: 'var(--accent)',
-                                border: '1px dashed var(--accent)', borderRadius: 'var(--radius-sm)',
-                                cursor: 'pointer',
-                              }}>
-                              + 새 USP 만들기 (이 자리용)
-                            </button>
-                          )}
-                        </div>
+                          + 새 USP 만들기 (이 자리용)
+                        </button>
                       )}
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
                       {mappingRec.reason}
                     </div>
                   </div>
-                )}
+                  )
+                })()}
               </div>
             )
           })}

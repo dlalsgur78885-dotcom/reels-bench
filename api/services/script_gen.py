@@ -3880,7 +3880,7 @@ def _classify_ref_sections(primary: dict) -> list[tuple[str, list[dict]]]:
     ]
 
 
-def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, usp_mapping_override: dict[int, int] | None = None) -> dict:
+def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None) -> dict:
     """v4 = B버전: Pre-Planner Flash + Section Planners parallel + Writers parallel."""
     import concurrent.futures as _cf
 
@@ -3998,7 +3998,7 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                     break
             logger.info("[override] ref USP%d: %s → user USP%d", rid, prev, uid)
 
-    # idx별 usp_id/slot_id 도출 — chunk가 권한
+    # idx별 usp_id/slot_id 도출 — precedence: chunk_usp_override > usp_mapping_override > usp_mapping
     usp_map: dict[int, int | None] = {}
     slot_map: dict[int, int] = {}
     for i in range(len(all_ref_sents)):
@@ -4007,9 +4007,19 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
             usp_map[i] = None
             continue
         chunk = section_chunks[ci]
-        chunk_ref_usp = chunk.get("primary_usp_id")
-        usp_map[i] = usp_mapping.get(chunk_ref_usp) if isinstance(chunk_ref_usp, int) else None
+        chunk_section = (chunk.get("section") or "").strip()
+        # 1) chunk-level override 최우선
+        if chunk_usp_override and chunk_section in chunk_usp_override:
+            usp_map[i] = chunk_usp_override[chunk_section]
+        else:
+            # 2) ref USP override (usp_mapping에 이미 적용됨) → auto mapping
+            chunk_ref_usp = chunk.get("primary_usp_id")
+            usp_map[i] = usp_mapping.get(chunk_ref_usp) if isinstance(chunk_ref_usp, int) else None
         slot_map[i] = ci  # chunk index = slot
+
+    if chunk_usp_override:
+        logger.info("[chunk-override] applied to %d chunks: %s",
+                    len(chunk_usp_override), chunk_usp_override)
 
     role_override: dict[int, str] = {}
 
@@ -4297,10 +4307,11 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     return draft
 
 
-def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None, usp_mapping_override: dict[int, int] | None = None) -> dict:
+def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None) -> dict:
     """엔드투엔드 — 참고 릴스 fetch → 1차 생성 → (선택) 2차 다듬기 → 최종.
 
-    usp_mapping_override: ref_usp_id → user_usp_id 수동 매핑 (wizard에서 null 자리 채울 때).
+    usp_mapping_override: ref_usp_id → user_usp_id 수동 매핑 (ref USP 단위).
+    chunk_usp_override: chunk.section → user_usp_id 수동 매핑 (chunk 단위, 더 우선).
     """
     refs = []
     for sc in reference_shortcodes:
@@ -4311,7 +4322,9 @@ def generate(product_name: str, pain: str, desire: str, usps: list[dict], refere
         raise RuntimeError("참고 릴스 데이터를 찾을 수 없습니다")
     primary = refs[0]
     # 1차 생성 (멀티스텝: 플래너 → 섹션 작성자 → 어셈블 → 비평 → 리파이너)
-    draft = _generate_multistep(product_name, pain, desire, usps, primary, target_persona, usp_mapping_override=usp_mapping_override)
+    draft = _generate_multistep(product_name, pain, desire, usps, primary, target_persona,
+                                usp_mapping_override=usp_mapping_override,
+                                chunk_usp_override=chunk_usp_override)
 
     # 2차 다듬기 (선택)
     if refine:

@@ -70,6 +70,37 @@ export default function ScriptGenWizard() {
     }
   }
 
+  // 새 USP를 즉석 생성 + my_products DB에 저장 + 매핑 자동 적용
+  const createUspForRef = async (
+    refUspId: number,
+    name: string,
+    description: string,
+    reviews: string[],
+  ): Promise<{ ok: boolean; error?: string }> => {
+    if (!mapping || !productId) return { ok: false, error: '매핑/상품 미로드' }
+    if (!name.trim()) return { ok: false, error: 'USP 이름 필수' }
+    const cleanReviews = reviews.map(r => r.trim()).filter(Boolean)
+    const newUsp: any = {
+      usp: name.trim(),
+      description: description.trim() || undefined,
+      reviews: cleanReviews,
+    }
+    const newUsps = [...mapping.product.usps, newUsp]
+    try {
+      await api.updateMyProduct(productId, {
+        name: mapping.product.name,
+        usps: newUsps,
+      })
+    } catch (e: any) {
+      return { ok: false, error: e.message || 'DB 저장 실패' }
+    }
+    // 로컬 매핑 갱신 + override 자동 적용
+    const newUserUspId = newUsps.length  // 1-based id
+    setMapping({ ...mapping, product: { ...mapping.product, usps: newUsps } })
+    setOverrides({ ...overrides, [refUspId]: newUserUspId })
+    return { ok: true }
+  }
+
   // 자동 매핑 + override를 합친 effective 매핑
   const effectiveUserUspId = (m: MappingPreview['usp_mapping'][number]): number | null => {
     if (overrides[m.ref_usp_id]) return overrides[m.ref_usp_id]
@@ -200,6 +231,7 @@ export default function ScriptGenWizard() {
             else next[refId] = userId
             setOverrides(next)
           }}
+          onCreateUsp={createUspForRef}
           onBack={() => setStep('product')}
           onNext={goToPersona}
         />
@@ -340,7 +372,7 @@ function StepProduct({
 }
 
 function StepMapping({
-  mapping, loading, error, overrides, unusedUsps, onOverride, onBack, onNext,
+  mapping, loading, error, overrides, unusedUsps, onOverride, onCreateUsp, onBack, onNext,
 }: {
   mapping: MappingPreview | null
   loading: boolean
@@ -348,9 +380,42 @@ function StepMapping({
   overrides: Record<number, number>
   unusedUsps: { user_usp_id: number; user_usp_name: string }[]
   onOverride: (refId: number, userId: number | null) => void
+  onCreateUsp: (refUspId: number, name: string, description: string, reviews: string[]) => Promise<{ ok: boolean; error?: string }>
   onBack: () => void
   onNext: () => void
 }) {
+  const [creatingFor, setCreatingFor] = useState<number | null>(null)
+  const [newName, setNewName] = useState('')
+  const [newDesc, setNewDesc] = useState('')
+  const [newReviews, setNewReviews] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [createErr, setCreateErr] = useState('')
+
+  const startCreate = (refUspId: number, refDesc: string) => {
+    setCreatingFor(refUspId)
+    setNewName('')
+    setNewDesc(refDesc)  // ref USP 설명을 default로 채워서 사용자 시작점 제공
+    setNewReviews('')
+    setCreateErr('')
+  }
+  const cancelCreate = () => {
+    setCreatingFor(null)
+    setCreateErr('')
+  }
+  const submitCreate = async () => {
+    if (!creatingFor) return
+    setCreating(true)
+    setCreateErr('')
+    const reviews = newReviews.split('\n').map(s => s.trim()).filter(Boolean)
+    const r = await onCreateUsp(creatingFor, newName, newDesc, reviews)
+    setCreating(false)
+    if (r.ok) {
+      setCreatingFor(null)
+    } else {
+      setCreateErr(r.error || '실패')
+    }
+  }
+
   if (loading) {
     return (
       <div style={{ ...cardSt, textAlign: 'center', padding: 40 }}>
@@ -499,6 +564,75 @@ function StepMapping({
                               </option>
                             ))}
                           </select>
+                          {creatingFor === mappingRec.ref_usp_id ? (
+                            <div style={{
+                              marginTop: 8, padding: 10,
+                              background: 'var(--bg-base)', border: '1px solid var(--accent)',
+                              borderRadius: 'var(--radius-sm)',
+                            }}>
+                              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)', marginBottom: 6 }}>
+                                새 USP 만들기 (저장하면 내 상품 DB에 추가됨)
+                              </div>
+                              <input
+                                value={newName}
+                                onChange={(e) => setNewName(e.target.value)}
+                                placeholder="USP 이름 (예: 노카라잠옷)"
+                                style={{
+                                  width: '100%', padding: '7px 10px', fontSize: 12, marginBottom: 6,
+                                  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                                  background: 'var(--bg-surface)',
+                                }}
+                              />
+                              <textarea
+                                value={newDesc}
+                                onChange={(e) => setNewDesc(e.target.value)}
+                                placeholder="설명 (선택, 한 줄. 형식 예: 문제: ... / 해결: ... / 혜택: ...)"
+                                rows={2}
+                                style={{
+                                  width: '100%', padding: '7px 10px', fontSize: 12, marginBottom: 6,
+                                  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                                  background: 'var(--bg-surface)', resize: 'vertical', fontFamily: 'inherit',
+                                }}
+                              />
+                              <textarea
+                                value={newReviews}
+                                onChange={(e) => setNewReviews(e.target.value)}
+                                placeholder={'리뷰 (한 줄에 하나씩)\n예: 부드러운 촉감이 정말 좋아요\n예: 잘 때 편해서 매일 입어요'}
+                                rows={4}
+                                style={{
+                                  width: '100%', padding: '7px 10px', fontSize: 12, marginBottom: 6,
+                                  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                                  background: 'var(--bg-surface)', resize: 'vertical', fontFamily: 'inherit',
+                                }}
+                              />
+                              {createErr && (
+                                <div style={{ fontSize: 11, color: 'var(--error)', marginBottom: 6 }}>{createErr}</div>
+                              )}
+                              <div style={{ display: 'flex', gap: 6 }}>
+                                <button onClick={submitCreate} disabled={creating || !newName.trim()} style={{
+                                  ...primaryBtnSt, padding: '6px 14px', fontSize: 12,
+                                  opacity: (creating || !newName.trim()) ? 0.5 : 1,
+                                  cursor: (creating || !newName.trim()) ? 'not-allowed' : 'pointer',
+                                }}>
+                                  {creating ? '저장 중…' : '저장 + 매핑'}
+                                </button>
+                                <button onClick={cancelCreate} disabled={creating} style={{
+                                  ...ghostBtnSt, padding: '6px 14px', fontSize: 12,
+                                }}>취소</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => startCreate(mappingRec.ref_usp_id, mappingRec.ref_description)}
+                              style={{
+                                marginTop: 6, padding: '6px 12px', fontSize: 11, fontWeight: 500,
+                                background: 'transparent', color: 'var(--accent)',
+                                border: '1px dashed var(--accent)', borderRadius: 'var(--radius-sm)',
+                                cursor: 'pointer',
+                              }}>
+                              + 새 USP 만들기 (이 자리용)
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>

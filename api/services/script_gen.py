@@ -2194,13 +2194,15 @@ def classify_sentence_sections(sentences: list[dict], structure: dict) -> list[d
                 out[i] = best_sec
         return out
 
+    idx_to_section: dict[int, str] = {}
+    # Gemini 시도 (실패해도 fallback으로 이어짐)
     try:
-        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=4096)
+        # 큰 문장 수에는 더 많은 토큰 (assignment 1개 ≈ 30 토큰)
+        max_t = max(4096, len(sentences) * 60)
+        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=max_t)
         if isinstance(result, list) and result:
             result = result[0]
         assignments = (result or {}).get("assignments") or []
-        # idx → section 매핑
-        idx_to_section = {}
         for a in assignments:
             try:
                 idx = int(a.get("index", 0))
@@ -2209,44 +2211,40 @@ def classify_sentence_sections(sentences: list[dict], structure: dict) -> list[d
                     idx_to_section[idx] = sec
             except Exception:
                 pass
-        # ⚠️ Gemini가 거의 비었으면 (<30% sentences) 시간 범위 fallback
-        if len(idx_to_section) < max(1, len(sentences) * 0.3):
-            logger.warning("[classify] Gemini sparse (%d/%d) → 시간 범위 fallback",
-                           len(idx_to_section), len(sentences))
-            idx_to_section = _time_range_fallback()
-        # apply
-        out = []
-        for i, sent in enumerate(sentences, 1):
-            new_sent = dict(sent)
-            if i in idx_to_section:
-                new_sent["section"] = idx_to_section[i]
-            out.append(new_sent)
-        # ⭐ body_N 시간순 정규화 — Gemini가 뒤죽박죽 라벨 줘도 시간순으로 1, 2, 3, ... 재할당
-        if n_body_slots >= 2:
-            # 시간순으로 body 문장 + 원래 body_N 라벨 추출
-            body_items = []
-            for s in out:
-                sec = (s.get("section") or "").lower()
-                if sec.startswith("body_"):
-                    body_items.append(s)
-            if body_items:
-                # 시간 정렬
-                body_items.sort(key=lambda x: float(x.get("start", 0)))
-                # 인접 문장끼리 동일 body_N이면 chunk, 다르면 새 chunk → 시간 순으로 1,2,3...
-                relabeled = []
-                cur_label = body_items[0].get("section")
-                cur_chunk = 1
-                for s in body_items:
-                    if s.get("section") != cur_label:
-                        cur_chunk += 1
-                        cur_label = s.get("section")
-                    s["section"] = f"body_{cur_chunk}"
-                    relabeled.append(s)
-                logger.info("[classify] body_N relabeled to time-ordered (max=%d)", cur_chunk)
-        return out
     except Exception as e:
-        logger.warning("classify_sentence_sections failed: %s", e)
-        return sentences
+        logger.warning("Gemini classify failed (will fallback): %s", e)
+
+    # ⚠️ Gemini 결과가 부족하면 (<30% sentences) 시간 범위 fallback
+    if len(idx_to_section) < max(1, len(sentences) * 0.3):
+        logger.warning("[classify] Gemini sparse (%d/%d) → 시간 범위 fallback",
+                       len(idx_to_section), len(sentences))
+        try:
+            idx_to_section = _time_range_fallback()
+        except Exception as e:
+            logger.warning("time range fallback failed: %s", e)
+
+    # apply
+    out = []
+    for i, sent in enumerate(sentences, 1):
+        new_sent = dict(sent)
+        if i in idx_to_section:
+            new_sent["section"] = idx_to_section[i]
+        out.append(new_sent)
+
+    # ⭐ body_N 시간순 정규화
+    if n_body_slots >= 2:
+        body_items = [s for s in out if (s.get("section") or "").lower().startswith("body_")]
+        if body_items:
+            body_items.sort(key=lambda x: float(x.get("start", 0)))
+            cur_label = body_items[0].get("section")
+            cur_chunk = 1
+            for s in body_items:
+                if s.get("section") != cur_label:
+                    cur_chunk += 1
+                    cur_label = s.get("section")
+                s["section"] = f"body_{cur_chunk}"
+            logger.info("[classify] body_N relabeled to time-ordered (max=%d)", cur_chunk)
+    return out
 
 
 def _build_planner_prompt(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None) -> str:

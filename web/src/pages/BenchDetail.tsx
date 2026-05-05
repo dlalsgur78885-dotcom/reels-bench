@@ -635,6 +635,7 @@ export default function BenchDetail() {
                     {(() => {
                       const chunks = (extra.script_structure?.overall as any)?.body_chunks as Array<{
                         body_n: string; topic: string; primary_usp_id: number | null;
+                        usp_ids?: number[];
                         role: string; relation_to_prev: string; summary: string;
                         sentences: { start: number; end: number; text: string }[]
                       }> | undefined
@@ -651,7 +652,10 @@ export default function BenchDetail() {
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                             {chunks.map((c) => {
                               const rc = roleColor[c.role] || 'var(--text-muted)'
-                              const usp_id = c.primary_usp_id
+                              const usp_ids = (c.usp_ids && c.usp_ids.length > 0)
+                                ? c.usp_ids
+                                : (c.primary_usp_id != null ? [c.primary_usp_id] : [])
+                              const primary_usp = c.primary_usp_id ?? (usp_ids[0] ?? null)
                               return (
                                 <div key={c.body_n} style={{
                                   background: 'var(--bg-surface)', border: '1px solid var(--border)',
@@ -663,12 +667,13 @@ export default function BenchDetail() {
                                       fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
                                       textTransform: 'uppercase', letterSpacing: 0.04,
                                     }}>{c.body_n.replace('_', ' ')}</span>
-                                    {usp_id != null && (
-                                      <span style={{
-                                        background: colorOf(usp_id), color: '#fff',
+                                    {usp_ids.map(uid => (
+                                      <span key={uid} style={{
+                                        background: colorOf(uid), color: '#fff',
                                         fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
-                                      }}>USP{usp_id}</span>
-                                    )}
+                                        opacity: uid === primary_usp ? 1 : 0.75,
+                                      }} title={uid === primary_usp ? '주 USP' : '부수 USP'}>USP{uid}{uid === primary_usp && usp_ids.length > 1 ? '★' : ''}</span>
+                                    ))}
                                     {c.role && (
                                       <span style={{
                                         fontSize: 10, fontWeight: 700, padding: '1px 6px',
@@ -687,7 +692,7 @@ export default function BenchDetail() {
                                       {c.summary}
                                     </div>
                                   )}
-                                  <div style={{ paddingLeft: 10, borderLeft: `2px solid ${usp_id != null ? colorOf(usp_id) + '40' : 'var(--border)'}` }}>
+                                  <div style={{ paddingLeft: 10, borderLeft: `2px solid ${primary_usp != null ? colorOf(primary_usp) + '40' : 'var(--border)'}` }}>
                                     {c.sentences.map((s, i) => (
                                       <div key={i} style={{ fontSize: 11, color: 'var(--text-primary)', lineHeight: 1.5 }}>
                                         <span style={{ fontFamily: 'monospace', color: 'var(--text-muted)', marginRight: 6 }}>

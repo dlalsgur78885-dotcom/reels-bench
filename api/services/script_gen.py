@@ -237,7 +237,11 @@ def analyze_body_chunks(ref: dict) -> list[dict]:
 
 ## 각 body_N마다 출력
 - topic: 한 줄로 — 이 chunk가 다루는 핵심 토픽 (15자 이내)
-- primary_usp_id: usp_layout 중 이 chunk를 대표하는 USP id (정수). 위 layout의 appears_in 정보를 우선 신뢰. 매핑 없으면 null
+- usp_ids: 이 chunk에서 **다루는 모든 USP id 배열** (정수 배열)
+  ⚠️ 한 chunk에 USP가 2개 이상 있으면 모두 포함 (예: [3, 4])
+  ⚠️ usp_layout의 appears_in을 우선 신뢰하되, 다른 USP가 부수적으로 등장하면 추가
+  ⚠️ 매핑 없으면 빈 배열 []
+- primary_usp_id: usp_ids 중 가장 핵심인 한 개 (시간 비중·강조 기준). usp_ids 비었으면 null
 - role: 다음 중 하나 — '시연' / '비교' / 'proof' / '전환' / '요약' / '감성' / '디테일'
 - relation_to_prev: 이전 chunk와의 관계 — '확장' / '대조' / '심화' / '새토픽' / '요약' (body_1은 'start')
 - summary: 한 줄 — 이 chunk의 분석 요약 (어떻게 시청자에게 작용하는지)
@@ -245,7 +249,8 @@ def analyze_body_chunks(ref: dict) -> list[dict]:
 JSON만 출력 (chunk 시간순):
 {{
   "chunks": [
-    {{"body_n": "body_1", "topic": "...", "primary_usp_id": 2, "role": "디테일", "relation_to_prev": "start", "summary": "..."}},
+    {{"body_n": "body_1", "topic": "...", "usp_ids": [2], "primary_usp_id": 2, "role": "디테일", "relation_to_prev": "start", "summary": "..."}},
+    {{"body_n": "body_4", "topic": "...", "usp_ids": [3, 4], "primary_usp_id": 4, "role": "디테일", "relation_to_prev": "확장", "summary": "..."}},
     ...
   ]
 }}"""
@@ -264,14 +269,28 @@ JSON만 출력 (chunk 시간순):
     out = []
     for k in sorted_keys:
         c = by_key.get(k, {})
-        # primary_usp_id 보정 — Gemini가 빠뜨렸으면 body_to_usp에서 채움
+        # usp_ids 보정 — Gemini가 빠뜨렸으면 body_to_usp에서 채움
+        usp_ids = c.get("usp_ids") or []
+        # 정수 캐스트 + 중복 제거
+        usp_ids = list({int(u) for u in usp_ids if isinstance(u, (int, float)) or (isinstance(u, str) and u.isdigit())})
+        if not usp_ids and k in body_to_usp:
+            usp_ids = list(dict.fromkeys(body_to_usp[k]))
         primary = c.get("primary_usp_id")
-        if primary is None and k in body_to_usp:
-            primary = body_to_usp[k][0] if body_to_usp[k] else None
+        if primary is not None:
+            try:
+                primary = int(primary)
+            except Exception:
+                primary = None
+        if primary is None and usp_ids:
+            primary = usp_ids[0]
+        # primary가 usp_ids에 없으면 추가
+        if primary is not None and primary not in usp_ids:
+            usp_ids = [primary] + usp_ids
         out.append({
             "body_n": k,
             "sentences": [{"start": s.get("start"), "end": s.get("end"), "text": s.get("text")} for s in body_groups[k]],
             "topic": c.get("topic", ""),
+            "usp_ids": usp_ids,
             "primary_usp_id": primary,
             "role": c.get("role", ""),
             "relation_to_prev": c.get("relation_to_prev", "start" if k == sorted_keys[0] else ""),

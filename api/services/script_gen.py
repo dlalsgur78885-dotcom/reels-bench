@@ -2124,6 +2124,46 @@ def classify_sentence_sections(sentences: list[dict], structure: dict) -> list[d
             valid_sections.add(f"body_{k}")
     else:
         valid_sections.add("body")
+    def _time_range_fallback() -> dict[int, str]:
+        """Gemini 실패 시 structure의 hook/intro/body/cta 시간 범위로 분류."""
+        ranges: list[tuple[float, float, str]] = []
+        for k in ("hook", "intro", "body", "cta"):
+            sec = (structure or {}).get(k) or {}
+            r = _parse_section_seconds(sec.get("seconds"))
+            if r:
+                ranges.append((r[0], r[1], k))
+        if not ranges:
+            return {}
+        # body는 시간순으로 N개 균등 분할 (key_points 개수만큼)
+        body_range = next((r for r in ranges if r[2] == "body"), None)
+        body_subdivisions: list[tuple[float, float, str]] = []
+        if body_range and n_body_slots >= 2:
+            bs, be = body_range[0], body_range[1]
+            span = (be - bs) / n_body_slots
+            for k in range(n_body_slots):
+                body_subdivisions.append((bs + k*span, bs + (k+1)*span, f"body_{k+1}"))
+            ranges = [r for r in ranges if r[2] != "body"] + body_subdivisions
+        out: dict[int, str] = {}
+        for i, sent in enumerate(sentences, 1):
+            st = float(sent.get("start", 0) or 0)
+            en = float(sent.get("end", st) or st)
+            mid = (st + en) / 2
+            best_overlap = 0.0
+            best_sec = ""
+            for rs, re_, sec_name in ranges:
+                ov = max(0.0, min(en, re_) - max(st, rs))
+                if ov > best_overlap:
+                    best_overlap = ov
+                    best_sec = sec_name
+            if not best_sec:
+                # mid가 어느 범위에 가장 가까운지
+                for rs, re_, sec_name in ranges:
+                    if rs <= mid <= re_:
+                        best_sec = sec_name; break
+            if best_sec and best_sec in valid_sections:
+                out[i] = best_sec
+        return out
+
     try:
         result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=4096)
         if isinstance(result, list) and result:
@@ -2139,6 +2179,11 @@ def classify_sentence_sections(sentences: list[dict], structure: dict) -> list[d
                     idx_to_section[idx] = sec
             except Exception:
                 pass
+        # ⚠️ Gemini가 거의 비었으면 (<30% sentences) 시간 범위 fallback
+        if len(idx_to_section) < max(1, len(sentences) * 0.3):
+            logger.warning("[classify] Gemini sparse (%d/%d) → 시간 범위 fallback",
+                           len(idx_to_section), len(sentences))
+            idx_to_section = _time_range_fallback()
         # apply
         out = []
         for i, sent in enumerate(sentences, 1):

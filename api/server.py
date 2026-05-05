@@ -390,23 +390,35 @@ def classify_sentences_for_reel(
 
 @app.get("/api/script/reference-info/{shortcode}")
 def reference_info(shortcode: str):
-    """참고 릴스의 구조 정보 (분류·문장 수·body 슬롯 수) — UI 가이드용."""
+    """참고 릴스의 구조 정보 (분류·문장 수·body 슬롯 수) — UI 가이드용.
+
+    recommended_usps는 분석 단계에서 결정된 usp_layout(구조화된 USP 분류)을 정본으로 사용.
+    이게 분석 페이지(BenchDetail)에 표시되는 USP 개수와 일치한다.
+    """
     try:
         ref = script_gen.fetch_reference(shortcode)
         if not ref:
             raise HTTPException(404, "참고 릴스 데이터 없음")
         props = script_gen.analyze_reference_proportions(ref)
         body_class = script_gen.classify_body_structure(ref)
+        body_slot_count = len(props.get("body_slots") or [])
+        # 정본: usp_layout 길이 (분석 결과). 없으면 body_class 기반 fallback
+        overall = ((ref.get("structure") or {}).get("overall") or {})
+        usp_layout = overall.get("usp_layout") or []
+        if usp_layout:
+            recommended = len(usp_layout)
+        elif body_class.get("type") in ("단일USP_카테고리분할", "단일진행"):
+            recommended = 1
+        else:
+            recommended = body_slot_count
         return {
             "shortcode": shortcode,
             "duration_sec": props.get("total_sec"),
             "total_sentences": len(ref.get("sentences") or []),
-            "body_slot_count": len(props.get("body_slots") or []),
-            "body_class": body_class,  # { type, guide }
-            "recommended_usps": (
-                1 if body_class.get("type") in ("단일USP_카테고리분할", "단일진행")
-                else len(props.get("body_slots") or [])  # 멀티USP_1대1: 슬롯 수만큼 USP
-            ),
+            "body_slot_count": body_slot_count,
+            "body_class": body_class,
+            "recommended_usps": recommended,
+            "usp_layout_count": len(usp_layout) if usp_layout else None,
         }
     except HTTPException:
         raise

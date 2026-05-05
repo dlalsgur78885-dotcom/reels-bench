@@ -1066,12 +1066,12 @@ def update_my_product(pid: int, req: MyProductIn, request: Request):
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
     H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
-    # 소유자 OR 수정 권한 share
+    # 소유자 OR 수정 권한 share OR admin
     own = _r.get(f"{SUPA}/rest/v1/my_products?id=eq.{pid}&select=owner_id",
         headers=H, timeout=10).json()
     if not own:
         raise HTTPException(404, "상품 없음")
-    if own[0]["owner_id"] != me["id"]:
+    if me.get("role") != "admin" and own[0]["owner_id"] != me["id"]:
         share = _r.get(
             f"{SUPA}/rest/v1/my_product_shares?product_id=eq.{pid}"
             f"&shared_with_id=eq.{me['id']}&permission=eq.edit&select=id&limit=1",

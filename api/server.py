@@ -287,6 +287,90 @@ def rebuild_transcript_from_ocr(shortcode: str, request: Request, force: bool = 
     }
 
 
+class BodyBoundaries(BaseModel):
+    splits: list[float]  # body 영역 내부의 분할 시각들. 예: [11, 15, 19, 23] → body_1~5
+
+
+@app.post("/api/script/set-body-boundaries/{shortcode}")
+def set_body_boundaries(shortcode: str, req: BodyBoundaries, request: Request):
+    """body 분절 boundary 수동 지정. body 영역 내부 split 시각 list로 body_1~N 재라벨.
+
+    예: splits=[11, 15, 19, 23]일 때
+    - body_1: body 시작~11s
+    - body_2: 11~15s
+    - body_3: 15~19s
+    - body_4: 19~23s
+    - body_5: 23~body 끝
+    """
+    auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+
+    tr_rows = _r.get(
+        f"{SUPA}/rest/v1/reels_transcripts?shortcode=eq.{shortcode}&select=transcript,segments&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    if not tr_rows or not tr_rows[0].get("segments"):
+        raise HTTPException(404, "transcript/segments 없음")
+    sentences = tr_rows[0]["segments"]
+    transcript = tr_rows[0].get("transcript", "")
+
+    # 현재 body 영역의 시작·끝 (sentence section 기반)
+    body_sents = [s for s in sentences if (s.get("section") or "").lower().startswith("body")]
+    if not body_sents:
+        raise HTTPException(400, "body 라벨된 sentence 없음")
+    body_start = min(float(s.get("start", 0) or 0) for s in body_sents)
+    body_end = max(float(s.get("end", 0) or 0) for s in body_sents)
+
+    splits = sorted([s for s in req.splits if body_start < s < body_end])
+    boundaries = [body_start] + splits + [body_end + 0.001]
+
+    # 각 body sentence를 어느 body_N에 속하는지 시간 기반으로 매핑
+    new_sentences = []
+    for s in sentences:
+        sec = (s.get("section") or "").lower()
+        if not sec.startswith("body"):
+            new_sentences.append(s); continue
+        st = float(s.get("start", 0) or 0)
+        en = float(s.get("end", st) or st)
+        mid = (st + en) / 2
+        new_label = "body_1"
+        for i in range(len(boundaries) - 1):
+            if boundaries[i] <= mid < boundaries[i+1]:
+                new_label = f"body_{i+1}"; break
+        new_sent = dict(s)
+        new_sent["section"] = new_label
+        new_sentences.append(new_sent)
+
+    # 저장
+    upsert_url = f"{SUPA}/rest/v1/reels_transcripts?on_conflict=shortcode"
+    _r.post(upsert_url, headers={
+        **H, "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=minimal",
+    }, json={
+        "shortcode": shortcode, "transcript": transcript,
+        "language": "ko", "segments": new_sentences,
+    }, timeout=15)
+
+    cached = pipeline.extra_cache.get(shortcode)
+    if isinstance(cached, dict):
+        cached["sentences"] = new_sentences
+        pipeline.extra_cache[shortcode] = cached
+
+    # 새 라벨 분포
+    from collections import Counter
+    sec_counts = Counter((s.get("section") or "?") for s in new_sentences)
+    return {
+        "shortcode": shortcode,
+        "body_count": len(boundaries) - 1,
+        "boundaries": [round(b, 1) for b in boundaries],
+        "sections": dict(sec_counts),
+        "next_step": "reanalyze-usp-layout 호출해 USP 매핑 갱신",
+    }
+
+
 @app.post("/api/script/reanalyze-structure/{shortcode}")
 def reanalyze_structure_for_reel(shortcode: str, request: Request):
     """script_structure를 transcript 기반으로 재생성. 이후 usp_layout + body_chunks도 자동 재분석."""

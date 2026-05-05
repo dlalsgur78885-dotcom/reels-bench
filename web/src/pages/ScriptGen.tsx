@@ -69,7 +69,12 @@ export default function ScriptGen() {
   const [copied, setCopied] = useState(false)
 
   // 참고 릴스 대본 (생성 후 비교용)
-  interface RefScript { author: string; sentences: Array<{ start: number; end: number; text: string; section?: string }> }
+  interface SectionRole { role?: string; what_it_does?: string; must_not_repeat?: string }
+  interface RefScript {
+    author: string
+    sentences: Array<{ start: number; end: number; text: string; section?: string }>
+    section_roles?: Record<string, SectionRole>
+  }
   const [refScripts, setRefScripts] = useState<Record<string, RefScript>>({})
 
   const [searchParams] = useSearchParams()
@@ -81,11 +86,13 @@ export default function ScriptGen() {
       if (refScripts[r.shortcode]) return
       Promise.all([api.metadata(r.shortcode), api.extra(r.shortcode)])
         .then(([meta, extra]) => {
+          const overall: any = (extra as any)?.script_structure?.overall || {}
           setRefScripts(prev => ({
             ...prev,
             [r.shortcode]: {
               author: meta?.author_username || r.author || r.shortcode,
               sentences: (extra?.sentences as RefScript['sentences']) || [],
+              section_roles: overall.section_roles || undefined,
             },
           }))
         })
@@ -862,6 +869,19 @@ export default function ScriptGen() {
                 fontSize: 11, fontWeight: 600, marginBottom: 10,
               }}>✓ 2차 다듬기 완료 — 최종본</div>
             )}
+            {(() => {
+              const hasRoles = refSelected.length > 0 &&
+                refScripts[refSelected[0]?.shortcode]?.section_roles &&
+                Object.keys(refScripts[refSelected[0]?.shortcode]?.section_roles || {}).length > 0
+              return hasRoles ? (
+                <div style={{
+                  background: '#fef3c7', color: '#92400e', padding: '6px 10px',
+                  borderRadius: 'var(--radius-sm)', fontSize: 11, marginBottom: 10,
+                }}>
+                  🎬 narrative role 가이드 적용됨 — 각 섹션이 흐름의 다른 단계 (단순 반복 X)
+                </div>
+              ) : null
+            })()}
             {(displayed as any)._target_persona && (
               <div style={{
                 background: '#eff6ff', color: '#1e40af', padding: '6px 10px', borderRadius: 'var(--radius-sm)',
@@ -1012,40 +1032,68 @@ export default function ScriptGen() {
                           <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>대본 불러오는 중…</div>
                         ) : rs.sentences.length === 0 ? (
                           <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>대본 데이터 없음</div>
-                        ) : (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            {rs.sentences.map((s, i) => {
-                              const sec = (s.section || '').toLowerCase()
-                              const label = sec === 'hook' ? 'Hook'
-                                : sec === 'intro' ? 'Intro'
-                                : sec === 'cta' ? 'CTA'
-                                : sec.startsWith('body') ? sec.replace('_', ' ').toUpperCase()
-                                : ''
-                              const color = sec === 'hook' ? '#EF4444'
-                                : sec === 'intro' ? '#8B5CF6'
-                                : sec.startsWith('body') ? '#307df0'
-                                : sec === 'cta' ? '#F59E0B' : 'var(--text-muted)'
-                              return (
-                                <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 12, lineHeight: 1.55 }}>
-                                  <span style={{
-                                    fontFamily: 'monospace', fontSize: 10,
-                                    color: 'var(--text-muted)', flexShrink: 0, minWidth: 56,
-                                  }}>
-                                    {s.start.toFixed(1)}-{s.end.toFixed(1)}s
-                                  </span>
-                                  {label && (
-                                    <span style={{
-                                      fontSize: 9, fontWeight: 700, color, padding: '1px 6px',
-                                      border: `1px solid ${color}`, borderRadius: 3,
-                                      flexShrink: 0, textTransform: 'uppercase', letterSpacing: '.04em',
-                                    }}>{label}</span>
-                                  )}
-                                  <span style={{ color: 'var(--text-primary)' }}>{s.text}</span>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        )}
+                        ) : (() => {
+                          // 섹션별 그룹화 (시간순 보존)
+                          const groups: Array<{ section: string; sentences: typeof rs.sentences }> = []
+                          for (const s of rs.sentences) {
+                            const sec = (s.section || '').toLowerCase()
+                            const last = groups[groups.length - 1]
+                            if (last && last.section === sec) last.sentences.push(s)
+                            else groups.push({ section: sec, sentences: [s] })
+                          }
+                          const labelOf = (sec: string) => sec === 'hook' ? 'Hook'
+                            : sec === 'intro' ? 'Intro'
+                            : sec === 'cta' ? 'CTA'
+                            : sec.startsWith('body') ? sec.replace('_', ' ').toUpperCase()
+                            : '— 미분류 —'
+                          const colorOf = (sec: string) => sec === 'hook' ? '#EF4444'
+                            : sec === 'intro' ? '#8B5CF6'
+                            : sec.startsWith('body') ? '#307df0'
+                            : sec === 'cta' ? '#F59E0B' : 'var(--text-muted)'
+                          return (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                              {groups.map((g, gi) => {
+                                const role = rs.section_roles?.[g.section]
+                                const color = colorOf(g.section)
+                                return (
+                                  <div key={gi}>
+                                    <div style={{
+                                      display: 'inline-block', fontSize: 10, fontWeight: 700, color,
+                                      padding: '2px 8px', border: `1px solid ${color}`, borderRadius: 3,
+                                      textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 4,
+                                    }}>{labelOf(g.section)}</div>
+                                    {role?.role && (
+                                      <div style={{
+                                        fontSize: 11, color: 'var(--text-secondary)',
+                                        fontStyle: 'italic', marginBottom: 6, lineHeight: 1.4,
+                                      }}>
+                                        🎬 {role.role}
+                                        {role.must_not_repeat && (
+                                          <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>
+                                            · 반복 금지: {role.must_not_repeat}
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, paddingLeft: 8, borderLeft: `2px solid ${color}30` }}>
+                                      {g.sentences.map((s, si) => (
+                                        <div key={si} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 12, lineHeight: 1.55 }}>
+                                          <span style={{
+                                            fontFamily: 'monospace', fontSize: 10,
+                                            color: 'var(--text-muted)', flexShrink: 0, minWidth: 56,
+                                          }}>
+                                            {s.start.toFixed(1)}-{s.end.toFixed(1)}s
+                                          </span>
+                                          <span style={{ color: 'var(--text-primary)' }}>{s.text}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )
+                        })()}
                       </div>
                     )
                   })}

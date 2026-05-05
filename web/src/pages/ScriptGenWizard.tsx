@@ -109,12 +109,6 @@ export default function ScriptGenWizard() {
     return { ok: true }
   }
 
-  // 자동 매핑 + override를 합친 effective 매핑
-  const effectiveUserUspId = (m: MappingPreview['usp_mapping'][number]): number | null => {
-    if (overrides[m.ref_usp_id]) return overrides[m.ref_usp_id]
-    return m.user_usp_id
-  }
-
   // chunk별 effective user_usp_id (precedence: chunkOverride > refUspOverride > auto)
   const effectiveChunkUspId = (chunk: MappingPreview['section_chunks'][number]): number | null => {
     const sec = chunk.section || ''

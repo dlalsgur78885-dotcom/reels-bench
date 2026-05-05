@@ -178,6 +178,95 @@ JSON만 출력. 빈 섹션은 제외.
         return {}
 
 
+def analyze_ref_desire_arc(ref_usps: list[dict], section_chunks: list[dict]) -> list[dict]:
+    """ref 대본의 emotional desire/pain arc를 추출.
+
+    Hook의 트리거 욕구 + Intro promise의 톤 + 페르소나성 chunk(primary=null in body)의 desire 흐름을 보고
+    1-3개의 ref-derived desire 후보를 반환.
+
+    각 candidate = {name, pain, desire, scenario}
+    """
+    if not section_chunks:
+        return []
+    # hook/intro/페르소나성 body chunks 텍스트 추출
+    relevant_lines = []
+    for c in section_chunks:
+        sec = (c.get("section") or "").lower()
+        is_hook = sec == "hook"
+        is_intro = sec == "intro"
+        is_persona_body = sec.startswith("body") and not c.get("primary_usp_id")
+        if not (is_hook or is_intro or is_persona_body):
+            continue
+        for s in (c.get("sentences") or []):
+            relevant_lines.append(f"[{sec}] \"{s.get('text','')}\"")
+
+    if not relevant_lines:
+        return []
+
+    usps_brief = "\n".join(
+        f"- ref USP{u.get('id')} ({u.get('label','')}): {u.get('description','')}"
+        for u in (ref_usps or [])
+    )
+    text_block = "\n".join(relevant_lines)
+
+    prompt = f"""당신은 광고 카피의 emotional 분석가입니다. 아래 참고 릴스의 hook/intro/페르소나성 chunk를 보고 **이 대본이 시청자에게 어필하는 desire/pain 후보 1~3개**를 뽑아주세요.
+
+## ref USPs (참고)
+{usps_brief or '(없음)'}
+
+## hook + intro + 페르소나성 body 텍스트
+{text_block}
+
+## 작업
+- hook이 트리거하는 **욕구의 종류**와 intro·페르소나성 chunk가 강화하는 **감정 흐름**을 종합
+- 1~3개의 candidate desire/pain 페어를 출력 (대본의 진짜 thrust)
+- 각 candidate는 **구체적**이어야 함 (추상명사 "행복", "만족" 금지)
+
+### 좋은 예
+- 대본: "남친이 귀엽다고 하면 게임 끝 / 더 설레게 만드는 잠옷 / 남친도 더 설렌다면서"
+  → desire: "남친에게 더 매력적으로 보이고 사랑받는 느낌"
+  → pain: "남친 앞에서 매력 없어 보일까봐 걱정되는 것"
+  → scenario: "데이트 후 만남에서 남친 반응을 신경 쓰는 일상"
+- 대본: "여행 경비 반 아껴줄 거 / 일본 우버 할인 코드"
+  → desire: "여행 비용을 똑똑하게 절감해 더 많이 즐기기"
+  → pain: "정보 모르고 비싸게 결제해 호구 되는 것"
+
+### 나쁜 예 (절대 X)
+- desire: "편안함 / 만족감 / 좋은 기분" (추상)
+- pain: "불편함 / 답답함" (추상)
+
+## 출력 JSON
+{{
+  "candidates": [
+    {{
+      "name": "한 줄 라벨 (예: 매력 어필 / 남친 인정)",
+      "pain": "구체 pain 한 줄",
+      "desire": "구체 desire 한 줄",
+      "scenario": "이 desire/pain이 발생하는 상황 한 줄"
+    }}
+  ]
+}}
+
+JSON만 출력. 설명 X."""
+    try:
+        result = call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=1500)
+        if isinstance(result, list) and result:
+            result = result[0]
+        cands = (result or {}).get("candidates") or []
+        out = []
+        for c in cands:
+            name = (c.get("name") or "").strip()
+            desire = (c.get("desire") or "").strip()
+            pain = (c.get("pain") or "").strip()
+            scenario = (c.get("scenario") or "").strip()
+            if name and (desire or pain):
+                out.append({"name": name, "pain": pain, "desire": desire, "scenario": scenario})
+        return out[:3]
+    except Exception as e:
+        logger.warning("analyze_ref_desire_arc failed: %s", e)
+        return []
+
+
 def analyze_section_chunks(ref: dict) -> list[dict]:
     """섹션별 chunk 상세 분석 — hook/intro/body_N/cta 전부.
 

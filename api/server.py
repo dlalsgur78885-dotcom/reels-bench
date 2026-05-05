@@ -626,6 +626,13 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
     ]
     unmatched_ref = [m for m in mapping_full if m["user_usp_id"] is None]
 
+    # 6. ref-derived desire/pain 후보 (hook+intro+페르소나성 chunk에서 추출)
+    try:
+        ref_desires = script_gen.analyze_ref_desire_arc(ref_usps, section_chunks)
+    except Exception as e:
+        logger.warning("[preview-mapping] ref_desires 추출 실패: %s", e)
+        ref_desires = []
+
     return {
         "shortcode": shortcode,
         "product": {"id": product["id"], "name": product.get("name", ""), "usps": user_usps},
@@ -634,6 +641,7 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
         "usp_mapping": mapping_full,
         "unused_user_usps": unused_user,
         "unmatched_ref_usps": unmatched_ref,
+        "ref_desires": ref_desires,
     }
 
 

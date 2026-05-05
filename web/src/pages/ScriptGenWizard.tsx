@@ -44,6 +44,8 @@ export default function ScriptGenWizard() {
   // 3. 페르소나
   const [allPersonas, setAllPersonas] = useState<Array<PersonaCandidate & { _uspIndex: number; _uspName: string }>>([])
   const [selectedPersonaIdx, setSelectedPersonaIdx] = useState<Set<number>>(new Set())
+  // ref-derived desire 후보 (참고 대본 emotional arc 기반)
+  const [selectedRefDesireIdx, setSelectedRefDesireIdx] = useState<Set<number>>(new Set())
 
   // 4. 생성
   const [genError, setGenError] = useState('')
@@ -253,9 +255,27 @@ export default function ScriptGenWizard() {
       reviews: (u.reviews || []).map((r: string) => r.trim()).filter(Boolean),
     })).filter((u: any) => u.usp)
 
-    const personas: (PersonaCandidate | null)[] = selectedPersonaIdx.size
-      ? Array.from(selectedPersonaIdx).map(i => allPersonas[i])
-      : [null]
+    // 1) USP 페르소나 + 2) ref-derived desire 후보를 합쳐 사용
+    type PersonaLike = (PersonaCandidate & { _label?: string }) | null
+    const productPersonas: PersonaLike[] = Array.from(selectedPersonaIdx).map(i => allPersonas[i])
+    const refDesires = mapping?.ref_desires || []
+    const refPersonas: PersonaLike[] = Array.from(selectedRefDesireIdx).map(i => {
+      const r = refDesires[i]
+      if (!r) return null
+      return {
+        name: `[참고 대본] ${r.name}`,
+        scenario: r.scenario,
+        signals: [],
+        destinations: [],
+        tone_hint: '',
+        pain: r.pain,
+        desire: r.desire,
+        review_count: 0,
+        sample_reviews: [],
+      } as PersonaCandidate
+    }).filter((p): p is PersonaCandidate => !!p)
+    const personas: PersonaLike[] = [...productPersonas, ...refPersonas]
+    if (personas.length === 0) personas.push(null)
 
     try {
       const token = await getAccessToken()
@@ -357,10 +377,17 @@ export default function ScriptGenWizard() {
           onRefreshUspPersonas={refreshSingleUspPersonas}
           refreshingUspIdx={refreshingUspIdx}
           selected={selectedPersonaIdx}
+          selectedRefDesireIdx={selectedRefDesireIdx}
+          onToggleRefDesire={(i) => {
+            const next = new Set(selectedRefDesireIdx)
+            if (next.has(i)) next.delete(i)
+            else if (selectedPersonaIdx.size + next.size < 2) next.add(i)
+            setSelectedRefDesireIdx(next)
+          }}
           onToggle={(i) => {
             const next = new Set(selectedPersonaIdx)
             if (next.has(i)) next.delete(i)
-            else if (next.size < 2) next.add(i)
+            else if (next.size + selectedRefDesireIdx.size < 2) next.add(i)
             setSelectedPersonaIdx(next)
           }}
           error={genError}
@@ -787,7 +814,9 @@ function StepMapping({
 }
 
 function StepPersona({
-  mapping, personas, matchedUserUsps, selected, onToggle, onRefreshUspPersonas, refreshingUspIdx, error, onBack, onGenerate,
+  mapping, personas, matchedUserUsps, selected, onToggle, onRefreshUspPersonas, refreshingUspIdx,
+  selectedRefDesireIdx, onToggleRefDesire,
+  error, onBack, onGenerate,
 }: {
   mapping: MappingPreview | null
   personas: Array<PersonaCandidate & { _uspIndex: number; _uspName: string }>
@@ -796,6 +825,8 @@ function StepPersona({
   onToggle: (i: number) => void
   onRefreshUspPersonas: (uspIdx: number) => Promise<void>
   refreshingUspIdx: number | null
+  selectedRefDesireIdx: Set<number>
+  onToggleRefDesire: (i: number) => void
   error: string
   onBack: () => void
   onGenerate: () => void
@@ -833,10 +864,67 @@ function StepPersona({
         </div>
       </div>
 
+      {(mapping.ref_desires || []).length > 0 && (
+        <div style={cardSt}>
+          <div style={labelSt}>참고 대본 기반 desire/pain 후보</div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10 }}>
+            참고 릴스의 hook/intro/페르소나성 chunk가 어필하는 emotional thrust. 우리 대본에 같은 desire를 녹이고 싶다면 선택.
+          </div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {(mapping.ref_desires || []).map((d, i) => {
+              const checked = selectedRefDesireIdx.has(i)
+              const disabled = !checked && (selected.size + selectedRefDesireIdx.size >= 2)
+              return (
+                <label key={i} style={{
+                  display: 'flex', gap: 10, alignItems: 'flex-start',
+                  padding: '10px 12px',
+                  background: checked ? 'var(--accent-light)' : 'var(--bg-surface)',
+                  border: `1px solid ${checked ? 'var(--accent)' : 'var(--border)'}`,
+                  borderRadius: 'var(--radius-md)',
+                  cursor: disabled ? 'not-allowed' : 'pointer',
+                  opacity: disabled ? 0.5 : 1,
+                }}>
+                  <input type="checkbox" checked={checked} disabled={disabled}
+                    onChange={() => onToggleRefDesire(i)}
+                    style={{ marginTop: 3, accentColor: 'var(--accent)' }} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, padding: '2px 7px',
+                        background: 'var(--accent)', color: '#fff', borderRadius: 'var(--radius-sm)',
+                        marginRight: 8, letterSpacing: '0.05em',
+                      }}>REF</span>
+                      {d.name}
+                    </div>
+                    {d.scenario && (
+                      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4 }}>{d.scenario}</div>
+                    )}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 6, fontSize: 12, lineHeight: 1.5 }}>
+                      {d.pain && (
+                        <div>
+                          <span style={{ color: 'var(--text-muted)', fontWeight: 600, marginRight: 6 }}>pain</span>
+                          <span style={{ color: 'var(--text-body)' }}>{d.pain}</span>
+                        </div>
+                      )}
+                      {d.desire && (
+                        <div>
+                          <span style={{ color: 'var(--accent)', fontWeight: 600, marginRight: 6 }}>desire</span>
+                          <span style={{ color: 'var(--text-body)' }}>{d.desire}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </label>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       <div style={cardSt}>
-        <div style={labelSt}>3단계 — 페르소나 선택</div>
+        <div style={labelSt}>3단계 — 페르소나 선택 (총 0~2개)</div>
         <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>
-          매칭된 USP의 페르소나 중 0~2개를 선택하세요. 0개 = 자동 추론.
+          위 desire 후보 + 아래 USP 페르소나 합쳐 0~2개. 0개 = 자동 추론.
         </div>
         {personas.length === 0 ? (
           <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>

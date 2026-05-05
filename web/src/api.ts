@@ -399,6 +399,7 @@ export const api = {
       }>
       unused_user_usps: Array<{ user_usp_id: number; user_usp_name: string }>
       unmatched_ref_usps: Array<{ ref_usp_id: number; ref_label: string; ref_description: string; reason: string }>
+      ref_desires: Array<{ name: string; pain: string; desire: string; scenario: string }>
     }>(`/api/script/preview-mapping/${sc}`, { product_id }),
   classifySentences: (sc: string) =>
     post<{ shortcode: string; total_sentences: number; sections: Record<string, number> }>(`/api/script/classify-sentences/${sc}`, {}),

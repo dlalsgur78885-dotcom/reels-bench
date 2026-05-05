@@ -68,6 +68,36 @@ def _gemini_key() -> str:
 _KOR_SYL_PER_SEC = 4.5  # 한국어 평균 발화 속도 (음절/초)
 
 
+_INTERJECTION_TOKENS = {
+    "호와", "와", "와우", "워", "워우", "어머", "어머나", "헐", "엥", "엣", "엠", "음",
+    "오", "오오", "오우", "와아", "에이", "아", "아아", "아하", "이야", "이야아",
+    "허", "헉", "핵", "쩐다", "찐", "진짜", "진심", "ㅋㅋ", "ㅎㅎ", "헤헤",
+    "응", "아니", "어", "ㅇㅇ",
+}
+
+def _is_interjection_text(text: str) -> bool:
+    """짧은 감탄어/호응어인지 판정. True면 LLM이 제품 기능을 채우지 않도록."""
+    if not text:
+        return False
+    cleaned = text.strip().rstrip(".!?~ ").strip()
+    if not cleaned:
+        return False
+    # 어절 수
+    words = cleaned.split()
+    if len(words) > 2:
+        return False
+    syl = _count_kor_syllables(cleaned)
+    if syl > 4:
+        return False
+    # 알려진 감탄어 또는 짧은 단음절 + 감탄부호
+    if cleaned in _INTERJECTION_TOKENS:
+        return True
+    # 매우 짧고 (3음절 이하) 마침표 없이 끝남
+    if syl <= 3:
+        return True
+    return False
+
+
 def _count_kor_syllables(text: str) -> int:
     """한국어 음절 수 (한글 + 라틴 단어 1단어=2음절 가산 근사)."""
     import re
@@ -1156,14 +1186,28 @@ def build_prompt(product_name: str, pain: str, desire: str, usps: list[dict], re
     hook_sents = props.get("hook_sents_all") or []
     intro_sents = props.get("intro_sents_all") or []
     cta_sents = props.get("cta_sents_all") or []
+    def _scaffold_line(j: int, ref_t: str, role: str, ending: str, default_instr: str) -> tuple[str, str]:
+        """참고 문장 j에 대한 우리 문장 j 가이드 라인 두 개 반환 (참고 표시 / 우리 지침)."""
+        ref_label = f"  {j}) 참고: \"{ref_t}\" [역할={role}]"
+        if _is_interjection_text(ref_t):
+            instr = (
+                f"     → 우리 문장 {j}: ⚠️ **이건 짧은 감탄어/호응어** ({_count_kor_syllables(ref_t)}음절). "
+                f"우리도 비슷한 톤의 짧은 감탄어/호응어로 미러링 (예: 와, 진짜, 오, 어머 등). "
+                f"제품 기능·USP·CTA 등 정보성 내용 절대 채우지 말 것. 참고와 같은 길이·리듬 유지."
+            )
+        else:
+            instr = default_instr
+        return ref_label, instr
+
     if hook_sents:
         parts.append(f"## 📐 HOOK 1:1 scaffold ({len(hook_sents)}문장)")
         for j, s in enumerate(hook_sents, 1):
             ending = (s.get("ending") or {}).get("kind", "")
             role = s.get("role", "spec")
             ref_t = s.get("text", "")
-            parts.append(f"  {j}) 참고: \"{ref_t}\" [역할={role}]")
-            parts.append(f"     → 우리 Hook 문장 {j}: 위 참고문장의 **토픽·역할·구문 shape·종결({ending})** 그대로. 참고가 무엇을 말하는지 파악해 우리 제품·페인에 같은 주제로 작성. 다른 토픽으로 점프 금지.")
+            default = f"     → 우리 Hook 문장 {j}: 위 참고문장의 **토픽·역할·구문 shape·종결({ending})** 그대로. 참고가 무엇을 말하는지 파악해 우리 제품·페인에 같은 주제로 작성. 다른 토픽으로 점프 금지."
+            label, instr = _scaffold_line(j, ref_t, role, ending, default)
+            parts.append(label); parts.append(instr)
         parts.append("")
     if intro_sents:
         parts.append(f"## 📐 INTRO 1:1 scaffold ({len(intro_sents)}문장)")
@@ -1171,8 +1215,9 @@ def build_prompt(product_name: str, pain: str, desire: str, usps: list[dict], re
             ending = (s.get("ending") or {}).get("kind", "")
             role = s.get("role", "transition")
             ref_t = s.get("text", "")
-            parts.append(f"  {j}) 참고: \"{ref_t}\" [역할={role}]")
-            parts.append(f"     → 우리 Intro 문장 {j}: 위 참고문장의 **토픽·역할·구문 shape·종결({ending})** 그대로. 참고가 제품 재질을 도입하면 우리도 우리 제품 재질을 도입. 다른 주제 X.")
+            default = f"     → 우리 Intro 문장 {j}: 위 참고문장의 **토픽·역할·구문 shape·종결({ending})** 그대로. 참고가 제품 재질을 도입하면 우리도 우리 제품 재질을 도입. 다른 주제 X."
+            label, instr = _scaffold_line(j, ref_t, role, ending, default)
+            parts.append(label); parts.append(instr)
         parts.append("")
     if cta_sents:
         parts.append(f"## 📐 CTA 1:1 scaffold ({len(cta_sents)}문장)")
@@ -1180,8 +1225,9 @@ def build_prompt(product_name: str, pain: str, desire: str, usps: list[dict], re
             ending = (s.get("ending") or {}).get("kind", "")
             role = s.get("role", "cta")
             ref_t = s.get("text", "")
-            parts.append(f"  {j}) 참고: \"{ref_t}\" [역할={role}]")
-            parts.append(f"     → 우리 CTA 문장 {j}: 위 참고문장의 **토픽·역할·구문 shape·종결({ending})** 그대로. 인센티브·키워드는 우리 페르소나에 맞게.")
+            default = f"     → 우리 CTA 문장 {j}: 위 참고문장의 **토픽·역할·구문 shape·종결({ending})** 그대로. 인센티브·키워드는 우리 페르소나에 맞게."
+            label, instr = _scaffold_line(j, ref_t, role, ending, default)
+            parts.append(label); parts.append(instr)
         parts.append("")
     # 통일 시나리오 — 모든 Body가 같은 맥락 유지
     unified = select_unified_scenario(usps)
@@ -1263,9 +1309,14 @@ def build_prompt(product_name: str, pain: str, desire: str, usps: list[dict], re
                 parts.append(
                     f"        → shape: 톤={m.get('emotion')} {int(m.get('intensity',0)*100)}%{deliv} · ~{syl}음절 · 종결={ending}"
                 )
-                parts.append(
-                    f"        → 우리 문장 {j}: 위 참고문장의 **토픽(무엇에 대해 말하는지)·역할·구문 shape·종결** 그대로. 참고가 재질 묘사면 우리도 재질, 사이즈면 사이즈, 시연이면 시연. 다른 토픽 점프 금지. 참고의 동사·명사 복사 금지 (우리 USP·리뷰에서)."
-                )
+                if _is_interjection_text(ref_text):
+                    parts.append(
+                        f"        → 우리 문장 {j}: ⚠️ **짧은 감탄어/호응어** — 우리도 비슷한 톤의 짧은 반응 (와/진짜/오/어머 등). 제품 기능 채우지 말 것. 같은 길이·리듬 유지."
+                    )
+                else:
+                    parts.append(
+                        f"        → 우리 문장 {j}: 위 참고문장의 **토픽(무엇에 대해 말하는지)·역할·구문 shape·종결** 그대로. 참고가 재질 묘사면 우리도 재질, 사이즈면 사이즈, 시연이면 시연. 다른 토픽 점프 금지. 참고의 동사·명사 복사 금지 (우리 USP·리뷰에서)."
+                    )
         if ua["selected_reviews"]:
             parts.append(f"  사용할 리뷰 ({len(ua['selected_reviews'])}개, 임팩트 점수 순) — 부가설명·혜택 문장에 자연스럽게 녹여 활용:")
             for r in ua["selected_reviews"]:

@@ -3143,45 +3143,39 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
                 persona_str += f"- **identity**: {_identity}\n"
             persona_str += """
 ### ⚠️ 적용 룰 (Hook · Intro · 페르소나성 chunk에 강제)
-0. **⭐⭐⭐ USP1(MAIN) 도메인이 script 전체의 도메인 anchor** ⭐⭐⭐
-   - Hook/Intro/Body/CTA **모두** USP1의 도메인 명사권 안에서 작성
-   - persona의 pain_scene/desire_scene이 다른 도메인(예: USP1=항공인데 페르소나 scene이 "숙소")을 가져오면 → **USP1 도메인 명사로 번역**
-   - 예: USP1="땡처리 항공권", persona desire_scene="30만원 숙소값 절약" → Hook은 "30만원 항공권 손해" / "30만원 비행기표 절약" 등 **항공 도메인** 어휘 사용 (숙소는 다른 USP의 영역이라 안 박힘)
-   - persona는 emotional context(예산 집착·실속)를 제공하고, USP1은 도메인 명사를 결정
-   - **충돌 시 USP1 우선** — persona scene 어휘가 USP1 도메인과 안 맞으면 USP1 도메인으로 대체
-1. **시각적 명사·동작 화이트리스트** — pain_scene / desire_scene / identity 단어를 차용 (단, 룰 0 따라 USP1 도메인 통과한 단어만)
-   - ❌ 추상명사 금지: "편함 / 만족 / 행복 / 자신감 / 즐거움"
-   - ✅ scene 단어 사용 + USP1 도메인 호환
+1. **시각적 명사·동작 화이트리스트** — pain_scene / desire_scene / identity 단어를 **직접** 차용
+   - ❌ 추상명사 금지: "편함 / 만족 / 행복 / 자신감 / 즐거움" — 이런 단어 1회 등장 시 무효
+   - ✅ scene 단어 사용: 위 pain_scene/desire_scene에 박힌 명사·동사를 어절·음절 룰 안에서 그대로
 2. **LF8 일치 강제**:
-   - ref Hook이 어떤 LF8을 트리거하는지 → 우리도 **같은 LF8**
-3. **ref scene STRUCTURE만 차용, 도메인 단어는 USP1 도메인으로 번역** (Schwartz 핵심):
-   - ref pain/desire scene의 **구조·동작·결과 패턴**을 가져와 USP1 도메인 어휘로 채움
-   - ref 도메인 단어("일본 우버")는 우리 USP1 도메인으로 대체
-   - 예: ref "여행 경비 반 아껴줄 거" → 우리 USP1=잠옷 → "외출옷 값 반 아껴줄 거"
-   - 예: ref "여행 경비 반 아껴줄 거" → 우리 USP1=항공권 → "비행기표 반 아껴줄 거"
-4. **부정적 → 긍정적 대비** (Schwartz #9): Hook/Intro pain_scene → Body/CTA desire_scene
-5. **시간 확장** (Schwartz #5): "매일 아침 / 영상통화할 때마다" 반복 일상 시제 권장
-6. **독자 중심화** (Schwartz #3): "당신은 / 너는" 직접 호칭 (ref 톤 따라)
+   - ref Hook이 어떤 LF8 (사회 인정·매력·편안·생존 등)을 트리거하는지 파악 → 우리도 **같은 LF8**
+   - 다른 LF8로 빠지면 ❌ (ref가 #4(매력 어필)이면 우리도 #4. #5(편안)으로 빠지면 무효)
+3. **ref scene STRUCTURE만 차용, 도메인 단어는 persona 어휘로 번역** (Schwartz 핵심):
+   - ref가 제공하는 건 **emotional 프레임**이지 도메인 콘텐츠가 아님
+   - ref pain/desire scene의 **구조·동작·결과 패턴**을 가져와 우리 persona·product 어휘로 채움
+   - ref 도메인 단어("일본 우버", "여행 경비")는 우리 product/persona 도메인으로 대체
+   - 같은 ref scene이 product 무관하게 적용 가능 (절약 angle은 잠옷/화장품/앱 어디든)
+   - 예: ref "여행 경비 반 아껴줄 거" (절약 angle) → 잠옷 광고: "외출옷 값 반 아껴줄 거"
+   - 예: ref "남친이 귀엽다고 계속 물어보는데" (사회 인정 angle) → 잠옷 광고: "남친이 영상통화 켜고 더 이쁘다는데"
+4. **부정적 → 긍정적 대비** (Schwartz #9):
+   - Hook/Intro에 pain_scene 정황 깔고 → Body/CTA로 desire_scene 충족 흐름
+5. **시간 확장** (Schwartz #5):
+   - "매일 아침 / 퇴근하고 / 영상통화할 때마다" 같이 **반복되는 일상 시제** 권장
+6. **독자 중심화** (Schwartz #3):
+   - "당신은 / 너는" 직접 호칭 (ref 톤이 그렇다면)
 
-### 좋은 예 — ref structure + USP1 도메인
+### 좋은 예 — ref structure + persona 어휘
 - ref Hook (LF8 #4 사회 인정): "남친이 오늘 왜 이렇게 / 귀엽냐고 계속 물어보는데"
-- USP1: 노브라 잠옷 / persona desire_scene: "남친이 잠옷 보고 예쁘다는 순간"
-- 우리 Hook: "남친이 영상통화 켜고 / 잠옷 보고 더 이쁘다는데" (USP1 도메인=잠옷 ✓, LF8 #4 ✓)
+- 우리 desire_scene: "잠옷 그대로 나가도 남친이 '오늘따라 예쁘다' 한 마디"
+- 우리 Hook: "남친이 영상통화 켜고 / 잠옷 보고 더 이쁘다는데" (#4 일치, 어절·음절 미러, ref 구조 + persona 어휘)
 
-### 좋은 예 — 도메인 mismatch ref도 angle만 가져오기
+### 좋은 예 — 도메인 mismatch ref도 angle만 가져오면 OK
 - ref Hook (절약 angle, 여행쿠폰): "여행 경비 반 아껴줄 거거든"
-- USP1=잠옷 → 우리 Hook: "외출옷 값 반 아껴줄 거거든" (절약 angle 유지, 도메인=잠옷)
-- USP1=땡처리 항공 → 우리 Hook: "비행기표 반 아껴줄 거거든" (절약 angle 유지, 도메인=항공)
+- 우리 product: 잠옷 → 우리 Hook: "외출옷 값 반 아껴줄 거거든" (절약 angle 유지, 도메인은 잠옷)
 
-### ❌ 나쁜 예 — USP1 도메인 충돌 (가장 자주 나오는 실수)
-- USP1="땡처리 항공권"인데 persona scene이 "숙소"라고 Hook에 "숙소 예약 망했어요" 출력
-  → ❌ 위반. USP1=항공 도메인이라 "숙소" 단어 등장 X. "비행기표 예약 망했어요" 또는 "항공권 가격 망했어요"로 번역해야 함
-- USP1="잠옷"인데 Hook에 "여행 망했어요" → ❌ 잠옷과 무관
-
-### ❌ 다른 자주 나오는 실수
-- "잠옷 입어도 편안해서 너무 만족스러워" (추상명사 + LF8 이탈)
+### 나쁜 예 (절대 X)
+- "잠옷 입어도 편안해서 너무 만족스러워" (추상명사 + LF8 #5로 이탈)
 - ref가 절약 angle인데 우리가 매력 어필로 빠짐 (LF8 변경 X)
-- ref 도메인 단어 그대로 박힘 ("일본 우버" 같은 단어가 우리 도메인에)
+- ref 도메인 단어 그대로 박힘 ("일본 우버" 같은 단어가 잠옷 광고에 등장)
 """
 
     section_guidance = _section_specific_guidance(section_name, has_destination=False)

@@ -4,7 +4,7 @@ services:
     runtime: python
     region: oregon
     plan: free
-    buildCommand: pip install -r requirements-worker.txt && playwright install chromium --with-deps
+    buildCommand: pip install -r requirements-worker.txt && playwright install chromium
     startCommand: uvicorn fb_ads_web:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /
     envVars:

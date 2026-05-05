@@ -339,7 +339,11 @@ def reanalyze_structure_for_reel(shortcode: str, request: Request):
             "overall": new_overall,
         }, timeout=15,
     )
-    pipeline.extra_cache.pop(shortcode, None)
+    # 캐시 무효화 (extra_cache는 dict-like — assign으로 갱신)
+    cached = pipeline.extra_cache.get(shortcode)
+    if isinstance(cached, dict):
+        cached["script_structure"] = {**(cached.get("script_structure") or {}), **structure, "overall": new_overall}
+        pipeline.extra_cache[shortcode] = cached
     return {
         "shortcode": shortcode,
         "hook_text": (structure.get("hook") or {}).get("text", ""),

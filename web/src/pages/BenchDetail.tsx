@@ -337,7 +337,32 @@ export default function BenchDetail() {
           <div>
             <div style={{ marginBottom: 16 }}>
               <div className="eyebrow-label">대본</div>
-              {transcript ? (
+              {extra?.sentences && extra.sentences.length > 0 ? (
+                <div className="transcript-box" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {(extra.sentences as Array<{ start: number; end: number; text: string; section?: string }>).map((s, i) => {
+                    const sec = (s.section || '').toLowerCase()
+                    const sectionLabel = sec === 'hook' ? 'Hook'
+                      : sec === 'intro' ? 'Intro'
+                      : sec === 'cta' ? 'CTA'
+                      : sec.startsWith('body') ? sec.replace('_', ' ').toUpperCase()
+                      : ''
+                    return (
+                      <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                        <span style={{
+                          fontSize: 11, fontVariantNumeric: 'tabular-nums',
+                          color: 'var(--text-muted)', flexShrink: 0, minWidth: 64,
+                        }}>
+                          {s.start.toFixed(1)}-{s.end.toFixed(1)}초
+                        </span>
+                        {sectionLabel && (
+                          <span className="tag-pill tag-pill--small" style={{ flexShrink: 0 }}>{sectionLabel}</span>
+                        )}
+                        <span style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--text-primary)' }}>{s.text}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : transcript ? (
                 <div className="transcript-box">{transcript.transcript}</div>
               ) : (
                 <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>대본 없음</div>
@@ -509,6 +534,105 @@ export default function BenchDetail() {
                   <strong style={{ color: 'var(--error)' }}>Improve:</strong> {extra.script_structure.overall.weakness}
                 </div>
               )}
+              {/* USP Layout 카드 — ref가 어느 USP를 어느 섹션에 배치했는지 */}
+              {(() => {
+                const layout = (extra.script_structure?.overall as any)?.usp_layout as Array<{ id: number; label: string; description: string; appears_in: string[]; evidence?: string }> | undefined
+                if (!layout || !layout.length) return null
+                // section → uspIds 매핑 (한 섹션에 여러 USP 가능)
+                const secOrder = ['hook', 'intro', 'body_1', 'body_2', 'body_3', 'body_4', 'body_5', 'body_6', 'body', 'cta']
+                const secToUsps: Record<string, number[]> = {}
+                layout.forEach(u => {
+                  (u.appears_in || []).forEach(sec => {
+                    const k = sec.toLowerCase()
+                    if (!secToUsps[k]) secToUsps[k] = []
+                    if (!secToUsps[k].includes(u.id)) secToUsps[k].push(u.id)
+                  })
+                })
+                const usedSecs = secOrder.filter(s => secToUsps[s])
+                // USP 색상 매핑
+                const uspColors: Record<number, string> = {
+                  1: '#f97316', 2: '#3b82f6', 3: '#10b981', 4: '#a855f7', 5: '#ec4899',
+                }
+                const colorOf = (id: number) => uspColors[id] || '#6b7280'
+                const adFormat = (extra.script_structure?.overall as any)?.ad_format as string | undefined
+                const adScore = (extra.script_structure?.overall as any)?.ad_suitability_score as number | undefined
+                const adReason = (extra.script_structure?.overall as any)?.ad_format_reason as string | undefined
+                const fmtColor: Record<string, string> = {
+                  '광고형': '#10b981', '후기형': '#3b82f6', '정보형': '#a855f7',
+                  '브랜딩형': '#ec4899', '유머형': '#f59e0b', '일상형': '#ef4444',
+                }
+                const scoreColor = (s?: number) => !s ? '#6b7280' : s >= 70 ? '#10b981' : s >= 50 ? '#f59e0b' : '#ef4444'
+                return (
+                  <div className="section-card section-card--block" style={{ marginBottom: 20, background: 'var(--bg-elevated)' }}>
+                    {/* 광고 포맷 + 적합성 배지 */}
+                    {(adFormat || adScore != null) && (
+                      <div style={{ marginBottom: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        {adFormat && (
+                          <span style={{
+                            background: fmtColor[adFormat] || '#6b7280', color: '#fff',
+                            fontSize: 12, fontWeight: 700, padding: '4px 10px', borderRadius: 6,
+                          }}>{adFormat}</span>
+                        )}
+                        {adScore != null && (
+                          <span style={{
+                            border: `1px solid ${scoreColor(adScore)}`, color: scoreColor(adScore),
+                            fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+                          }}>광고적합성 {adScore}</span>
+                        )}
+                        {adReason && (
+                          <span style={{ fontSize: 11, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                            {adReason}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    <div className="eyebrow-label" style={{ marginBottom: 10 }}>
+                      🗺 ref USP Layout — 총 <b style={{ color: '#1e40af' }}>{layout.length}개 USP</b>가 {usedSecs.length}개 섹션에 배치됨
+                    </div>
+                    {/* 타임라인 — 섹션 순서대로 USP ID 표시 */}
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 12, padding: 8, background: 'var(--bg-surface)', borderRadius: 6 }}>
+                      {usedSecs.map((sec, i) => (
+                        <Fragment key={sec}>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.04, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
+                              {sec.replace('_', ' ').toUpperCase()}
+                            </div>
+                            <div style={{ display: 'flex', gap: 2 }}>
+                              {secToUsps[sec].map(uid => (
+                                <span key={uid} style={{
+                                  background: colorOf(uid), color: '#fff',
+                                  fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
+                                }}>USP{uid}</span>
+                              ))}
+                            </div>
+                          </div>
+                          {i < usedSecs.length - 1 && (
+                            <div style={{ alignSelf: 'flex-end', paddingBottom: 4, color: 'var(--text-muted)', fontSize: 12 }}>→</div>
+                          )}
+                        </Fragment>
+                      ))}
+                    </div>
+                    {/* USP 상세 (compact) */}
+                    {layout.map(u => (
+                      <div key={u.id} style={{ marginBottom: 6, paddingBottom: 5, borderBottom: '1px solid var(--border-subtle)', fontSize: 12 }}>
+                        <div style={{ marginBottom: 2 }}>
+                          <span style={{
+                            background: colorOf(u.id), color: '#fff',
+                            fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 3, marginRight: 6,
+                          }}>USP{u.id}</span>
+                          <span className={u.label === 'MAIN' ? 'tag-pill tag-pill--strong' : 'tag-pill'} style={{ marginRight: 6, fontSize: 10 }}>
+                            {u.label}
+                          </span>
+                          <span style={{ fontWeight: 600 }}>{u.description}</span>
+                        </div>
+                        <div style={{ fontSize: 10, color: 'var(--text-secondary)' }}>
+                          📍 {(u.appears_in || []).map(s => s.replace('_', ' ').toUpperCase()).join(' · ')}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )
+              })()}
             </>
           )}
           {extra?.sentences && extra.sentences.length > 0 && (
@@ -522,11 +646,11 @@ export default function BenchDetail() {
                 <button
                   className="btn-ghost btn-ghost--inline"
                   onClick={async () => {
-                    if (!confirm('AI가 각 문장의 섹션(HOOK/INTRO/BODY/CTA)을 자동 분류하고 저장합니다. ~10초 소요. 기존 수동 지정 섹션은 덮어쓰여집니다.')) return
+                    if (!confirm('AI가 각 문장의 섹션(HOOK/INTRO/BODY_N/CTA)을 자동 분류하고 저장합니다. ~10초 소요. 기존 수동 지정 섹션은 덮어쓰여집니다.')) return
                     try {
                       const r = await api.classifySentences(shortcode!)
                       alert(`분류 완료: ${r.total_sentences}문장\n${Object.entries(r.sections).map(([k,v])=>`${k.toUpperCase()}: ${v}`).join(' / ')}`)
-                      const d = await api.extra(shortcode!)
+                      const d = await api.extra(shortcode!, { fresh: true })
                       if (d && Object.keys(d).length) setExtra(d)
                     } catch (e: any) {
                       alert('분류 실패: ' + (e?.message || ''))
@@ -535,9 +659,67 @@ export default function BenchDetail() {
                 >섹션 자동 분류</button>
                 <button
                   className="btn-ghost btn-ghost--inline"
+                  onClick={async () => {
+                    try {
+                      const d = await api.extra(shortcode!, { fresh: true })
+                      if (d && Object.keys(d).length) setExtra(d)
+                    } catch (e: any) {
+                      alert('새로고침 실패: ' + (e?.message || ''))
+                    }
+                  }}
+                >새로고침</button>
+                <button
+                  className="btn-ghost btn-ghost--inline"
                   onClick={() => { setEditing('sentences'); setEditSentences(JSON.parse(JSON.stringify(extra.sentences))); setEditError('') }}
                 >문장 수정</button>
               </div>
+              {(() => {
+                // Body 문장을 body_1/body_2/.../body_N으로 분할
+                // tip_count = script_structure.body.key_points 길이 (없으면 ceil(body_count/3))
+                const ssLocal = extra.script_structure
+                const hookEndPre = parseFloat(ssLocal?.hook?.seconds?.split('-')[1] || '3')
+                const introEndPre = parseFloat(ssLocal?.intro?.seconds?.split('-')[1] || '7')
+                const bodyEndPre = parseFloat(ssLocal?.body?.seconds?.split('-')[1] || '40')
+                const bodySents: number[] = []  // sentence indices that are BODY
+                ;(extra.sentences || []).forEach((sx, idx) => {
+                  const ov = (sx as any).section as string | undefined
+                  let isBody = false
+                  if (ov) isBody = ov.toUpperCase() === 'BODY'
+                  else if (ssLocal) isBody = sx.start >= hookEndPre && sx.start >= introEndPre && sx.start < bodyEndPre
+                  if (isBody) bodySents.push(idx)
+                })
+                const keyPts = (ssLocal?.body as any)?.key_points
+                const tipCount = Array.isArray(keyPts) && keyPts.length > 0 ? keyPts.length : Math.max(1, Math.ceil(bodySents.length / 3))
+                const bodyMap = new Map<number, number>()  // sentence idx → body_N (1-based)
+                if (bodySents.length && tipCount > 0) {
+                  // 전환 키워드 우선 탐지
+                  const TRANS = ['마지막으로', '그리고', '또한', '다음으로', '게다가', '하지만', '또']
+                  const boundaries = [0]
+                  for (let k = 1; k < bodySents.length; k++) {
+                    const txt = (extra.sentences[bodySents[k]] || {}).text || ''
+                    if (TRANS.some(t => txt.startsWith(t) || txt.slice(0, 6).includes(' ' + t))) {
+                      boundaries.push(k)
+                    }
+                  }
+                  boundaries.push(bodySents.length)
+                  let groups: number[][] = []
+                  if (boundaries.length - 1 === tipCount) {
+                    for (let k = 0; k < tipCount; k++) groups.push(bodySents.slice(boundaries[k], boundaries[k + 1]))
+                  } else {
+                    const base = Math.floor(bodySents.length / tipCount)
+                    const rem = bodySents.length % tipCount
+                    let idx2 = 0
+                    for (let k = 0; k < tipCount; k++) {
+                      const size = base + (k < rem ? 1 : 0)
+                      groups.push(bodySents.slice(idx2, idx2 + size))
+                      idx2 += size
+                    }
+                  }
+                  groups.forEach((grp, gi) => grp.forEach(si => bodyMap.set(si, gi + 1)))
+                }
+                ;(extra as any)._bodyMap = bodyMap
+                return null
+              })()}
               {extra.sentences.map((s, i) => {
                 // TTS direction 매칭 (pro_audio.tts_script)
                 const ttsScript = (extra as any)?.pro_audio?.tts_script as Array<{start: string|number; end: string|number; direction: string; text: string}> | undefined
@@ -604,6 +786,11 @@ export default function BenchDetail() {
                     else if (s.start < bodyEnd) section = 'BODY'
                     else section = 'CTA'
                   }
+                }
+                // BODY → BODY_N으로 세분화 (위에서 만든 _bodyMap 사용)
+                if (section === 'BODY') {
+                  const bn = (extra as any)._bodyMap?.get(i)
+                  if (bn) section = `BODY_${bn}`
                 }
 
                 const fmtTime = (t: number) => {

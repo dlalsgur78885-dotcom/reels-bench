@@ -574,7 +574,7 @@ function StepMapping({
   unusedUsps: { user_usp_id: number; user_usp_name: string }[]
   onChunkOverride: (section: string, userId: number | null) => void
   getEffectiveChunkUspId: (chunk: MappingPreview['section_chunks'][number]) => number | null
-  chunkEdits: Record<string, { topic: string; role: string }>
+  chunkEdits: Record<string, { topic: string; role: string; section?: string }>
   editingChunk: Record<string, boolean>
   setChunkEdits: React.Dispatch<React.SetStateAction<Record<string, { topic: string; role: string; section?: string }>>>
   toggleChunkEdit: (section: string, currentTopic: string, currentRole: string) => void

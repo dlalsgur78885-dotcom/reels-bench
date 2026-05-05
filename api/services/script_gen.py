@@ -251,37 +251,38 @@ def analyze_section_chunks(ref: dict) -> list[dict]:
 
     prompt = f"""광고 릴스의 모든 섹션을 **chunk 단위로 분할 후 분석**.
 
-⭐ 핵심: **한 섹션 안에서 feature angle이 바뀌면 sub-chunk로 분할** (body_1 안에 angle 2-3개 → body_1a / body_1b / body_1c). 같은 부위라도 방지·창출·보정·기능 카테고리가 다르면 다른 angle.
+⭐ 핵심: **한 섹션 안에서 design feature/mechanism이 바뀌면 sub-chunk로 분할** (body_1 안에 mechanism 2개 → body_1a / body_1b). 같은 mechanism의 여러 효과는 한 chunk로 묶음.
 
 {usp_block}
 ## 모든 문장 (idx 0-based, 시간순)
 {chr(10).join(sent_with_idx)}
 
-## 분할 룰 (⚠️ 적극적으로 split — usp_layout이 합쳐놨더라도)
+## 분할 룰
 
-### feature angle 정의 (같은 부위/요소라도 **기능 목적**이 다르면 다른 angle)
-- **방지/차단/은폐** (defense): "노출 방지", "가림", "안 보이게"
-- **창출/강조/미관** (offense): "라인 예쁘게", "셔링으로 강조", "실루엣 살림"
-- **보정/커버** (correction): "부유방 가림", "허리 보정", "팔뚝 슬림"
-- **기능/편의** (functional): "조절", "통풍", "활동성", "내구성"
-**위 카테고리가 다르면 무조건 다른 angle → split.** 같은 신체부위(가슴/허리)여도 split.
+### chunk 경계 = **다른 design feature/mechanism**이 새로 등장할 때
+**한 chunk = 하나의 design feature(브이넥 / 셔링·절개 / 모달 안감 / 스트랩 / 단추 / 리본 등)가 만들어내는 효과들의 묶음.**
+
+- **같은 mechanism의 여러 효과 = 같은 chunk** (예: "셔링·절개로 가슴 라인 예쁘게 + 부유방 커버까지" → 둘 다 셔링·절개의 효과 → 한 chunk)
+- **다른 mechanism이 등장 = split** (예: 브이넥 라인 → 셔링·절개 → 모달 안감 = 3 chunk)
+
+말로 mechanism이 명시되지 않더라도, 발언의 화제가 "어떤 디자인 요소"에서 "다른 디자인 요소"로 옮겨가면 split.
+**"~로 / ~으로 / ~에 / ~까지" 같은 연결어에 주의**: "셔링으로 ~ + 부유방 커버까지"의 "까지"는 같은 mechanism의 추가 효과 → 묶음.
 
 ### 룰
 1. **Hook/Intro/CTA**: 분할 X (engagement·promise·callback이면 그대로)
-2. **Body_N**: feature angle 바뀌는 순간 = 새 chunk 시작
-   - usp_layout이 묶어놨어도 split (보수적으로 묶지 말 것)
-   - 라벨: body_1a, body_1b, body_1c... (필요하면 d까지 가능)
-   - 분할 안 되면 그냥 body_1
-3. 각 chunk = 단일 feature angle만
-4. usp_layout의 USP가 split된 angle을 포함 못 하면:
-   - usp_ids에 가장 가까운 id만, topic + summary로 angle 구분 명시
+2. **Body_N**: 다른 mechanism 등장 시 split — 라벨은 body_1a, body_1b, body_1c...
+3. 효과 나열로 인한 split은 금지 (방지+창출+보정이 한 mechanism에서 나오면 한 chunk)
+4. usp_layout의 USP가 chunk angle과 정확히 맞지 않으면 가장 가까운 id 선택 + topic·summary로 명시
 
-### 예시 (3-way split도 흔함)
-- body_1 = "브이넥(가슴골 **가림**) + 셔링(가슴라인 **강조**) + **부유방 커버**"
-  → body_1a (노출 방지/가림) / body_1b (셔링 라인 강조) / body_1c (부유방 보정)
-- body_1 = "스트랩 **조절** + 모달 **촉감**" → body_1a (스트랩 조절) / body_1b (모달 촉감)
-- body_2 = "리본 + 단추" 둘 다 디자인 미관 → split X (같은 angle)
-- ❌ 잘못된 예: "가슴골 가림 + 셔링 강조"를 하나의 chunk로 묶음 — 방지(defense)와 창출(offense)는 다른 angle
+### 예시
+- body_1 = "브이넥(가슴골 가림) + 셔링·절개(라인 예쁘게 + 부유방 커버)"
+  → body_1a (브이넥) / body_1b (셔링·절개) — 2-way split
+  → ❌ 3-way split 금지: 라인 미관과 부유방 커버는 같은 셔링·절개 mechanism이라 묶음
+- body_1 = "스트랩 조절 + 모달 안감 촉감"
+  → body_1a (스트랩) / body_1b (모달) — 다른 mechanism
+- body_2 = "리본 + 단추" 둘 다 디자인 포인트, 화제가 옮겨감
+  → body_2a (리본) / body_2b (단추) 가능하나 한 문장씩이면 묶어도 OK
+- ❌ 같은 mechanism의 효과 나열을 split하지 말 것
 
 ## 각 chunk 출력
 - section: 분할된 라벨 (hook / intro / body_1 / body_1a / body_2b / cta 등)
@@ -301,9 +302,8 @@ JSON만:
 {{
   "chunks": [
     {{"section": "hook", "sentence_idxs": [0,1], "topic": "...", "usp_ids": [], "primary_usp_id": null, "role": "engagement", "relation_to_prev": "start", "summary": "..."}},
-    {{"section": "body_1a", "sentence_idxs": [3,4], "topic": "가슴골 가림", "usp_ids": [2], "primary_usp_id": 2, "role": "디테일", "relation_to_prev": "새토픽", "summary": "브이넥으로 노출 방지"}},
-    {{"section": "body_1b", "sentence_idxs": [5,6], "topic": "셔링 라인 강조", "usp_ids": [2], "primary_usp_id": 2, "role": "디테일", "relation_to_prev": "확장", "summary": "셔링·절개로 가슴라인 미관"}},
-    {{"section": "body_1c", "sentence_idxs": [7], "topic": "부유방 커버", "usp_ids": [3], "primary_usp_id": 3, "role": "디테일", "relation_to_prev": "확장", "summary": "측면 부유감 보정"}}
+    {{"section": "body_1a", "sentence_idxs": [3,4], "topic": "브이넥 가림", "usp_ids": [2], "primary_usp_id": 2, "role": "디테일", "relation_to_prev": "새토픽", "summary": "브이넥 라인으로 가슴골 노출 방지"}},
+    {{"section": "body_1b", "sentence_idxs": [5,6,7], "topic": "셔링·절개 효과", "usp_ids": [2,3], "primary_usp_id": 2, "role": "디테일", "relation_to_prev": "확장", "summary": "셔링·절개로 가슴라인 미관 + 부유방 커버"}}
   ]
 }}"""
 

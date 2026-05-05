@@ -1310,14 +1310,27 @@ def extract_personas(usp: str, reviews: list[str], pain_solved: str = "") -> lis
 - **세분화 권장**: 인구통계(연령/성별)+라이프스타일(직장인/주부/학생)+상황(여름/출퇴근/취침)으로 조합 가능한 만큼 분리
 - 최대 6개 (리뷰에 명확히 다른 페르소나가 보이면 6개까지 추출, 강제 X)
 
+## ⭐ pain / desire 추출 (핵심 — 빠지면 대본이 추상적이 됨)
+각 페르소나마다 **구체적인** pain과 desire를 리뷰에서 길어내세요:
+- **pain** (피하고 싶은 것·답답한 상황·불편함):
+  - 한 줄, 구체. "땀에 젖어 잠 깨는 거 / 살이 비치는 것 같아 신경 쓰임 / 외출 준비에 30분 쓰는 것"
+  - ❌ 추상 금지: "불편함 / 답답함 / 스트레스" (이런 말은 텍스트에 안 박힘)
+- **desire** (가장 원하는 결과·상태·감정·인정):
+  - 한 줄, 구체. "남친한테 더 이쁨받기 / 새벽 피로 없이 일어나기 / 임산부도 멋있게 보이기"
+  - 사회적 인정·매력 어필·효율·안전감·자존감 같은 카테고리도 OK
+  - ❌ 추상 금지: "만족 / 편안함 / 좋은 기분"
+- 리뷰에 명시 안 돼있으면 **합리적 추론** OK (단, 카테고리에서 너무 멀어지지 말 것)
+
 ## 출력 JSON (배열만)
 {{
   "personas": [
     {{
       "name": "한 줄 정의 (인구통계 + 라이프스타일 키워드)",
       "scenario": "이 페르소나가 이 USP를 사용·체감하는 구체 상황 (리뷰에서 발견된 실제 맥락)",
+      "pain": "구체적인 pain 한 줄 (피하고 싶은 상황·불편)",
+      "desire": "구체적인 desire 한 줄 (원하는 결과·인정·감정)",
       "signals": ["리뷰 키워드1","2","3"],
-      "destinations": ["리뷰에 등장하는 구체 장소·여행지 (선택, 여행 카테고리만 — 푸꾸옥/나트랑/다낭/도쿄 등)"],
+      "destinations": ["리뷰에 등장하는 구체 장소·여행지 (선택, 여행 카테고리만)"],
       "review_count": <매칭 리뷰 개수>,
       "sample_reviews": ["대표 리뷰 1","2"],
       "tone_hint": "친근·일상 / 실용·간결 / 따뜻 / 신중·전문 등"
@@ -3012,6 +3025,21 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
     persona_str = ""
     if target_persona:
         persona_str = f"타깃: {target_persona.get('name','')} ({target_persona.get('scenario','')})\n"
+        _persona_pain = (target_persona.get("pain") or "").strip()
+        _persona_desire = (target_persona.get("desire") or "").strip()
+        if _persona_pain or _persona_desire:
+            persona_str += "\n⭐⭐⭐ **페르소나 핵심 동기 (Hook · Intro · 페르소나성 chunk에 반드시 녹일 것)** ⭐⭐⭐\n"
+            if _persona_pain:
+                persona_str += f"- **pain (피하고 싶은 것)**: {_persona_pain}\n"
+            if _persona_desire:
+                persona_str += f"- **desire (원하는 결과·인정·감정)**: {_persona_desire}\n"
+            persona_str += """
+**⚠️ 핵심: pain/desire는 hook/intro/페르소나성 chunk(role=감성/transition/요약·null usp_id)에 직접 단어 또는 정황으로 박힐 것**
+- ❌ 추상 표현 금지 ("편함", "만족"만 쓰면 의미 안 박힘)
+- ✅ 구체 정황: desire="남친한테 더 이쁨받기" → hook "남친이 오늘 왜 이렇게 보고싶다고 하는데"
+- ✅ pain 자리: "외출 준비 30분 쓰는 거 귀찮지" / "땀에 잠 깨는 거 답답하지?"
+- ref hook의 desire 트리거를 우리 desire로 **대치**, ref pain의 정황을 우리 pain의 정황으로 **대치**
+"""
         _dests = target_persona.get("destinations") or []
         if _dests:
             chosen_dest = _dests[0]  # _generate_multistep에서 이미 1개로 선택됨

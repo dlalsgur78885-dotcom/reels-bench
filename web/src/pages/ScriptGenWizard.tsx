@@ -171,6 +171,7 @@ export default function ScriptGenWizard() {
             target_persona: persona ? {
               name: persona.name, scenario: persona.scenario, signals: persona.signals,
               destinations: persona.destinations || [], tone_hint: persona.tone_hint,
+              pain: persona.pain || '', desire: persona.desire || '',
             } : null,
             usp_mapping_override: Object.keys(overrides).length
               ? Object.fromEntries(Object.entries(overrides).map(([k, v]) => [k, v]))
@@ -715,7 +716,23 @@ function StepPersona({
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name}</div>
                     <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>{p.scenario}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                    {(p.pain || p.desire) && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 6, fontSize: 12, lineHeight: 1.5 }}>
+                        {p.pain && (
+                          <div>
+                            <span style={{ color: 'var(--text-muted)', fontWeight: 600, marginRight: 6 }}>pain</span>
+                            <span style={{ color: 'var(--text-body)' }}>{p.pain}</span>
+                          </div>
+                        )}
+                        {p.desire && (
+                          <div>
+                            <span style={{ color: 'var(--accent)', fontWeight: 600, marginRight: 6 }}>desire</span>
+                            <span style={{ color: 'var(--text-body)' }}>{p.desire}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
                       USP{p._uspIndex} · {p._uspName}
                     </div>
                   </div>

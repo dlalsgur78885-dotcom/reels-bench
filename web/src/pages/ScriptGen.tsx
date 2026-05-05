@@ -158,6 +158,10 @@ export default function ScriptGen() {
     setPersonaCandidates([])
     setSelectedPersonas([])
   }
+  void subUspIndices
+  void toggleSubUsp
+  void moveSubUsp
+  void setMain
 
   // 메인 USP 변경 또는 USP 텍스트 변경 시 페르소나 자동 추출
   // mainUspText를 deps에 포함 — product 변경 시 같은 index여도 USP 내용이 다르면 재추출
@@ -337,6 +341,8 @@ export default function ScriptGen() {
               signals: persona.signals,
               destinations: persona.destinations || [],
               tone_hint: persona.tone_hint,
+              pain: persona.pain || '',
+              desire: persona.desire || '',
             } : null,
           }),
         })

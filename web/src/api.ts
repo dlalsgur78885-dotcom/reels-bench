@@ -86,6 +86,15 @@ export interface Analysis {
   analyzed_at: string
 }
 
+export interface DetailData {
+  metadata: Metadata | null
+  transcript: Transcript | null
+  analysis: Analysis | null
+  comments: { comment_text: string; comment_author: string; comment_likes: number }[]
+  extra: ExtraData | null
+  frame_images: Record<number, string>
+}
+
 export interface DashboardData {
   reels: Reel[]
   metadata: Metadata[]
@@ -351,6 +360,7 @@ export const api = {
   reels: () => get<Reel[]>('/api/reels'),
   addReel: (url: string, analyze = false) => post<ReelAddResult>('/api/reels', { url, analyze }),
   metadata: (sc: string) => get<Metadata>(`/api/metadata/${sc}`),
+  detail: (sc: string) => get<DetailData>(`/api/detail/${sc}`),
   transcript: (sc: string) => get<Transcript>(`/api/transcripts/${sc}`),
   analysis: (sc: string) => get<Analysis>(`/api/analyses/${sc}`),
   comments: (sc: string) => get<{ comment_text: string; comment_author: string; comment_likes: number }[]>(`/api/comments/${sc}`),
@@ -443,6 +453,8 @@ export interface ReferenceInfo {
 export interface PersonaCandidate {
   name: string
   scenario: string
+  pain?: string  // 구체적 pain — 피하고 싶은 상황 (예: "땀에 젖어 잠 깨는 것")
+  desire?: string  // 구체적 desire — 원하는 결과·인정·감정 (예: "남친한테 더 이쁨받기")
   signals: string[]
   destinations?: string[]  // 여행지 등 구체 장소 (예: 푸꾸옥, 나트랑)
   review_count: number

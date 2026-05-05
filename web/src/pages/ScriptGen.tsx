@@ -68,7 +68,31 @@ export default function ScriptGen() {
   const [activeTab, setActiveTab] = useState<string>('')  // 결과 탭에 표시할 페르소나 name
   const [copied, setCopied] = useState(false)
 
+  // 참고 릴스 대본 (생성 후 비교용)
+  interface RefScript { author: string; sentences: Array<{ start: number; end: number; text: string; section?: string }> }
+  const [refScripts, setRefScripts] = useState<Record<string, RefScript>>({})
+
   const [searchParams] = useSearchParams()
+
+  // drafts 생성되면 참고 릴스 sentences 로드
+  useEffect(() => {
+    if (!Object.keys(drafts).length) return
+    refSelected.forEach(r => {
+      if (refScripts[r.shortcode]) return
+      Promise.all([api.metadata(r.shortcode), api.extra(r.shortcode)])
+        .then(([meta, extra]) => {
+          setRefScripts(prev => ({
+            ...prev,
+            [r.shortcode]: {
+              author: meta?.author_username || r.author || r.shortcode,
+              sentences: (extra?.sentences as RefScript['sentences']) || [],
+            },
+          }))
+        })
+        .catch(() => {})
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drafts, refSelected])
 
   // 내 상품 목록 로드
   useEffect(() => { api.listMyProducts().then(setMyProducts).catch(() => {}) }, [])
@@ -920,6 +944,77 @@ export default function ScriptGen() {
                 <strong>Flow:</strong> {displayed.structure.overall.flow}<br />
                 <strong style={{ color: 'var(--success)' }}>Strength:</strong> {displayed.structure.overall.strength}<br />
                 {displayed.structure.overall.why_it_works && <><strong>왜 작동할까:</strong> {displayed.structure.overall.why_it_works}</>}
+              </div>
+            )}
+
+            {/* 참고 대본 */}
+            {refSelected.length > 0 && (
+              <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 10 }}>
+                  📚 참고 대본 ({refSelected.length}개)
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {refSelected.map(r => {
+                    const rs = refScripts[r.shortcode]
+                    return (
+                      <div key={r.shortcode} style={{
+                        background: 'var(--bg-base)', border: '1px solid var(--border)',
+                        borderRadius: 'var(--radius-sm)', padding: 12,
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, gap: 8 }}>
+                          <div style={{ fontSize: 12, fontWeight: 700 }}>
+                            @{rs?.author || r.author || '—'}
+                            <span style={{ color: 'var(--text-muted)', fontWeight: 400, marginLeft: 6, fontSize: 11 }}>
+                              {r.shortcode}
+                            </span>
+                          </div>
+                          <a href={`/bench/${r.shortcode}`} target="_blank" rel="noopener noreferrer"
+                            style={{ fontSize: 11, color: 'var(--accent)', textDecoration: 'none' }}>
+                            상세 →
+                          </a>
+                        </div>
+                        {!rs ? (
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>대본 불러오는 중…</div>
+                        ) : rs.sentences.length === 0 ? (
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>대본 데이터 없음</div>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            {rs.sentences.map((s, i) => {
+                              const sec = (s.section || '').toLowerCase()
+                              const label = sec === 'hook' ? 'Hook'
+                                : sec === 'intro' ? 'Intro'
+                                : sec === 'cta' ? 'CTA'
+                                : sec.startsWith('body') ? sec.replace('_', ' ').toUpperCase()
+                                : ''
+                              const color = sec === 'hook' ? '#EF4444'
+                                : sec === 'intro' ? '#8B5CF6'
+                                : sec.startsWith('body') ? '#307df0'
+                                : sec === 'cta' ? '#F59E0B' : 'var(--text-muted)'
+                              return (
+                                <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 12, lineHeight: 1.55 }}>
+                                  <span style={{
+                                    fontFamily: 'monospace', fontSize: 10,
+                                    color: 'var(--text-muted)', flexShrink: 0, minWidth: 56,
+                                  }}>
+                                    {s.start.toFixed(1)}-{s.end.toFixed(1)}s
+                                  </span>
+                                  {label && (
+                                    <span style={{
+                                      fontSize: 9, fontWeight: 700, color, padding: '1px 6px',
+                                      border: `1px solid ${color}`, borderRadius: 3,
+                                      flexShrink: 0, textTransform: 'uppercase', letterSpacing: '.04em',
+                                    }}>{label}</span>
+                                  )}
+                                  <span style={{ color: 'var(--text-primary)' }}>{s.text}</span>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
             )}
           </div>

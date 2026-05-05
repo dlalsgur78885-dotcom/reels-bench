@@ -3752,7 +3752,7 @@ def _classify_ref_sections(primary: dict) -> list[tuple[str, list[dict]]]:
     ]
 
 
-def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None) -> dict:
+def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, usp_mapping_override: dict[int, int] | None = None) -> dict:
     """v4 = B버전: Pre-Planner Flash + Section Planners parallel + Writers parallel."""
     import concurrent.futures as _cf
 
@@ -3851,6 +3851,24 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
             logger.warning("[pre-planner] failed: %s — usp_mapping empty", e)
     else:
         logger.info("[pre-planner] skipped — no ref_usps_layout")
+
+    # ⭐ wizard 수동 override 적용 (사용자가 null 자리에 user USP 직접 매핑)
+    if usp_mapping_override:
+        for rid, uid in usp_mapping_override.items():
+            if not isinstance(rid, int) or not isinstance(uid, int):
+                continue
+            if not (1 <= uid <= len(usps)):
+                continue
+            prev = usp_mapping.get(rid)
+            usp_mapping[rid] = uid
+            # full record도 동기화
+            for rec in usp_mapping_full:
+                if rec["ref_usp_id"] == rid:
+                    rec["user_usp_id"] = uid
+                    rec["user_usp_name"] = usps[uid - 1].get("usp", "")
+                    rec["reason"] = (rec.get("reason", "") + " · 사용자 수동 매핑").strip(" ·")
+                    break
+            logger.info("[override] ref USP%d: %s → user USP%d", rid, prev, uid)
 
     # idx별 usp_id/slot_id 도출 — chunk가 권한
     usp_map: dict[int, int | None] = {}
@@ -4151,8 +4169,11 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     return draft
 
 
-def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None) -> dict:
-    """엔드투엔드 — 참고 릴스 fetch → 1차 생성 → (선택) 2차 다듬기 → 최종."""
+def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None, usp_mapping_override: dict[int, int] | None = None) -> dict:
+    """엔드투엔드 — 참고 릴스 fetch → 1차 생성 → (선택) 2차 다듬기 → 최종.
+
+    usp_mapping_override: ref_usp_id → user_usp_id 수동 매핑 (wizard에서 null 자리 채울 때).
+    """
     refs = []
     for sc in reference_shortcodes:
         ref = fetch_reference(sc)
@@ -4162,7 +4183,7 @@ def generate(product_name: str, pain: str, desire: str, usps: list[dict], refere
         raise RuntimeError("참고 릴스 데이터를 찾을 수 없습니다")
     primary = refs[0]
     # 1차 생성 (멀티스텝: 플래너 → 섹션 작성자 → 어셈블 → 비평 → 리파이너)
-    draft = _generate_multistep(product_name, pain, desire, usps, primary, target_persona)
+    draft = _generate_multistep(product_name, pain, desire, usps, primary, target_persona, usp_mapping_override=usp_mapping_override)
 
     # 2차 다듬기 (선택)
     if refine:

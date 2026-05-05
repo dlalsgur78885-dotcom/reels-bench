@@ -38,6 +38,8 @@ export default function ScriptGenWizard() {
   const [mapping, setMapping] = useState<MappingPreview | null>(null)
   const [mappingLoading, setMappingLoading] = useState(false)
   const [mappingError, setMappingError] = useState('')
+  // 사용자 수동 override (ref_usp_id → user_usp_id) — null 매칭 자리 채우기
+  const [overrides, setOverrides] = useState<Record<number, number>>({})
 
   // 3. 페르소나
   const [allPersonas, setAllPersonas] = useState<Array<PersonaCandidate & { _uspIndex: number; _uspName: string }>>([])
@@ -57,6 +59,7 @@ export default function ScriptGenWizard() {
     setStep('mapping')
     setMappingLoading(true)
     setMappingError('')
+    setOverrides({})
     try {
       const r = await api.previewMapping(shortcode, pid)
       setMapping(r)
@@ -67,12 +70,33 @@ export default function ScriptGenWizard() {
     }
   }
 
+  // 자동 매핑 + override를 합친 effective 매핑
+  const effectiveUserUspId = (m: MappingPreview['usp_mapping'][number]): number | null => {
+    if (overrides[m.ref_usp_id]) return overrides[m.ref_usp_id]
+    return m.user_usp_id
+  }
+
+  // override 적용 후 unused user USPs 재계산
+  const effectiveUnusedUsps = (() => {
+    if (!mapping) return []
+    const used = new Set<number>()
+    mapping.usp_mapping.forEach(m => {
+      const eff = effectiveUserUspId(m)
+      if (eff) used.add(eff)
+    })
+    return mapping.product.usps
+      .map((u: any, i: number) => ({ user_usp_id: i + 1, user_usp_name: u.usp }))
+      .filter(u => !used.has(u.user_usp_id))
+  })()
+
   const goToPersona = () => {
     if (!mapping) return
-    // 매칭된 user USP들의 페르소나만 모아서 보여줌
-    const matched = new Set(
-      mapping.usp_mapping.filter(m => m.user_usp_id !== null).map(m => m.user_usp_id as number),
-    )
+    // override 반영한 effective 매핑 기준
+    const matched = new Set<number>()
+    mapping.usp_mapping.forEach(m => {
+      const eff = effectiveUserUspId(m)
+      if (eff) matched.add(eff)
+    })
     const collected: typeof allPersonas = []
     mapping.product.usps.forEach((u: any, i: number) => {
       if (!matched.has(i + 1)) return
@@ -117,6 +141,9 @@ export default function ScriptGenWizard() {
               name: persona.name, scenario: persona.scenario, signals: persona.signals,
               destinations: persona.destinations || [], tone_hint: persona.tone_hint,
             } : null,
+            usp_mapping_override: Object.keys(overrides).length
+              ? Object.fromEntries(Object.entries(overrides).map(([k, v]) => [k, v]))
+              : undefined,
           }),
         })
         if (!r.ok) throw new Error(`${r.status} ${await r.text()}`)
@@ -165,6 +192,14 @@ export default function ScriptGenWizard() {
           mapping={mapping}
           loading={mappingLoading}
           error={mappingError}
+          overrides={overrides}
+          unusedUsps={effectiveUnusedUsps}
+          onOverride={(refId, userId) => {
+            const next = { ...overrides }
+            if (userId === null) delete next[refId]
+            else next[refId] = userId
+            setOverrides(next)
+          }}
           onBack={() => setStep('product')}
           onNext={goToPersona}
         />
@@ -305,11 +340,14 @@ function StepProduct({
 }
 
 function StepMapping({
-  mapping, loading, error, onBack, onNext,
+  mapping, loading, error, overrides, unusedUsps, onOverride, onBack, onNext,
 }: {
   mapping: MappingPreview | null
   loading: boolean
   error: string
+  overrides: Record<number, number>
+  unusedUsps: { user_usp_id: number; user_usp_name: string }[]
+  onOverride: (refId: number, userId: number | null) => void
   onBack: () => void
   onNext: () => void
 }) {
@@ -335,15 +373,25 @@ function StepMapping({
       <div style={cardSt}>
         <div style={labelSt}>2단계 — 매핑 리뷰</div>
         <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>
-          참고 릴스의 USP가 우리 제품 USP에 어떻게 매핑됐는지 확인하세요.
+          자동 매칭이 안 된 ref USP는 아래 드롭다운으로 우리 USP를 직접 골라 채울 수 있습니다.
         </div>
         <div style={{ display: 'grid', gap: 0 }}>
           {mapping.usp_mapping.map((m) => {
-            const matched = m.user_usp_id !== null
+            const overrideId = overrides[m.ref_usp_id]
+            const isOverridden = overrideId !== undefined
+            const effectiveId = isOverridden ? overrideId : m.user_usp_id
+            const effectiveName = isOverridden
+              ? mapping.product.usps[overrideId - 1]?.usp || ''
+              : m.user_usp_name
+            const matched = effectiveId !== null
+            // 이 row에서 고를 수 있는 후보 = 현재 unused + 본인이 이미 override한 것
+            const dropdownOptions = isOverridden
+              ? [{ user_usp_id: overrideId, user_usp_name: effectiveName || '' }, ...unusedUsps]
+              : unusedUsps
             return (
               <div key={m.ref_usp_id} style={{
                 display: 'grid',
-                gridTemplateColumns: 'minmax(200px, 1fr) 16px minmax(200px, 1fr) 1.5fr',
+                gridTemplateColumns: 'minmax(200px, 1fr) 16px minmax(220px, 1fr) 1.4fr',
                 gap: 12, alignItems: 'start', fontSize: 13,
                 padding: '12px 0', borderTop: '1px solid var(--border-subtle)',
               }}>
@@ -362,16 +410,33 @@ function StepMapping({
                 </div>
                 <div style={{ color: 'var(--text-muted)', paddingTop: 2 }}>→</div>
                 <div>
-                  {matched ? (
+                  {m.user_usp_id !== null ? (
                     <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
                       USP{m.user_usp_id} · {m.user_usp_name}
                     </div>
                   ) : (
                     <div>
-                      <div style={{ fontWeight: 600, color: 'var(--warning)' }}>매칭 없음</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-                        우리 제품에 해당 mechanism이 부족
+                      <div style={{ fontWeight: 600, color: matched ? 'var(--text-primary)' : 'var(--warning)', marginBottom: 6 }}>
+                        {matched ? `USP${effectiveId} · ${effectiveName} (수동)` : '매칭 없음 — 직접 선택 가능'}
                       </div>
+                      <select
+                        value={overrideId || ''}
+                        onChange={(e) => {
+                          const v = e.target.value
+                          onOverride(m.ref_usp_id, v ? Number(v) : null)
+                        }}
+                        style={{
+                          width: '100%', padding: '6px 10px', fontSize: 12,
+                          border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                          background: 'var(--bg-base)', color: 'var(--text-primary)',
+                        }}>
+                        <option value="">— 미매칭 (페르소나로 풀기) —</option>
+                        {dropdownOptions.map(u => (
+                          <option key={u.user_usp_id} value={u.user_usp_id}>
+                            USP{u.user_usp_id} · {u.user_usp_name}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                   )}
                 </div>
@@ -384,30 +449,14 @@ function StepMapping({
         </div>
       </div>
 
-      {mapping.unmatched_ref_usps.length > 0 && (
-        <div style={cardSt}>
-          <div style={labelSt}>부족한 USP — 우리 제품에 없는 mechanism</div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
-            아래 ref USP들은 매칭이 안 됐고, 해당 chunk 자리는 페르소나로 보강하거나 빠질 수 있습니다.
-          </div>
-          <ul style={{ margin: 0, paddingLeft: 18 }}>
-            {mapping.unmatched_ref_usps.map(u => (
-              <li key={u.ref_usp_id} style={{ fontSize: 13, marginBottom: 4 }}>
-                <b>ref USP{u.ref_usp_id}</b> — {u.ref_description}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {mapping.unused_user_usps.length > 0 && (
+      {unusedUsps.length > 0 && (
         <div style={cardSt}>
           <div style={labelSt}>사용 안 된 우리 USP</div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
-            이번 대본에서 다음 USP는 등장하지 않습니다 (참고 릴스에 해당 angle이 없음).
+            이번 대본에서 다음 USP는 등장하지 않습니다. 위에서 미매칭 자리에 직접 매핑할 수 있어요.
           </div>
           <ul style={{ margin: 0, paddingLeft: 18 }}>
-            {mapping.unused_user_usps.map(u => (
+            {unusedUsps.map(u => (
               <li key={u.user_usp_id} style={{ fontSize: 13, marginBottom: 4 }}>
                 <b>USP{u.user_usp_id}</b> — {u.user_usp_name}
               </li>

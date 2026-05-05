@@ -74,6 +74,7 @@ class ScriptGenRequest(BaseModel):
     reference_shortcodes: list[str]
     refine: bool = True  # False = 1차만 (draft), True = 1차+2차
     target_persona: dict | None = None  # { name, scenario, signals, tone_hint }
+    usp_mapping_override: dict[str, int] | None = None  # ref_usp_id(str)→user_usp_id (wizard 수동 매핑)
 
 
 @app.post("/api/script/generate")
@@ -93,6 +94,10 @@ def gen_script(req: ScriptGenRequest):
     )
     try:
         script_gen.reset_cost_meter()
+        # str→int 변환 (JSON dict key는 string)
+        override = None
+        if req.usp_mapping_override:
+            override = {int(k): v for k, v in req.usp_mapping_override.items() if v is not None}
         result = script_gen.generate(
             product_name=req.product_name,
             pain=req.pain,
@@ -101,6 +106,7 @@ def gen_script(req: ScriptGenRequest):
             reference_shortcodes=req.reference_shortcodes,
             refine=req.refine,
             target_persona=req.target_persona,
+            usp_mapping_override=override,
         )
         n_sentences = len(result.get("sentences") or [])
         cost = script_gen.summarize_cost()
@@ -1627,6 +1633,8 @@ _BENCH_CACHE_TTL = 120  # seconds
 _bench_mem: dict = {"data": None, "ts": 0.0}
 _bench_lock = threading.Lock()
 _bench_refreshing = False
+_phrases_cache: dict[str, tuple[float, dict]] = {}
+_PHRASES_CACHE_TTL = 60
 
 
 def _refresh_bench():
@@ -1853,6 +1861,13 @@ def get_phrases(
     """문구별 보기 — bench와 동일 필터 + part(hook_intro|cta)별 텍스트."""
     if part not in ("hook_intro", "cta"):
         raise HTTPException(400, "part must be hook_intro or cta")
+    cache_key = "|".join(map(str, [
+        part, page, limit, sort, q, plays_min, plays_max, er_min, er_max,
+        date_from, date_to, ad_suitability, usp_count, body_structure, hook_type, cta_type,
+    ]))
+    cached = _cache_get(_phrases_cache, cache_key, _PHRASES_CACHE_TTL)
+    if cached is not None:
+        return cached
 
     cache = _get_bench()
     if not cache:
@@ -1923,12 +1938,13 @@ def get_phrases(
                 "cta_seconds": cta.get("seconds") or "",
             })
 
-    return {
+    result = {
         "items": out,
         "total": total_pre,
         "page": page,
         "has_more": start + limit < total_pre,
     }
+    return _cache_set(_phrases_cache, cache_key, result)
 
 
 @app.get("/api/ads")

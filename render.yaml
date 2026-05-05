@@ -1,0 +1,17 @@
+services:
+  - type: worker
+    name: fb-ads-worker
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements-worker.txt && playwright install chromium --with-deps
+    startCommand: python fb_ads_worker.py --interval 30
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: FB_ADS_PROXY
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.12"

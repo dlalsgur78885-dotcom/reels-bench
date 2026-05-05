@@ -1,0 +1,49 @@
+.env
+.env.local
+__pycache__/
+*.pyc
+*.mp4
+*.mp3
+새 폴더/
+.claude/
+.agents/
+skills-lock.json
+design_review/
+녹음*
+화면*
+test_frame*
+ss_*
+screenshot_*
+debug_dom*
+scrape_comments*
+
+# Large files / build artifacts
+node_modules/
+web/node_modules/
+web/dist/
+thumbs/
+frames/
+extra_cache/
+*.tar.bz2
+sherpa-onnx-*/
+*.html
+!web/**/*.html
+_debug_*.txt
+SESSION_STATUS.md
+
+# Analysis cache/results
+analysis_*_cache.json
+batch_frames_result.json
+compare_*_result.json
+compare_quality_data.json
+config.json
+
+# Docs / non-essential
+docs/
+
+.vercel
+
+# Render/Worker artifacts
+.browser_profile/
+fb_storage_state.json
+fb_ads_output/

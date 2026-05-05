@@ -59,27 +59,36 @@ def update_advertiser(adv_id: int, ad_count: int, status: str = "ok"):
 def insert_ad_to_reels(ad: dict, page_name: str) -> bool:
     ad_id = ad.get("id") or ""
     if not ad_id:
+        print(f"[insert] empty ad_id, skip", flush=True)
         return False
     shortcode = f"fb_{ad_id}"
-    requests.post(
+    # 추출된 광고주명 우선 사용
+    actual_author = (ad.get("page_name") or "").strip() or page_name
+    r1 = requests.post(
         f"{SUPA}/rest/v1/reels?on_conflict=shortcode",
         headers={**H, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"},
         json={"shortcode": shortcode, "url": ad.get("snapshot_url") or "", "source": "fb_ad"},
         timeout=15,
     )
+    if r1.status_code not in (200, 201, 204):
+        print(f"[insert] reels POST failed sc={r1.status_code} {r1.text[:150]}", flush=True)
+        return False
     meta = {
         "shortcode": shortcode,
         "video_url": ad.get("video_url") or "",
         "thumbnail_url": ad.get("video_thumbnail") or ad.get("banner_url") or "",
         "caption_text": ad.get("caption") or "",
-        "author_username": page_name,
+        "author_username": actual_author,
     }
     meta = {k: v for k, v in meta.items() if v not in (None, "") or k == "shortcode"}
-    requests.post(
+    r2 = requests.post(
         f"{SUPA}/rest/v1/reels_metadata?on_conflict=shortcode",
         headers={**H, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"},
         json=meta, timeout=15,
     )
+    if r2.status_code not in (200, 201, 204):
+        print(f"[insert] meta POST failed sc={r2.status_code} {r2.text[:150]}", flush=True)
+        return False
     return True
 
 

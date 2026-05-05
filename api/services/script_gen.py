@@ -259,7 +259,8 @@ def analyze_ref_desire_arc(ref_usps: list[dict], section_chunks: list[dict]) -> 
 
 JSON만 출력. 설명 X."""
     try:
-        result = call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=1500)
+        # Flash 사용 — desire 추출은 분류 작업이라 속도 우선
+        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=1500)
         if isinstance(result, list) and result:
             result = result[0]
         cands = (result or {}).get("candidates") or []
@@ -3559,40 +3560,6 @@ Planner가 각 문장에 **skeleton + signature + usp_id**를 줍니다.
 → direction은 **성우가 어떻게 읽을지 한 줄 cue**. 광고 전략 지시문 절대 금지.
 
 정확히 {len(sentences_spec)}개. JSON만.
-"""
-
-
-def _build_critic_prompt(draft: dict, plan: dict) -> str:
-    """critic prompt — 룰 위반 검출."""
-    sents = draft.get("sentences") or []
-    sent_lines = []
-    for i, s in enumerate(sents, 1):
-        sent_lines.append(f"  [{i}] {s.get('text','')}")
-
-    return f"""당신은 광고 카피 검토관입니다. 아래 초안에서 **명확한 위반**만 검출하세요.
-
-## 초안
-{chr(10).join(sent_lines)}
-
-## 검출할 위반
-1. **마케터 어휘**: "정말 좋아요/최고예요/딱이죠/찾거든요/어때요" 등
-2. **추상 명사구**: "활동성/편의성/효율성/안정성/쾌적함/만족도/신축성" 등 (친구 카톡에 안 씀)
-3. **격식 종결**: "~중요하죠/~필수죠/~합니다/~입니다/~도와줘요/~추구합니다" (친구 톤 아님)
-4. **가짜 인과 어미**: 무관한 두 USP를 "라서/하면"으로 묶음
-5. **토픽 점프**: 인접 문장이 연결 안 되고 다른 토픽으로 점프
-6. **같은 종결 반복**: ~좋아요 / ~좋아요 같이 인접 종결 동일
-7. **참고 단어 표절**: 참고에만 있을 법한 고유 단어를 그대로 차용
-8. **역할 위반**: spec 자리에 평가어, benefit 자리에 단순 묘사 등
-9. **단어 확장**: 참고 1단어를 우리 문장에서 명사구로 확장 (예: "편한"→"편안한 활동성")
-
-## 출력 JSON
-{{
-  "violations": [
-    {{"sentence_index": <1-based>, "issue": "...", "suggestion": "..."}}
-  ],
-  "severity": "low/medium/high"
-}}
-위반 없으면 violations: []. JSON만.
 """
 
 

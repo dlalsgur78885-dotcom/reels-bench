@@ -139,12 +139,13 @@ def status():
 
 
 @app.api_route("/trigger", methods=["GET", "POST"])
-async def trigger(background_tasks: BackgroundTasks, key: str = "", x_trigger_key: str | None = Header(None)):
+async def trigger(key: str = "", x_trigger_key: str | None = Header(None)):
     if TRIGGER_SECRET:
         provided = key or x_trigger_key
         if provided != TRIGGER_SECRET:
             raise HTTPException(401, "invalid trigger key")
-    background_tasks.add_task(asyncio.create_task, process_pending(3))
+    # asyncio.create_task로 백그라운드 실행 (이벤트 루프 안에서 OK)
+    asyncio.create_task(process_pending(3))
     return {"ok": True, "queued": True, "ts": now()}
 
 

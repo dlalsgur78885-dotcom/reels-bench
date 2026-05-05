@@ -574,10 +574,10 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
     if not user_usps:
         raise HTTPException(400, "product에 USP 없음")
 
-    # 3. pre-planner 호출
+    # 3. pre-planner 호출 (truncation 방지 — max_tokens 넉넉히)
     prompt = script_gen._build_pre_planner_prompt(user_usps, ref_usps, section_chunks)
     try:
-        result = script_gen.call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=2048)
+        result = script_gen.call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=4096)
         if isinstance(result, list) and result:
             result = result[0]
     except Exception as e:

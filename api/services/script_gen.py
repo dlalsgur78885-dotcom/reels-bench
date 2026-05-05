@@ -3541,13 +3541,12 @@ ref USP는 이미 분석되어 있고, 각 chunk가 어느 ref USP를 다루는�
 ## 출력 JSON
 {{
   "usp_mapping": [
-    {{"ref_usp_id": 1, "user_usp_id": 1, "reason": "둘 다 핵심 활용도 강조"}},
-    {{"ref_usp_id": 2, "user_usp_id": 2, "reason": "둘 다 노출 방지 디자인"}},
-    {{"ref_usp_id": 3, "user_usp_id": null, "reason": "우리 USP에 셔링·체형 보정 없음"}}
+    {{"ref_usp_id": 1, "user_usp_id": 1, "reason": "..."}},
+    ...
   ]
 }}
 
-JSON만. 모든 ref_usp_id 포함 (총 {len(ref_usps or [])}개). 설명 X."""
+⚠️ reason은 **40자 이내** 한 줄. 모든 ref_usp_id 포함 (총 {len(ref_usps or [])}개). JSON만, 설명 X."""
 
 
 def _build_section_planner_prompt(section_name: str, ref_subset: list[dict], usps: list[dict], product_name: str, target_persona: dict | None, pain: str, desire: str) -> str:

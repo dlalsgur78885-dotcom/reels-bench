@@ -389,12 +389,6 @@ export default function ScriptGenWizard() {
           overrides={overrides}
           chunkOverrides={chunkOverrides}
           unusedUsps={effectiveUnusedUsps}
-          onOverride={(refId, userId) => {
-            const next = { ...overrides }
-            if (userId === null) delete next[refId]
-            else next[refId] = userId
-            setOverrides(next)
-          }}
           onChunkOverride={(section, userId) => {
             const next = { ...chunkOverrides }
             if (userId === null) delete next[section]
@@ -563,7 +557,7 @@ function StepProduct({
 }
 
 function StepMapping({
-  mapping, loading, error, overrides, chunkOverrides, unusedUsps, onOverride, onChunkOverride,
+  mapping, loading, error, overrides, chunkOverrides, unusedUsps, onChunkOverride,
   getEffectiveChunkUspId, onCreateUsp, onBack, onNext,
 }: {
   mapping: MappingPreview | null
@@ -572,7 +566,6 @@ function StepMapping({
   overrides: Record<number, number>
   chunkOverrides: Record<string, number>
   unusedUsps: { user_usp_id: number; user_usp_name: string }[]
-  onOverride: (refId: number, userId: number | null) => void
   onChunkOverride: (section: string, userId: number | null) => void
   getEffectiveChunkUspId: (chunk: MappingPreview['section_chunks'][number]) => number | null
   onCreateUsp: (refUspId: number, name: string, description: string, reviews: string[]) => Promise<{ ok: boolean; error?: string }>

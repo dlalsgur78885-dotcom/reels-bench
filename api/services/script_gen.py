@@ -3937,48 +3937,20 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
             logger.warning("[multistep-B] analyze_section_chunks 실패: %s", e)
             section_chunks = []
     # chunk_meta_override 적용 (사용자 수정 topic/role/section)
-    section_renames: dict[str, str] = {}  # 옛 section → 새 section
+    # section 변경은 chunk_for_idx 빌드 후에 적용 (sub-chunk 라벨 기준 매칭)
+    chunk_section_renames: dict[int, tuple[str, str]] = {}  # chunk_index → (old, new)
     if chunk_meta_override and section_chunks:
-        for c in section_chunks:
+        for ci, c in enumerate(section_chunks):
             sec = c.get("section")
             if sec and sec in chunk_meta_override:
                 m = chunk_meta_override[sec] or {}
                 if m.get("topic"): c["topic"] = m["topic"]
                 if m.get("role"): c["role"] = m["role"]
-                # section rename — chunk.section + 그 chunk의 sentence들의 _section 모두 갱신
                 new_sec = (m.get("section") or "").strip().lower()
                 if new_sec and new_sec != sec:
-                    section_renames[sec] = new_sec
-                    c["section"] = new_sec
+                    chunk_section_renames[ci] = (sec, new_sec)
                 logger.info("[chunk-meta-override] %s → topic=%s role=%s section=%s",
                             sec, m.get("topic"), m.get("role"), new_sec or '(unchanged)')
-
-    # section_renames가 있으면 all_ref_sents의 _section + section_idx_ranges 재구성
-    if section_renames:
-        # base_label (body_1a → body_1) 매핑까지 고려
-        for s in all_ref_sents:
-            old = (s.get("_section") or "").strip()
-            # chunk 내 sentence면 section_renames 가능
-            for old_sec, new_sec in section_renames.items():
-                # chunk.section이 base_label이거나 그 sub일 경우 모두 포함
-                if old == old_sec or old.startswith(old_sec.rstrip("abcdefghij") + "_") and old_sec.rstrip("abcdefghij") == old.rstrip("abcdefghij"):
-                    base_new = new_sec.rstrip("abcdefghij") if not new_sec.endswith(tuple("abcdefghij")) else new_sec
-                    s["_section"] = new_sec
-                    break
-        # section_idx_ranges 재구성 — sentence._section 기준
-        section_idx_ranges = []
-        cur_sec = None
-        cur_start = 0
-        for i, s in enumerate(all_ref_sents):
-            sec = s.get("_section") or ""
-            if sec != cur_sec:
-                if cur_sec is not None:
-                    section_idx_ranges.append((cur_sec, cur_start, i))
-                cur_sec = sec
-                cur_start = i
-        if cur_sec is not None:
-            section_idx_ranges.append((cur_sec, cur_start, len(all_ref_sents)))
-        logger.info("[section-rename] applied: %s, new ranges: %s", section_renames, [(n, s, e) for n, s, e in section_idx_ranges])
     logger.info("[multistep-B] ref USPs: %d, chunks: %d",
                 len(ref_usps_layout or []), len(section_chunks or []))
 
@@ -3994,6 +3966,29 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                 if abs(float(s.get("start", -2)) - cs_start) < 0.05 and (s.get("text") or "").strip() == cs_text:
                     chunk_for_idx[i] = ci
                     break
+
+    # chunk section rename 적용 — chunk_for_idx로 sentence._section 갱신 + section_idx_ranges 재구성
+    if chunk_section_renames:
+        for ci, (old_sec, new_sec) in chunk_section_renames.items():
+            section_chunks[ci]["section"] = new_sec
+            for idx, mapped_ci in chunk_for_idx.items():
+                if mapped_ci == ci:
+                    all_ref_sents[idx]["_section"] = new_sec
+        # section_idx_ranges 재구성 — sentence._section 기준
+        section_idx_ranges = []
+        cur_sec = None
+        cur_start = 0
+        for i, s in enumerate(all_ref_sents):
+            sec = (s.get("_section") or "").strip()
+            if sec != cur_sec:
+                if cur_sec is not None:
+                    section_idx_ranges.append((cur_sec, cur_start, i))
+                cur_sec = sec
+                cur_start = i
+        if cur_sec is not None:
+            section_idx_ranges.append((cur_sec, cur_start, len(all_ref_sents)))
+        logger.info("[section-rename] applied: %s → ranges: %s",
+                    chunk_section_renames, [(n, s, e) for n, s, e in section_idx_ranges])
 
     # Pre-planner 호출 — ref_usp → user_usp 매핑
     usp_mapping: dict[int, int | None] = {}

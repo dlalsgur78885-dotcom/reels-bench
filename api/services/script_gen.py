@@ -86,6 +86,87 @@ def _parse_section_seconds(s: str | None) -> tuple[float, float] | None:
     return None
 
 
+def split_segment_by_sentences(seg: dict) -> list[dict]:
+    """단일 segment를 문장 경계(.!?)로 쪼개고 시간을 글자수 비율로 분배."""
+    import re as _re
+    text = (seg.get("text") or "").strip()
+    if not text:
+        return [seg]
+    start = float(seg.get("start", 0) or 0)
+    end = float(seg.get("end", start) or start)
+    parts = _re.split(r"(?<=[.!?])\s+", text)
+    parts = [p.strip() for p in parts if p and p.strip()]
+    if len(parts) <= 1:
+        return [seg]
+    total_chars = sum(len(p) for p in parts) or 1
+    span = max(end - start, 0.1)
+    out = []
+    cur = start
+    for i, p in enumerate(parts):
+        piece_end = end if i == len(parts) - 1 else cur + span * len(p) / total_chars
+        new_seg = dict(seg)
+        new_seg["text"] = p
+        new_seg["start"] = round(cur, 1)
+        new_seg["end"] = round(piece_end, 1)
+        new_seg.pop("section", None)
+        out.append(new_seg)
+        cur = piece_end
+    return out
+
+
+def resegment_to_sentences(segments: list[dict]) -> list[dict]:
+    """모든 segment를 문장 단위로 재분할. 이미 단일 문장이면 그대로."""
+    out = []
+    for s in segments:
+        out.extend(split_segment_by_sentences(s))
+    return out
+
+
+def get_canonical_tts(ref: dict) -> list[dict]:
+    """참고 릴스의 sentence-level 분절을 단일 진입점으로 반환.
+
+    `pro_audio.tts_script`(Gemini 3 Pro 결과)와 `sentences`(Whisper + resegment) 중
+    더 세밀한 쪽을 정본으로 채택. tts_script의 direction/delivery 메타데이터는
+    시간 overlap으로 매칭해 보존.
+
+    호출 후 ref["tts_script"]도 정본으로 갱신 (다른 함수에서 재진입 시 일관성).
+    """
+    tts = ref.get("tts_script") or []
+    sentences = ref.get("sentences") or []
+    if len(sentences) <= len(tts):
+        return tts
+
+    def _to_sec(v):
+        try:
+            return _mmss_to_sec(v)
+        except Exception:
+            return 0.0
+
+    # tts_script의 direction/delivery를 시간 매칭으로 가져오기
+    tts_by_start = [(_to_sec(t.get("start", 0)), _to_sec(t.get("end", 0)), t) for t in tts]
+    canonical: list[dict] = []
+    for s in sentences:
+        st = float(s.get("start", 0) or 0)
+        en = float(s.get("end", st) or st)
+        # overlap이 가장 큰 tts 항목 찾기
+        best_overlap = 0.0
+        best_tts: dict = {}
+        for ts, te, t in tts_by_start:
+            ov = max(0, min(en, te) - max(st, ts))
+            if ov > best_overlap:
+                best_overlap = ov
+                best_tts = t
+        canonical.append({
+            "start": st,
+            "end": en,
+            "text": s.get("text", ""),
+            "direction": best_tts.get("direction", ""),
+            "delivery": best_tts.get("delivery", ""),
+        })
+    ref["tts_script"] = canonical
+    return canonical
+
+
 def analyze_reference_proportions(ref: dict) -> dict:
     """참고 릴스의 섹션 비율 + body의 분절(tip) 단위 추출.
 
@@ -101,17 +182,8 @@ def analyze_reference_proportions(ref: dict) -> dict:
     cta = _parse_section_seconds((s.get("cta") or {}).get("seconds"))
 
     # body 시간 범위 정정 — structure가 잘못된 경우(예: '8-36초'이지만 영상은 28초) tts/cta 기준으로 보정
-    tts = ref.get("tts_script") or []
-    # 더 세밀한 분절 우선 — sentences가 tts_script보다 길면 sentences 사용
-    # (resegment로 sentences가 문장 단위로 쪼개진 경우 CTA 탐지·body_slot 계산 정확도 ↑)
-    sentences_raw = ref.get("sentences") or []
-    if len(sentences_raw) > len(tts):
-        tts = [
-            {"start": s.get("start", 0), "end": s.get("end", 0),
-             "text": s.get("text", ""), "direction": ""}
-            for s in sentences_raw
-        ]
-        ref["tts_script"] = tts  # 다른 함수에서도 일관 사용하도록 갱신
+    # canonical helper로 sentences/tts_script 중 더 세밀한 쪽을 단일 진입점에서 받음
+    tts = get_canonical_tts(ref)
     last_tts_end = max((_mmss_to_sec(t.get("end", 0)) for t in tts), default=0)
     # CTA 시작점 탐지 — structure의 cta 시간이 영상 길이 초과할 수 있어 tts에서 키워드 기반 검출
     cta_keywords = ["저장", "써먹", "클릭", "댓글", "공유", "팔로우", "링크", "구독", "DM", "가입", "다운로드", "프로필"]
@@ -155,7 +227,7 @@ def analyze_reference_proportions(ref: dict) -> dict:
     if body_sentences and tip_count > 0:
         # 전환 키워드로 경계 탐지
         TRANS = ["마지막으로", "그리고", "또한", "다음으로", "게다가", "하지만", "또"]
-        full_tts = ref.get("tts_script") or []
+        full_tts = get_canonical_tts(ref)
         boundaries = [0]
         for idx, (ts, te) in enumerate(body_sentences):
             if idx == 0: continue
@@ -532,7 +604,7 @@ def _format_reference(ref: dict, idx: int) -> str:
     # 문장 타임라인 + 감정/delivery
     lines.append("\n[문장 타임라인 — direction + 감정 + delivery]")
     tl = ref.get("emotion_timeline") or []
-    tts = ref.get("tts_script") or []
+    tts = get_canonical_tts(ref)
     for sent in (ref.get("sentences") or []):
         st = sent.get("start") or 0
         en = sent.get("end") or 0
@@ -626,7 +698,7 @@ def _classify_ending(text: str) -> dict:
 def _extract_slot_sentences(ref: dict, slot: tuple) -> list[dict]:
     """body 분절 시간대에 속하는 참고 문장들의 (시간, 감정, direction, 역할, 끝맺음) 반환."""
     s_start, s_end = slot[0], slot[1]
-    tts = ref.get("tts_script") or []
+    tts = get_canonical_tts(ref)
     tl = ref.get("emotion_timeline") or []
     sents_in_slot = []
     for t in tts:

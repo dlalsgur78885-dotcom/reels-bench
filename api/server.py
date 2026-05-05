@@ -217,47 +217,6 @@ def update_usp_personas(pid: int, req: UspPersonasUpdateRequest, request: Reques
     return {"message": "갱신 완료", "personas": req.personas}
 
 
-def _split_segment_by_sentences(seg: dict) -> list[dict]:
-    """단일 segment를 문장 경계(.!?)로 쪼개고 시간을 글자수 비율로 분배."""
-    text = (seg.get("text") or "").strip()
-    if not text:
-        return [seg]
-    start = float(seg.get("start", 0) or 0)
-    end = float(seg.get("end", start) or start)
-    # 문장 경계 패턴: .!? 다음 공백/끝
-    parts = re.split(r"(?<=[.!?])\s+", text)
-    parts = [p.strip() for p in parts if p and p.strip()]
-    if len(parts) <= 1:
-        return [seg]
-    total_chars = sum(len(p) for p in parts) or 1
-    span = max(end - start, 0.1)
-    out = []
-    cur = start
-    for i, p in enumerate(parts):
-        # 마지막 조각은 정확히 end로
-        if i == len(parts) - 1:
-            piece_end = end
-        else:
-            piece_end = cur + span * len(p) / total_chars
-        new_seg = dict(seg)
-        new_seg["text"] = p
-        new_seg["start"] = round(cur, 1)
-        new_seg["end"] = round(piece_end, 1)
-        # section은 다시 매겨질 거라 비움
-        new_seg.pop("section", None)
-        out.append(new_seg)
-        cur = piece_end
-    return out
-
-
-def _resegment_to_sentences(segments: list[dict]) -> list[dict]:
-    """모든 segment를 문장 단위로 재분할. 이미 단일 문장이면 그대로."""
-    out = []
-    for s in segments:
-        out.extend(_split_segment_by_sentences(s))
-    return out
-
-
 @app.post("/api/script/classify-sentences/{shortcode}")
 def classify_sentences_for_reel(
     shortcode: str, request: Request,
@@ -280,9 +239,9 @@ def classify_sentences_for_reel(
     transcript = trans[0].get("transcript", "")
     if not sentences:
         raise HTTPException(400, "sentences 없음")
-    # 1.5. 옵션: 다중 문장 segment를 문장 단위로 분할
+    # 1.5. 옵션: 다중 문장 segment를 문장 단위로 분할 (script_gen 모듈에서 정본 helper 제공)
     if resegment:
-        sentences = _resegment_to_sentences(sentences)
+        sentences = script_gen.resegment_to_sentences(sentences)
     struct = _r.get(
         f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=hook,intro,body,cta&limit=1",
         headers=H, timeout=10,
@@ -1930,6 +1889,161 @@ def _normalize_instagram_username(value: str) -> str:
 @app.get("/api/channels")
 def get_channels():
     return supabase.sb_get("monitored_channels", "select=*&order=created_at.desc&limit=500")
+
+
+@app.get("/api/fb/advertisers")
+def get_fb_advertisers(
+    sort: str = Query("ad_count"),
+    q: str = Query(""),
+):
+    """페북 라이브러리 광고주 — fb_advertisers 테이블 + 광고 카운트 조인."""
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+    # 등록된 광고주
+    advs = _r.get(
+        f"{SUPA}/rest/v1/fb_advertisers?select=*&limit=2000",
+        headers=H, timeout=15,
+    ).json() or []
+    # 광고 메타 (author_username 기준 광고 수)
+    rows = _r.get(
+        f"{SUPA}/rest/v1/reels_metadata?shortcode=like.fb_*"
+        f"&select=shortcode,author_username,caption_text&limit=5000",
+        headers=H, timeout=15,
+    ).json() or []
+    from collections import defaultdict
+    counts: dict[str, dict] = defaultdict(lambda: {"ad_count": 0, "sample_caption": ""})
+    for m in rows:
+        author = (m.get("author_username") or "").strip()
+        if not author:
+            continue
+        c = counts[author]
+        c["ad_count"] += 1
+        if not c["sample_caption"] and m.get("caption_text"):
+            c["sample_caption"] = (m["caption_text"] or "")[:120]
+
+    # 등록된 광고주 + 자동 감지 (광고는 있지만 fb_advertisers 미등록)
+    registered_names = {a["page_name"] for a in advs}
+    items = []
+    for a in advs:
+        pn = a["page_name"]
+        c = counts.get(pn) or {}
+        items.append({
+            "id": a.get("id"),
+            "page_name": pn,
+            "page_url": a.get("page_url"),
+            "logo_url": a.get("logo_url"),
+            "description": a.get("description"),
+            "is_active": a.get("is_active"),
+            "ad_count": c.get("ad_count", 0),
+            "sample_caption": c.get("sample_caption", ""),
+            "registered": True,
+        })
+    for author, c in counts.items():
+        if author in registered_names:
+            continue
+        items.append({
+            "id": None,
+            "page_name": author,
+            "page_url": None,
+            "logo_url": None,
+            "description": None,
+            "is_active": None,
+            "ad_count": c["ad_count"],
+            "sample_caption": c["sample_caption"],
+            "registered": False,
+        })
+
+    if q:
+        ql = q.lower()
+        items = [it for it in items if ql in (it.get("page_name") or "").lower()]
+    if sort == "ad_count":
+        items.sort(key=lambda i: i["ad_count"], reverse=True)
+    elif sort == "name":
+        items.sort(key=lambda i: i["page_name"].lower())
+    return {"items": items, "total": len(items)}
+
+
+class FbAdvertiserAddRequest(BaseModel):
+    page_url: str
+    page_name: str | None = None
+    logo_url: str | None = None
+    description: str | None = None
+
+
+def _fetch_fb_page_meta(page_url: str) -> dict:
+    """FB 페이지 URL → og:title + og:image 추출."""
+    import re as _re
+    out: dict = {"page_name": None, "logo_url": None}
+    try:
+        import requests as _req
+        r = _req.get(
+            page_url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=15, allow_redirects=True,
+        )
+        if r.status_code != 200:
+            return out
+        html = r.text
+        m_title = _re.search(r'<meta property="og:title" content="([^"]+)"', html)
+        m_image = _re.search(r'<meta property="og:image" content="([^"]+)"', html)
+        if m_title:
+            out["page_name"] = m_title.group(1).strip()
+        if m_image:
+            out["logo_url"] = m_image.group(1).replace("&amp;", "&").strip()
+    except Exception as e:
+        logger.warning("fetch_fb_page_meta failed: %s", e)
+    return out
+
+
+@app.post("/api/fb/advertisers")
+def add_fb_advertiser(req: FbAdvertiserAddRequest, request: Request):
+    auth_svc.require_user(request)
+    page_url = (req.page_url or "").strip()
+    if not page_url.startswith(("http://", "https://")):
+        raise HTTPException(400, "유효한 페이지 URL이 필요합니다 (https://www.facebook.com/...)")
+    # 자동으로 og:title + og:image 추출 (사용자가 수동 입력 안 했을 때만)
+    page_name = (req.page_name or "").strip()
+    logo_url = (req.logo_url or "").strip()
+    if not page_name or not logo_url:
+        meta = _fetch_fb_page_meta(page_url)
+        if not page_name:
+            page_name = meta.get("page_name") or ""
+        if not logo_url:
+            logo_url = meta.get("logo_url") or ""
+    if not page_name:
+        # URL slug fallback
+        from urllib.parse import urlparse
+        slug = urlparse(page_url).path.strip("/").split("/")[0]
+        page_name = slug or page_url
+    payload = {
+        "page_name": page_name,
+        "page_url": page_url,
+        "logo_url": logo_url or None,
+        "description": (req.description or "").strip() or None,
+    }
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}", "Content-Type": "application/json", "Prefer": "return=representation"}
+    _r = supabase.get_session()
+    r = _r.post(f"{SUPA}/rest/v1/fb_advertisers", headers=H, json=payload, timeout=15)
+    if r.status_code in (201, 200):
+        return r.json()[0] if r.json() else payload
+    raise HTTPException(r.status_code, r.text[:300])
+
+
+@app.delete("/api/fb/advertisers/{adv_id}")
+def delete_fb_advertiser(adv_id: int, request: Request):
+    auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}", "Prefer": "return=minimal"}
+    _r = supabase.get_session()
+    r = _r.delete(f"{SUPA}/rest/v1/fb_advertisers?id=eq.{adv_id}", headers=H, timeout=15)
+    if r.status_code in (200, 204):
+        return {"ok": True}
+    raise HTTPException(r.status_code, r.text[:300])
 
 
 @app.get("/api/youtubers")

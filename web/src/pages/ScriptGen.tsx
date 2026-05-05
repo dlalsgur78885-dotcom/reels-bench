@@ -4,7 +4,7 @@ import { api, BASE } from '../api'
 import type { MyProduct, PersonaCandidate, ReferenceInfo } from '../api'
 import { getAccessToken } from '../supabase'
 
-interface USPItem { usp: string; reviews: string[] }
+interface USPItem { usp: string; description?: string; reviews: string[] }
 
 interface RefSuggest { shortcode: string; author: string; play_count: number; thumbnail_url: string }
 
@@ -32,12 +32,15 @@ const textareaSt: React.CSSProperties = { ...inputSt, fontFamily: 'inherit', res
 
 export default function ScriptGen() {
   const [productName, setProductName] = useState('')
-  const [pain, setPain] = useState('')
-  const [desire, setDesire] = useState('')
-  const [usps, setUsps] = useState<USPItem[]>([{ usp: '', reviews: [''] }])
-  // 메인 USP (라디오) + 서브 USP (체크박스)
+  // pain/desire UI 제거 — 페르소나에서 자동 추론. API 호환을 위해 빈 문자열만 유지.
+  const pain = ''
+  const desire = ''
+  const [usps, setUsps] = useState<USPItem[]>([{ usp: '', description: '', reviews: [''] }])
+  // 메인 USP (라디오) + 서브 USP (체크박스 + 순서)
   const [mainUspIndex, setMainUspIndex] = useState<number | null>(null)
-  const [subUspIndices, setSubUspIndices] = useState<Set<number>>(new Set())
+  const [subUspOrder, setSubUspOrder] = useState<number[]>([])  // 순서 있는 sub USP 인덱스
+  // 호환용 — Set 인터페이스 유지
+  const subUspIndices = new Set(subUspOrder)
   // 메인 USP에서 추출한 페르소나 후보들
   const [personaCandidates, setPersonaCandidates] = useState<PersonaCandidate[]>([])
   const [personasLoading, setPersonasLoading] = useState(false)
@@ -93,10 +96,10 @@ export default function ScriptGen() {
     const p = myProducts.find(x => x.id === id)
     if (!p) return
     setProductName(p.name)
-    const loaded = p.usps?.length ? p.usps.map(u => ({ usp: u.usp, reviews: u.reviews?.length ? u.reviews : [''] })) : [{ usp: '', reviews: [''] }]
+    const loaded = p.usps?.length ? p.usps.map((u: any) => ({ usp: u.usp, description: u.description || '', reviews: u.reviews?.length ? u.reviews : [''] })) : [{ usp: '', description: '', reviews: [''] }]
     setUsps(loaded)
     setMainUspIndex(loaded.length ? 0 : null)
-    setSubUspIndices(new Set())
+    setSubUspOrder([])
     setPersonaCandidates([])
     setSelectedPersonas([])
     setSelectedProductId(id)
@@ -104,15 +107,22 @@ export default function ScriptGen() {
 
   const toggleSubUsp = (i: number) => {
     if (i === mainUspIndex) return  // 메인은 서브에 동시 선택 불가
-    setSubUspIndices(prev => {
-      const next = new Set(prev)
-      if (next.has(i)) next.delete(i); else next.add(i)
+    setSubUspOrder(prev => prev.includes(i) ? prev.filter(x => x !== i) : [...prev, i])
+  }
+  const moveSubUsp = (i: number, dir: -1 | 1) => {
+    setSubUspOrder(prev => {
+      const idx = prev.indexOf(i)
+      if (idx < 0) return prev
+      const newIdx = idx + dir
+      if (newIdx < 0 || newIdx >= prev.length) return prev
+      const next = [...prev]
+      ;[next[idx], next[newIdx]] = [next[newIdx], next[idx]]
       return next
     })
   }
   const setMain = (i: number) => {
     setMainUspIndex(i)
-    setSubUspIndices(prev => { const next = new Set(prev); next.delete(i); return next })
+    setSubUspOrder(prev => prev.filter(x => x !== i))
     setPersonaCandidates([])
     setSelectedPersonas([])
   }
@@ -197,6 +207,7 @@ export default function ScriptGen() {
         name: personaEdit.data.name.trim(),
         scenario: personaEdit.data.scenario.trim(),
         signals: personaEdit.data.signals.map(s => s.trim()).filter(Boolean),
+        destinations: (personaEdit.data.destinations || []).map(s => s.trim()).filter(Boolean),
         review_count: personaEdit.data.review_count || 0,
         sample_reviews: personaEdit.data.sample_reviews || [],
         tone_hint: personaEdit.data.tone_hint.trim(),
@@ -236,7 +247,7 @@ export default function ScriptGen() {
   }, [refQuery])
 
   const addUsp = () => {
-    setUsps([...usps, { usp: '', reviews: [''] }])
+    setUsps([...usps, { usp: '', description: '', reviews: [''] }])
   }
   const removeUsp = (i: number) => {
     setUsps(usps.filter((_, idx) => idx !== i))
@@ -245,14 +256,7 @@ export default function ScriptGen() {
     } else if (mainUspIndex !== null && mainUspIndex > i) {
       setMainUspIndex(mainUspIndex - 1)
     }
-    setSubUspIndices(prev => {
-      const next = new Set<number>()
-      Array.from(prev).forEach(x => {
-        if (x === i) return
-        next.add(x > i ? x - 1 : x)
-      })
-      return next
-    })
+    setSubUspOrder(prev => prev.filter(x => x !== i).map(x => x > i ? x - 1 : x))
   }
   const updateUsp = (i: number, val: string) => setUsps(usps.map((u, idx) => idx === i ? { ...u, usp: val } : u))
 
@@ -268,11 +272,15 @@ export default function ScriptGen() {
   // 메인 USP 첫 항목 + 서브 USP 순서대로
   const buildCleanUsps = () => {
     if (mainUspIndex === null) return []
-    const order: number[] = [mainUspIndex, ...Array.from(subUspIndices).filter(i => i !== mainUspIndex)]
+    const order: number[] = [mainUspIndex, ...subUspOrder.filter(i => i !== mainUspIndex)]
     return order
       .map(i => usps[i])
       .filter(Boolean)
-      .map(u => ({ usp: u.usp.trim(), reviews: u.reviews.map(r => r.trim()).filter(Boolean) }))
+      .map(u => ({
+        usp: u.usp.trim(),
+        description: (u.description || '').trim() || undefined,
+        reviews: u.reviews.map(r => r.trim()).filter(Boolean),
+      }))
       .filter(u => u.usp)
   }
 
@@ -299,6 +307,7 @@ export default function ScriptGen() {
               name: persona.name,
               scenario: persona.scenario,
               signals: persona.signals,
+              destinations: persona.destinations || [],
               tone_hint: persona.tone_hint,
             } : null,
           }),
@@ -379,27 +388,68 @@ export default function ScriptGen() {
           </div>
 
           <div style={{ marginBottom: 16 }}>
-            <label style={labelSt}>페르소나 — 고민 (Pain)</label>
-            <textarea style={textareaSt} rows={2} value={pain} onChange={e => setPain(e.target.value)}
-              placeholder="페르소나의 구체 고민 (선택 — 메인 USP에서 자동 추론도 가능)" />
-          </div>
-
-          <div style={{ marginBottom: 16 }}>
-            <label style={labelSt}>페르소나 — 욕구 (Desire)</label>
-            <textarea style={textareaSt} rows={2} value={desire} onChange={e => setDesire(e.target.value)}
-              placeholder="페르소나의 구체 욕구 (선택)" />
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-              ※ 나이대·성별·직업은 벤치 릴스 + USP에서 AI가 자동 추론합니다
-            </div>
-          </div>
-
-          <div style={{ marginBottom: 16 }}>
             <label style={labelSt}>
               USP & 연관 리뷰
               <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: 8 }}>
                 (메인 USP는 라디오 ◉ — 페르소나 결정 / 서브 USP는 체크 ☑ — Body 보조)
               </span>
             </label>
+
+            {refInfo && (
+              <div style={{
+                marginBottom: 10, padding: '8px 12px',
+                background: '#fff7ed', border: '1px solid #fdba74',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: 12, color: 'var(--text-primary)',
+                display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+              }}>
+                <span style={{ fontWeight: 700, color: '#9a3412' }}>
+                  ⚡ 이 참고 릴스에는 USP <b>{refInfo.recommended_usps}개</b> 권장
+                </span>
+                <span style={{ color: 'var(--text-secondary)' }}>
+                  (메인 1개 {refInfo.recommended_usps > 1 ? `+ 서브 ${refInfo.recommended_usps - 1}개` : ''})
+                </span>
+                <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                  · Body 분절 {refInfo.body_slot_count}개 · {refInfo.body_class.type}
+                </span>
+              </div>
+            )}
+
+            {/* USP 순서 미리보기 (Main + Sub #1, #2... → Body slot 흐름) */}
+            {(mainUspIndex !== null || subUspOrder.length > 0) && (
+              <div style={{
+                background: 'var(--bg-base)', border: '1px dashed var(--accent)', borderRadius: 'var(--radius-sm)',
+                padding: 10, marginBottom: 8, fontSize: 12,
+              }}>
+                <div style={{ fontWeight: 700, color: 'var(--accent)', marginBottom: 6, fontSize: 11 }}>
+                  📋 USP 순서 (Hook+Intro → Body slot 1 → 2 → 3...)
+                </div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  {mainUspIndex !== null && (
+                    <>
+                      <span style={{ padding: '4px 10px', background: '#fff7ed', border: '2px solid #f97316', borderRadius: 4, fontWeight: 700, color: '#f97316' }}>
+                        MAIN: {usps[mainUspIndex]?.usp || '(빈 USP)'}
+                      </span>
+                      <span style={{ color: 'var(--text-muted)' }}>→</span>
+                    </>
+                  )}
+                  {subUspOrder.map((idx, k) => (
+                    <span key={idx} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ padding: '4px 10px', background: 'var(--accent-light)', border: '1px solid var(--accent)', borderRadius: 4, fontWeight: 700, color: 'var(--accent)' }}>
+                        SUB #{k + 1}: {usps[idx]?.usp || '(빈 USP)'}
+                      </span>
+                      {k < subUspOrder.length - 1 && <span style={{ color: 'var(--text-muted)' }}>→</span>}
+                    </span>
+                  ))}
+                </div>
+                {mainUspIndex !== null && subUspOrder.length === 0 && (
+                  <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+                    아래 USP 카드 체크박스로 서브 USP 선택 + ↑↓로 순서 조정
+                  </div>
+                )}
+              </div>
+            )}
+
             {usps.map((u, i) => {
               const isMain = mainUspIndex === i
               const isSub = subUspIndices.has(i)
@@ -421,7 +471,21 @@ export default function ScriptGen() {
                     title={isMain ? '메인은 서브로 동시 선택 불가' : '서브 USP — Body 보조'}
                     style={{ width: 16, height: 16, cursor: isMain ? 'not-allowed' : 'pointer', flexShrink: 0 }} />
                   {isMain && <span style={{ fontSize: 10, fontWeight: 700, color: '#f97316', padding: '1px 5px', border: '1px solid #f97316', borderRadius: 3 }}>MAIN</span>}
-                  {isSub && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)', padding: '1px 5px', border: '1px solid var(--accent)', borderRadius: 3 }}>SUB</span>}
+                  {isSub && (
+                    <>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)', padding: '1px 5px', border: '1px solid var(--accent)', borderRadius: 3 }}>
+                        SUB #{subUspOrder.indexOf(i) + 1}
+                      </span>
+                      <button onClick={() => moveSubUsp(i, -1)}
+                        disabled={subUspOrder.indexOf(i) <= 0}
+                        title="순서 위로"
+                        style={{ padding: '2px 6px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 3, background: 'var(--bg-elevated)', cursor: subUspOrder.indexOf(i) <= 0 ? 'not-allowed' : 'pointer', opacity: subUspOrder.indexOf(i) <= 0 ? 0.4 : 1 }}>↑</button>
+                      <button onClick={() => moveSubUsp(i, 1)}
+                        disabled={subUspOrder.indexOf(i) >= subUspOrder.length - 1}
+                        title="순서 아래로"
+                        style={{ padding: '2px 6px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 3, background: 'var(--bg-elevated)', cursor: subUspOrder.indexOf(i) >= subUspOrder.length - 1 ? 'not-allowed' : 'pointer', opacity: subUspOrder.indexOf(i) >= subUspOrder.length - 1 ? 0.4 : 1 }}>↓</button>
+                    </>
+                  )}
                   <input style={{ ...inputSt, flex: 1 }} value={u.usp}
                     onChange={e => updateUsp(i, e.target.value)}
                     placeholder={`USP ${i+1} 슬로건 (15자 이내)`} />
@@ -429,6 +493,12 @@ export default function ScriptGen() {
                     <button onClick={() => removeUsp(i)} style={smallBtn('error')}>삭제</button>
                   )}
                 </div>
+                <textarea
+                  style={{ ...inputSt, fontFamily: 'inherit', resize: 'vertical', minHeight: 50, fontSize: 12, marginBottom: 6 }}
+                  value={u.description || ''}
+                  onChange={e => setUsps(usps.map((x, idx) => idx === i ? { ...x, description: e.target.value } : x))}
+                  placeholder="기능 설명 (선택, 앱·서비스 추천) — 예: '설정한 가격에 도달하면 푸시 알림. 평소 모니터링 안 해도 자동 절약'"
+                />
                 <div style={{ paddingLeft: 10, borderLeft: '2px solid var(--border)', fontSize: 11, color: 'var(--text-muted)' }}>
                   연관 리뷰 {u.reviews.filter(r => r.trim()).length}개 (대본 생성 시 자동 사용)
                 </div>
@@ -552,6 +622,13 @@ export default function ScriptGen() {
                     placeholder="냥이, 집사, 고양이털" />
                 </div>
                 <div style={{ marginBottom: 10 }}>
+                  <label style={labelSt}>여행지 / 구체 장소 (쉼표로 구분, 선택)</label>
+                  <input style={inputSt}
+                    value={(personaEdit.data.destinations || []).join(', ')}
+                    onChange={e => setPersonaEdit({ ...personaEdit, data: { ...personaEdit.data, destinations: e.target.value.split(',').map(s => s.trim()).filter(Boolean) } })}
+                    placeholder="푸꾸옥, 나트랑, 보라카이, 다낭 (대본에서 vivid 시나리오로 활용)" />
+                </div>
+                <div style={{ marginBottom: 10 }}>
                   <label style={labelSt}>톤 힌트</label>
                   <input style={inputSt} value={personaEdit.data.tone_hint}
                     onChange={e => setPersonaEdit({ ...personaEdit, data: { ...personaEdit.data, tone_hint: e.target.value } })}
@@ -614,17 +691,15 @@ export default function ScriptGen() {
 
             {/* 참고 구조 분석 카드 */}
             {refInfo && (() => {
-              const selectedUspCount = (mainUspIndex !== null ? 1 : 0) + subUspIndices.size
-              const recommended = refInfo.recommended_usps
-              const subNeeded = Math.max(0, recommended - 1)  // 메인 1개 외 서브 필요수
               const subSelected = subUspIndices.size
-              const subRemaining = Math.max(0, subNeeded - subSelected)
-              const isSingleMode = refInfo.body_class.type === '단일USP_카테고리분할'
-              const ready = mainUspIndex !== null && (isSingleMode || subSelected >= subNeeded)
+              const bodyCount = refInfo.body_slot_count
+              // 새 룰: main USP만 있으면 OK. sub은 선택사항 (body 다양화용).
+              const ready = mainUspIndex !== null
+              const optimalSubs = Math.max(0, bodyCount - 1)  // body마다 다른 USP 쓰려면 main + (body-1)개 sub
               return (
                 <div style={{
-                  background: ready ? '#ecfdf5' : (selectedUspCount >= 1 ? '#fff3cd' : '#eff6ff'),
-                  border: `1px solid ${ready ? '#34d399' : (selectedUspCount >= 1 ? '#ffc107' : '#bfdbfe')}`,
+                  background: ready ? '#ecfdf5' : '#eff6ff',
+                  border: `1px solid ${ready ? '#34d399' : '#bfdbfe'}`,
                   borderRadius: 'var(--radius-sm)', padding: 10, marginBottom: 8,
                   fontSize: 11,
                 }}>
@@ -632,31 +707,25 @@ export default function ScriptGen() {
                     📊 참고 릴스 구조: <span style={{ color: '#1e40af' }}>{refInfo.body_class.type}</span>
                   </div>
                   <div style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                    • {refInfo.duration_sec.toFixed(0)}초 / {refInfo.total_sentences}문장 / Body 분절 <b>{refInfo.body_slot_count}개</b><br/>
+                    • {refInfo.duration_sec.toFixed(0)}초 / {refInfo.total_sentences}문장 / Body 분절 <b>{bodyCount}개</b><br/>
                     • {refInfo.body_class.guide}
                   </div>
 
-                  {isSingleMode ? (
-                    <div style={{ marginTop: 8, padding: 8, background: '#fff', borderRadius: 4, fontSize: 11 }}>
-                      <b>권장 구성</b>: <span style={{ color: '#f97316', fontWeight: 700 }}>메인 USP 1개</span>만으로 충분.
-                      <br/>{ready ? '✓ 준비 완료' : '메인 USP를 라디오로 선택하세요'}
-                    </div>
-                  ) : (
-                    <div style={{ marginTop: 8, padding: 8, background: '#fff', borderRadius: 4, fontSize: 11 }}>
-                      <b>권장 구성</b>:
-                      <span style={{ color: '#f97316', fontWeight: 700 }}> 메인 USP 1개</span>
-                      <span> + </span>
-                      <span style={{ color: 'var(--accent)', fontWeight: 700 }}>서브 USP {subNeeded}개</span>
-                      <br/>
-                      현재: 메인 {mainUspIndex !== null ? '✓' : '✗'} / 서브 <b>{subSelected}/{subNeeded}</b>
-                      {subRemaining > 0 && (
-                        <span style={{ color: '#856404', marginLeft: 6 }}>
-                          → <b>서브 USP {subRemaining}개 더 선택</b>
+                  <div style={{ marginTop: 8, padding: 8, background: '#fff', borderRadius: 4, fontSize: 11 }}>
+                    <b>필수</b>: <span style={{ color: '#f97316', fontWeight: 700 }}>메인 USP 1개</span> {mainUspIndex !== null ? '✓' : '✗'}
+                    {bodyCount >= 2 && (
+                      <>
+                        <br/>
+                        <b>선택</b>: <span style={{ color: 'var(--accent)' }}>서브 USP {optimalSubs}개</span>까지 추가하면 body 섹션마다 다른 USP 사용 가능 (현재 <b>{subSelected}개</b> 선택)
+                        <br/>
+                        <span style={{ color: 'var(--text-muted)', fontSize: 10 }}>
+                          • main 1개만 선택 = 모든 body가 main USP를 다양한 각도로 어필<br/>
+                          • main + sub 추가 = body_1/2/3에 main·sub 적응형 매칭
                         </span>
-                      )}
-                      {ready && <span style={{ color: '#065f46', marginLeft: 6, fontWeight: 700 }}>✓ 준비 완료</span>}
-                    </div>
-                  )}
+                      </>
+                    )}
+                    {ready && <div style={{ color: '#065f46', marginTop: 4, fontWeight: 700 }}>✓ 준비 완료</div>}
+                  </div>
                 </div>
               )
             })()}

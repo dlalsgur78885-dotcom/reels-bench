@@ -249,6 +249,36 @@ export interface PhrasesPage {
   has_more: boolean
 }
 
+export interface AdItem {
+  shortcode: string
+  url: string
+  page_name: string
+  caption: string
+  video_url: string
+  video_duration: number
+  thumbnail_url: string
+  collected_at: string
+  start_date: string
+  media_type: 'video' | 'image' | string
+  platforms: string[]
+}
+
+export interface AdsPage {
+  items: AdItem[]
+  total: number
+  page: number
+  has_more: boolean
+}
+
+export interface AdsFilters {
+  page?: number
+  limit?: number
+  q?: string
+  date_from?: string
+  date_to?: string
+  sort?: 'recent' | 'oldest'
+}
+
 export interface BenchFilters {
   page?: number
   limit?: number
@@ -287,6 +317,16 @@ export const api = {
     if (p.cta_type) params.set('cta_type', p.cta_type)
     return get<BenchPage>(`/api/bench?${params}`)
   },
+  ads: (p: AdsFilters = {}) => {
+    const params = new URLSearchParams()
+    params.set('page', String(p.page ?? 1))
+    params.set('limit', String(p.limit ?? 30))
+    params.set('sort', p.sort ?? 'recent')
+    if (p.q) params.set('q', p.q)
+    if (p.date_from) params.set('date_from', p.date_from)
+    if (p.date_to) params.set('date_to', p.date_to)
+    return get<AdsPage>(`/api/ads?${params}`)
+  },
   phrases: (part: 'hook_intro' | 'cta', p: BenchFilters = {}) => {
     const params = new URLSearchParams()
     params.set('part', part)
@@ -317,7 +357,7 @@ export const api = {
   startAnalysis: (sc: string) => post<{ message: string }>('/api/analyze', { shortcode: sc }),
   analysisStatus: (sc: string) => get<AnalysisStatus>(`/api/analysis-status/${sc}`),
   frameImages: (sc: string) => get<Record<number, string>>(`/api/frame-images/${sc}`),
-  extra: (sc: string) => get<ExtraData>(`/api/extra/${sc}`),
+  extra: (sc: string, opts?: { fresh?: boolean }) => get<ExtraData>(`/api/extra/${sc}${opts?.fresh ? `?_t=${Date.now()}` : ''}`),
   updateExtra: (sc: string, data: { script_structure?: any; category?: any; sentences?: any[] }) =>
     patch<any>(`/api/extra/${sc}`, { shortcode: sc, ...data }),
   fetchComments: (sc: string) => post<{ count: number; comments: any[] }>(`/api/comments/${sc}/fetch`, {}),
@@ -391,6 +431,7 @@ export interface PersonaCandidate {
   name: string
   scenario: string
   signals: string[]
+  destinations?: string[]  // 여행지 등 구체 장소 (예: 푸꾸옥, 나트랑)
   review_count: number
   sample_reviews: string[]
   tone_hint: string

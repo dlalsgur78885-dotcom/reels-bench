@@ -264,6 +264,11 @@ def classify_sentences_for_reel(shortcode: str, request: Request):
     }, timeout=15)
     if r.status_code not in (200, 201, 204):
         raise HTTPException(r.status_code, r.text[:200])
+    # 캐시 무효화 — sentences override 즉시 반영
+    cached = pipeline.extra_cache.get(shortcode)
+    if isinstance(cached, dict):
+        cached["sentences"] = classified
+        pipeline.extra_cache[shortcode] = cached
     # 분류 통계
     from collections import Counter
     sec_counts = Counter(c.get("section", "?") for c in classified)
@@ -328,66 +333,15 @@ def refine_script(req: ScriptRefineRequest):
                     }
             except Exception as e:
                 logger.warning("ref fetch failed in refine: %s", e)
-        # B. Pro 3.1 어색 검출 (도메인 정합 + 구체 교정안)
+        # B. Flash 어색 검출 (v3 baseline)
         awkward_info = []
         try:
             ref_for_aw = (ref_info or {}).get("sentences") or []
-            tp = req.draft.get("_target_persona") or {}
-            pn = req.draft.get("_product_name", "") or ""
-            awkward_info = script_gen.detect_awkward_sentences(
-                req.draft.get("sentences") or [],
-                ref_for_aw,
-                product_name=pn,
-                target_persona=tp,
-            )
+            awkward_info = script_gen.detect_awkward_sentences(req.draft.get("sentences") or [], ref_for_aw)
             if awkward_info:
-                logger.info("[refine] %d awkward sentences detected (Pro)", len(awkward_info))
+                logger.info("[refine] %d awkward sentences detected", len(awkward_info))
         except Exception as e:
             logger.warning("[refine] awkward detection failed: %s", e)
-
-        # main USP 키워드 누락 체크 — Hook 첫 문장 + CTA 마지막 문장 위치만 (강제 X, 자연스러움 우선)
-        try:
-            target_persona = req.draft.get("_target_persona") or {}
-            main_kws = script_gen._extract_main_usp_keywords(req.usps or [], target_persona)
-            if main_kws:
-                draft_sents = req.draft.get("sentences") or []
-                plan = req.draft.get("_plan") or {}
-                # hook 첫 위치 + cta 마지막 위치만 체크
-                check_indices: list[int] = []  # 0-based
-                flat_idx = 0
-                hook_first_idx = None
-                cta_last_idx = None
-                for sec in (plan.get("sections") or []):
-                    sec_name = sec.get("name", "")
-                    sents = sec.get("sentences") or []
-                    if not sents:
-                        continue
-                    if sec_name == "hook" and hook_first_idx is None:
-                        hook_first_idx = flat_idx
-                    if sec_name == "cta":
-                        cta_last_idx = flat_idx + len(sents) - 1
-                    flat_idx += len(sents)
-                if hook_first_idx is not None:
-                    check_indices.append(hook_first_idx)
-                if cta_last_idx is not None and cta_last_idx != hook_first_idx:
-                    check_indices.append(cta_last_idx)
-
-                missing_main = []
-                for i in check_indices:
-                    if i >= len(draft_sents):
-                        continue
-                    text = draft_sents[i].get("text", "")
-                    if not any(kw in text for kw in main_kws):
-                        missing_main.append({
-                            "idx": i + 1,
-                            "text": text,
-                            "reason": f"main USP 키워드 누락 (이 핵심 위치엔 필수: {', '.join(main_kws[:3])})",
-                        })
-                if missing_main:
-                    logger.info("[refine] %d main USP keyword missing at hook-first/cta-last: %s", len(missing_main), [m["idx"] for m in missing_main])
-                    awkward_info.extend(missing_main)
-        except Exception as e:
-            logger.warning("[refine] main USP keyword check failed: %s", e)
         prompt = script_gen.build_refine_prompt(req.draft, unified.get("city"), ref_info=ref_info, usps=req.usps, awkward_info=awkward_info)
         draft_n = len(req.draft.get("sentences") or [])
         # 길이 매칭: ref 있으면 그 수로, 없으면 draft 그대로
@@ -1028,8 +982,11 @@ def get_comments(shortcode: str):
 
 
 @app.get("/api/extra/{shortcode}")
-def get_extra(shortcode: str):
-    data = pipeline.extra_cache.get(shortcode, {}) or {}
+def get_extra(shortcode: str, request: Request):
+    # ?_t=... 또는 ?fresh=1 → 캐시 무시 + 응답 캐시 헤더 no-store
+    qp = dict(request.query_params)
+    fresh = bool(qp.get("_t") or qp.get("fresh"))
+    data = {} if fresh else (pipeline.extra_cache.get(shortcode, {}) or {})
     # 캐시에 없는 항목들을 병렬 DB 조회 (5개 → ~0.5s)
     need_category = not data.get("category")
     need_script = not data.get("script_structure")
@@ -1106,7 +1063,7 @@ def get_extra(shortcode: str):
     return Response(
         content=__import__("json").dumps(data),
         media_type="application/json",
-        headers={"Cache-Control": "private, max-age=300"},
+        headers={"Cache-Control": "no-store" if fresh else "private, max-age=300"},
     )
 
 
@@ -1149,7 +1106,7 @@ _bench_lock = threading.Lock()
 def _refresh_bench():
     """Fetch from Supabase, build merged list, store in module-level dict."""
     try:
-        with ThreadPoolExecutor(max_workers=5) as ex:
+        with ThreadPoolExecutor(max_workers=6) as ex:
             f_reels = ex.submit(supabase.sb_get, "reels",
                 "select=shortcode,url,account_category,collected_at&order=collected_at.desc&limit=50000")
             f_meta = ex.submit(supabase.sb_get, "reels_metadata",
@@ -1158,11 +1115,17 @@ def _refresh_bench():
                 "select=shortcode&limit=50000")
             f_class = ex.submit(supabase.sb_get, "reels_pro_audio",
                 "select=shortcode,classification&limit=50000")
+            f_cat = ex.submit(supabase.sb_get, "reels_category",
+                "select=shortcode,topic,topic_detail,style,tags&limit=50000")
+            f_ss = ex.submit(supabase.sb_get, "reels_script_structure",
+                "select=shortcode,overall&limit=50000")
 
         reels = f_reels.result()
         meta_map = {m["shortcode"]: m for m in f_meta.result()}
         analysis_scs = {a["shortcode"] for a in f_opus.result()}
         class_map = {r["shortcode"]: (r.get("classification") or {}) for r in f_class.result()}
+        cat_map = {c["shortcode"]: c for c in f_cat.result()}
+        ss_map = {s["shortcode"]: (s.get("overall") or {}) for s in f_ss.result()}
 
         items = []
         total_plays = total_likes = 0
@@ -1173,6 +1136,8 @@ def _refresh_bench():
             total_plays += plays
             total_likes += likes
             cls = class_map.get(r["shortcode"]) or {}
+            cat = cat_map.get(r["shortcode"]) or {}
+            ss = ss_map.get(r["shortcode"]) or {}
             items.append({
                 "shortcode": r["shortcode"],
                 "author": m.get("author_username") or "",
@@ -1187,6 +1152,14 @@ def _refresh_bench():
                 "body_structure": cls.get("body_structure") or None,
                 "hook_type": cls.get("hook_type") or None,
                 "cta_type": cls.get("cta_type") or None,
+                # 카테고리 (reels_category 조인)
+                "topic": cat.get("topic"),
+                "topic_detail": cat.get("topic_detail"),
+                "style": cat.get("style"),
+                "tags": cat.get("tags") or [],
+                # 광고 포맷 + 적합성 (script_structure.overall)
+                "ad_format": ss.get("ad_format"),
+                "ad_suitability_score": ss.get("ad_suitability_score"),
             })
 
         with _bench_lock:
@@ -1421,6 +1394,86 @@ def get_phrases(
         "total": total_pre,
         "page": page,
         "has_more": start + limit < total_pre,
+    }
+
+
+@app.get("/api/ads")
+def get_ads(
+    page: int = Query(1, ge=1),
+    limit: int = Query(30, ge=1, le=100),
+    q: str = Query(""),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    sort: str = Query("recent"),  # 'recent' | 'oldest'
+):
+    """페이스북 라이브러리에서 수집된 광고 — reels(source=fb_ad) + reels_metadata 머지."""
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_reels = ex.submit(
+            _r.get,
+            f"{SUPA}/rest/v1/reels?source=eq.fb_ad"
+            f"&select=shortcode,url,collected_at"
+            f"&order=collected_at.desc&limit=2000",
+            headers=H, timeout=10,
+        )
+        f_meta = ex.submit(
+            _r.get,
+            f"{SUPA}/rest/v1/reels_metadata?shortcode=like.fb_*"
+            f"&select=shortcode,video_url,video_duration,thumbnail_url,caption_text,author_username"
+            f"&limit=2000",
+            headers=H, timeout=10,
+        )
+
+    reels = f_reels.result().json() or []
+    meta_map = {m["shortcode"]: m for m in (f_meta.result().json() or [])}
+
+    items = []
+    for r in reels:
+        sc = r["shortcode"]
+        m = meta_map.get(sc, {})
+        items.append({
+            "shortcode": sc,
+            "url": r.get("url") or "",
+            "page_name": m.get("author_username") or "",
+            "caption": m.get("caption_text") or "",
+            "video_url": m.get("video_url") or "",
+            "video_duration": m.get("video_duration") or 0,
+            "thumbnail_url": m.get("thumbnail_url") or "",
+            "collected_at": r.get("collected_at") or "",
+            # 향후 facebook ads 프로젝트 ads 테이블 연결 시 채워질 필드
+            "start_date": "",
+            "media_type": "video" if m.get("video_url") else "image",
+            "platforms": [],
+        })
+
+    # 검색 (광고주 또는 caption)
+    if q:
+        ql = q.lower()
+        items = [i for i in items
+                 if ql in (i["page_name"] or "").lower() or ql in (i["caption"] or "").lower()]
+
+    # 기간 필터 (collected_at 기준 — start_date가 없으니)
+    if date_from:
+        items = [i for i in items if (i["collected_at"] or "")[:10] >= date_from]
+    if date_to:
+        items = [i for i in items if (i["collected_at"] or "")[:10] <= date_to]
+
+    # 정렬
+    items.sort(key=lambda i: i["collected_at"] or "", reverse=(sort != "oldest"))
+
+    total = len(items)
+    start = (page - 1) * limit
+    page_items = items[start:start + limit]
+
+    return {
+        "items": page_items,
+        "total": total,
+        "page": page,
+        "has_more": start + limit < total,
     }
 
 

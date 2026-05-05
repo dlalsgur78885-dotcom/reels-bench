@@ -17,6 +17,7 @@ const ScriptGen = lazy(() => import('./pages/ScriptGen'))
 const MyProducts = lazy(() => import('./pages/MyProducts'))
 const MyProductEdit = lazy(() => import('./pages/MyProductEdit'))
 const Phrases = lazy(() => import('./pages/Phrases'))
+const Ads = lazy(() => import('./pages/Ads'))
 const Settings = lazy(() => import('./pages/Settings'))
 
 function RouteFallback() {
@@ -58,6 +59,7 @@ function saveCachedMe(p: UserProfile | null) {
 const NAV = [
   { to: '/', label: '홈', icon: '&#x2302;' },
   { to: '/bench', label: '벤치마크', icon: '&#x25A6;' },
+  { to: '/ads', label: '광고', icon: '&#x25B6;' },
   { to: '/channels', label: '채널', icon: '&#x2631;' },
   { to: '/reels/new', label: '릴스 추가', icon: '&#x2795;' },
   { to: '/my-products', label: '내 상품', icon: '&#x1F4E6;' },
@@ -145,6 +147,7 @@ export default function App() {
           <Route path="/bench" element={<Bench />} />
           <Route path="/bench/:shortcode" element={<BenchDetail />} />
           <Route path="/phrases" element={<Phrases />} />
+          <Route path="/ads" element={<Ads />} />
           <Route path="/analysis" element={<AnalysisPage />} />
           <Route path="/channels" element={<Channels />} />
           <Route path="/script" element={<ScriptGen />} />

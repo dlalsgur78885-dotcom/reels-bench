@@ -178,32 +178,42 @@ JSON만 출력. 빈 섹션은 제외.
         return {}
 
 
-def analyze_body_chunks(ref: dict) -> list[dict]:
-    """body_N 각 chunk별 상세 분석.
+def analyze_section_chunks(ref: dict) -> list[dict]:
+    """섹션별 chunk 상세 분석 — hook/intro/body_N/cta 전부.
 
     각 chunk마다:
-    - body_n: chunk 라벨
-    - sentences: 이 chunk의 문장들 (start/end/text)
-    - topic: 한 문장 요약 (이 chunk가 무엇을 다루는지)
-    - primary_usp_id: usp_layout에서 이 chunk를 appears_in으로 가진 USP id (없으면 null)
-    - role: 이 chunk의 narrative 역할 (시연/비교/proof/전환/요약/감성/디테일)
-    - relation_to_prev: 이전 chunk와의 관계 (확장/대조/심화/전환)
-
-    Returns: [{body_n, sentences, topic, primary_usp_id, role, relation_to_prev}, ...]
+    - section: chunk 라벨 (hook / intro / body_1 / cta 등)
+    - sentences: 이 chunk의 문장들
+    - topic: 한 줄 요약
+    - usp_ids: 다루는 USP id 배열 (engagement·promise만이면 빈 배열)
+    - primary_usp_id: 가장 핵심 1개 (없으면 null)
+    - role: chunk 역할 (engagement / promise / 시연 / proof / 전환 / 요약 / callback / 행동유도 / 감성 / 디테일)
+    - relation_to_prev: 이전 chunk와의 관계 (start / 확장 / 대조 / 심화 / 새토픽 / 회수 / 요약)
+    - summary: 한 줄 — chunk가 시청자에게 어떻게 작용하는지
     """
     sentences = ref.get("sentences") or []
     if not sentences:
         return []
 
-    # body_N별 grouping (시간순)
+    # 모든 섹션 grouping (시간순)
     body_groups: dict[str, list[dict]] = {}
     for s in sentences:
         sec = (s.get("section") or "").lower()
-        if sec.startswith("body_") or sec == "body":
+        if sec and sec != "?":
             body_groups.setdefault(sec, []).append(s)
     if not body_groups:
         return []
-    sorted_keys = sorted(body_groups.keys())
+    # 섹션 순서: hook → intro → body_1..N → body → cta
+    def _order_key(k: str) -> tuple:
+        if k == "hook": return (0, 0)
+        if k == "intro": return (1, 0)
+        if k.startswith("body_"):
+            try: return (2, int(k.split("_")[1]))
+            except: return (2, 99)
+        if k == "body": return (2, 999)
+        if k == "cta": return (3, 0)
+        return (9, 0)
+    sorted_keys = sorted(body_groups.keys(), key=_order_key)
 
     # usp_layout 매핑 — body_N → usp_id
     structure = ref.get("structure") or {}
@@ -229,29 +239,34 @@ def analyze_body_chunks(ref: dict) -> list[dict]:
         for u in usp_layout:
             usp_block += f"- USP {u.get('id')} [{u.get('label')}]: {u.get('description', '')} (등장: {', '.join(u.get('appears_in') or [])})\n"
 
-    prompt = f"""광고 릴스의 body 분절(body_N)별로 무엇을 다루는지 상세 분석하세요.
+    prompt = f"""광고 릴스의 모든 섹션(hook/intro/body_N/cta)을 chunk 단위로 상세 분석하세요.
 
 {usp_block}
-## body 분절들
+## 섹션별 문장
 {chr(10).join(chunk_lines)}
 
-## 각 body_N마다 출력
-- topic: 한 줄로 — 이 chunk가 다루는 핵심 토픽 (15자 이내)
-- usp_ids: 이 chunk에서 **다루는 모든 USP id 배열** (정수 배열)
-  ⚠️ 한 chunk에 USP가 2개 이상 있으면 모두 포함 (예: [3, 4])
-  ⚠️ usp_layout의 appears_in을 우선 신뢰하되, 다른 USP가 부수적으로 등장하면 추가
-  ⚠️ 매핑 없으면 빈 배열 []
-- primary_usp_id: usp_ids 중 가장 핵심인 한 개 (시간 비중·강조 기준). usp_ids 비었으면 null
-- role: 다음 중 하나 — '시연' / '비교' / 'proof' / '전환' / '요약' / '감성' / '디테일'
-- relation_to_prev: 이전 chunk와의 관계 — '확장' / '대조' / '심화' / '새토픽' / '요약' (body_1은 'start')
-- summary: 한 줄 — 이 chunk의 분석 요약 (어떻게 시청자에게 작용하는지)
+## 각 섹션 chunk마다 출력
+- section: 라벨 (hook / intro / body_1 / cta 등 — 입력 그대로)
+- topic: 한 줄로 핵심 토픽 (15자 이내)
+- usp_ids: 다루는 모든 USP id 배열 (정수 배열)
+  ⚠️ Hook/Intro/CTA에서 USP를 직접 명시·시연하지 않으면 (engagement·promise·callback) 빈 배열 []
+  ⚠️ Body chunk에서 USP가 2개 이상이면 모두 포함
+- primary_usp_id: usp_ids 중 가장 핵심 1개 (없으면 null)
+- role: chunk가 광고 흐름에서 수행하는 역할
+  - **Hook 가능값**: 'engagement'(스크롤 멈추기·저장 권유) / 'pain제기' / 'tease'(궁금증) / '직접소개'
+  - **Intro 가능값**: 'promise'(혜택 약속) / '문제 정의' / '맥락 도입' / '직접 USP 도입'
+  - **Body 가능값**: '시연' / 'proof' / '비교' / '디테일' / '전환' / '감성' / '요약'
+  - **CTA 가능값**: 'callback'(hook의 약속 회수) / '행동유도' / '인센티브' / '재강조'
+- relation_to_prev: 'start' / '확장' / '대조' / '심화' / '새토픽' / '회수' / '요약'
+- summary: 한 줄 — chunk가 시청자에게 어떻게 작용하는지
 
 JSON만 출력 (chunk 시간순):
 {{
   "chunks": [
-    {{"body_n": "body_1", "topic": "...", "usp_ids": [2], "primary_usp_id": 2, "role": "디테일", "relation_to_prev": "start", "summary": "..."}},
-    {{"body_n": "body_4", "topic": "...", "usp_ids": [3, 4], "primary_usp_id": 4, "role": "디테일", "relation_to_prev": "확장", "summary": "..."}},
-    ...
+    {{"section": "hook", "topic": "스크롤 멈추기", "usp_ids": [], "primary_usp_id": null, "role": "engagement", "relation_to_prev": "start", "summary": "..."}},
+    {{"section": "intro", "topic": "혜택 약속", "usp_ids": [], "primary_usp_id": null, "role": "promise", "relation_to_prev": "확장", "summary": "..."}},
+    {{"section": "body_1", "topic": "...", "usp_ids": [1], "primary_usp_id": 1, "role": "시연", "relation_to_prev": "새토픽", "summary": "..."}},
+    {{"section": "cta", "topic": "...", "usp_ids": [], "primary_usp_id": null, "role": "행동유도", "relation_to_prev": "요약", "summary": "..."}}
   ]
 }}"""
 
@@ -261,17 +276,19 @@ JSON만 출력 (chunk 시간순):
             result = result[0]
         chunks_raw = (result or {}).get("chunks") or []
     except Exception as e:
-        logger.warning("analyze_body_chunks Gemini failed: %s", e)
+        logger.warning("analyze_section_chunks Gemini failed: %s", e)
         chunks_raw = []
 
-    # 결과를 sorted_keys 순으로 정합 + sentences 첨부
-    by_key = {c.get("body_n", "").lower(): c for c in chunks_raw}
+    # 결과 매핑 — Gemini가 'section' 또는 'body_n' 둘 중 하나로 키 줄 수 있음
+    by_key = {}
+    for c in chunks_raw:
+        k = (c.get("section") or c.get("body_n") or "").lower()
+        if k:
+            by_key[k] = c
     out = []
     for k in sorted_keys:
         c = by_key.get(k, {})
-        # usp_ids 보정 — Gemini가 빠뜨렸으면 body_to_usp에서 채움
         usp_ids = c.get("usp_ids") or []
-        # 정수 캐스트 + 중복 제거
         usp_ids = list({int(u) for u in usp_ids if isinstance(u, (int, float)) or (isinstance(u, str) and u.isdigit())})
         if not usp_ids and k in body_to_usp:
             usp_ids = list(dict.fromkeys(body_to_usp[k]))
@@ -283,11 +300,10 @@ JSON만 출력 (chunk 시간순):
                 primary = None
         if primary is None and usp_ids:
             primary = usp_ids[0]
-        # primary가 usp_ids에 없으면 추가
         if primary is not None and primary not in usp_ids:
             usp_ids = [primary] + usp_ids
         out.append({
-            "body_n": k,
+            "section": k,
             "sentences": [{"start": s.get("start"), "end": s.get("end"), "text": s.get("text")} for s in body_groups[k]],
             "topic": c.get("topic", ""),
             "usp_ids": usp_ids,
@@ -296,6 +312,18 @@ JSON만 출력 (chunk 시간순):
             "relation_to_prev": c.get("relation_to_prev", "start" if k == sorted_keys[0] else ""),
             "summary": c.get("summary", ""),
         })
+    return out
+
+
+# 호환 alias — 기존 호출처가 사용
+def analyze_body_chunks(ref: dict) -> list[dict]:
+    """deprecated alias — analyze_section_chunks 호출. body_n 키로 변환해 backward compat."""
+    chunks = analyze_section_chunks(ref)
+    out = []
+    for c in chunks:
+        c2 = dict(c)
+        c2["body_n"] = c2.pop("section")  # 구식 키
+        out.append(c2)
     return out
 
 

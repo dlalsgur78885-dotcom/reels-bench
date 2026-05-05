@@ -631,23 +631,42 @@ export default function BenchDetail() {
                       </div>
                     ))}
 
-                    {/* Body chunk 상세 분석 (overall.body_chunks) */}
+                    {/* 섹션별 chunk 상세 분석 (overall.section_chunks 우선, 없으면 body_chunks 호환) */}
                     {(() => {
-                      const chunks = (extra.script_structure?.overall as any)?.body_chunks as Array<{
+                      const overall = extra.script_structure?.overall as any
+                      const section_chunks = overall?.section_chunks as Array<{
+                        section: string; topic: string; primary_usp_id: number | null;
+                        usp_ids?: number[];
+                        role: string; relation_to_prev: string; summary: string;
+                        sentences: { start: number; end: number; text: string }[]
+                      }> | undefined
+                      const body_chunks_compat = overall?.body_chunks as Array<{
                         body_n: string; topic: string; primary_usp_id: number | null;
                         usp_ids?: number[];
                         role: string; relation_to_prev: string; summary: string;
                         sentences: { start: number; end: number; text: string }[]
                       }> | undefined
+                      // section_chunks가 있으면 그걸 사용, 없으면 body_chunks에서 변환
+                      const chunks: Array<{
+                        section: string; topic: string; primary_usp_id: number | null;
+                        usp_ids?: number[];
+                        role: string; relation_to_prev: string; summary: string;
+                        sentences: { start: number; end: number; text: string }[]
+                      }> | undefined = section_chunks
+                        || body_chunks_compat?.map(c => ({ ...c, section: c.section }))
                       if (!chunks || !chunks.length) return null
                       const roleColor: Record<string, string> = {
                         '시연': '#3b82f6', '비교': '#8b5cf6', 'proof': '#10b981',
                         '전환': '#6b7280', '요약': '#f59e0b', '감성': '#ec4899', '디테일': '#0ea5e9',
+                        'engagement': '#ef4444', 'pain제기': '#dc2626', 'tease': '#f97316',
+                        '직접소개': '#3b82f6', 'promise': '#8b5cf6', '문제 정의': '#dc2626',
+                        '맥락 도입': '#a855f7', '직접 USP 도입': '#3b82f6',
+                        'callback': '#f59e0b', '행동유도': '#f59e0b', '인센티브': '#10b981', '재강조': '#f59e0b',
                       }
                       return (
                         <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px dashed var(--border)' }}>
                           <div className="eyebrow-label" style={{ marginBottom: 8 }}>
-                            🧩 Body 분절별 상세 — {chunks.length}개 chunk
+                            🧩 섹션별 상세 — {chunks.length}개 chunk
                           </div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                             {chunks.map((c) => {
@@ -657,7 +676,7 @@ export default function BenchDetail() {
                                 : (c.primary_usp_id != null ? [c.primary_usp_id] : [])
                               const primary_usp = c.primary_usp_id ?? (usp_ids[0] ?? null)
                               return (
-                                <div key={c.body_n} style={{
+                                <div key={c.section} style={{
                                   background: 'var(--bg-surface)', border: '1px solid var(--border)',
                                   borderRadius: 6, padding: 10, fontSize: 12, lineHeight: 1.5,
                                 }}>
@@ -666,7 +685,7 @@ export default function BenchDetail() {
                                       background: '#1e40af', color: '#fff',
                                       fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
                                       textTransform: 'uppercase', letterSpacing: 0.04,
-                                    }}>{c.body_n.replace('_', ' ')}</span>
+                                    }}>{c.section.replace('_', ' ')}</span>
                                     {usp_ids.map(uid => (
                                       <span key={uid} style={{
                                         background: colorOf(uid), color: '#fff',

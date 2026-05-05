@@ -478,9 +478,12 @@ def reanalyze_usp_layout_for_reel(shortcode: str, request: Request):
     ref_updated = dict(ref)
     ref_updated["structure"] = dict(ref.get("structure") or {})
     ref_updated["structure"]["overall"] = overall
-    chunks = script_gen.analyze_body_chunks(ref_updated)
+    chunks = script_gen.analyze_section_chunks(ref_updated)
     if chunks:
-        overall["body_chunks"] = chunks
+        overall["section_chunks"] = chunks
+        overall["body_chunks"] = [
+            {**c, "body_n": c["section"]} for c in chunks if c.get("section", "").startswith("body")
+        ]
 
     _r.patch(
         f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
@@ -495,9 +498,45 @@ def reanalyze_usp_layout_for_reel(shortcode: str, request: Request):
     }
 
 
+@app.post("/api/script/analyze-section-chunks/{shortcode}")
+def analyze_section_chunks_for_reel(shortcode: str, request: Request):
+    """모든 섹션(hook/intro/body_N/cta) chunk별 분석. overall.section_chunks에 저장 (+ body_chunks 호환 alias)."""
+    auth_svc.require_user(request)
+    ref = script_gen.fetch_reference(shortcode)
+    if not ref:
+        raise HTTPException(404, "참고 릴스 없음")
+    sentences = ref.get("sentences") or []
+    if not any(s.get("section") for s in sentences):
+        raise HTTPException(400, "section 라벨된 sentences 필요")
+    chunks = script_gen.analyze_section_chunks(ref)
+    if not chunks:
+        raise HTTPException(500, "section chunk 분석 실패")
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    rows = _r.get(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=overall&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    if not rows:
+        raise HTTPException(404, "script_structure 없음")
+    overall = rows[0].get("overall") or {}
+    overall["section_chunks"] = chunks
+    overall["body_chunks"] = [
+        {**c, "body_n": c["section"]} for c in chunks if c.get("section", "").startswith("body")
+    ]
+    _r.patch(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
+        headers={**H, "Prefer": "return=minimal"},
+        json={"overall": overall}, timeout=15,
+    )
+    return {"shortcode": shortcode, "chunks": chunks, "count": len(chunks)}
+
+
 @app.post("/api/script/analyze-body-chunks/{shortcode}")
 def analyze_body_chunks_for_reel(shortcode: str, request: Request):
-    """body_N 각 chunk별 토픽·USP·역할 분석. overall.body_chunks에 저장."""
+    """deprecated — analyze-section-chunks와 동일 동작."""
     auth_svc.require_user(request)
     ref = script_gen.fetch_reference(shortcode)
     if not ref:
@@ -2385,6 +2424,7 @@ def add_fb_advertiser(req: FbAdvertiserAddRequest, request: Request):
     _r = supabase.get_session()
     r = _r.post(f"{SUPA}/rest/v1/fb_advertisers", headers=H, json=payload, timeout=15)
     if r.status_code in (201, 200):
+        _trigger_render_scraper()
         return r.json()[0] if r.json() else payload
     raise HTTPException(r.status_code, r.text[:300])
 
@@ -2488,22 +2528,22 @@ def fb_scrape_keyword(request: Request, keyword: str = Query(...), country: str 
         "is_active": True,
     }
     _r.post(f"{SUPA}/rest/v1/fb_advertisers", headers=H, json=payload, timeout=15)
-    # Node 스크래퍼 endpoint 백그라운드 trigger (fire-and-forget)
-    try:
-        base = os.getenv("VERCEL_URL")
-        base = f"https://{base}" if base else "https://reels-bench.vercel.app"
-        cron_secret = os.getenv("CRON_SECRET")
-        h2 = {"Authorization": f"Bearer {cron_secret}"} if cron_secret else {}
-        import threading
-        def _trigger():
-            try:
-                requests.get(f"{base}/api/cron/fb-scrape", headers=h2, timeout=300)
-            except Exception:
-                pass
-        threading.Thread(target=_trigger, daemon=True).start()
-    except Exception:
-        pass
+    _trigger_render_scraper()
     return {"ok": True, "queued": True, "keyword": keyword.strip(), "message": "스크래핑 시작 (1-2분 소요)"}
+
+
+def _trigger_render_scraper():
+    """Render fb-ads-web /trigger 호출 (fire-and-forget). 사용자 액션 시 즉시 스크래핑."""
+    fb_web = os.getenv("FB_ADS_WEB_URL", "https://fb-ads-web.onrender.com")
+    secret = os.getenv("TRIGGER_SECRET", "")
+    url = f"{fb_web}/trigger" + (f"?key={secret}" if secret else "")
+    import threading
+    def _go():
+        try:
+            requests.get(url, timeout=15)
+        except Exception:
+            pass
+    threading.Thread(target=_go, daemon=True).start()
 
 
 @app.get("/api/youtubers")

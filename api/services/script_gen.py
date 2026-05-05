@@ -178,6 +178,89 @@ JSON만 출력. 빈 섹션은 제외.
         return {}
 
 
+def parse_frame_ocr_from_analysis(analysis_text: str) -> list[tuple[int, str]]:
+    """opus_analyses.analysis에서 [N초] ... 화면텍스트: \"TEXT\" 형식 파싱.
+
+    Returns: [(seconds, text), ...] 시간순.
+    """
+    import re as _re
+    out: list[tuple[int, str]] = []
+    for line in (analysis_text or "").split("\n"):
+        m = _re.search(r"\[(\d+)\s*초?\][^\n]*?화면텍스트\s*[:\uff1a]\s*[\"\u201c\u201d]([^\"\u201c\u201d\n]*)[\"\u201c\u201d]", line)
+        if not m:
+            continue
+        sec = int(m.group(1))
+        text = m.group(2).strip()
+        if text:
+            out.append((sec, text))
+    return out
+
+
+def build_transcript_from_ocr(ocr_pairs: list[tuple[int, str]], video_dur: float) -> tuple[str, list[dict]]:
+    """프레임별 OCR을 transcript + segments로 변환.
+
+    연속된 동일 텍스트는 하나의 segment로 합침.
+    Returns: (transcript_text, segments_list)
+    """
+    if not ocr_pairs:
+        return "", []
+    pairs = sorted(ocr_pairs, key=lambda p: p[0])
+    groups: list[tuple[int, int, str]] = []
+    cur_text: str | None = None
+    cur_start = 0
+    cur_end = 0
+    for sec, text in pairs:
+        if text == cur_text:
+            cur_end = sec + 1
+        else:
+            if cur_text is not None:
+                groups.append((cur_start, cur_end, cur_text))
+            cur_text = text
+            cur_start = sec
+            cur_end = sec + 1
+    if cur_text is not None:
+        groups.append((cur_start, cur_end, cur_text))
+
+    # 마지막 segment의 end가 video_dur보다 작으면 video_dur로 늘림
+    if video_dur > 0 and groups and groups[-1][1] < video_dur:
+        last = groups[-1]
+        groups[-1] = (last[0], int(round(video_dur)), last[2])
+
+    segments = [
+        {"start": float(st), "end": float(en), "text": text}
+        for st, en, text in groups
+    ]
+    transcript = " ".join(t for _, _, t in groups)
+    return transcript, segments
+
+
+def _word_jaccard(a: str, b: str) -> float:
+    """텍스트 a, b의 단어 단위 Jaccard 유사도."""
+    import re as _re
+    wa = set(_re.findall(r"[\uac00-\ud7a3A-Za-z0-9]+", a or ""))
+    wb = set(_re.findall(r"[\uac00-\ud7a3A-Za-z0-9]+", b or ""))
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / len(wa | wb)
+
+
+def detect_bgm_only_reel(transcript: str, ocr_pairs: list[tuple[int, str]],
+                          jaccard_threshold: float = 0.15,
+                          min_ocr_chars: int = 30) -> bool:
+    """Whisper transcript가 BGM 가사를 잘못 잡은 케이스 감지.
+
+    True 조건 (모두):
+    - OCR 텍스트 총합이 충분 (>= min_ocr_chars) — 화면 텍스트 위주 광고
+    - Whisper transcript와 OCR 텍스트의 단어 Jaccard < threshold (거의 무관)
+    """
+    if not transcript or not ocr_pairs:
+        return False
+    ocr_text = " ".join(t for _, t in ocr_pairs)
+    if len(ocr_text) < min_ocr_chars:
+        return False
+    return _word_jaccard(transcript, ocr_text) < jaccard_threshold
+
+
 def split_segment_by_sentences(seg: dict) -> list[dict]:
     """단일 segment를 문장 경계(.!?)로 쪼개고 시간을 글자수 비율로 분배."""
     import re as _re

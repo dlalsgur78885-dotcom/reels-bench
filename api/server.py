@@ -217,6 +217,76 @@ def update_usp_personas(pid: int, req: UspPersonasUpdateRequest, request: Reques
     return {"message": "갱신 완료", "personas": req.personas}
 
 
+@app.post("/api/script/rebuild-transcript-from-ocr/{shortcode}")
+def rebuild_transcript_from_ocr(shortcode: str, request: Request, force: bool = Query(False)):
+    """BGM-only 릴스: opus_analyses의 화면텍스트를 transcript + segments로 사용.
+
+    감지 (?force=false): Whisper transcript와 화면 OCR 단어 Jaccard < 0.15면 BGM 오인으로 판정.
+    ?force=true: 감지 무시하고 강제 교체.
+    """
+    auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+
+    rows = _r.get(
+        f"{SUPA}/rest/v1/opus_analyses?shortcode=eq.{shortcode}&select=analysis&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    if not rows:
+        raise HTTPException(404, "opus_analyses 없음 (분석 먼저)")
+    ocr_pairs = script_gen.parse_frame_ocr_from_analysis(rows[0].get("analysis") or "")
+    if not ocr_pairs:
+        raise HTTPException(400, "화면 텍스트(OCR) 없음 — BGM-only 아닐 수 있음")
+
+    tr_rows = _r.get(
+        f"{SUPA}/rest/v1/reels_transcripts?shortcode=eq.{shortcode}&select=transcript&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    cur_transcript = (tr_rows[0].get("transcript") if tr_rows else "") or ""
+
+    is_bgm = script_gen.detect_bgm_only_reel(cur_transcript, ocr_pairs)
+    if not is_bgm and not force:
+        return {
+            "shortcode": shortcode, "skipped": True,
+            "reason": "transcript가 OCR과 충분히 일치 — BGM 오인 아님 (force=true로 강제 가능)",
+            "jaccard": script_gen._word_jaccard(cur_transcript, " ".join(t for _, t in ocr_pairs)),
+        }
+
+    meta_rows = _r.get(
+        f"{SUPA}/rest/v1/reels_metadata?shortcode=eq.{shortcode}&select=video_duration&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    video_dur = float((meta_rows[0].get("video_duration") if meta_rows else 0) or 0)
+
+    new_transcript, new_segments = script_gen.build_transcript_from_ocr(ocr_pairs, video_dur)
+    if not new_segments:
+        raise HTTPException(500, "OCR transcript 빌드 실패")
+
+    upsert_url = f"{SUPA}/rest/v1/reels_transcripts?on_conflict=shortcode"
+    _r.post(upsert_url, headers={
+        **H, "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=minimal",
+    }, json={
+        "shortcode": shortcode, "transcript": new_transcript,
+        "language": "ko", "segments": new_segments,
+    }, timeout=15)
+
+    cached = pipeline.extra_cache.get(shortcode)
+    if isinstance(cached, dict):
+        cached["sentences"] = new_segments
+        pipeline.extra_cache[shortcode] = cached
+
+    return {
+        "shortcode": shortcode, "replaced": True,
+        "old_preview": cur_transcript[:120],
+        "new_preview": new_transcript[:120],
+        "segments_count": len(new_segments),
+        "next_step": "classify-sentences 호출해 섹션 라벨 부여",
+    }
+
+
 @app.post("/api/script/extract-roles/{shortcode}")
 def extract_roles_for_reel(shortcode: str, request: Request):
     """참고 릴스의 섹션별 narrative role을 추출해 script_structure.overall.section_roles에 저장."""
@@ -2165,7 +2235,22 @@ def fb_scrape_keyword(request: Request, keyword: str = Query(...), country: str 
         "is_active": True,
     }
     _r.post(f"{SUPA}/rest/v1/fb_advertisers", headers=H, json=payload, timeout=15)
-    return {"ok": True, "queued": True, "keyword": keyword.strip(), "message": "fb_ads_worker가 처리합니다"}
+    # Node 스크래퍼 endpoint 백그라운드 trigger (fire-and-forget)
+    try:
+        base = os.getenv("VERCEL_URL")
+        base = f"https://{base}" if base else "https://reels-bench.vercel.app"
+        cron_secret = os.getenv("CRON_SECRET")
+        h2 = {"Authorization": f"Bearer {cron_secret}"} if cron_secret else {}
+        import threading
+        def _trigger():
+            try:
+                requests.get(f"{base}/api/cron/fb-scrape", headers=h2, timeout=300)
+            except Exception:
+                pass
+        threading.Thread(target=_trigger, daemon=True).start()
+    except Exception:
+        pass
+    return {"ok": True, "queued": True, "keyword": keyword.strip(), "message": "스크래핑 시작 (1-2분 소요)"}
 
 
 @app.get("/api/youtubers")

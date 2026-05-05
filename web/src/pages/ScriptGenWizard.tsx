@@ -637,18 +637,7 @@ function StepMapping({
           {mapping.section_chunks.map((chunk, ci) => {
             const refUspId = chunk.primary_usp_id
             const mappingRec = refUspId ? mappingByRefId.get(refUspId) : null
-            const overrideId = refUspId ? overrides[refUspId] : undefined
-            const isOverridden = overrideId !== undefined
-            const effectiveUserId = isOverridden
-              ? overrideId
-              : (mappingRec?.user_usp_id ?? null)
-            const effectiveUserName = isOverridden
-              ? mapping.product.usps[overrideId - 1]?.usp || ''
-              : (mappingRec?.user_usp_name ?? null)
             const isPersonaSlot = !refUspId  // hook/intro/cta 일부 — 특정 USP 없음
-            const dropdownOptions = isOverridden
-              ? [{ user_usp_id: overrideId, user_usp_name: effectiveUserName || '' }, ...unusedUsps]
-              : unusedUsps
 
             return (
               <div key={ci} style={{

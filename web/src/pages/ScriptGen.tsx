@@ -343,6 +343,12 @@ export default function ScriptGen() {
               tone_hint: persona.tone_hint,
               pain: persona.pain || '',
               desire: persona.desire || '',
+              job_statement: persona.job_statement || '',
+              lf8: persona.lf8 || null,
+              lf8_label: persona.lf8_label || '',
+              pain_scene: persona.pain_scene || '',
+              desire_scene: persona.desire_scene || '',
+              identity: persona.identity || '',
             } : null,
           }),
         })

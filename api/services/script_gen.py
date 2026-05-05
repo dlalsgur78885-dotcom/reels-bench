@@ -209,7 +209,8 @@ def analyze_ref_desire_arc(ref_usps: list[dict], section_chunks: list[dict]) -> 
     )
     text_block = "\n".join(relevant_lines)
 
-    prompt = f"""당신은 광고 카피의 emotional 분석가입니다. 아래 참고 릴스의 hook/intro/페르소나성 chunk를 보고 **이 대본이 시청자에게 어필하는 desire/pain 후보 1~3개**를 뽑아주세요.
+    prompt = f"""당신은 광고 카피의 emotional 분석가입니다 (Eugene Schwartz / Drew Whitman 프레임워크 사용).
+참고 릴스의 hook/intro/페르소나성 chunk가 **시청자의 어떤 desire/pain을 건드리는지** 1~3개 후보로 추출.
 
 ## ref USPs (참고)
 {usps_brief or '(없음)'}
@@ -217,33 +218,42 @@ def analyze_ref_desire_arc(ref_usps: list[dict], section_chunks: list[dict]) -> 
 ## hook + intro + 페르소나성 body 텍스트
 {text_block}
 
-## 작업
-- hook이 트리거하는 **욕구의 종류**와 intro·페르소나성 chunk가 강화하는 **감정 흐름**을 종합
-- 1~3개의 candidate desire/pain 페어를 출력 (대본의 진짜 thrust)
-- 각 candidate는 **구체적**이어야 함 (추상명사 "행복", "만족" 금지)
+## 각 후보가 가져야 할 6필드 (JTBD + LF8 + Visual Scene)
+
+1. **name** — 한 줄 라벨 (예: "남친 인정 / 매력 어필")
+2. **job_statement** — JTBD 포맷: "When [상황], I want to [동기], so I can [결과]"
+3. **lf8** — Drew Whitman LF8 중 핵심 1개 (1~8 정수):
+   1=생존 / 2=음식 / 3=공포·고통 회피 / 4=성적·매력 / 5=편안 / 6=우월·승리 / 7=가족 보호 / 8=사회 승인
+4. **lf8_label** — 한 줄 한국어 라벨
+5. **pain_scene** — **시각적 장면** (시간·장소·동작·결과). 추상명사 절대 X
+6. **desire_scene** — **시각적 장면** (충족된 순간)
++ **identity** — "이런 사람으로 보이고 싶다" 한 줄
 
 ### 좋은 예
-- 대본: "남친이 귀엽다고 하면 게임 끝 / 더 설레게 만드는 잠옷 / 남친도 더 설렌다면서"
-  → desire: "남친에게 더 매력적으로 보이고 사랑받는 느낌"
-  → pain: "남친 앞에서 매력 없어 보일까봐 걱정되는 것"
-  → scenario: "데이트 후 만남에서 남친 반응을 신경 쓰는 일상"
-- 대본: "여행 경비 반 아껴줄 거 / 일본 우버 할인 코드"
-  → desire: "여행 비용을 똑똑하게 절감해 더 많이 즐기기"
-  → pain: "정보 모르고 비싸게 결제해 호구 되는 것"
+대본: "남친이 귀엽다고 하면 게임 끝 / 더 설레게 만드는 잠옷"
+```
+{{
+  "name": "남친 인정 / 매력 어필",
+  "job_statement": "When 잠옷 차림으로 남친 만날 때, I want to 매력 잃지 않게 보이고 싶다, so I can 영상통화도 자신 있게 받을 수 있다",
+  "lf8": 4, "lf8_label": "성적 동반자 / 매력 어필",
+  "pain_scene": "잠옷 차림이 후줄근해서 남친 영상통화 거절한 순간",
+  "desire_scene": "잠옷 그대로 나가도 남친이 '오늘따라 예쁘다' 한 마디 하는 순간",
+  "identity": "집에서도 자기관리 놓치지 않는 여자"
+}}
+```
 
-### 나쁜 예 (절대 X)
-- desire: "편안함 / 만족감 / 좋은 기분" (추상)
-- pain: "불편함 / 답답함" (추상)
+### ❌ 나쁜 예 (절대 X)
+- pain_scene: "답답함 / 불편함" (추상명사만, scene 아님)
+- desire_scene: "만족감 / 행복" (추상)
+- lf8: "복합" (반드시 1~8 단일 정수)
 
 ## 출력 JSON
 {{
   "candidates": [
-    {{
-      "name": "한 줄 라벨 (예: 매력 어필 / 남친 인정)",
-      "pain": "구체 pain 한 줄",
-      "desire": "구체 desire 한 줄",
-      "scenario": "이 desire/pain이 발생하는 상황 한 줄"
-    }}
+    {{"name": "...", "job_statement": "...", "lf8": 4, "lf8_label": "...",
+      "pain_scene": "...", "desire_scene": "...", "identity": "...",
+      "pain": "pain_scene 한 줄 요약(호환)", "desire": "desire_scene 한 줄 요약(호환)",
+      "scenario": "발생 상황 한 줄"}}
   ]
 }}
 
@@ -259,8 +269,19 @@ JSON만 출력. 설명 X."""
             desire = (c.get("desire") or "").strip()
             pain = (c.get("pain") or "").strip()
             scenario = (c.get("scenario") or "").strip()
-            if name and (desire or pain):
-                out.append({"name": name, "pain": pain, "desire": desire, "scenario": scenario})
+            if not (name and (desire or pain)):
+                continue
+            entry = {
+                "name": name,
+                "pain": pain, "desire": desire, "scenario": scenario,
+                "job_statement": (c.get("job_statement") or "").strip(),
+                "lf8": int(c["lf8"]) if isinstance(c.get("lf8"), (int, float)) else None,
+                "lf8_label": (c.get("lf8_label") or "").strip(),
+                "pain_scene": (c.get("pain_scene") or pain).strip(),
+                "desire_scene": (c.get("desire_scene") or desire).strip(),
+                "identity": (c.get("identity") or "").strip(),
+            }
+            out.append(entry)
         return out[:3]
     except Exception as e:
         logger.warning("analyze_ref_desire_arc failed: %s", e)
@@ -1399,25 +1420,45 @@ def extract_personas(usp: str, reviews: list[str], pain_solved: str = "") -> lis
 - **세분화 권장**: 인구통계(연령/성별)+라이프스타일(직장인/주부/학생)+상황(여름/출퇴근/취침)으로 조합 가능한 만큼 분리
 - 최대 6개 (리뷰에 명확히 다른 페르소나가 보이면 6개까지 추출, 강제 X)
 
-## ⭐ pain / desire 추출 (핵심 — 빠지면 대본이 추상적이 됨)
-각 페르소나마다 **구체적인** pain과 desire를 리뷰에서 길어내세요:
-- **pain** (피하고 싶은 것·답답한 상황·불편함):
-  - 한 줄, 구체. "땀에 젖어 잠 깨는 거 / 살이 비치는 것 같아 신경 쓰임 / 외출 준비에 30분 쓰는 것"
-  - ❌ 추상 금지: "불편함 / 답답함 / 스트레스" (이런 말은 텍스트에 안 박힘)
-- **desire** (가장 원하는 결과·상태·감정·인정):
-  - 한 줄, 구체. "남친한테 더 이쁨받기 / 새벽 피로 없이 일어나기 / 임산부도 멋있게 보이기"
-  - 사회적 인정·매력 어필·효율·안전감·자존감 같은 카테고리도 OK
-  - ❌ 추상 금지: "만족 / 편안함 / 좋은 기분"
-- 리뷰에 명시 안 돼있으면 **합리적 추론** OK (단, 카테고리에서 너무 멀어지지 말 것)
+## ⭐ JTBD + LF8 + Visual Scenes (핵심 — Eugene Schwartz / Drew Whitman 프레임워크)
+
+### 각 페르소나마다 다음 6필드 강제
+1. **job_statement** — JTBD 포맷: "When [상황], I want to [motivation], so I can [outcome]"
+   - 예: "When 퇴근 후 집에서 쉴 때, I want to 잠옷이지만 매력 잃지 않게 보이고 싶다, so I can 남친 영상통화에도 자신 있게 받을 수 있다"
+2. **lf8** — Drew Whitman의 Life Force 8 중 핵심 1개 (1~8 정수):
+   1=생존·삶의 즐거움 / 2=음식 즐거움 / 3=공포·고통 회피 / 4=성적 동반자·매력 / 5=편안한 생활 / 6=우월·승리 / 7=사랑하는 사람 보호 / 8=사회적 승인
+3. **lf8_label** — lf8의 한 줄 한국어 ("사회적 인정 / 매력 어필" 등)
+4. **pain_scene** — **시각적 장면**으로 표현 (시간·장소·동작·결과 명시):
+   - ❌ 추상: "답답함 / 불편함" (절대 X)
+   - ✅ 구체: "거울 봤는데 잠옷 차림이 후줄근해서 남친 영상통화 거절한 순간"
+5. **desire_scene** — **시각적 장면**으로 충족된 모습:
+   - ❌ 추상: "만족 / 행복"
+   - ✅ 구체: "잠옷 그대로 나가도 남친이 '오늘따라 예쁘다' 한 마디 하는 순간"
+6. **identity** — "이런 사람으로 보이고 싶다" 한 줄
+   - 예: "집에서도 자기관리 놓치지 않는 여자"
+
+### 페르소나 추출 규칙 (기존)
+- 리뷰 코퍼스에서 **반복 등장하는 명확한 시그널 단어**가 있는 페르소나만 추출
+- 페르소나끼리는 **시나리오·시그널이 겹치면 안 됨** (서로 명확히 다른 인구·상황만)
+- 리뷰가 단일 페르소나만 보여주면 1개만 반환 (억지로 만들지 말 것)
+- 페르소나 정의는 반드시 위 리뷰에서 직접 관찰되는 것만 (다른 도메인 페르소나 끌어오기 금지)
+- **세분화 권장**: 인구통계(연령/성별)+라이프스타일(직장인/주부/학생)+상황(여름/출퇴근/취침)으로 조합 가능한 만큼 분리
+- 최대 6개
 
 ## 출력 JSON (배열만)
 {{
   "personas": [
     {{
       "name": "한 줄 정의 (인구통계 + 라이프스타일 키워드)",
-      "scenario": "이 페르소나가 이 USP를 사용·체감하는 구체 상황 (리뷰에서 발견된 실제 맥락)",
-      "pain": "구체적인 pain 한 줄 (피하고 싶은 상황·불편)",
-      "desire": "구체적인 desire 한 줄 (원하는 결과·인정·감정)",
+      "scenario": "이 페르소나가 이 USP를 사용·체감하는 구체 상황 (리뷰 발견 실제 맥락)",
+      "job_statement": "When ~, I want to ~, so I can ~",
+      "lf8": 4,
+      "lf8_label": "사회적 인정 / 매력 어필",
+      "pain_scene": "구체 visual scene (시간·장소·동작·결과)",
+      "desire_scene": "구체 visual scene (충족된 순간)",
+      "identity": "이런 사람으로 보이고 싶다 한 줄",
+      "pain": "pain_scene을 한 줄 요약 (호환용, scene과 일치)",
+      "desire": "desire_scene을 한 줄 요약 (호환용, scene과 일치)",
       "signals": ["리뷰 키워드1","2","3"],
       "destinations": ["리뷰에 등장하는 구체 장소·여행지 (선택, 여행 카테고리만)"],
       "review_count": <매칭 리뷰 개수>,
@@ -3115,20 +3156,46 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
     persona_str = ""
     if target_persona:
         persona_str = f"타깃: {target_persona.get('name','')} ({target_persona.get('scenario','')})\n"
-        _persona_pain = (target_persona.get("pain") or "").strip()
-        _persona_desire = (target_persona.get("desire") or "").strip()
-        if _persona_pain or _persona_desire:
-            persona_str += "\n⭐⭐⭐ **페르소나 핵심 동기 (Hook · Intro · 페르소나성 chunk에 반드시 녹일 것)** ⭐⭐⭐\n"
-            if _persona_pain:
-                persona_str += f"- **pain (피하고 싶은 것)**: {_persona_pain}\n"
-            if _persona_desire:
-                persona_str += f"- **desire (원하는 결과·인정·감정)**: {_persona_desire}\n"
+        _job = (target_persona.get("job_statement") or "").strip()
+        _lf8 = target_persona.get("lf8")
+        _lf8_label = (target_persona.get("lf8_label") or "").strip()
+        _pain_scene = (target_persona.get("pain_scene") or target_persona.get("pain") or "").strip()
+        _desire_scene = (target_persona.get("desire_scene") or target_persona.get("desire") or "").strip()
+        _identity = (target_persona.get("identity") or "").strip()
+        if _pain_scene or _desire_scene or _job:
+            persona_str += "\n⭐⭐⭐ **페르소나 핵심 동기 — Schwartz/Whitman 프레임워크** ⭐⭐⭐\n"
+            if _job:
+                persona_str += f"- **JTBD job_statement**: {_job}\n"
+            if _lf8:
+                persona_str += f"- **LF8 anchor**: #{_lf8} ({_lf8_label or ''}) — Hook이 이 LF8을 건드려야 함\n"
+            if _pain_scene:
+                persona_str += f"- **pain_scene** (시각적 장면): {_pain_scene}\n"
+            if _desire_scene:
+                persona_str += f"- **desire_scene** (시각적 장면): {_desire_scene}\n"
+            if _identity:
+                persona_str += f"- **identity**: {_identity}\n"
             persona_str += """
-**⚠️ 핵심: pain/desire는 hook/intro/페르소나성 chunk(role=감성/transition/요약·null usp_id)에 직접 단어 또는 정황으로 박힐 것**
-- ❌ 추상 표현 금지 ("편함", "만족"만 쓰면 의미 안 박힘)
-- ✅ 구체 정황: desire="남친한테 더 이쁨받기" → hook "남친이 오늘 왜 이렇게 보고싶다고 하는데"
-- ✅ pain 자리: "외출 준비 30분 쓰는 거 귀찮지" / "땀에 잠 깨는 거 답답하지?"
-- ref hook의 desire 트리거를 우리 desire로 **대치**, ref pain의 정황을 우리 pain의 정황으로 **대치**
+### ⚠️ 적용 룰 (Hook · Intro · 페르소나성 chunk에 강제)
+1. **시각적 명사·동작 화이트리스트** — pain_scene / desire_scene / identity 단어를 **직접** 차용
+   - ❌ 추상명사 금지: "편함 / 만족 / 행복 / 자신감 / 즐거움" — 이런 단어 1회 등장 시 무효
+   - ✅ scene 단어 사용: 위 pain_scene/desire_scene에 박힌 명사·동사를 어절·음절 룰 안에서 그대로
+2. **LF8 일치 강제**:
+   - ref Hook이 어떤 LF8 (사회 인정·매력·편안·생존 등)을 트리거하는지 파악 → 우리도 **같은 LF8**
+   - 다른 LF8로 빠지면 ❌ (ref가 #4(매력 어필)이면 우리도 #4. #5(편안)으로 빠지면 무효)
+3. **부정적 → 긍정적 대비** (Schwartz #9):
+   - Hook/Intro에 pain_scene 정황 깔고 → Body/CTA로 desire_scene 충족 흐름
+4. **시간 확장** (Schwartz #5):
+   - "매일 아침 / 퇴근하고 / 영상통화할 때마다" 같이 **반복되는 일상 시제** 권장
+5. **독자 중심화** (Schwartz #3):
+   - "당신은 / 너는" 직접 호칭 (ref 톤이 그렇다면)
+
+### 좋은 예
+- ref Hook (LF8 #4): "남친이 오늘 왜 이렇게 / 귀엽냐고 계속 물어보는데"
+- 우리 desire_scene: "잠옷 그대로 나가도 남친이 '오늘따라 예쁘다' 한 마디"
+- 우리 Hook: "남친이 영상통화 켜고 / 잠옷 보고 더 이쁘다는데" (#4 일치, 어절·음절 미러, 추상명사 X)
+
+### 나쁜 예 (절대 X)
+- "잠옷 입어도 편안해서 너무 만족스러워" (추상명사 + LF8 #5로 이탈)
 """
         _dests = target_persona.get("destinations") or []
         if _dests:

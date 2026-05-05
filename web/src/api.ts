@@ -399,7 +399,11 @@ export const api = {
       }>
       unused_user_usps: Array<{ user_usp_id: number; user_usp_name: string }>
       unmatched_ref_usps: Array<{ ref_usp_id: number; ref_label: string; ref_description: string; reason: string }>
-      ref_desires: Array<{ name: string; pain: string; desire: string; scenario: string }>
+      ref_desires: Array<{
+        name: string; pain: string; desire: string; scenario: string
+        job_statement?: string; lf8?: number; lf8_label?: string
+        pain_scene?: string; desire_scene?: string; identity?: string
+      }>
     }>(`/api/script/preview-mapping/${sc}`, { product_id }),
   classifySentences: (sc: string) =>
     post<{ shortcode: string; total_sentences: number; sections: Record<string, number> }>(`/api/script/classify-sentences/${sc}`, {}),
@@ -454,10 +458,17 @@ export interface ReferenceInfo {
 export interface PersonaCandidate {
   name: string
   scenario: string
-  pain?: string  // 구체적 pain — 피하고 싶은 상황 (예: "땀에 젖어 잠 깨는 것")
-  desire?: string  // 구체적 desire — 원하는 결과·인정·감정 (예: "남친한테 더 이쁨받기")
+  pain?: string
+  desire?: string
+  // JTBD + LF8 + Visual Scenes (Schwartz/Whitman 프레임워크)
+  job_statement?: string
+  lf8?: number  // 1~8 (Drew Whitman Life Force 8)
+  lf8_label?: string
+  pain_scene?: string
+  desire_scene?: string
+  identity?: string
   signals: string[]
-  destinations?: string[]  // 여행지 등 구체 장소 (예: 푸꾸옥, 나트랑)
+  destinations?: string[]
   review_count: number
   sample_reviews: string[]
   tone_hint: string

@@ -270,6 +270,12 @@ export default function ScriptGenWizard() {
         tone_hint: '',
         pain: r.pain,
         desire: r.desire,
+        job_statement: r.job_statement,
+        lf8: r.lf8,
+        lf8_label: r.lf8_label,
+        pain_scene: r.pain_scene,
+        desire_scene: r.desire_scene,
+        identity: r.identity,
         review_count: 0,
         sample_reviews: [],
       } as PersonaCandidate
@@ -293,6 +299,11 @@ export default function ScriptGenWizard() {
               name: persona.name, scenario: persona.scenario, signals: persona.signals,
               destinations: persona.destinations || [], tone_hint: persona.tone_hint,
               pain: persona.pain || '', desire: persona.desire || '',
+              job_statement: persona.job_statement || '',
+              lf8: persona.lf8 || null, lf8_label: persona.lf8_label || '',
+              pain_scene: persona.pain_scene || '',
+              desire_scene: persona.desire_scene || '',
+              identity: persona.identity || '',
             } : null,
             usp_mapping_override: Object.keys(overrides).length
               ? Object.fromEntries(Object.entries(overrides).map(([k, v]) => [k, v]))
@@ -888,28 +899,46 @@ function StepPersona({
                     onChange={() => onToggleRefDesire(i)}
                     style={{ marginTop: 3, accentColor: 'var(--accent)' }} />
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                       <span style={{
                         fontSize: 10, fontWeight: 700, padding: '2px 7px',
                         background: 'var(--accent)', color: '#fff', borderRadius: 'var(--radius-sm)',
-                        marginRight: 8, letterSpacing: '0.05em',
+                        letterSpacing: '0.05em',
                       }}>REF</span>
-                      {d.name}
+                      <span>{d.name}</span>
+                      {d.lf8 && (
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, padding: '2px 7px',
+                          background: 'var(--bg-elevated)', color: 'var(--text-secondary)',
+                          borderRadius: 'var(--radius-sm)', letterSpacing: '0.03em',
+                        }}>LF8 #{d.lf8} {d.lf8_label || ''}</span>
+                      )}
                     </div>
                     {d.scenario && (
                       <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4 }}>{d.scenario}</div>
                     )}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 6, fontSize: 12, lineHeight: 1.5 }}>
-                      {d.pain && (
+                    {d.job_statement && (
+                      <div style={{ fontSize: 12, color: 'var(--text-body)', marginTop: 6, fontStyle: 'italic' }}>
+                        {d.job_statement}
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 6, fontSize: 12, lineHeight: 1.5 }}>
+                      {(d.pain_scene || d.pain) && (
                         <div>
                           <span style={{ color: 'var(--text-muted)', fontWeight: 600, marginRight: 6 }}>pain</span>
-                          <span style={{ color: 'var(--text-body)' }}>{d.pain}</span>
+                          <span style={{ color: 'var(--text-body)' }}>{d.pain_scene || d.pain}</span>
                         </div>
                       )}
-                      {d.desire && (
+                      {(d.desire_scene || d.desire) && (
                         <div>
                           <span style={{ color: 'var(--accent)', fontWeight: 600, marginRight: 6 }}>desire</span>
-                          <span style={{ color: 'var(--text-body)' }}>{d.desire}</span>
+                          <span style={{ color: 'var(--text-body)' }}>{d.desire_scene || d.desire}</span>
+                        </div>
+                      )}
+                      {d.identity && (
+                        <div>
+                          <span style={{ color: 'var(--text-muted)', fontWeight: 600, marginRight: 6 }}>identity</span>
+                          <span style={{ color: 'var(--text-body)' }}>{d.identity}</span>
                         </div>
                       )}
                     </div>
@@ -949,20 +978,40 @@ function StepPersona({
                     onChange={() => onToggle(i)}
                     style={{ marginTop: 3, accentColor: 'var(--accent)' }} />
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name}</div>
+                    <div style={{ fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                      <span>{p.name}</span>
+                      {p.lf8 && (
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, padding: '2px 7px',
+                          background: 'var(--bg-elevated)', color: 'var(--text-secondary)',
+                          borderRadius: 'var(--radius-sm)', letterSpacing: '0.03em',
+                        }}>LF8 #{p.lf8} {p.lf8_label || ''}</span>
+                      )}
+                    </div>
                     <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>{p.scenario}</div>
-                    {(p.pain || p.desire) && (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 6, fontSize: 12, lineHeight: 1.5 }}>
-                        {p.pain && (
+                    {p.job_statement && (
+                      <div style={{ fontSize: 12, color: 'var(--text-body)', marginTop: 6, fontStyle: 'italic' }}>
+                        {p.job_statement}
+                      </div>
+                    )}
+                    {(p.pain_scene || p.desire_scene || p.pain || p.desire) && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 6, fontSize: 12, lineHeight: 1.5 }}>
+                        {(p.pain_scene || p.pain) && (
                           <div>
                             <span style={{ color: 'var(--text-muted)', fontWeight: 600, marginRight: 6 }}>pain</span>
-                            <span style={{ color: 'var(--text-body)' }}>{p.pain}</span>
+                            <span style={{ color: 'var(--text-body)' }}>{p.pain_scene || p.pain}</span>
                           </div>
                         )}
-                        {p.desire && (
+                        {(p.desire_scene || p.desire) && (
                           <div>
                             <span style={{ color: 'var(--accent)', fontWeight: 600, marginRight: 6 }}>desire</span>
-                            <span style={{ color: 'var(--text-body)' }}>{p.desire}</span>
+                            <span style={{ color: 'var(--text-body)' }}>{p.desire_scene || p.desire}</span>
+                          </div>
+                        )}
+                        {p.identity && (
+                          <div>
+                            <span style={{ color: 'var(--text-muted)', fontWeight: 600, marginRight: 6 }}>identity</span>
+                            <span style={{ color: 'var(--text-body)' }}>{p.identity}</span>
                           </div>
                         )}
                       </div>

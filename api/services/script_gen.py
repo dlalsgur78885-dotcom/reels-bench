@@ -329,10 +329,11 @@ JSON만:
 }}"""
 
     try:
-        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=4096)
+        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=8192)
         if isinstance(result, list) and result:
             result = result[0]
         chunks_raw = (result or {}).get("chunks") or []
+        logger.info("[analyze_section_chunks] %d chunks parsed", len(chunks_raw))
     except Exception as e:
         logger.warning("analyze_section_chunks Gemini failed: %s", e)
         chunks_raw = []

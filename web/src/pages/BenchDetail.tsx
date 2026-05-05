@@ -647,13 +647,23 @@ export default function BenchDetail() {
                         sentences: { start: number; end: number; text: string }[]
                       }> | undefined
                       // section_chunks가 있으면 그걸 사용, 없으면 body_chunks에서 변환
-                      const chunks: Array<{
+                      type SectionChunk = {
                         section: string; topic: string; primary_usp_id: number | null;
                         usp_ids?: number[];
                         role: string; relation_to_prev: string; summary: string;
                         sentences: { start: number; end: number; text: string }[]
-                      }> | undefined = section_chunks
-                        || body_chunks_compat?.map(c => ({ ...c, section: c.section }))
+                      }
+                      const chunks: SectionChunk[] | undefined = section_chunks
+                        || body_chunks_compat?.map((c): SectionChunk => ({
+                          section: c.body_n,
+                          topic: c.topic,
+                          primary_usp_id: c.primary_usp_id,
+                          usp_ids: c.usp_ids,
+                          role: c.role,
+                          relation_to_prev: c.relation_to_prev,
+                          summary: c.summary,
+                          sentences: c.sentences,
+                        }))
                       if (!chunks || !chunks.length) return null
                       const roleColor: Record<string, string> = {
                         '시연': '#3b82f6', '비교': '#8b5cf6', 'proof': '#10b981',

@@ -368,81 +368,145 @@ function StepMapping({
   }
   if (!mapping) return null
 
+  // ref USP id → mapping record (override 반영한 effective)
+  const mappingByRefId = new Map<number, MappingPreview['usp_mapping'][number]>()
+  mapping.usp_mapping.forEach(m => mappingByRefId.set(m.ref_usp_id, m))
+
   return (
     <>
       <div style={cardSt}>
         <div style={labelSt}>2단계 — 매핑 리뷰</div>
         <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>
-          자동 매칭이 안 된 ref USP는 아래 드롭다운으로 우리 USP를 직접 골라 채울 수 있습니다.
+          참고 릴스의 각 섹션 chunk와 그에 매핑된 우리 USP. 자동 매칭이 안 된 자리는 드롭다운으로 직접 채우거나 페르소나로 풀 수 있습니다.
         </div>
-        <div style={{ display: 'grid', gap: 0 }}>
-          {mapping.usp_mapping.map((m) => {
-            const overrideId = overrides[m.ref_usp_id]
+
+        <div style={{ display: 'grid', gap: 10 }}>
+          {mapping.section_chunks.map((chunk, ci) => {
+            const refUspId = chunk.primary_usp_id
+            const mappingRec = refUspId ? mappingByRefId.get(refUspId) : null
+            const overrideId = refUspId ? overrides[refUspId] : undefined
             const isOverridden = overrideId !== undefined
-            const effectiveId = isOverridden ? overrideId : m.user_usp_id
-            const effectiveName = isOverridden
+            const effectiveUserId = isOverridden
+              ? overrideId
+              : (mappingRec?.user_usp_id ?? null)
+            const effectiveUserName = isOverridden
               ? mapping.product.usps[overrideId - 1]?.usp || ''
-              : m.user_usp_name
-            const matched = effectiveId !== null
-            // 이 row에서 고를 수 있는 후보 = 현재 unused + 본인이 이미 override한 것
+              : (mappingRec?.user_usp_name ?? null)
+            const isPersonaSlot = !refUspId  // hook/intro/cta 일부 — 특정 USP 없음
             const dropdownOptions = isOverridden
-              ? [{ user_usp_id: overrideId, user_usp_name: effectiveName || '' }, ...unusedUsps]
+              ? [{ user_usp_id: overrideId, user_usp_name: effectiveUserName || '' }, ...unusedUsps]
               : unusedUsps
+
             return (
-              <div key={m.ref_usp_id} style={{
-                display: 'grid',
-                gridTemplateColumns: 'minmax(200px, 1fr) 16px minmax(220px, 1fr) 1.4fr',
-                gap: 12, alignItems: 'start', fontSize: 13,
-                padding: '12px 0', borderTop: '1px solid var(--border-subtle)',
+              <div key={ci} style={{
+                background: 'var(--bg-surface)', border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-md)', padding: 14,
               }}>
-                <div>
-                  <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-                    ref USP{m.ref_usp_id}{m.ref_label ? ` · ${m.ref_label}` : ''}
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
-                    {m.ref_description}
-                  </div>
-                  {m.ref_appears_in.length > 0 && (
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                      {m.ref_appears_in.join(', ')}
-                    </div>
+                {/* 헤더: 섹션 라벨 + 토픽 + 역할 */}
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+                  <span style={{
+                    fontSize: 11, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
+                    color: 'var(--text-secondary)',
+                    padding: '3px 8px', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                  }}>
+                    {chunk.section}
+                  </span>
+                  {chunk.role && (
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      {chunk.role}
+                    </span>
+                  )}
+                  {chunk.topic && (
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+                      {chunk.topic}
+                    </span>
                   )}
                 </div>
-                <div style={{ color: 'var(--text-muted)', paddingTop: 2 }}>→</div>
-                <div>
-                  {m.user_usp_id !== null ? (
-                    <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-                      USP{m.user_usp_id} · {m.user_usp_name}
-                    </div>
-                  ) : (
-                    <div>
-                      <div style={{ fontWeight: 600, color: matched ? 'var(--text-primary)' : 'var(--warning)', marginBottom: 6 }}>
-                        {matched ? `USP${effectiveId} · ${effectiveName} (수동)` : '매칭 없음 — 직접 선택 가능'}
+
+                {/* ref 대본 */}
+                {chunk.sentences && chunk.sentences.length > 0 && (
+                  <div style={{
+                    background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)',
+                    padding: '10px 12px', marginBottom: 10,
+                  }}>
+                    {chunk.sentences.map((s, si) => (
+                      <div key={si} style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text-body)' }}>
+                        <span style={{ color: 'var(--text-muted)', fontSize: 11, marginRight: 8 }}>
+                          {s.start.toFixed(1)}–{s.end.toFixed(1)}s
+                        </span>
+                        {s.text}
                       </div>
-                      <select
-                        value={overrideId || ''}
-                        onChange={(e) => {
-                          const v = e.target.value
-                          onOverride(m.ref_usp_id, v ? Number(v) : null)
-                        }}
-                        style={{
-                          width: '100%', padding: '6px 10px', fontSize: 12,
-                          border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                          background: 'var(--bg-base)', color: 'var(--text-primary)',
-                        }}>
-                        <option value="">— 미매칭 (페르소나로 풀기) —</option>
-                        {dropdownOptions.map(u => (
-                          <option key={u.user_usp_id} value={u.user_usp_id}>
-                            USP{u.user_usp_id} · {u.user_usp_name}
-                          </option>
-                        ))}
-                      </select>
+                    ))}
+                  </div>
+                )}
+
+                {/* USP 매핑 영역 */}
+                {isPersonaSlot ? (
+                  <div style={{
+                    fontSize: 12, color: 'var(--text-secondary)',
+                    padding: '8px 12px', background: 'var(--bg-base)',
+                    borderRadius: 'var(--radius-sm)', border: '1px dashed var(--border)',
+                  }}>
+                    이 chunk는 특정 USP에 묶이지 않습니다 — <b>페르소나 톤 + ref 구조</b>로 작성됩니다.
+                  </div>
+                ) : mappingRec && (
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'minmax(180px, 1fr) 16px minmax(200px, 1fr) 1.4fr',
+                    gap: 10, alignItems: 'start', fontSize: 13,
+                    padding: '8px 0',
+                  }}>
+                    <div>
+                      <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                        ref USP{mappingRec.ref_usp_id}{mappingRec.ref_label ? ` · ${mappingRec.ref_label}` : ''}
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
+                        {mappingRec.ref_description}
+                      </div>
                     </div>
-                  )}
-                </div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                  {m.reason}
-                </div>
+                    <div style={{ color: 'var(--text-muted)', paddingTop: 2 }}>→</div>
+                    <div>
+                      {mappingRec.user_usp_id !== null ? (
+                        <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                          USP{mappingRec.user_usp_id} · {mappingRec.user_usp_name}
+                        </div>
+                      ) : (
+                        <div>
+                          <div style={{
+                            fontWeight: 600,
+                            color: effectiveUserId ? 'var(--text-primary)' : 'var(--warning)',
+                            marginBottom: 6,
+                          }}>
+                            {effectiveUserId
+                              ? `USP${effectiveUserId} · ${effectiveUserName} (수동)`
+                              : '매칭 없음 — 직접 선택 가능'}
+                          </div>
+                          <select
+                            value={overrideId || ''}
+                            onChange={(e) => {
+                              const v = e.target.value
+                              onOverride(mappingRec.ref_usp_id, v ? Number(v) : null)
+                            }}
+                            style={{
+                              width: '100%', padding: '6px 10px', fontSize: 12,
+                              border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                              background: 'var(--bg-base)', color: 'var(--text-primary)',
+                            }}>
+                            <option value="">— 미매칭 (페르소나로 풀기) —</option>
+                            {dropdownOptions.map(u => (
+                              <option key={u.user_usp_id} value={u.user_usp_id}>
+                                USP{u.user_usp_id} · {u.user_usp_name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                      {mappingRec.reason}
+                    </div>
+                  </div>
+                )}
               </div>
             )
           })}
@@ -453,7 +517,7 @@ function StepMapping({
         <div style={cardSt}>
           <div style={labelSt}>사용 안 된 우리 USP</div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
-            이번 대본에서 다음 USP는 등장하지 않습니다. 위에서 미매칭 자리에 직접 매핑할 수 있어요.
+            이번 대본에서 다음 USP는 등장하지 않습니다. 위 chunk 중 미매칭 자리에 직접 매핑할 수 있어요.
           </div>
           <ul style={{ margin: 0, paddingLeft: 18 }}>
             {unusedUsps.map(u => (

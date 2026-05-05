@@ -1205,13 +1205,31 @@ def build_prompt(product_name: str, pain: str, desire: str, usps: list[dict], re
         parts.append("  → 위 시나리오 중 통일 도시와 일치하는 가장 강렬한 1개를 Hook 베이스로.")
         parts.append("")
 
+    # 🚫 사실 grounding & USP 경계 락 — 환각 방지
+    parts.append("## 🚫 사실 grounding & USP 경계 락 (환각 방지 — 위반 시 실패)")
+    parts.append("⚠️ **수치 거짓말 금지**: 비율(%), 금액, 횟수, 기간 등 모든 수치는 **리뷰에 명시된 그대로**만 인용. 새 숫자 만들지 말 것")
+    parts.append("   - ❌ 리뷰에 \"200만원→170만원\" → 우리가 \"20% 떨어졌다\" (15%인데 임의로 환산해 만들지 말 것)")
+    parts.append("   - ❌ 리뷰 어디에도 없는 \"평균 30% 절약\" 같은 통계 지어내기")
+    parts.append("⚠️ **USP 경계 락**: 한 문장은 그 분절의 USP 안에서만 근거 사용. **다른 USP의 기능·작동방식·전용 어휘 차용 절대 금지**")
+    parts.append("   - 예: '가격추적' USP 분절에서 '가격알림' USP의 푸시 알림 기능 언급 X")
+    parts.append("   - 한 USP의 리뷰만 이 분절 근거로 사용. 다른 USP 리뷰를 합성해 새 시나리오 만들지 말 것")
+    parts.append("⚠️ **기능 합성 금지**: 리뷰에 적힌 일이 아니면 새 기능·동작·시나리오 발명 금지. 'X해주니 Y한다' 같은 인과 체인은 한 리뷰 안에 명시되어야 함")
+    parts.append("")
+
     parts.append("## USP — 분절별 매핑 + 마이크로 구조 + 사용 가능 리뷰")
     # USP별 어휘 도메인 hint (다른 USP의 단어를 빌리지 않게 격리)
     other_usps = [u.get("usp", "") for u in usps]
+    # USP description 매핑 (이름으로 매칭)
+    usp_desc_map = {(u.get("usp") or "").strip(): (u.get("description") or "").strip() for u in usps}
     for i, ua in enumerate(usp_alloc, 1):
         main_tag = " ⭐ [메인 USP]" if ua.get("is_main") else ""
         slot_n = i if i <= len(body_slots) else len(body_slots)
         parts.append(f"\n■ Body 분절 {slot_n}: {ua['usp']}{main_tag}")
+        # USP description (있으면 이게 핵심 — LLM이 USP 영역을 정확히 이해)
+        desc = usp_desc_map.get((ua.get("usp") or "").strip(), "")
+        if desc:
+            parts.append(f"  📋 기능 정의: {desc}")
+            parts.append(f"     ⚠️ 이 분절의 모든 문장은 위 정의 범위 안에서만 작성. 정의 밖 기능·작동방식 언급 금지.")
         if ua.get("angle"):
             parts.append(f"  각도: {ua['angle']}")
         parts.append(f"  할당: {ua['alloc_sec']:.1f}초 ({ua['alloc_syllables']}음절)")
@@ -1219,10 +1237,15 @@ def build_prompt(product_name: str, pain: str, desire: str, usps: list[dict], re
         if slot_n >= 2:
             parts.append(f"  🔗 분절 {slot_n} 첫 문장: 자연스러운 흐름으로 새 USP 도입. 필요시 \"그리고/또/거기다\" 같은 전환어. 강제 X — 자연 흐름이 살아있으면 생략 가능")
             parts.append(f"     ⚠️ 단, 이전 분절과 가짜 인과(\"라서/하면\")로 묶지 말 것. 새 USP 토픽임을 명확히")
-        # 다른 USP 어휘 침입 금지 명시
-        forbidden = [o for o in other_usps if o and o != ua["usp"]]
+        # 다른 USP 어휘 침입 금지 명시 (description도 함께 표시 — 어디까지가 다른 USP인지 명확)
+        forbidden = [(o, usp_desc_map.get(o, "")) for o in other_usps if o and o != ua["usp"]]
         if forbidden:
-            parts.append(f"  🚫 이 분절에서 사용 금지 (다른 USP 영역): {', '.join(forbidden)}")
+            parts.append(f"  🚫 이 분절에서 사용 금지 (다른 USP 영역):")
+            for fo, fd in forbidden:
+                if fd:
+                    parts.append(f"     · \"{fo}\" — {fd}")
+                else:
+                    parts.append(f"     · \"{fo}\"")
         # 참고 분절의 마이크로 패턴 — 1:1 scaffold (참고 텍스트도 shape 가이드용으로 노출)
         micro = ua.get("ref_micro_pattern") or []
         if micro:

@@ -121,6 +121,61 @@ export default function ScriptGenWizard() {
   })()
 
   const [personaRefreshing, setPersonaRefreshing] = useState(false)
+  const [refreshingUspIdx, setRefreshingUspIdx] = useState<number | null>(null)
+
+  const refreshSingleUspPersonas = async (uspIdx: number) => {
+    if (!mapping || !productId) return
+    const u: any = mapping.product.usps[uspIdx]
+    if (!u || !u.usp) return
+    setRefreshingUspIdx(uspIdx)
+    try {
+      const r = await api.extractPersonas(u.usp || '', u.reviews || [], '', productId, uspIdx)
+      const personas = r.personas || []
+      const newUsps = mapping.product.usps.map((x: any, i: number) =>
+        i === uspIdx ? { ...x, personas } : x,
+      )
+      const newMapping = { ...mapping, product: { ...mapping.product, usps: newUsps } }
+      setMapping(newMapping)
+      // allPersonas 갱신 — matched USP 인덱스에 한해
+      const matched = new Set<number>()
+      mapping.usp_mapping.forEach(m => {
+        const eff = effectiveUserUspId(m)
+        if (eff) matched.add(eff)
+      })
+      const collected: typeof allPersonas = []
+      newUsps.forEach((x: any, i: number) => {
+        if (!matched.has(i + 1)) return
+        const ps: PersonaCandidate[] = (x.personas as PersonaCandidate[]) || []
+        ps.forEach(p => {
+          collected.push({ ...p, _uspIndex: i + 1, _uspName: x.usp })
+        })
+      })
+      setAllPersonas(collected)
+    } catch {
+      // ignore
+    } finally {
+      setRefreshingUspIdx(null)
+    }
+  }
+
+  const matchedUserUspsInfo = (() => {
+    if (!mapping) return [] as Array<{ idx: number; name: string; personaCount: number; reviewCount: number }>
+    const matched = new Set<number>()
+    mapping.usp_mapping.forEach(m => {
+      const eff = effectiveUserUspId(m)
+      if (eff) matched.add(eff)
+    })
+    return mapping.product.usps
+      .map((u: any, i: number) => ({
+        idx: i,
+        name: u.usp || '',
+        personaCount: (u.personas || []).length,
+        reviewCount: (u.reviews || []).filter(Boolean).length,
+        match: matched.has(i + 1),
+      }))
+      .filter(x => x.match)
+      .map(({ match: _m, ...rest }) => rest)
+  })()
 
   const goToPersona = async () => {
     if (!mapping) return
@@ -298,6 +353,9 @@ export default function ScriptGenWizard() {
         <StepPersona
           mapping={mapping}
           personas={allPersonas}
+          matchedUserUsps={matchedUserUspsInfo}
+          onRefreshUspPersonas={refreshSingleUspPersonas}
+          refreshingUspIdx={refreshingUspIdx}
           selected={selectedPersonaIdx}
           onToggle={(i) => {
             const next = new Set(selectedPersonaIdx)
@@ -729,12 +787,15 @@ function StepMapping({
 }
 
 function StepPersona({
-  mapping, personas, selected, onToggle, error, onBack, onGenerate,
+  mapping, personas, matchedUserUsps, selected, onToggle, onRefreshUspPersonas, refreshingUspIdx, error, onBack, onGenerate,
 }: {
   mapping: MappingPreview | null
   personas: Array<PersonaCandidate & { _uspIndex: number; _uspName: string }>
+  matchedUserUsps: Array<{ idx: number; name: string; personaCount: number; reviewCount: number }>
   selected: Set<number>
   onToggle: (i: number) => void
+  onRefreshUspPersonas: (uspIdx: number) => Promise<void>
+  refreshingUspIdx: number | null
   error: string
   onBack: () => void
   onGenerate: () => void
@@ -743,13 +804,43 @@ function StepPersona({
   return (
     <>
       <div style={cardSt}>
+        <div style={labelSt}>매칭된 USP — 페르소나 보유 현황</div>
+        <div style={{ display: 'grid', gap: 6, marginBottom: 14 }}>
+          {matchedUserUsps.map(u => (
+            <div key={u.idx} style={{
+              display: 'flex', alignItems: 'center', gap: 10, fontSize: 13,
+              padding: '8px 12px', background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)',
+            }}>
+              <span style={{ fontWeight: 600 }}>USP{u.idx + 1} · {u.name}</span>
+              <span style={{ color: u.personaCount > 0 ? 'var(--success)' : 'var(--warning)', fontSize: 12 }}>
+                페르소나 {u.personaCount}개
+              </span>
+              <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>리뷰 {u.reviewCount}개</span>
+              <button
+                onClick={() => onRefreshUspPersonas(u.idx)}
+                disabled={refreshingUspIdx === u.idx || u.reviewCount === 0}
+                style={{
+                  marginLeft: 'auto', padding: '4px 10px', fontSize: 11,
+                  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                  background: 'var(--bg-surface)', color: 'var(--text-body)',
+                  cursor: refreshingUspIdx === u.idx ? 'not-allowed' : (u.reviewCount === 0 ? 'not-allowed' : 'pointer'),
+                  opacity: refreshingUspIdx === u.idx || u.reviewCount === 0 ? 0.5 : 1,
+                }}>
+                {refreshingUspIdx === u.idx ? '추출 중…' : '페르소나 재추출'}
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={cardSt}>
         <div style={labelSt}>3단계 — 페르소나 선택</div>
         <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>
           매칭된 USP의 페르소나 중 0~2개를 선택하세요. 0개 = 자동 추론.
         </div>
         {personas.length === 0 ? (
           <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-            매칭된 USP에 등록된 페르소나가 없습니다. 자동 추론으로 진행하세요.
+            매칭된 USP에 등록된 페르소나가 없습니다. 위에서 재추출하거나, 자동 추론으로 진행하세요.
           </div>
         ) : (
           <div style={{ display: 'grid', gap: 8 }}>

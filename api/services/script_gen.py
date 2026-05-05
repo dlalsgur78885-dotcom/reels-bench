@@ -298,12 +298,22 @@ def analyze_section_chunks(ref: dict) -> list[dict]:
 - relation_to_prev: start / 확장 / 대조 / 심화 / 새토픽 / 회수 / 요약
 - summary: 한 줄
 
+### ⭐ CTA primary_usp_id 룰
+- **특정 USP의 기능·혜택을 직접 명시 / 재강조** → 그 USP id
+- **"모든 정보 / 한 번에 / 통합 / 위 모든 ~ / 다 받고 싶다면"** 같이 **여러 USP 통합 호소** → **primary_usp_id = null** + usp_ids에 등장한 모든 id 배열로
+- **"팔로우 / 저장 / 댓글 / 공유 / DM / 링크"** 같은 **generic 액션만** + 특정 USP 재언급 X → **primary_usp_id = null** + usp_ids = []
+- 예시:
+  - "다다의 팔로우하고 댓글에 일본 쿠폰 남겨줘 / DM으로 쏴줄게" → primary=null (generic action + "쿠폰"은 모든 USP 통칭)
+  - "이 모든 정보를 한 번에" → primary=null, usp_ids=[1,2,3]
+  - "이 잠옷 하나로 해결" (특정 제품 재강조) → primary=MAIN id
+
 JSON만:
 {{
   "chunks": [
     {{"section": "hook", "sentence_idxs": [0,1], "topic": "...", "usp_ids": [], "primary_usp_id": null, "role": "engagement", "relation_to_prev": "start", "summary": "..."}},
     {{"section": "body_1a", "sentence_idxs": [3,4], "topic": "브이넥 가림", "usp_ids": [2], "primary_usp_id": 2, "role": "디테일", "relation_to_prev": "새토픽", "summary": "브이넥 라인으로 가슴골 노출 방지"}},
-    {{"section": "body_1b", "sentence_idxs": [5,6,7], "topic": "셔링·절개 효과", "usp_ids": [2,3], "primary_usp_id": 2, "role": "디테일", "relation_to_prev": "확장", "summary": "셔링·절개로 가슴라인 미관 + 부유방 커버"}}
+    {{"section": "body_1b", "sentence_idxs": [5,6,7], "topic": "셔링·절개 효과", "usp_ids": [2,3], "primary_usp_id": 2, "role": "디테일", "relation_to_prev": "확장", "summary": "셔링·절개로 가슴라인 미관 + 부유방 커버"}},
+    {{"section": "cta", "sentence_idxs": [12,13,14], "topic": "팔로우+DM 통합 호소", "usp_ids": [1,2,3], "primary_usp_id": null, "role": "행동유도", "relation_to_prev": "회수", "summary": "모든 USP를 통합 회수 + 팔로우/DM generic 액션"}}
   ]
 }}"""
 
@@ -2785,9 +2795,18 @@ ref Intro의 물리·감각 비유 ("모찌 같은")가 우리 도메인과 안 
 
 ⚠️ CTA도 **skeleton fixed text를 우리 도메인에 안 맞으면 변형 OK**.
 
+### ⭐ usp_id가 null인 spec — 페르소나 + ref 톤 미러링
+spec_block의 usp_id가 비어있는(null) CTA 문장은:
+- **특정 USP에 묶지 말 것** — usp_block에 없으면 USP 어휘 도입 X
+- **페르소나의 signals + scenario + tone_hint를 명사·동작 source로 사용**
+- **ref 문장의 톤·구조·종결을 그대로 미러링** ("이 모든 ~ / 한 번에 / 받고 싶다면" 같은 통합 호소 패턴은 그대로)
+- ref가 generic 행동 (팔로우/저장/댓글/DM/링크)을 쓰면 우리도 그대로 — 플랫폼 맥락어니까 도메인 치환 X
+- 예: ref "이 모든 정보를 한 번에 받고 싶다면 / 팔로우하고 댓글에 일본 쿠폰 남겨줘 / DM으로 쏴줄게"
+  → 우리(페르소나=임산부 잠옷): "이 모든 정보를 한 번에 받고 싶다면 / 팔로우하고 댓글에 임산부 잠옷 남겨줘 / DM으로 쏴줄게"
+  (구조·종결·플랫폼 어휘 보존 + 페르소나 signal "임산부"만 치환)
+
 ### 보존 (필수)
 - **어절 수 + 어절별 음절 패턴 강제** (각 ±2 자 허용)
-
 - **CTA 패턴 구조** (행동 유도·마무리 흐름)
 - 종결어미 강제 X — 자연스러운 종결로 자유 결정
 
@@ -2805,6 +2824,7 @@ ref의 [SLOT] 외 fixed text 중 우리 제품 도메인과 안 맞는 단어는
 ### 절대 금지
 - ref 도메인 특정 단어 그대로 박기 ("잠옷", "잘 때", "꿀잠" 같이 우리 도메인과 안 맞는 단어)
 - 새 CTA 패턴 (예약·구독·다운로드 등 ref에 없는 패턴 금지)
+- usp_id가 null인 spec에 USP 어휘를 억지로 끼워넣기
 """
     return ""
 

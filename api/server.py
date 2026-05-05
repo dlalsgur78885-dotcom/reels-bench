@@ -217,6 +217,39 @@ def update_usp_personas(pid: int, req: UspPersonasUpdateRequest, request: Reques
     return {"message": "갱신 완료", "personas": req.personas}
 
 
+@app.post("/api/script/extract-roles/{shortcode}")
+def extract_roles_for_reel(shortcode: str, request: Request):
+    """참고 릴스의 섹션별 narrative role을 추출해 script_structure.overall.section_roles에 저장."""
+    auth_svc.require_user(request)
+    ref = script_gen.fetch_reference(shortcode)
+    if not ref:
+        raise HTTPException(404, "참고 릴스 데이터 없음")
+    sentences = ref.get("sentences") or []
+    if not sentences or not any((s.get("section") for s in sentences)):
+        raise HTTPException(400, "section 라벨된 sentences 필요 — 먼저 classify-sentences 실행")
+    roles = script_gen.extract_narrative_roles(ref)
+    if not roles:
+        raise HTTPException(500, "역할 추출 실패")
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    rows = _r.get(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=overall&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    if not rows:
+        raise HTTPException(404, "script_structure 없음")
+    overall = rows[0].get("overall") or {}
+    overall["section_roles"] = roles
+    _r.patch(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
+        headers={**H, "Prefer": "return=minimal"},
+        json={"overall": overall}, timeout=15,
+    )
+    return {"shortcode": shortcode, "roles": roles, "section_count": len(roles)}
+
+
 @app.post("/api/script/classify-sentences/{shortcode}")
 def classify_sentences_for_reel(
     shortcode: str, request: Request,
@@ -2044,6 +2077,95 @@ def delete_fb_advertiser(adv_id: int, request: Request):
     if r.status_code in (200, 204):
         return {"ok": True}
     raise HTTPException(r.status_code, r.text[:300])
+
+
+@app.get("/api/fb/search/advertisers")
+def fb_search_advertisers(q: str = Query(""), limit: int = Query(50, ge=1, le=200)):
+    """캐시된 fb_* reels_metadata에서 키워드 매칭 광고주 그룹."""
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+    rows = _r.get(
+        f"{SUPA}/rest/v1/reels_metadata?shortcode=like.fb_*"
+        f"&select=shortcode,author_username,caption_text,thumbnail_url&limit=5000",
+        headers=H, timeout=15,
+    ).json() or []
+    if q:
+        ql = q.lower()
+        rows = [m for m in rows if
+                ql in (m.get("caption_text") or "").lower() or
+                ql in (m.get("author_username") or "").lower()]
+    from collections import defaultdict
+    agg: dict[str, dict] = defaultdict(lambda: {"ad_count": 0, "thumbnails": [], "sample_caption": ""})
+    for m in rows:
+        author = (m.get("author_username") or "").strip()
+        if not author:
+            continue
+        a = agg[author]
+        a["ad_count"] += 1
+        if m.get("thumbnail_url") and len(a["thumbnails"]) < 3:
+            a["thumbnails"].append(m["thumbnail_url"])
+        if not a["sample_caption"] and m.get("caption_text"):
+            a["sample_caption"] = (m["caption_text"] or "")[:120]
+    advs = _r.get(f"{SUPA}/rest/v1/fb_advertisers?select=page_name,id,logo_url", headers=H, timeout=10).json() or []
+    reg_map = {a["page_name"]: a for a in advs}
+    items = []
+    for k, v in agg.items():
+        reg = reg_map.get(k)
+        items.append({
+            "page_name": k,
+            "ad_count": v["ad_count"],
+            "thumbnails": v["thumbnails"],
+            "sample_caption": v["sample_caption"],
+            "registered": reg is not None,
+            "advertiser_id": reg["id"] if reg else None,
+            "logo_url": reg.get("logo_url") if reg else None,
+        })
+    items.sort(key=lambda i: i["ad_count"], reverse=True)
+    return {"items": items[:limit], "total": len(items), "query": q}
+
+
+@app.get("/api/fb/search/ads")
+def fb_search_ads(q: str = Query(""), limit: int = Query(50, ge=1, le=200)):
+    """캐시된 fb_* reels에서 키워드 매칭 광고."""
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+    rows = _r.get(
+        f"{SUPA}/rest/v1/reels_metadata?shortcode=like.fb_*"
+        f"&select=shortcode,author_username,caption_text,thumbnail_url,video_duration,video_url"
+        f"&limit=2000",
+        headers=H, timeout=15,
+    ).json() or []
+    if q:
+        ql = q.lower()
+        rows = [m for m in rows if
+                ql in (m.get("caption_text") or "").lower() or
+                ql in (m.get("author_username") or "").lower()]
+    rows.sort(key=lambda r: r.get("shortcode") or "", reverse=True)
+    return {"items": rows[:limit], "total": len(rows), "query": q}
+
+
+@app.post("/api/fb/scrape")
+def fb_scrape_keyword(request: Request, keyword: str = Query(...), country: str = Query("KR")):
+    """키워드 라이브 스크래핑 trigger — fb_advertisers 큐에 추가, worker가 처리."""
+    auth_svc.require_user(request)
+    if not keyword.strip():
+        raise HTTPException(400, "keyword 필요")
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}", "Content-Type": "application/json", "Prefer": "return=minimal"}
+    _r = supabase.get_session()
+    payload = {
+        "page_name": f"[검색] {keyword.strip()}",
+        "page_url": f"https://www.facebook.com/ads/library/?q={keyword.strip()}",
+        "description": f"키워드 검색: {keyword.strip()}",
+        "is_active": True,
+    }
+    _r.post(f"{SUPA}/rest/v1/fb_advertisers", headers=H, json=payload, timeout=15)
+    return {"ok": True, "queued": True, "keyword": keyword.strip(), "message": "fb_ads_worker가 처리합니다"}
 
 
 @app.get("/api/youtubers")

@@ -86,6 +86,68 @@ def _parse_section_seconds(s: str | None) -> tuple[float, float] | None:
     return None
 
 
+def extract_narrative_roles(ref: dict) -> dict:
+    """Gemini Flash로 참고 릴스의 섹션별 narrative role 추출.
+
+    각 섹션이 광고 흐름에서 수행하는 **역할**을 한 줄로 정리.
+    이걸 build_prompt에 주입해 생성 LLM이 단순 반복이 아닌 흐름을 따라가게 강제.
+
+    Returns: {"hook": {role, what_it_does, must_not_repeat}, "intro": {...}, "body_1": {...}, ...}
+    """
+    sentences = ref.get("sentences") or []
+    if not sentences:
+        return {}
+
+    # section별 문장 묶기
+    by_sec: dict[str, list[dict]] = {}
+    for s in sentences:
+        sec = (s.get("section") or "").lower()
+        if not sec:
+            continue
+        by_sec.setdefault(sec, []).append(s)
+    if not by_sec:
+        return {}
+
+    # body_N 시간순 정렬
+    sec_order = ["hook", "intro"] + sorted([k for k in by_sec if k.startswith("body")]) + ["cta"]
+    sec_lines: list[str] = []
+    for sec in sec_order:
+        if sec not in by_sec:
+            continue
+        sec_lines.append(f"\n[{sec.upper()}]")
+        for s in by_sec[sec]:
+            sec_lines.append(f"  ({float(s.get('start',0)):.1f}-{float(s.get('end',0)):.1f}s) \"{s.get('text','')}\"")
+
+    prompt = f"""다음은 광고 릴스의 섹션별 문장입니다. 각 섹션이 **광고 흐름**에서 수행하는 narrative role을 분석하세요.
+
+{chr(10).join(sec_lines)}
+
+각 섹션마다:
+- **role**: 한 문장. 이 섹션이 광고에서 수행하는 핵심 역할 (예: "혜택을 약속", "사용법 시연", "추가 꿀팁 제시", "차별점 입증", "행동 유도")
+- **what_it_does**: 한 문장. 정보 전환의 구체 방향 (예: "Intro에서 약속한 '앱으로 자리 변경'을 실제 작동법으로 풀어냄")
+- **must_not_repeat**: 한 문장. 다른 섹션에서 이미 다뤘으니 겹치면 안 되는 내용
+
+⚠️ 룰:
+- 같은 단어로 반복 금지 (각 섹션은 흐름의 다른 단계여야 함)
+- 단순 묘사 X — 광고 카피 관점에서 정보 단계가 어떻게 advance하는지
+
+JSON만 출력. 빈 섹션은 제외.
+{{
+  "hook": {{"role": "...", "what_it_does": "...", "must_not_repeat": "..."}},
+  "intro": {{...}},
+  "body_1": {{...}},
+  "cta": {{...}}
+}}"""
+    try:
+        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=2048)
+        if isinstance(result, list) and result:
+            result = result[0]
+        return result if isinstance(result, dict) else {}
+    except Exception as e:
+        logger.warning("extract_narrative_roles failed: %s", e)
+        return {}
+
+
 def split_segment_by_sentences(seg: dict) -> list[dict]:
     """단일 segment를 문장 경계(.!?)로 쪼개고 시간을 글자수 비율로 분배."""
     import re as _re
@@ -1028,6 +1090,29 @@ def build_prompt(product_name: str, pain: str, desire: str, usps: list[dict], re
     # 참고 분석 — Hook/Body 유형 분류
     hook_class = classify_hook_type(hook_pat["raw"]) if hook_pat else {"type": "unknown", "pattern": ""}
     body_class = body_class_pre
+
+    # 섹션별 narrative role (저장된 게 있으면 사용 — script_structure.overall.section_roles)
+    primary_struct = primary.get("structure") or {}
+    overall_pri = primary_struct.get("overall") or {}
+    section_roles = overall_pri.get("section_roles") or {}
+    if section_roles:
+        parts.append("## 🎬 섹션별 내러티브 역할 (단순 반복 금지 — 각 섹션은 흐름의 다른 단계)")
+        sec_order = ["hook", "intro"] + sorted([k for k in section_roles if k.startswith("body")]) + ["cta"]
+        for sec in sec_order:
+            sd = section_roles.get(sec)
+            if not sd:
+                continue
+            label = sec.replace("_", " ").upper()
+            parts.append(f"\n■ {label}")
+            if sd.get("role"):
+                parts.append(f"  - 역할: {sd['role']}")
+            if sd.get("what_it_does"):
+                parts.append(f"  - 역할 흐름: {sd['what_it_does']}")
+            if sd.get("must_not_repeat"):
+                parts.append(f"  - 반복 금지: {sd['must_not_repeat']}")
+        parts.append("")
+        parts.append("⚠️ 우리 대본도 위 역할을 그대로 수행. 같은 정보를 두 섹션에서 반복 X. 흐름이 advance해야 함.")
+        parts.append("")
 
     parts.append("## 🔍 참고 대본 패턴 분석 (이 유형을 그대로 따라야 함, 자유롭게 X)")
     parts.append(f"  Hook 유형: **{hook_class['type']}** — 패턴: \"{hook_class['pattern']}\"")

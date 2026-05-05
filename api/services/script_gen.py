@@ -239,34 +239,53 @@ def analyze_section_chunks(ref: dict) -> list[dict]:
         for u in usp_layout:
             usp_block += f"- USP {u.get('id')} [{u.get('label')}]: {u.get('description', '')} (등장: {', '.join(u.get('appears_in') or [])})\n"
 
-    prompt = f"""광고 릴스의 모든 섹션(hook/intro/body_N/cta)을 chunk 단위로 상세 분석하세요.
+    # 모든 문장에 idx 부여 (section + sentence-index)
+    enumerated_sents = []
+    for k in sorted_keys:
+        for s in body_groups[k]:
+            enumerated_sents.append((k, s))
+
+    sent_with_idx = []
+    for i, (sec, s) in enumerate(enumerated_sents):
+        sent_with_idx.append(f"  [{i}] {sec.upper()} ({float(s.get('start',0)):.1f}-{float(s.get('end',0)):.1f}s) \"{s.get('text','')}\"")
+
+    prompt = f"""광고 릴스의 모든 섹션을 **chunk 단위로 분할 후 분석**.
+
+⭐ 핵심: **한 섹션 안에서도 USP가 바뀌면 sub-chunk로 분할** (body_1 안에 USP 2개 → body_1a / body_1b).
 
 {usp_block}
-## 섹션별 문장
-{chr(10).join(chunk_lines)}
+## 모든 문장 (idx 0-based, 시간순)
+{chr(10).join(sent_with_idx)}
 
-## 각 섹션 chunk마다 출력
-- section: 라벨 (hook / intro / body_1 / cta 등 — 입력 그대로)
-- topic: 한 줄로 핵심 토픽 (15자 이내)
-- usp_ids: 다루는 모든 USP id 배열 (정수 배열)
-  ⚠️ Hook/Intro/CTA에서 USP를 직접 명시·시연하지 않으면 (engagement·promise·callback) 빈 배열 []
-  ⚠️ Body chunk에서 USP가 2개 이상이면 모두 포함
-- primary_usp_id: usp_ids 중 가장 핵심 1개 (없으면 null)
-- role: chunk가 광고 흐름에서 수행하는 역할
-  - **Hook 가능값**: 'engagement'(스크롤 멈추기·저장 권유) / 'pain제기' / 'tease'(궁금증) / '직접소개'
-  - **Intro 가능값**: 'promise'(혜택 약속) / '문제 정의' / '맥락 도입' / '직접 USP 도입'
-  - **Body 가능값**: '시연' / 'proof' / '비교' / '디테일' / '전환' / '감성' / '요약'
-  - **CTA 가능값**: 'callback'(hook의 약속 회수) / '행동유도' / '인센티브' / '재강조'
-- relation_to_prev: 'start' / '확장' / '대조' / '심화' / '새토픽' / '회수' / '요약'
-- summary: 한 줄 — chunk가 시청자에게 어떻게 작용하는지
+## 분할 룰
+1. **Hook/Intro/CTA**는 보통 분할 X (engagement·promise·callback이면 그대로)
+2. **Body_N** 내부에서 USP가 바뀌면 sub-chunk로 분할:
+   - 같은 USP 다루는 연속 문장 = 하나의 chunk
+   - USP가 바뀌는 순간 = 새 chunk 시작
+   - 라벨: body_1a, body_1b, body_2a 등 (원래 body_N 유지 + 알파벳 suffix)
+   - 분할 안 되면 그냥 body_1 (suffix 없음)
+3. 각 chunk 내부는 단일 USP만 가짐 (또는 USP 없음)
 
-JSON만 출력 (chunk 시간순):
+## 각 chunk 출력
+- section: 분할된 라벨 (hook / intro / body_1 / body_1a / body_2b / cta 등)
+- sentence_idxs: 이 chunk가 포함하는 문장 idx 배열 (위 0-based)
+- topic: 핵심 토픽 (15자 이내)
+- usp_ids: 다루는 USP id 배열 (보통 1개, engagement/promise/callback이면 [])
+- primary_usp_id: 가장 핵심 1개 (없으면 null)
+- role: chunk 역할
+  - Hook: engagement / pain제기 / tease / 직접소개
+  - Intro: promise / 문제 정의 / 맥락 도입 / 직접 USP 도입
+  - Body: 시연 / proof / 비교 / 디테일 / 전환 / 감성 / 요약
+  - CTA: callback / 행동유도 / 인센티브 / 재강조
+- relation_to_prev: start / 확장 / 대조 / 심화 / 새토픽 / 회수 / 요약
+- summary: 한 줄
+
+JSON만:
 {{
   "chunks": [
-    {{"section": "hook", "topic": "스크롤 멈추기", "usp_ids": [], "primary_usp_id": null, "role": "engagement", "relation_to_prev": "start", "summary": "..."}},
-    {{"section": "intro", "topic": "혜택 약속", "usp_ids": [], "primary_usp_id": null, "role": "promise", "relation_to_prev": "확장", "summary": "..."}},
-    {{"section": "body_1", "topic": "...", "usp_ids": [1], "primary_usp_id": 1, "role": "시연", "relation_to_prev": "새토픽", "summary": "..."}},
-    {{"section": "cta", "topic": "...", "usp_ids": [], "primary_usp_id": null, "role": "행동유도", "relation_to_prev": "요약", "summary": "..."}}
+    {{"section": "hook", "sentence_idxs": [0,1], "topic": "...", "usp_ids": [], "primary_usp_id": null, "role": "engagement", "relation_to_prev": "start", "summary": "..."}},
+    {{"section": "body_1a", "sentence_idxs": [3,4,5,6], "topic": "가슴라인 미관", "usp_ids": [2], "primary_usp_id": 2, "role": "디테일", "relation_to_prev": "새토픽", "summary": "..."}},
+    {{"section": "body_1b", "sentence_idxs": [7], "topic": "부유방 커버", "usp_ids": [3], "primary_usp_id": 3, "role": "디테일", "relation_to_prev": "확장", "summary": "..."}}
   ]
 }}"""
 
@@ -279,39 +298,50 @@ JSON만 출력 (chunk 시간순):
         logger.warning("analyze_section_chunks Gemini failed: %s", e)
         chunks_raw = []
 
-    # 결과 매핑 — Gemini가 'section' 또는 'body_n' 둘 중 하나로 키 줄 수 있음
-    by_key = {}
-    for c in chunks_raw:
-        k = (c.get("section") or c.get("body_n") or "").lower()
-        if k:
-            by_key[k] = c
+    # 결과 처리: sentence_idxs로 chunk 구성 (split된 sub-chunk도 sentence 기반)
     out = []
-    for k in sorted_keys:
-        c = by_key.get(k, {})
+    for c in chunks_raw:
+        sec = (c.get("section") or c.get("body_n") or "").lower()
+        idxs = c.get("sentence_idxs") or []
+        # 정수 캐스트
+        idxs = [int(i) for i in idxs if isinstance(i, (int, float)) or (isinstance(i, str) and str(i).isdigit())]
+        # 유효 범위
+        idxs = [i for i in idxs if 0 <= i < len(enumerated_sents)]
+        if not idxs:
+            continue
+        chunk_sents = [enumerated_sents[i][1] for i in idxs]
+
         usp_ids = c.get("usp_ids") or []
-        usp_ids = list({int(u) for u in usp_ids if isinstance(u, (int, float)) or (isinstance(u, str) and u.isdigit())})
-        if not usp_ids and k in body_to_usp:
-            usp_ids = list(dict.fromkeys(body_to_usp[k]))
+        usp_ids = list({int(u) for u in usp_ids if isinstance(u, (int, float)) or (isinstance(u, str) and str(u).isdigit())})
+        # 빈 배열인데 USP-bearing section이면 layout fallback
+        base_sec = sec.rstrip("abcdefghij")  # body_1a → body_1
+        if not usp_ids and base_sec in body_to_usp:
+            usp_ids = list(dict.fromkeys(body_to_usp[base_sec]))
         primary = c.get("primary_usp_id")
         if primary is not None:
-            try:
-                primary = int(primary)
-            except Exception:
-                primary = None
+            try: primary = int(primary)
+            except: primary = None
         if primary is None and usp_ids:
             primary = usp_ids[0]
         if primary is not None and primary not in usp_ids:
             usp_ids = [primary] + usp_ids
+
         out.append({
-            "section": k,
-            "sentences": [{"start": s.get("start"), "end": s.get("end"), "text": s.get("text")} for s in body_groups[k]],
+            "section": sec,
+            "sentences": [{"start": s.get("start"), "end": s.get("end"), "text": s.get("text")} for s in chunk_sents],
             "topic": c.get("topic", ""),
             "usp_ids": usp_ids,
             "primary_usp_id": primary,
             "role": c.get("role", ""),
-            "relation_to_prev": c.get("relation_to_prev", "start" if k == sorted_keys[0] else ""),
+            "relation_to_prev": c.get("relation_to_prev", ""),
             "summary": c.get("summary", ""),
         })
+
+    # 시간순 정렬 (chunk의 첫 문장 start 기준)
+    out.sort(key=lambda c: (c["sentences"][0]["start"] if c["sentences"] else 0))
+    # 첫 chunk relation_to_prev → start
+    if out and not out[0]["relation_to_prev"]:
+        out[0]["relation_to_prev"] = "start"
     return out
 
 

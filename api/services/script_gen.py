@@ -3475,104 +3475,79 @@ def _build_critic_prompt(draft: dict, plan: dict) -> str:
 """
 
 
-def _build_pre_planner_prompt(usps: list[dict], ref_lines_with_idx: list[tuple[int, str, str]], ref_usps: list[dict] | None = None) -> str:
-    """Pro: 각 ref 문장에 usp_id 매핑.
-    ref_usps (USP layout)가 있으면 ref USP → 우리 USP 의미 매칭 가이드 제공.
+def _build_pre_planner_prompt(usps: list[dict], ref_usps: list[dict], section_chunks: list[dict]) -> str:
+    """K-USP 매핑: ref_usp_id → user_usp_id.
+
+    ref USP 각각을 우리 USP 중 의미가 가장 가까운 1개로 매핑 (또는 null).
+    Hook/Intro 강제·body 강제·slot 생성 없음 — chunks가 이미 sentence 그룹과 ref USP를 정의.
     """
     usps_str = ""
     for i, u in enumerate(usps, 1):
-        if i == 1:
-            tag = " ⭐MAIN"
-        elif i == 2:
-            tag = " 🔗 (main과 연결, body 첫 slot 우선)"
-        else:
-            tag = f" (우선순위 {i})"
+        tag = " ⭐MAIN" if i == 1 else f" (SUB {i})"
         usps_str += f"USP{i}{tag}: {u.get('usp','')}\n"
         desc_parsed = _parse_usp_description(u.get("description") or "")
         if desc_parsed["문제"]:
-            usps_str += f"  문제: {desc_parsed['문제'][:120]}\n"
+            usps_str += f"  문제: {desc_parsed['문제'][:160]}\n"
         if desc_parsed["해결"]:
-            usps_str += f"  해결: {desc_parsed['해결'][:120]}\n"
+            usps_str += f"  해결: {desc_parsed['해결'][:160]}\n"
         if desc_parsed["혜택"]:
-            usps_str += f"  혜택: {desc_parsed['혜택'][:120]}\n"
+            usps_str += f"  혜택: {desc_parsed['혜택'][:160]}\n"
         if not (desc_parsed["문제"] or desc_parsed["해결"] or desc_parsed["혜택"]) and desc_parsed["raw"]:
-            usps_str += f"  설명: {desc_parsed['raw'][:200]}\n"
-    usps_str += "\n⚠️ USP 순서 = 우선순위. body slot 매핑 시:\n"
-    usps_str += "  - body 첫 slot = USP2 (main 다음 연결)\n"
-    usps_str += "  - body 둘째 slot = USP3\n"
-    usps_str += "  - 그 외 slot = 남은 USP들 자유 분배\n"
+            usps_str += f"  설명: {desc_parsed['raw'][:240]}\n"
 
-    # ⭐ ref USP layout 가이드 (있으면)
-    ref_usps_block = ""
-    if ref_usps:
-        ref_usps_block = "\n## 🗺 ref USP Layout (ref가 어느 섹션에 어떤 메시지를 배치했는지)\n"
-        ref_usps_block += "**아래 매핑을 우리 USP에 1:1 적용하세요. ref MAIN → 우리 USP1(MAIN), ref SUB → 우리 USP2/3...**\n\n"
-        for ru in ref_usps:
-            label = ru.get("label", "")
-            desc = ru.get("description", "")
-            appears = ", ".join(ru.get("appears_in") or [])
-            ref_usps_block += f"- ref **{label}**: {desc}\n  → 등장 섹션: {appears}\n"
-        ref_usps_block += "\n⚠️ **매핑 룰:**\n"
-        ref_usps_block += "- ref 섹션이 ref MAIN을 사용하면 → 우리 그 섹션도 **USP1 (MAIN)**\n"
-        ref_usps_block += "- ref 섹션이 ref SUB를 사용하면 → 우리 그 섹션은 **USP2/3** (의미 가까운 우리 SUB)\n"
-        ref_usps_block += "- ref MAIN이 hook+intro+body_1 흐름이면 우리도 그 섹션들 모두 USP1\n"
-        ref_usps_block += "- 표면 키워드 매칭 X — ref 흐름 우선\n"
-    usps_str += ref_usps_block
+    ref_usps_str = ""
+    for ru in ref_usps or []:
+        rid = ru.get("id")
+        label = ru.get("label", "")
+        desc = ru.get("description", "")
+        appears = ", ".join(ru.get("appears_in") or [])
+        ref_usps_str += f"\nref USP{rid} ({label}): {desc}\n"
+        if appears:
+            ref_usps_str += f"  등장 섹션: {appears}\n"
 
-    sent_lines = "\n".join(
-        f"  [{idx}] ({sec}) \"{txt}\""
-        for idx, sec, txt in ref_lines_with_idx
-    )
+    chunk_lines = ""
+    for c in section_chunks or []:
+        sec = c.get("section", "?")
+        primary = c.get("primary_usp_id")
+        topic = c.get("topic", "")
+        role = c.get("role", "")
+        summary = c.get("summary", "")
+        ref_tag = f"ref USP{primary}" if primary else "engagement (no USP)"
+        chunk_lines += f"\n  [{sec}] {ref_tag} · role={role} · topic={topic}"
+        if summary:
+            chunk_lines += f"\n    summary: {summary}"
 
-    total_n = len(ref_lines_with_idx)
-    is_short = total_n < 10
+    return f"""당신은 광고 카피 플래너입니다. **ref의 각 USP를 우리 USP 중 어느 것에 매핑할지** 판단.
 
-    rule_block = """## ⭐ 매핑 룰 — section 단위 USP (상황 적응형)
+ref USP는 이미 분석되어 있고, 각 chunk가 어느 ref USP를 다루는지도 정해져 있습니다. 당신의 일은 **K-USP 매핑** — ref USP 하나당 우리 USP id 하나(또는 null).
 
-### Hook + Intro = 무조건 main (usp_id=1)
-- `(hook)` — 첫 시선 잡기 = main USP 트리거 (ref 톤 그대로)
-- `(intro)` — 제품 도입 = main USP teaser
-- ⚠️ ref 내용 무시하고 무조건 main
-
-### Body_N = 각 body 섹션마다 가장 잘 맞는 USP 1개 (상황 적응) ⭐⭐⭐
-**핵심 원리: 각 body_N 섹션의 ref 토픽 → 우리 USP 중 의미·뉘앙스가 가장 잘 맞는 1개 매칭**
-
-1. **ref body_N 섹션의 토픽 파악** (예: ref body_1=교통, body_2=쇼핑, body_3=숙박)
-2. **그 토픽과 가장 잘 맞는 우리 USP 매칭** (USP description의 문제·해결·혜택 비교)
-3. **같은 body_N의 모든 문장 = 같은 usp_id** (섹션 내 일관성 강제)
-4. **각 body_N마다 다른 USP 우선** — 단, ref body_N이 main을 다시 강조하는 자리면 **main도 OK**
-   - 예: ref body_3가 main USP의 핵심 기능을 또 설명 → body_3 = usp_id=1 (main)
-   - 예: ref body_3가 새로운 sub 기능 다룸 → body_3 = sub usp_id
-5. **CTA slot** = ref 의미 기반 (보통 null 또는 main)
-
-### 판단 가이드 — body_N → USP 매칭
-- ref body 토픽이 우리 main USP와 직접 일치 → main (usp_id=1)
-- ref body 토픽이 sub USP 중 하나와 일치 → 해당 sub usp_id
-- ref body 토픽이 우리 USP와 무관한 일반 시나리오 → null
-- 같은 USP가 여러 body에 나와도 OK (ref가 그렇게 강조한다면)
-- 다른 USP가 여러 body에 나오면 더 다양한 메시지 (일반적으로 이쪽이 효과적)
-
-⚠️ ref 문장 자체의 의미가 아니라, **우리 USP 중 어느 것이 그 자리에 가장 자연스럽게 들어갈지**가 기준."""
-
-    return f"""당신은 광고 카피 플래너입니다. 참고 릴스 각 문장에 **우리 카피에서 어떤 USP를 녹여야 하는지** 판단.
-
-⚠️ **ref 문장 자체의 의미가 아니라, 우리 카피가 어떤 USP를 강조해야 하는지가 기준입니다.**
-
-## USPs
+## 우리 USPs
 {usps_str}
 
-## 참고 문장 (idx는 0-based, section 라벨 포함, 총 {total_n}문장)
-{sent_lines}
+## ref USPs (분석 완료)
+{ref_usps_str or '(없음)'}
 
-{rule_block}
+## ref Section Chunks (각 chunk가 다루는 ref USP — 컨텍스트)
+{chunk_lines or '(없음)'}
+
+## 매핑 룰
+1. **각 ref USP id별로 1개의 user_usp_id 선택** (또는 null = 매칭 불가)
+2. 의미·기능이 가까운 USP를 매칭. 표면 키워드보다 **mechanism/혜택의 일치**.
+3. ref MAIN이라고 무조건 우리 USP1로 가지 말 것 — 우리 USP 중 의미가 가장 가까운 것이 sub여도 OK.
+4. 여러 ref USP가 같은 user USP로 매핑돼도 OK (우리 카피가 그 angle을 강조).
+5. **ref USP가 우리 어느 USP와도 안 맞으면 null** — null인 ref USP의 chunks는 generic 시나리오로 처리됨.
+6. 우리 USP 중 매핑 안 받는 게 있어도 OK (writer 단계에서 보강 가능).
 
 ## 출력 JSON
-{{"assignments": [{{"idx": 0, "usp_id": 1, "slot": 0}}, {{"idx": 1, "usp_id": 1, "slot": 0}}, {{"idx": 2, "usp_id": 1, "slot": 0}}, {{"idx": 3, "usp_id": 2, "slot": 1}}, {{"idx": 4, "usp_id": 2, "slot": 1}}, ...]}}
+{{
+  "usp_mapping": [
+    {{"ref_usp_id": 1, "user_usp_id": 1, "reason": "둘 다 핵심 활용도 강조"}},
+    {{"ref_usp_id": 2, "user_usp_id": 2, "reason": "둘 다 노출 방지 디자인"}},
+    {{"ref_usp_id": 3, "user_usp_id": null, "reason": "우리 USP에 셔링·체형 보정 없음"}}
+  ]
+}}
 
-⚠️ **같은 slot 번호 = 같은 usp_id 강제**. slot 번호는 0부터 증가 (연속 토픽 그룹 단위).
-예: hook(slot 0) → intro(slot 1) → body 디자인(slot 2 — 3문장) → body 사이즈(slot 3 — 2문장) → cta(slot 4)
-
-JSON만. 모든 idx 포함."""
+JSON만. 모든 ref_usp_id 포함 (총 {len(ref_usps or [])}개). 설명 X."""
 
 
 def _build_section_planner_prompt(section_name: str, ref_subset: list[dict], usps: list[dict], product_name: str, target_persona: dict | None, pain: str, desire: str) -> str:
@@ -3813,99 +3788,68 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     speech_level = _detect_speech_level([s.get("text", "") for s in all_ref_sents])
     logger.info("[multistep-B] speech_level=%s", speech_level)
 
-    # 1b. PRE-PLANNER (Pro — section 라벨 룰 잘 따름)
-    logger.info("[multistep-B] 1b. pre-planner (Flash)")
-    pre_lines = [(i, s["_section"], s["text"]) for i, s in enumerate(all_ref_sents)]
-    # ref_usps (USP layout) 가져오기 — primary.structure.overall.usp_layout
-    ref_usps_layout = None
-    try:
-        _overall = ((primary.get("structure") or {}).get("overall") or {})
-        if isinstance(_overall, dict):
-            ref_usps_layout = _overall.get("usp_layout")
-        if ref_usps_layout:
-            logger.info("[multistep-B] ref USP layout: %d USPs", len(ref_usps_layout))
-    except Exception:
-        pass
-    pre_prompt = _build_pre_planner_prompt(usps, pre_lines, ref_usps=ref_usps_layout)
+    # 1b. PRE-PLANNER — chunk 기반 K-USP 매핑 (ref USP → 우리 USP)
+    logger.info("[multistep-B] 1b. pre-planner (chunk-based K-USP mapping)")
+
+    # ref_usps + section_chunks 가져오기 (없으면 즉석 분석)
+    _overall = ((primary.get("structure") or {}).get("overall") or {})
+    ref_usps_layout = _overall.get("usp_layout") if isinstance(_overall, dict) else None
+    section_chunks = _overall.get("section_chunks") if isinstance(_overall, dict) else None
+    if not section_chunks:
+        logger.info("[multistep-B] section_chunks 없음 — 즉석 분석")
+        try:
+            section_chunks = analyze_section_chunks(primary)
+        except Exception as e:
+            logger.warning("[multistep-B] analyze_section_chunks 실패: %s", e)
+            section_chunks = []
+    logger.info("[multistep-B] ref USPs: %d, chunks: %d",
+                len(ref_usps_layout or []), len(section_chunks or []))
+
+    # idx → chunk_index 매핑 (start/end/text 기준)
+    chunk_for_idx: dict[int, int] = {}
+    for ci, c in enumerate(section_chunks or []):
+        for cs in c.get("sentences") or []:
+            cs_start = float(cs.get("start", -1))
+            cs_text = (cs.get("text") or "").strip()
+            for i, s in enumerate(all_ref_sents):
+                if i in chunk_for_idx:
+                    continue
+                if abs(float(s.get("start", -2)) - cs_start) < 0.05 and (s.get("text") or "").strip() == cs_text:
+                    chunk_for_idx[i] = ci
+                    break
+
+    # Pre-planner 호출 — ref_usp → user_usp 매핑
+    usp_mapping: dict[int, int | None] = {}
+    if ref_usps_layout:
+        try:
+            pre_prompt = _build_pre_planner_prompt(usps, ref_usps_layout, section_chunks or [])
+            pre_result = call_gemini(pre_prompt, model="gemini-3-flash-preview", max_tokens=2048)
+            if isinstance(pre_result, list) and pre_result:
+                pre_result = pre_result[0]
+            for m in (pre_result.get("usp_mapping") or []):
+                rid = m.get("ref_usp_id")
+                uid = m.get("user_usp_id")
+                if isinstance(rid, int):
+                    usp_mapping[rid] = uid if isinstance(uid, int) and 1 <= uid <= len(usps) else None
+            logger.info("[pre-planner] %d USP mappings: %s", len(usp_mapping), usp_mapping)
+        except Exception as e:
+            logger.warning("[pre-planner] failed: %s — usp_mapping empty", e)
+    else:
+        logger.info("[pre-planner] skipped — no ref_usps_layout")
+
+    # idx별 usp_id/slot_id 도출 — chunk가 권한
     usp_map: dict[int, int | None] = {}
-    slot_map: dict[int, int] = {}  # idx → slot_id
-    try:
-        pre_result = call_gemini(pre_prompt, model="gemini-3-flash-preview", max_tokens=4096)
-        for a in (pre_result.get("assignments") or []):
-            idx = a.get("idx")
-            uid = a.get("usp_id")
-            slot = a.get("slot")
-            if isinstance(idx, int):
-                usp_map[idx] = uid if isinstance(uid, int) else None
-                if isinstance(slot, int):
-                    slot_map[idx] = slot
-        # Slot 일관성 강제 — 같은 slot이면 그 slot의 majority usp_id로 통일
-        if slot_map:
-            from collections import Counter
-            slots_to_idxs: dict[int, list[int]] = {}
-            for idx, slot in slot_map.items():
-                slots_to_idxs.setdefault(slot, []).append(idx)
-            for slot, idxs in slots_to_idxs.items():
-                slot_usps = [usp_map.get(i) for i in idxs if usp_map.get(i) is not None]
-                if slot_usps:
-                    majority = Counter(slot_usps).most_common(1)[0][0]
-                    for i in idxs:
-                        usp_map[i] = majority
-            logger.info("[pre-planner] %d slots, slot consistency enforced", len(slots_to_idxs))
-    except Exception as e:
-        logger.warning("[pre-planner] failed: %s — defaulting all to null", e)
+    slot_map: dict[int, int] = {}
+    for i in range(len(all_ref_sents)):
+        ci = chunk_for_idx.get(i)
+        if ci is None:
+            usp_map[i] = None
+            continue
+        chunk = section_chunks[ci]
+        chunk_ref_usp = chunk.get("primary_usp_id")
+        usp_map[i] = usp_mapping.get(chunk_ref_usp) if isinstance(chunk_ref_usp, int) else None
+        slot_map[i] = ci  # chunk index = slot
 
-    # ⭐ 코드 레벨 강제 — Hook + Intro 섹션의 모든 idx는 무조건 usp_id=1 (main)
-    forced_main_count = 0
-    for sec_name, start, end in section_idx_ranges:
-        if sec_name in ("hook", "intro"):
-            for i in range(start, end):
-                if usp_map.get(i) != 1:
-                    usp_map[i] = 1
-                    forced_main_count += 1
-    if forced_main_count:
-        logger.info("[force] hook+intro main USP: %d idx 강제 변경", forced_main_count)
-
-    # ⭐⭐ 각 body 섹션 = 1 USP 일관성 강제 (어떤 USP인지는 Pre-Planner가 결정 — 상황 적응)
-    # 룰: body_N 내 모든 문장의 usp_id를 majority로 통일. Pre-Planner 결정 존중.
-    # Pre-Planner가 null/혼란이면 → 다른 body 섹션과 안 겹치는 sub USP 우선 배정
-    from collections import Counter as _BodyCnt
-    body_sec_ranges = [(sn, s, e) for sn, s, e in section_idx_ranges if sn.startswith("body")]
-    n_bodies = len(body_sec_ranges)
-    used_uids: set[int] = set()  # 이미 다른 body 섹션이 점유한 usp_id
-    sub_usp_ids = list(range(2, len(usps) + 1))  # fallback 후보
-    body_uid_assigned: list[int | None] = []
-    body_force_count = 0
-    for k, (sn, start, end) in enumerate(body_sec_ranges):
-        # 1) 섹션 내 majority usp_id (Pre-Planner 결정 존중)
-        ids_in_sec = [usp_map.get(i) for i in range(start, end) if usp_map.get(i) is not None]
-        majority = _BodyCnt(ids_in_sec).most_common(1)[0][0] if ids_in_sec else None
-        target_uid: int | None = majority
-        # 2) majority가 null이면 — 미사용 sub usp 중 하나 배정
-        if target_uid is None:
-            unused_subs = [u for u in sub_usp_ids if u not in used_uids]
-            if unused_subs:
-                target_uid = unused_subs[0]
-            elif sub_usp_ids:
-                target_uid = sub_usp_ids[k % len(sub_usp_ids)]
-            else:
-                target_uid = 1
-        used_uids.add(target_uid)
-        body_uid_assigned.append(target_uid)
-        # 3) 섹션 내 모든 idx에 target_uid 적용 (일관성)
-        for i in range(start, end):
-            if usp_map.get(i) != target_uid:
-                usp_map[i] = target_uid
-                body_force_count += 1
-        # 4) slot_id도 body 섹션별 고유 (Section Planner slot 일관성)
-        for i in range(start, end):
-            slot_map[i] = 100 + k
-    if n_bodies:
-        logger.info("[body-usp] %d sections → assigned %s (majority + adaptive fallback): %d idx forced",
-                    n_bodies, body_uid_assigned, body_force_count)
-
-    # role 강제 X — Hook/Intro/Body/CTA 모두 ref 텍스트 톤 그대로 따름
-    # ref가 자랑/강조/조건/명령이면 그대로, ref가 pain이면 pain
     role_override: dict[int, str] = {}
 
     # 1c. SECTION PLANNERS (Pro × parallel)

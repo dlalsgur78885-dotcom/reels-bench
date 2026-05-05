@@ -217,8 +217,52 @@ def update_usp_personas(pid: int, req: UspPersonasUpdateRequest, request: Reques
     return {"message": "갱신 완료", "personas": req.personas}
 
 
+def _split_segment_by_sentences(seg: dict) -> list[dict]:
+    """단일 segment를 문장 경계(.!?)로 쪼개고 시간을 글자수 비율로 분배."""
+    text = (seg.get("text") or "").strip()
+    if not text:
+        return [seg]
+    start = float(seg.get("start", 0) or 0)
+    end = float(seg.get("end", start) or start)
+    # 문장 경계 패턴: .!? 다음 공백/끝
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    parts = [p.strip() for p in parts if p and p.strip()]
+    if len(parts) <= 1:
+        return [seg]
+    total_chars = sum(len(p) for p in parts) or 1
+    span = max(end - start, 0.1)
+    out = []
+    cur = start
+    for i, p in enumerate(parts):
+        # 마지막 조각은 정확히 end로
+        if i == len(parts) - 1:
+            piece_end = end
+        else:
+            piece_end = cur + span * len(p) / total_chars
+        new_seg = dict(seg)
+        new_seg["text"] = p
+        new_seg["start"] = round(cur, 1)
+        new_seg["end"] = round(piece_end, 1)
+        # section은 다시 매겨질 거라 비움
+        new_seg.pop("section", None)
+        out.append(new_seg)
+        cur = piece_end
+    return out
+
+
+def _resegment_to_sentences(segments: list[dict]) -> list[dict]:
+    """모든 segment를 문장 단위로 재분할. 이미 단일 문장이면 그대로."""
+    out = []
+    for s in segments:
+        out.extend(_split_segment_by_sentences(s))
+    return out
+
+
 @app.post("/api/script/classify-sentences/{shortcode}")
-def classify_sentences_for_reel(shortcode: str, request: Request):
+def classify_sentences_for_reel(
+    shortcode: str, request: Request,
+    resegment: bool = Query(True, description="다중 문장 segment를 문장 단위로 쪼갠 후 분류"),
+):
     """기존 분석된 릴스에 sentence-level section 분류 backfill."""
     auth_svc.require_user(request)
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
@@ -236,6 +280,9 @@ def classify_sentences_for_reel(shortcode: str, request: Request):
     transcript = trans[0].get("transcript", "")
     if not sentences:
         raise HTTPException(400, "sentences 없음")
+    # 1.5. 옵션: 다중 문장 segment를 문장 단위로 분할
+    if resegment:
+        sentences = _resegment_to_sentences(sentences)
     struct = _r.get(
         f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=hook,intro,body,cta&limit=1",
         headers=H, timeout=10,
@@ -1883,6 +1930,32 @@ def _normalize_instagram_username(value: str) -> str:
 @app.get("/api/channels")
 def get_channels():
     return supabase.sb_get("monitored_channels", "select=*&order=created_at.desc&limit=500")
+
+
+@app.get("/api/youtubers")
+def get_youtubers(
+    sort: str = Query("subscribers"),
+    q: str = Query(""),
+    category: str = Query(""),
+):
+    """유튜버 리스트 (구독자 / 일일 조회수 / 카테고리)."""
+    rows = supabase.sb_get(
+        "youtubers",
+        "select=youtube_handle,channel_name,category,subscribers,daily_views,subscriber_growth_rate,avatar_url,description,country_code,is_verified,engagement_rate&limit=2000",
+    ) or []
+    if q:
+        ql = q.lower()
+        rows = [r for r in rows if ql in (r.get("channel_name") or "").lower() or ql in (r.get("youtube_handle") or "").lower()]
+    if category:
+        cats = [c.strip() for c in category.split(",") if c.strip()]
+        rows = [r for r in rows if r.get("category") in cats]
+    if sort == "subscribers":
+        rows.sort(key=lambda r: r.get("subscribers") or 0, reverse=True)
+    elif sort == "daily_views":
+        rows.sort(key=lambda r: r.get("daily_views") or 0, reverse=True)
+    elif sort == "growth":
+        rows.sort(key=lambda r: r.get("subscriber_growth_rate") or 0, reverse=True)
+    return {"items": rows, "total": len(rows)}
 
 
 class ChannelAddRequest(BaseModel):

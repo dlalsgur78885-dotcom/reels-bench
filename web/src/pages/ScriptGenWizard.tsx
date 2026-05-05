@@ -126,17 +126,12 @@ export default function ScriptGenWizard() {
     return m ? m.user_usp_id : null
   }
 
-  // override 적용 후 unused user USPs 재계산 (chunk-level 사용 우선)
+  // override 적용 후 unused user USPs 재계산 — chunk effective USPs만 기준
   const effectiveUnusedUsps = (() => {
     if (!mapping) return []
     const used = new Set<number>()
     mapping.section_chunks.forEach(c => {
       const eff = effectiveChunkUspId(c)
-      if (eff) used.add(eff)
-    })
-    // chunk가 ref USP 없는 (hook/intro/cta) 경우는 ref USP override도 고려
-    mapping.usp_mapping.forEach(m => {
-      const eff = effectiveUserUspId(m)
       if (eff) used.add(eff)
     })
     return mapping.product.usps
@@ -160,10 +155,10 @@ export default function ScriptGenWizard() {
       )
       const newMapping = { ...mapping, product: { ...mapping.product, usps: newUsps } }
       setMapping(newMapping)
-      // allPersonas 갱신 — matched USP 인덱스에 한해
+      // allPersonas 갱신 — chunk effective USPs만 기준
       const matched = new Set<number>()
-      mapping.usp_mapping.forEach(m => {
-        const eff = effectiveUserUspId(m)
+      mapping.section_chunks.forEach(c => {
+        const eff = effectiveChunkUspId(c)
         if (eff) matched.add(eff)
       })
       const collected: typeof allPersonas = []
@@ -189,10 +184,6 @@ export default function ScriptGenWizard() {
       const eff = effectiveChunkUspId(c)
       if (eff) matched.add(eff)
     })
-    mapping.usp_mapping.forEach(m => {
-      const eff = effectiveUserUspId(m)
-      if (eff) matched.add(eff)
-    })
     return mapping.product.usps
       .map((u: any, i: number) => ({
         idx: i,
@@ -209,14 +200,10 @@ export default function ScriptGenWizard() {
     if (!mapping) return
     setStep('persona')
 
-    // override 반영한 매칭된 user USP 인덱스 (chunk-level + ref-level)
+    // override 반영한 매칭된 user USP 인덱스 — chunk effective USPs만 기준
     const matched = new Set<number>()
     mapping.section_chunks.forEach(c => {
       const eff = effectiveChunkUspId(c)
-      if (eff) matched.add(eff)
-    })
-    mapping.usp_mapping.forEach(m => {
-      const eff = effectiveUserUspId(m)
       if (eff) matched.add(eff)
     })
 

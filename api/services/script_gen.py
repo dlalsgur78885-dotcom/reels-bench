@@ -1430,7 +1430,8 @@ def extract_personas(usp: str, reviews: list[str], pain_solved: str = "") -> lis
 JSON만 출력. 설명 금지.
 """
     try:
-        result = call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=4096)
+        # Flash 사용 — 페르소나 분류는 단순 추출이라 속도 우선 (Pro 대비 5~6배 빠름)
+        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=4096)
         if isinstance(result, list) and result:
             result = result[0]
         if isinstance(result, dict):

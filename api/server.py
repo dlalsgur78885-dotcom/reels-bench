@@ -287,6 +287,69 @@ def rebuild_transcript_from_ocr(shortcode: str, request: Request, force: bool = 
     }
 
 
+@app.post("/api/script/reanalyze-structure/{shortcode}")
+def reanalyze_structure_for_reel(shortcode: str, request: Request):
+    """script_structure를 transcript 기반으로 재생성. 이후 usp_layout + body_chunks도 자동 재분석."""
+    auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+
+    tr_rows = _r.get(
+        f"{SUPA}/rest/v1/reels_transcripts?shortcode=eq.{shortcode}&select=transcript&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    if not tr_rows or not tr_rows[0].get("transcript"):
+        raise HTTPException(404, "transcript 없음")
+    transcript = tr_rows[0]["transcript"]
+
+    meta_rows = _r.get(
+        f"{SUPA}/rest/v1/reels_metadata?shortcode=eq.{shortcode}&select=caption_text&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    caption = (meta_rows[0].get("caption_text") if meta_rows else "") or ""
+
+    from services import gemini as _g
+    structure = _g.analyze_script_structure(transcript, caption)
+    if not structure:
+        raise HTTPException(500, "structure 재생성 실패")
+
+    # 기존 overall 보존 (usp_layout, section_roles 등) 후 새 분석으로 덮어쓰기
+    cur_rows = _r.get(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=overall&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    cur_overall = (cur_rows[0].get("overall") if cur_rows else {}) or {}
+    new_overall = structure.get("overall") or {}
+    # 보존: 누적된 분석 필드들
+    for k in ("usp_layout", "ad_format", "ad_suitability_score", "ad_format_reason",
+              "section_roles", "body_chunks"):
+        if cur_overall.get(k) is not None and not new_overall.get(k):
+            new_overall[k] = cur_overall[k]
+
+    _r.patch(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
+        headers={**H, "Prefer": "return=minimal"},
+        json={
+            "hook": structure.get("hook"),
+            "intro": structure.get("intro"),
+            "body": structure.get("body"),
+            "cta": structure.get("cta"),
+            "overall": new_overall,
+        }, timeout=15,
+    )
+    pipeline.extra_cache.pop(shortcode, None)
+    return {
+        "shortcode": shortcode,
+        "hook_text": (structure.get("hook") or {}).get("text", ""),
+        "intro_text": (structure.get("intro") or {}).get("text", ""),
+        "body_text": (structure.get("body") or {}).get("text", ""),
+        "cta_text": (structure.get("cta") or {}).get("text", ""),
+        "next_step": "classify-sentences + reanalyze-usp-layout 호출 권장 (선택)",
+    }
+
+
 @app.post("/api/script/reanalyze-usp-layout/{shortcode}")
 def reanalyze_usp_layout_for_reel(shortcode: str, request: Request):
     """analyze_usp_layout 강화된 룰(1 USP = 1 차원)로 재실행 → overall.usp_layout 갱신.

@@ -908,20 +908,55 @@ export default function ScriptGen() {
               </div>
             )}
 
-            {/* 문장 타임라인 */}
+            {/* 문장 타임라인 — 참고 릴스의 섹션 라벨을 시간 매칭으로 부여 */}
             <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 6 }}>문장 타임라인</div>
             <div style={{ background: 'var(--bg-base)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 10, marginBottom: 12 }}>
-              {(displayed.sentences || []).map((s, i) => (
-                <div key={i} style={{ padding: '6px 0', borderBottom: '1px solid var(--border-subtle)', fontSize: 12, lineHeight: 1.7 }}>
-                  <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: 11, marginRight: 6 }}>
-                    [{s.start.toFixed(1)}~{s.end.toFixed(1)}s]
-                  </span>
-                  {s.direction && <span style={{ background: '#ede9fe', color: '#7c3aed', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 999, marginRight: 4 }}>🎙 {s.direction}</span>}
-                  {s.emotion && <span style={{ background: '#fce7f3', color: '#be185d', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 999, marginRight: 4 }}>{s.emotion}{s.intensity ? ` ${Math.round(s.intensity*100)}%` : ''}</span>}
-                  {s.delivery && s.delivery !== 'normal' && <span style={{ background: '#FEF3C7', color: '#B45309', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 999, marginRight: 4 }}>{s.delivery}</span>}
-                  <span>{s.text}</span>
-                </div>
-              ))}
+              {(() => {
+                const refSents = refScripts[refSelected[0]?.shortcode]?.sentences || []
+                const findSection = (st: number, en: number): string => {
+                  let bestOverlap = 0
+                  let bestSection = ''
+                  for (const r of refSents) {
+                    const ov = Math.max(0, Math.min(en, r.end) - Math.max(st, r.start))
+                    if (ov > bestOverlap) {
+                      bestOverlap = ov
+                      bestSection = (r.section || '').toLowerCase()
+                    }
+                  }
+                  return bestSection
+                }
+                const sectionLabel = (sec: string) => sec === 'hook' ? 'Hook'
+                  : sec === 'intro' ? 'Intro'
+                  : sec === 'cta' ? 'CTA'
+                  : sec.startsWith('body') ? sec.replace('_', ' ').toUpperCase()
+                  : ''
+                const sectionColor = (sec: string) => sec === 'hook' ? '#EF4444'
+                  : sec === 'intro' ? '#8B5CF6'
+                  : sec.startsWith('body') ? '#307df0'
+                  : sec === 'cta' ? '#F59E0B'
+                  : 'var(--text-muted)'
+                return (displayed.sentences || []).map((s, i) => {
+                  const sec = findSection(s.start, s.end)
+                  const label = sectionLabel(sec)
+                  const color = sectionColor(sec)
+                  return (
+                    <div key={i} style={{ padding: '6px 0', borderBottom: '1px solid var(--border-subtle)', fontSize: 12, lineHeight: 1.7 }}>
+                      <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: 11, marginRight: 6 }}>
+                        [{s.start.toFixed(1)}~{s.end.toFixed(1)}s]
+                      </span>
+                      {label && <span style={{
+                        fontSize: 9, fontWeight: 700, color, padding: '1px 6px',
+                        border: `1px solid ${color}`, borderRadius: 3, marginRight: 4,
+                        textTransform: 'uppercase', letterSpacing: '.04em',
+                      }}>{label}</span>}
+                      {s.direction && <span style={{ background: '#ede9fe', color: '#7c3aed', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 999, marginRight: 4 }}>🎙 {s.direction}</span>}
+                      {s.emotion && <span style={{ background: '#fce7f3', color: '#be185d', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 999, marginRight: 4 }}>{s.emotion}{s.intensity ? ` ${Math.round(s.intensity*100)}%` : ''}</span>}
+                      {s.delivery && s.delivery !== 'normal' && <span style={{ background: '#FEF3C7', color: '#B45309', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 999, marginRight: 4 }}>{s.delivery}</span>}
+                      <span>{s.text}</span>
+                    </div>
+                  )
+                })
+              })()}
             </div>
 
             {/* TTS Script */}

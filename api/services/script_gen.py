@@ -298,14 +298,25 @@ def analyze_section_chunks(ref: dict) -> list[dict]:
 - relation_to_prev: start / 확장 / 대조 / 심화 / 새토픽 / 회수 / 요약
 - summary: 한 줄
 
-### ⭐ CTA primary_usp_id 룰
-- **특정 USP의 기능·혜택을 직접 명시 / 재강조** → 그 USP id
-- **"모든 정보 / 한 번에 / 통합 / 위 모든 ~ / 다 받고 싶다면"** 같이 **여러 USP 통합 호소** → **primary_usp_id = null** + usp_ids에 등장한 모든 id 배열로
-- **"팔로우 / 저장 / 댓글 / 공유 / DM / 링크"** 같은 **generic 액션만** + 특정 USP 재언급 X → **primary_usp_id = null** + usp_ids = []
-- 예시:
-  - "다다의 팔로우하고 댓글에 일본 쿠폰 남겨줘 / DM으로 쏴줄게" → primary=null (generic action + "쿠폰"은 모든 USP 통칭)
-  - "이 모든 정보를 한 번에" → primary=null, usp_ids=[1,2,3]
-  - "이 잠옷 하나로 해결" (특정 제품 재강조) → primary=MAIN id
+### ⭐⭐⭐ CTA primary_usp_id 룰 (반드시 따를 것)
+**디폴트로 MAIN을 박지 마세요.** 텍스트가 어느 USP를 다루는지 보고 결정.
+
+규칙 (위에서부터 적용):
+1. cta 텍스트에 **"모든 / 한 번에 / 통합 / 다 / 위 ~ / 전부"** 같은 통합 키워드 등장 → **primary_usp_id = null** + usp_ids = 통합되는 USP 모두
+2. cta가 **generic 플랫폼 액션만** ("팔로우 / 저장 / 댓글 / 공유 / DM / 링크 / 알람")이고 특정 USP 기능 재언급 X → **primary_usp_id = null**, usp_ids = []
+3. cta가 **특정 USP 기능을 명시·재강조** ("우버 코드 챙기자" / "이 가격 알람으로 절약") → 그 USP id
+4. **헷갈리면 무조건 null** — primary는 비워도 됨
+
+**❌ 잘못된 예 (자주 나오는 실수):**
+- 텍스트: "이 모든 정보를 한 번에 받고 싶다면 / 팔로우하고 댓글에 일본 쿠폰 남겨줘 / DM으로 쏴줄게"
+  → 잘못: primary_usp_id=1 (MAIN 디폴트로 박음) ❌
+  → 정답: **primary_usp_id=null, usp_ids=[1,2,3]** (통합 호소 + generic 액션)
+
+**✅ 올바른 예:**
+- "이 모든 ~" → null
+- "팔로우/댓글/DM" only → null
+- "잠옷 하나로 해결" + 우리 제품이 핵심 잠옷 → MAIN id (재강조)
+- "우버 할인 코드 잊지 말고 챙기자" (USP1 직접 언급) → 1
 
 JSON만:
 {{
@@ -349,7 +360,16 @@ JSON만:
         if primary is not None:
             try: primary = int(primary)
             except: primary = None
-        if primary is None and usp_ids:
+        # ⭐ CTA + 통합 호소(usp_ids 2개 이상 또는 통합 키워드) → primary 강제 null
+        if sec == "cta":
+            chunk_text = " ".join(s.get("text", "") for s in chunk_sents)
+            integrate_keywords = ["모든", "한 번에", "한번에", "통합", "전부", "위에", "위 모든"]
+            has_integrate = any(k in chunk_text for k in integrate_keywords)
+            if len(usp_ids) >= 2 or has_integrate:
+                primary = None
+                logger.info("[cta-null] %s primary→null (usp_ids=%s, integrate=%s)",
+                            sec, usp_ids, has_integrate)
+        if primary is None and usp_ids and sec != "cta":
             primary = usp_ids[0]
         if primary is not None and primary not in usp_ids:
             usp_ids = [primary] + usp_ids

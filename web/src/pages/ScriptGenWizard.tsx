@@ -78,6 +78,34 @@ export default function ScriptGenWizard() {
     }
   }
 
+  // ref USP 라벨/설명 저장 — DB 저장 + 로컬 mapping 갱신
+  const saveRefUsp = async (
+    refUspId: number,
+    fields: { label?: string; description?: string },
+  ): Promise<{ ok: boolean; error?: string }> => {
+    if (!shortcode || !mapping) return { ok: false, error: '매핑 미로드' }
+    const newRefUsps = mapping.ref_usps.map(ru =>
+      ru.id === refUspId
+        ? { ...ru, label: fields.label ?? ru.label, description: fields.description ?? ru.description }
+        : ru
+    )
+    try {
+      await api.updateUspLayout(shortcode, newRefUsps)
+    } catch (e: any) {
+      return { ok: false, error: e.message || 'DB 저장 실패' }
+    }
+    setMapping({
+      ...mapping,
+      ref_usps: newRefUsps,
+      usp_mapping: mapping.usp_mapping.map(m =>
+        m.ref_usp_id === refUspId
+          ? { ...m, ref_label: fields.label ?? m.ref_label, ref_description: fields.description ?? m.ref_description }
+          : m
+      ),
+    })
+    return { ok: true }
+  }
+
   // 새 USP를 즉석 생성 + my_products DB에 저장 + 매핑 자동 적용
   const createUspForRef = async (
     refUspId: number,
@@ -402,6 +430,7 @@ export default function ScriptGenWizard() {
             })
           }}
           onCreateUsp={createUspForRef}
+          onSaveRefUsp={saveRefUsp}
           onBack={() => setStep('product')}
           onNext={goToPersona}
         />
@@ -564,7 +593,7 @@ function StepProduct({
 function StepMapping({
   mapping, loading, error, overrides, chunkOverrides, unusedUsps, onChunkOverride,
   getEffectiveChunkUspId, chunkEdits, editingChunk, setChunkEdits, toggleChunkEdit,
-  onCreateUsp, onBack, onNext,
+  onCreateUsp, onSaveRefUsp, onBack, onNext,
 }: {
   mapping: MappingPreview | null
   loading: boolean
@@ -579,6 +608,7 @@ function StepMapping({
   setChunkEdits: React.Dispatch<React.SetStateAction<Record<string, { topic: string; role: string; section?: string }>>>
   toggleChunkEdit: (section: string, currentTopic: string, currentRole: string) => void
   onCreateUsp: (refUspId: number, name: string, description: string, reviews: string[]) => Promise<{ ok: boolean; error?: string }>
+  onSaveRefUsp: (refUspId: number, fields: { label?: string; description?: string }) => Promise<{ ok: boolean; error?: string }>
   onBack: () => void
   onNext: () => void
 }) {
@@ -588,6 +618,8 @@ function StepMapping({
   const [newReviews, setNewReviews] = useState('')
   const [creating, setCreating] = useState(false)
   const [createErr, setCreateErr] = useState('')
+  const [refUspEditing, setRefUspEditing] = useState<number | null>(null)
+  const [refUspDraft, setRefUspDraft] = useState<{ label?: string; description?: string } | null>(null)
 
   const startCreate = (refUspId: number, refDesc: string) => {
     setCreatingFor(refUspId)
@@ -786,12 +818,64 @@ function StepMapping({
                     padding: '8px 0',
                   }}>
                     <div>
-                      <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-                        ref USP{mappingRec.ref_usp_id}{mappingRec.ref_label ? ` · ${mappingRec.ref_label}` : ''}
-                      </div>
-                      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
-                        {mappingRec.ref_description}
-                      </div>
+                      {refUspEditing === mappingRec.ref_usp_id ? (
+                        <div style={{ display: 'grid', gap: 4 }}>
+                          <input
+                            value={refUspDraft?.label ?? mappingRec.ref_label}
+                            onChange={(e) => setRefUspDraft({ ...refUspDraft, label: e.target.value })}
+                            placeholder="label (MAIN/SUB)"
+                            style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}
+                          />
+                          <textarea
+                            value={refUspDraft?.description ?? mappingRec.ref_description}
+                            onChange={(e) => setRefUspDraft({ ...refUspDraft, description: e.target.value })}
+                            placeholder="description"
+                            rows={2}
+                            style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', resize: 'vertical', fontFamily: 'inherit' }}
+                          />
+                          <div style={{ display: 'flex', gap: 4 }}>
+                            <button
+                              onClick={async () => {
+                                const r = await onSaveRefUsp(mappingRec.ref_usp_id, {
+                                  label: refUspDraft?.label,
+                                  description: refUspDraft?.description,
+                                })
+                                if (r.ok) {
+                                  setRefUspEditing(null); setRefUspDraft(null)
+                                } else {
+                                  alert('저장 실패: ' + (r.error || ''))
+                                }
+                              }}
+                              style={{ padding: '3px 10px', fontSize: 11, fontWeight: 600, background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 3, cursor: 'pointer' }}>
+                              저장 (DB)
+                            </button>
+                            <button
+                              onClick={() => { setRefUspEditing(null); setRefUspDraft(null) }}
+                              style={{ padding: '3px 10px', fontSize: 11, background: 'var(--bg-surface)', color: 'var(--text-body)', border: '1px solid var(--border)', borderRadius: 3, cursor: 'pointer' }}>
+                              취소
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                            <div style={{ fontWeight: 600, color: 'var(--text-primary)', flex: 1 }}>
+                              ref USP{mappingRec.ref_usp_id}{mappingRec.ref_label ? ` · ${mappingRec.ref_label}` : ''}
+                            </div>
+                            <button
+                              onClick={() => {
+                                setRefUspEditing(mappingRec.ref_usp_id)
+                                setRefUspDraft({ label: mappingRec.ref_label, description: mappingRec.ref_description })
+                              }}
+                              style={{ padding: '1px 6px', fontSize: 10, border: '1px solid var(--border)', borderRadius: 3, background: 'var(--bg-surface)', cursor: 'pointer' }}>
+                              ✏
+                            </button>
+                          </div>
+                          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
+                            {mappingRec.ref_description}
+                          </div>
+                        </>
+                      )}
                     </div>
                     <div style={{ color: 'var(--text-muted)', paddingTop: 2 }}>→</div>
                     <div>

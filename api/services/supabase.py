@@ -77,3 +77,43 @@ def storage_list(bucket, prefix="", limit=1000):
         timeout=10,
     )
     return r.json() if r.status_code == 200 else []
+
+
+def storage_upload(bucket, path, file_bytes, content_type="application/octet-stream", upsert=True):
+    """파일을 Supabase Storage에 업로드. (bucket, path) 위치에. Returns (ok, error_msg)."""
+    sk = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip() or SUPABASE_ANON_KEY
+    h = {
+        "apikey": sk,
+        "Authorization": f"Bearer {sk}",
+        "Content-Type": content_type,
+    }
+    if upsert:
+        h["x-upsert"] = "true"
+    r = _session.post(
+        f"{SUPABASE_URL}/storage/v1/object/{bucket}/{path}",
+        headers=h, data=file_bytes, timeout=60,
+    )
+    if r.status_code in (200, 201):
+        return True, None
+    return False, f"{r.status_code}: {r.text[:200]}"
+
+
+def storage_create_bucket(name, public=True):
+    """버킷 생성 (이미 있으면 409 → OK 처리). idempotent."""
+    sk = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip() or SUPABASE_ANON_KEY
+    h = {
+        "apikey": sk,
+        "Authorization": f"Bearer {sk}",
+        "Content-Type": "application/json",
+    }
+    r = _session.post(
+        f"{SUPABASE_URL}/storage/v1/bucket",
+        headers=h,
+        json={"id": name, "name": name, "public": public},
+        timeout=10,
+    )
+    return r.status_code in (200, 201, 409, 400)  # 400 = duplicate (Supabase 메시지 다름)
+
+
+def storage_public_url(bucket, path):
+    return f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{path}"

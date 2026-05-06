@@ -1,6 +1,8 @@
 import { getAccessToken } from './supabase'
 
 export const BASE = import.meta.env.VITE_API_BASE || ''
+// TTS 전용 (Render 별도 배포). 미설정 시 BASE로 폴백 (로컬 dev).
+export const TTS_BASE = import.meta.env.VITE_TTS_API_BASE || BASE
 
 async function authedHeaders(extra?: HeadersInit): Promise<HeadersInit> {
   const token = await getAccessToken()
@@ -12,6 +14,11 @@ async function authedHeaders(extra?: HeadersInit): Promise<HeadersInit> {
 export async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = await authedHeaders(init.headers)
   return fetch(`${BASE}${path}`, { ...init, headers })
+}
+
+export async function ttsAuthedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = await authedHeaders(init.headers)
+  return fetch(`${TTS_BASE}${path}`, { ...init, headers })
 }
 
 async function get<T>(path: string): Promise<T> {

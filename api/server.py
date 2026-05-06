@@ -16,6 +16,7 @@ logger = logging.getLogger("uvicorn.error")
 
 from services import supabase, pipeline, thumb, comments, script_gen
 from services import secrets as secrets_svc
+from services import elevenlabs as tts_svc
 
 app = FastAPI(title="Reels Bench API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -2108,18 +2109,21 @@ def get_ads(
     for r in reels:
         sc = r["shortcode"]
         m = meta_map.get(sc, {})
+        video_url = m.get("video_url") or ""
+        if not video_url:
+            continue  # 영상 광고만
         items.append({
             "shortcode": sc,
             "url": r.get("url") or "",
             "page_name": m.get("author_username") or "",
             "caption": m.get("caption_text") or "",
-            "video_url": m.get("video_url") or "",
+            "video_url": video_url,
             "video_duration": m.get("video_duration") or 0,
             "thumbnail_url": m.get("thumbnail_url") or "",
             "collected_at": r.get("collected_at") or "",
             # 향후 facebook ads 프로젝트 ads 테이블 연결 시 채워질 필드
             "start_date": "",
-            "media_type": "video" if m.get("video_url") else "image",
+            "media_type": "video",
             "platforms": [],
         })
 
@@ -2783,6 +2787,8 @@ def fb_search_ads(q: str = Query(""), limit: int = Query(50, ge=1, le=200)):
         f"&limit=2000",
         headers=H, timeout=15,
     ).json() or []
+    # 영상 광고만
+    rows = [m for m in rows if m.get("video_url")]
     if q:
         ql = q.lower()
         rows = [m for m in rows if
@@ -2849,6 +2855,278 @@ def get_youtubers(
     elif sort == "growth":
         rows.sort(key=lambda r: r.get("subscriber_growth_rate") or 0, reverse=True)
     return {"items": rows, "total": len(rows)}
+
+
+@app.get("/api/yt/bench")
+def get_yt_bench(
+    page: int = Query(1, ge=1),
+    limit: int = Query(30, ge=1, le=100),
+    sort: str = Query("recent"),
+    q: str = Query(""),
+):
+    """유튜브 쇼츠 벤치마크 — youtube_shorts + youtube_shorts_metadata 머지."""
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_core = ex.submit(_r.get,
+            f"{SUPA}/rest/v1/youtube_shorts?select=shortcode,url,collected_at&order=collected_at.desc&limit=2000",
+            headers=H, timeout=15)
+        f_meta = ex.submit(_r.get,
+            f"{SUPA}/rest/v1/youtube_shorts_metadata?select=shortcode,view_count,like_count,comment_count,video_duration,thumbnail_url,caption_text,author_username,author_full_name,taken_at&limit=2000",
+            headers=H, timeout=15)
+        f_an = ex.submit(_r.get,
+            f"{SUPA}/rest/v1/youtube_shorts_pro_audio?select=shortcode&limit=2000",
+            headers=H, timeout=15)
+    core = f_core.result().json() or []
+    meta_map = {m["shortcode"]: m for m in (f_meta.result().json() or [])}
+    analyzed = {a["shortcode"] for a in (f_an.result().json() or [])}
+
+    items = []
+    total_views = total_likes = 0
+    for c in core:
+        sc = c["shortcode"]
+        m = meta_map.get(sc, {})
+        views = m.get("view_count") or 0
+        likes = m.get("like_count") or 0
+        total_views += views
+        total_likes += likes
+        items.append({
+            "shortcode": sc,
+            "url": c.get("url") or f"https://www.youtube.com/shorts/{sc}",
+            "author": m.get("author_full_name") or m.get("author_username") or "",
+            "author_handle": m.get("author_username") or "",
+            "play_count": views,
+            "like_count": likes,
+            "comment_count": m.get("comment_count") or 0,
+            "video_duration": m.get("video_duration") or 0,
+            "thumbnail_url": m.get("thumbnail_url") or f"https://i.ytimg.com/vi/{sc}/hqdefault.jpg",
+            "caption": (m.get("caption_text") or "")[:200],
+            "collected_at": c.get("collected_at") or "",
+            "taken_at": m.get("taken_at") or "",
+            "analyzed": sc in analyzed,
+        })
+    if q:
+        ql = q.lower()
+        items = [i for i in items if
+                 ql in i["author"].lower() or ql in i["author_handle"].lower() or
+                 ql in (i["caption"] or "").lower() or ql in i["shortcode"].lower()]
+    if sort == "plays":
+        items.sort(key=lambda i: i["play_count"], reverse=True)
+    elif sort == "likes":
+        items.sort(key=lambda i: i["like_count"], reverse=True)
+    elif sort == "er":
+        items.sort(key=lambda i: (i["like_count"] / i["play_count"]) if i["play_count"] else 0, reverse=True)
+    else:  # recent
+        items.sort(key=lambda i: i["collected_at"], reverse=True)
+    total = len(items)
+    start = (page - 1) * limit
+    return {
+        "items": items[start:start + limit],
+        "stats": {
+            "total_shorts": len(core),
+            "total_views": total_views,
+            "total_likes": total_likes,
+            "analyzed_count": len(analyzed),
+        },
+        "total": total,
+        "page": page,
+        "has_more": start + limit < total,
+    }
+
+
+@app.get("/api/yt/bench/{vid}")
+def get_yt_bench_detail(vid: str):
+    """유튜브 쇼츠 단일 상세 — 메타 + audio/video 분석 + 자막."""
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+
+    def _g(table: str, sel: str = "*"):
+        rr = _r.get(
+            f"{SUPA}/rest/v1/{table}?shortcode=eq.{vid}&select={sel}&limit=1",
+            headers=H, timeout=10,
+        )
+        rows = rr.json() if rr.status_code == 200 else []
+        return rows[0] if rows else None
+
+    core = _g("youtube_shorts")
+    meta = _g("youtube_shorts_metadata")
+    audio = _g("youtube_shorts_pro_audio")
+    ss = _g("youtube_shorts_script_structure")
+    cat = _g("youtube_shorts_category")
+    if not core:
+        raise HTTPException(404, f"shortcode {vid} not found")
+
+    pa = (audio or {}).get("pro_audio") or {}
+    raw_emos = (audio or {}).get("audio_emotions") or []
+    raw_bgm = (audio or {}).get("bgm_changes") or []
+    duration = int(round(pa.get("duration_sec") or (meta or {}).get("video_duration") or 0))
+
+    def _to_sec(v):
+        if v is None:
+            return 0.0
+        if isinstance(v, (int, float)):
+            return float(v)
+        s = str(v).strip()
+        if ":" in s:
+            try:
+                m, ss_ = s.split(":")
+                return int(m) * 60 + float(ss_)
+            except Exception:
+                return 0.0
+        try:
+            return float(s)
+        except Exception:
+            return 0.0
+
+    # audio_emotions list -> Record<sec_int, EmotionData> (1-indexed, IG-호환)
+    audio_emotions: dict[int, dict] = {}
+    if isinstance(raw_emos, list):
+        for sec in range(1, max(duration, 1) + 1):
+            t = sec - 0.5
+            for e in raw_emos:
+                eS = _to_sec(e.get("start"))
+                eE = _to_sec(e.get("end"))
+                if eS <= t < eE:
+                    audio_emotions[sec] = {
+                        "pitch": 0,
+                        "volume": int(round((e.get("intensity") or 0) * 100)),
+                        "silence": False,
+                        "emotion": e.get("emotion") or "",
+                        "label": e.get("emotion") or "",
+                        "confidence": float(e.get("intensity") or 0),
+                    }
+                    break
+    elif isinstance(raw_emos, dict):
+        audio_emotions = raw_emos
+
+    # bgm_changes list of bands -> [{sec, score}] for FrameTimeline 마커 (각 band 시작점 + 1.0)
+    bgm_changes_compat = []
+    seen_sec = set()
+    if isinstance(raw_bgm, list):
+        for b in raw_bgm:
+            sec = int(round(_to_sec(b.get("start"))))
+            if sec not in seen_sec:
+                bgm_changes_compat.append({"sec": sec, "score": 1.0})
+                seen_sec.add(sec)
+
+    # tts_script -> script_by_sec (Record<sec, text>)
+    script_by_sec: dict[int, str] = {}
+    for s in (pa.get("tts_script") or []):
+        sS = _to_sec(s.get("start"))
+        sE = _to_sec(s.get("end"))
+        text = (s.get("text") or "").strip()
+        if not text:
+            continue
+        a = max(0, int(sS))
+        b = max(a, int(sE) + (1 if sE > int(sE) else 0))
+        for sec in range(a, b + 1):
+            script_by_sec[sec + 1] = text  # IG는 1-indexed (currentSec + 1)
+
+    # frame_images: Storage 'frames' 버킷에서 조회
+    frame_images: dict[int, str] = {}
+    try:
+        rows = supabase.storage_list("frames", vid)
+        base = f"{SUPA}/storage/v1/object/public/frames/{vid}"
+        for row in rows:
+            name = str(row.get("name") or "")
+            stem = name.rsplit(".", 1)[0]
+            if not (name.lower().endswith(".webp") or name.lower().endswith(".jpg")) or not stem.isdigit():
+                continue
+            sec = int(stem)
+            if sec not in frame_images or name.lower().endswith(".webp"):
+                frame_images[sec] = f"{base}/{name}"
+    except Exception:
+        pass
+
+    return {
+        "shortcode": vid,
+        "url": (core or {}).get("url"),
+        "metadata": meta or {},
+        "pro_audio": pa,
+        "audio_emotions": audio_emotions,
+        "audio_emotions_raw": raw_emos,
+        "bgm_changes": bgm_changes_compat,
+        "bgm_changes_raw": raw_bgm,
+        "tts": pa.get("tts_script") or [],
+        "frame_analysis": pa.get("frame_analysis") or "",
+        "frame_ocr": pa.get("frame_ocr") or {},
+        "script_by_sec": script_by_sec,
+        "frame_images": dict(sorted(frame_images.items())),
+        "script_structure": ss or None,
+        "category": cat or None,
+    }
+
+
+class YoutuberAddRequest(BaseModel):
+    handle: str  # @channel 또는 https://youtube.com/@channel
+
+
+def _normalize_yt_handle(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    # URL → handle 추출
+    import re
+    m = re.search(r"youtube\.com/(@[A-Za-z0-9._-]+)", raw, re.IGNORECASE)
+    if m:
+        h = m.group(1)
+    elif raw.startswith("@"):
+        h = raw
+    else:
+        h = "@" + raw
+    return h.replace(" ", "")
+
+
+@app.post("/api/youtubers")
+def add_youtuber(req: YoutuberAddRequest, request: Request):
+    auth_svc.require_user(request)
+    handle = _normalize_yt_handle(req.handle)
+    if not handle or len(handle) < 2:
+        raise HTTPException(400, "핸들이 필요합니다 (@channel 형식)")
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+    # 중복 체크
+    exists = _r.get(
+        f"{SUPA}/rest/v1/youtubers?youtube_handle=eq.{handle}&select=youtube_handle",
+        headers=H, timeout=10,
+    ).json() or []
+    if exists:
+        return {"ok": True, "duplicate": True, "handle": handle}
+    payload = {
+        "youtube_handle": handle,
+        "channel_name": handle.lstrip("@"),  # 메타데이터 fetch 전 임시
+    }
+    rr = _r.post(
+        f"{SUPA}/rest/v1/youtubers",
+        headers={**H, "Content-Type": "application/json", "Prefer": "return=minimal"},
+        json=payload, timeout=15,
+    )
+    if rr.status_code not in (200, 201, 204):
+        raise HTTPException(500, f"저장 실패: {rr.status_code} {rr.text[:120]}")
+    return {"ok": True, "handle": handle}
+
+
+@app.delete("/api/youtubers/{handle}")
+def delete_youtuber(handle: str, request: Request):
+    auth_svc.require_user(request)
+    h = _normalize_yt_handle(handle)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+    rr = _r.delete(
+        f"{SUPA}/rest/v1/youtubers?youtube_handle=eq.{h}",
+        headers=H, timeout=15,
+    )
+    if rr.status_code not in (200, 204):
+        raise HTTPException(500, f"삭제 실패: {rr.status_code}")
+    return {"ok": True, "handle": h}
 
 
 class ChannelAddRequest(BaseModel):
@@ -3079,6 +3357,102 @@ def debug_fs():
         "root_public_exists": (root / "public").is_dir(),
         "api_public_files": sorted(p.name for p in (here / "public").iterdir()) if (here / "public").is_dir() else None,
     }
+
+
+# ── ElevenLabs TTS 합성 ──
+
+class TtsSynthRequest(BaseModel):
+    sentences: list[dict]
+    voice_name: str = "yuna"
+    model_id: str = "eleven_v3"
+    emotion_strength: float = 0.5  # 0.0~1.0 (전체 base)
+
+
+class TtsSegmentRequest(BaseModel):
+    job_id: str
+    idx: int
+    strength_level: int  # -2 (매우 약) ~ +2 (매우 강)
+
+
+@app.get("/api/tts/voices")
+def tts_voices():
+    return {
+        "presets": [
+            {"value": k, "label": v["label"]}
+            for k, v in tts_svc.PRESETS.items()
+        ],
+        "ttl_sec": tts_svc.DEFAULT_TTL_SEC,
+    }
+
+
+@app.post("/api/tts/synthesize")
+def tts_synthesize(req: TtsSynthRequest):
+    if not req.sentences:
+        raise HTTPException(400, "sentences 비어있음")
+    if req.voice_name not in tts_svc.PRESETS:
+        raise HTTPException(400, f"unknown voice preset: {req.voice_name}")
+    try:
+        tts_svc.cleanup_old_files()
+        result = tts_svc.synthesize_script(
+            sentences=req.sentences,
+            voice_name=req.voice_name,
+            model_id=req.model_id,
+            emotion_strength=req.emotion_strength,
+        )
+        logger.info("[tts/synth] OK job=%s voice=%s segs=%d chars=%d dur=%.1fs",
+                    result["job_id"], req.voice_name, result["segment_count"],
+                    result["char_count"], result["total_duration"])
+        return result
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error("[tts/synth] FAILED: %s", e)
+        raise HTTPException(500, f"TTS 합성 실패: {e}")
+
+
+@app.post("/api/tts/segment")
+def tts_regenerate_segment(req: TtsSegmentRequest):
+    if not isinstance(req.strength_level, int) or req.strength_level < -2 or req.strength_level > 2:
+        raise HTTPException(400, "strength_level은 -2 ~ +2 정수")
+    try:
+        result = tts_svc.regenerate_segment(req.job_id, req.idx, req.strength_level)
+        logger.info("[tts/segment] OK job=%s idx=%d level=%+d",
+                    req.job_id, req.idx, req.strength_level)
+        return result
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error("[tts/segment] FAILED: %s", e)
+        raise HTTPException(500, f"문장 재합성 실패: {e}")
+
+
+@app.get("/api/tts/job/{job_id}")
+def tts_job_state(job_id: str):
+    try:
+        return tts_svc.get_job(job_id)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/api/tts/files/{job_id}/{filename}")
+def tts_download_job(job_id: str, filename: str):
+    p = tts_svc.file_path(job_id, filename)
+    if not p:
+        raise HTTPException(404, "file not found or expired")
+    from fastapi.responses import FileResponse
+    return FileResponse(str(p), media_type="audio/mpeg", filename=filename)
+
+
+# 구버전 호환 (job 폴더 없는 단일 mp3)
+@app.get("/api/tts/files/{filename}")
+def tts_download_legacy(filename: str):
+    p = tts_svc.file_path(filename)
+    if not p:
+        raise HTTPException(404, "file not found or expired")
+    from fastapi.responses import FileResponse
+    return FileResponse(str(p), media_type="audio/mpeg", filename=filename)
 
 
 # ── Serve built frontend (must be last: catches all non-API routes) ──

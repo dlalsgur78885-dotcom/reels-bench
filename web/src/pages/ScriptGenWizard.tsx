@@ -1239,6 +1239,7 @@ function StepDone({
   result: Record<string, GeneratedScript>
   onRestart: () => void
 }) {
+  const navigate = useNavigate()
   const tabs = Object.keys(result)
   const [active, setActive] = useState(tabs[0] || '')
   const cur = active && result[active] ? result[active] : null
@@ -1260,14 +1261,26 @@ function StepDone({
 
       {cur && (
         <div style={cardSt}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 8, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 16, fontWeight: 700 }}>
               생성된 대본 ({cur.duration_target_sec}초)
             </div>
-            <button onClick={async () => {
-              const text = cur.tts_script || (cur.sentences || []).map(s => s.text).join('\n')
-              await navigator.clipboard.writeText(text)
-            }} style={ghostBtnSt}>TTS 복사</button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={async () => {
+                const text = cur.tts_script || (cur.sentences || []).map(s => s.text).join('\n')
+                await navigator.clipboard.writeText(text)
+              }} style={ghostBtnSt}>TTS 복사</button>
+              <button
+                onClick={() => navigate('/tts', { state: { sentences: cur.sentences, title: active } })}
+                disabled={!cur.sentences?.length}
+                style={{
+                  ...ghostBtnSt,
+                  background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)',
+                  cursor: cur.sentences?.length ? 'pointer' : 'not-allowed',
+                  opacity: cur.sentences?.length ? 1 : 0.5,
+                }}
+              >🎙 음성 생성</button>
+            </div>
           </div>
           {(cur.sentences || []).map((s, i) => (
             <div key={i} style={{

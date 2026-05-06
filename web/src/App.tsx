@@ -15,15 +15,59 @@ const ReelIntake = lazy(() => import('./pages/ReelIntake'))
 const Login = lazy(() => import('./pages/Login'))
 const ScriptGen = lazy(() => import('./pages/ScriptGen'))
 const ScriptGenWizard = lazy(() => import('./pages/ScriptGenWizard'))
+const TtsGen = lazy(() => import('./pages/TtsGen'))
 const MyProducts = lazy(() => import('./pages/MyProducts'))
 const MyProductEdit = lazy(() => import('./pages/MyProductEdit'))
 const Phrases = lazy(() => import('./pages/Phrases'))
 const Ads = lazy(() => import('./pages/Ads'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Youtubers = lazy(() => import('./pages/Youtubers'))
+const YtShortsIntake = lazy(() => import('./pages/YtShortsIntake'))
+const YtBench = lazy(() => import('./pages/YtBench'))
+const YtBenchDetail = lazy(() => import('./pages/YtBenchDetail'))
 const FbAdvertisers = lazy(() => import('./pages/FbAdvertisers'))
 const FbSearchAdvertisers = lazy(() => import('./pages/FbSearchAdvertisers'))
 const FbSearchAds = lazy(() => import('./pages/FbSearchAds'))
+
+const routePrefetchers: Record<string, () => Promise<unknown>> = {
+  '/': () => import('./pages/Home'),
+  '/bench': () => import('./pages/Bench'),
+  '/channels': () => import('./pages/Channels'),
+  '/reels/new': () => import('./pages/ReelIntake'),
+  '/phrases': () => import('./pages/Phrases'),
+  '/my-products': () => import('./pages/MyProducts'),
+  '/yt/channels': () => import('./pages/Youtubers'),
+  '/fb/advertisers': () => import('./pages/FbAdvertisers'),
+  '/fb/search/ads': () => import('./pages/FbSearchAds'),
+}
+const routeDataPrefetchers: Record<string, () => Promise<unknown>> = {
+  '/': () => api.bench({ page: 1, limit: 40, sort: 'recent' }),
+  '/bench': () => api.bench({ page: 1, limit: 50, sort: 'plays' }),
+  '/channels': () => api.channels(),
+  '/phrases': () => api.phrases('hook_intro', { page: 1, limit: 30, sort: 'plays' }),
+  '/my-products': () => api.listMyProducts(),
+}
+const prefetchedRoutes = new Set<string>()
+const prefetchedRouteData = new Set<string>()
+
+function prefetchRoute(path: string) {
+  const prefetcher = routePrefetchers[path]
+  if (!prefetcher || prefetchedRoutes.has(path)) return
+  prefetchedRoutes.add(path)
+  prefetcher().catch(() => {})
+}
+
+function prefetchRouteData(path: string) {
+  const prefetcher = routeDataPrefetchers[path]
+  if (!prefetcher || prefetchedRouteData.has(path)) return
+  prefetchedRouteData.add(path)
+  prefetcher().catch(() => {})
+}
+
+function prefetchRouteWork(path: string) {
+  prefetchRoute(path)
+  prefetchRouteData(path)
+}
 
 function RouteFallback() {
   return <div style={{ padding: 40, color: 'var(--text-muted)' }}>불러오는 중…</div>
@@ -76,12 +120,14 @@ const NAV_BY_PLATFORM: Record<Platform, { to: string; label: string; icon: strin
     { to: '/bench', label: '벤치마크', icon: '&#x25A6;' },
     { to: '/channels', label: '채널', icon: '&#x2631;' },
     { to: '/reels/new', label: '릴스 추가', icon: '&#x2795;' },
-    { to: '/my-products', label: '내 상품', icon: '&#x1F4E6;' },
     { to: '/phrases', label: '문구별 보기', icon: '&#x201C;' },
   ],
   yt: [
     { to: '/', label: '홈', icon: '&#x2302;' },
+    { to: '/yt/bench', label: '벤치마크', icon: '&#x25A6;' },
     { to: '/yt/channels', label: '채널', icon: '&#x2631;' },
+    { to: '/yt/shorts/new', label: '숏폼 추가', icon: '&#x2795;' },
+    { to: '/yt/phrases', label: '문구별 보기', icon: '&#x201C;' },
   ],
   fb: [
     { to: '/', label: '홈', icon: '&#x2302;' },
@@ -111,6 +157,14 @@ export default function App() {
     setPlatform(p)
     savePlatform(p)
   }
+
+  useEffect(() => {
+    if (bootstrapping || !session) return
+    const timer = window.setTimeout(() => {
+      NAV_BY_PLATFORM[platform].slice(0, 4).forEach(n => prefetchRoute(n.to))
+    }, 1200)
+    return () => window.clearTimeout(timer)
+  }, [bootstrapping, session, platform])
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -190,6 +244,8 @@ export default function App() {
               key={n.to}
               to={n.to}
               end={n.to === '/'}
+              onMouseEnter={() => prefetchRouteWork(n.to)}
+              onFocus={() => prefetchRouteWork(n.to)}
               className={({ isActive }) => `sb-item${isActive ? ' active' : ''}`}
             >
               <span className="sb-icon" dangerouslySetInnerHTML={{ __html: n.icon }} />
@@ -211,11 +267,16 @@ export default function App() {
           <Route path="/analysis" element={<AnalysisPage />} />
           <Route path="/channels" element={<Channels />} />
           <Route path="/yt/channels" element={<Youtubers />} />
+          <Route path="/yt/bench" element={<YtBench />} />
+          <Route path="/yt/bench/:shortcode" element={<YtBenchDetail />} />
+          <Route path="/yt/shorts/new" element={<YtShortsIntake />} />
+          <Route path="/yt/phrases" element={<YtStub title="문구별 보기 (유튜브)" />} />
           <Route path="/fb/advertisers" element={<FbAdvertisers />} />
           <Route path="/fb/search/advertisers" element={<FbSearchAdvertisers />} />
           <Route path="/fb/search/ads" element={<FbSearchAds />} />
           <Route path="/script" element={<ScriptGen />} />
           <Route path="/script/new/:shortcode" element={<ScriptGenWizard />} />
+          <Route path="/tts" element={<TtsGen />} />
           <Route path="/my-products" element={<MyProducts />} />
           <Route path="/my-products/new" element={<MyProductEdit />} />
           <Route path="/my-products/:id/edit" element={<MyProductEdit />} />
@@ -234,6 +295,20 @@ export default function App() {
       </main>
     </div>
     </AuthContext.Provider>
+  )
+}
+
+function YtStub({ title }: { title: string }) {
+  return (
+    <>
+      <div className="page-header">
+        <h1>{title}</h1>
+        <p>준비 중 — 유튜브 숏폼 분석은 인스타 구조를 따라 곧 추가됩니다.</p>
+      </div>
+      <div className="section-card" style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)' }}>
+        아직 데이터가 없습니다.
+      </div>
+    </>
   )
 }
 
@@ -256,6 +331,12 @@ function UserMenu({ me }: { me: UserProfile | null }) {
       <div style={{ fontSize: 10, marginBottom: 6 }}>
         {me?.role === 'admin' ? '관리자' : '직원'}
       </div>
+      <button
+        onMouseEnter={() => prefetchRouteWork('/my-products')}
+        onFocus={() => prefetchRouteWork('/my-products')}
+        onClick={() => navigate('/my-products')}
+        style={{ ...btnSt, marginBottom: 6 }}
+      >내 상품</button>
       <button onClick={logout} style={btnSt}>로그아웃</button>
       {me?.role === 'admin' && (
         <button onClick={() => navigate('/settings')} style={{ ...btnSt, marginTop: 6 }}>설정</button>

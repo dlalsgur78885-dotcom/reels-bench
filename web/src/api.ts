@@ -387,6 +387,8 @@ export const api = {
     patch<{ message: string; personas: PersonaCandidate[] }>(`/api/my-products/${pid}/usp-personas`, { usp_index, personas }),
   referenceInfo: (sc: string) =>
     get<ReferenceInfo>(`/api/script/reference-info/${sc}`),
+  updateSectionChunks: (sc: string, chunks: any[]) =>
+    patch<{ shortcode: string; count: number }>(`/api/script/section-chunks/${sc}`, { chunks }),
   previewMapping: (sc: string, product_id: number) =>
     post<{
       shortcode: string

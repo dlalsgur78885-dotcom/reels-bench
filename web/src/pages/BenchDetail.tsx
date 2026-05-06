@@ -107,6 +107,8 @@ export default function BenchDetail() {
   const [copied, setCopied] = useState(false)
   const [transcriptOpen, setTranscriptOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [chunkEditing, setChunkEditing] = useState<string | null>(null)
+  const [chunkEditDraft, setChunkEditDraft] = useState<any>(null)
   const me = useMe()
 
   const canDelete = !!me && (me.role === 'admin' || me.can_delete_reels)
@@ -139,9 +141,60 @@ export default function BenchDetail() {
 
   useEffect(() => {
     if (!shortcode) return
-    api.metadata(shortcode).then(setMeta).catch(() => {})
-    api.transcript(shortcode).then(setTranscript).catch(() => {})
-    api.analysis(shortcode).then(a => {
+    const sc = shortcode
+    api.detail(sc).then(d => {
+      if (d.metadata) setMeta(d.metadata)
+      if (d.transcript) setTranscript(d.transcript)
+      if (d.analysis) setAnalysis(d.analysis)
+      else if (!autoStarted.current) {
+        autoStarted.current = true
+        startAnalysis()
+      }
+      setComments(d.comments || [])
+      if (!d.comments?.length) {
+        api.comments(sc).then(setComments).catch(() => {})
+      }
+      if (d.extra && Object.keys(d.extra).length) setExtra(d.extra)
+      if (d.frame_images && Object.keys(d.frame_images).length) setFrameImages(d.frame_images)
+      api.extra(sc).then(extraData => {
+        if (extraData && Object.keys(extraData).length) {
+          setExtra(extraData)
+          if ((extraData as any).frame_images && Object.keys((extraData as any).frame_images).length) {
+            setFrameImages((extraData as any).frame_images)
+          }
+        }
+      }).catch(() => {})
+      api.frameImages(sc).then(images => {
+        if (images && Object.keys(images).length) setFrameImages(images)
+      }).catch(() => {})
+    }).catch(() => {
+      api.metadata(sc).then(setMeta).catch(() => {})
+      api.transcript(sc).then(setTranscript).catch(() => {})
+      api.analysis(sc).then(a => {
+        setAnalysis(a)
+      }).catch(() => {
+        if (!autoStarted.current) {
+          autoStarted.current = true
+          startAnalysis()
+        }
+      })
+      api.comments(sc).then(setComments).catch(() => {})
+      api.extra(sc).then(d => {
+        if (d && Object.keys(d).length) {
+          setExtra(d)
+          if ((d as any).frame_images && Object.keys((d as any).frame_images).length) {
+            setFrameImages((d as any).frame_images)
+          }
+        }
+      }).catch(() => {})
+      api.frameImages(sc).then(images => {
+        if (images && Object.keys(images).length) setFrameImages(images)
+      }).catch(() => {})
+    })
+    return
+    api.metadata(sc).then(setMeta).catch(() => {})
+    api.transcript(sc).then(setTranscript).catch(() => {})
+    api.analysis(sc).then(a => {
       setAnalysis(a)
     }).catch(() => {
       // 분석 결과 없으면 자동 시작
@@ -150,8 +203,8 @@ export default function BenchDetail() {
         startAnalysis()
       }
     })
-    api.comments(shortcode).then(setComments).catch(() => {})
-    api.extra(shortcode).then(d => {
+    api.comments(sc).then(setComments).catch(() => {})
+    api.extra(sc).then(d => {
         if (d && Object.keys(d).length) {
           setExtra(d)
           if ((d as any).frame_images && Object.keys((d as any).frame_images).length) {
@@ -159,7 +212,7 @@ export default function BenchDetail() {
           }
         }
       }).catch(() => {})
-    api.frameImages(shortcode).then(images => {
+    api.frameImages(sc).then(images => {
       if (images && Object.keys(images).length) setFrameImages(images)
     }).catch(() => {})
   }, [shortcode])
@@ -646,7 +699,6 @@ export default function BenchDetail() {
                         role: string; relation_to_prev: string; summary: string;
                         sentences: { start: number; end: number; text: string }[]
                       }> | undefined
-                      // section_chunks가 있으면 그걸 사용, 없으면 body_chunks에서 변환
                       type SectionChunk = {
                         section: string; topic: string; primary_usp_id: number | null;
                         usp_ids?: number[];
@@ -664,6 +716,28 @@ export default function BenchDetail() {
                           summary: c.summary,
                           sentences: c.sentences,
                         }))
+                      const saveChunks = async (modifiedChunks: SectionChunk[]) => {
+                        if (!shortcode) return
+                        try {
+                          await api.updateSectionChunks(shortcode, modifiedChunks)
+                          // 로컬 state 갱신
+                          setExtra((prev: any) => {
+                            if (!prev) return prev
+                            const next = { ...prev }
+                            const ss = { ...(next.script_structure || {}) }
+                            const ov = { ...(ss.overall || {}) }
+                            ov.section_chunks = modifiedChunks
+                            ov.body_chunks = modifiedChunks
+                              .filter(c => (c.section || '').startsWith('body'))
+                              .map(c => ({ ...c, body_n: c.section }))
+                            ss.overall = ov
+                            next.script_structure = ss
+                            return next
+                          })
+                        } catch (e: any) {
+                          alert('저장 실패: ' + (e.message || e))
+                        }
+                      }
                       if (!chunks || !chunks.length) return null
                       const roleColor: Record<string, string> = {
                         '시연': '#3b82f6', '비교': '#8b5cf6', 'proof': '#10b981',
@@ -679,12 +753,14 @@ export default function BenchDetail() {
                             🧩 섹션별 상세 — {chunks.length}개 chunk
                           </div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                            {chunks.map((c) => {
+                            {chunks.map((c, idx) => {
                               const rc = roleColor[c.role] || 'var(--text-muted)'
                               const usp_ids = (c.usp_ids && c.usp_ids.length > 0)
                                 ? c.usp_ids
                                 : (c.primary_usp_id != null ? [c.primary_usp_id] : [])
                               const primary_usp = c.primary_usp_id ?? (usp_ids[0] ?? null)
+                              const isEditing = chunkEditing === c.section
+                              const editVal = chunkEditDraft || c
                               return (
                                 <div key={c.section} style={{
                                   background: 'var(--bg-surface)', border: '1px solid var(--border)',
@@ -715,8 +791,67 @@ export default function BenchDetail() {
                                       </span>
                                     )}
                                     <span style={{ fontWeight: 600 }}>{c.topic}</span>
+                                    {canDelete && (
+                                      <button
+                                        onClick={() => {
+                                          if (isEditing) {
+                                            setChunkEditing(null)
+                                            setChunkEditDraft(null)
+                                          } else {
+                                            setChunkEditing(c.section)
+                                            setChunkEditDraft({ ...c })
+                                          }
+                                        }}
+                                        style={{
+                                          marginLeft: 'auto', padding: '2px 8px', fontSize: 10,
+                                          border: '1px solid var(--border)', borderRadius: 3,
+                                          background: 'var(--bg-surface)', cursor: 'pointer',
+                                        }}>
+                                        {isEditing ? '취소' : '✏ 편집'}
+                                      </button>
+                                    )}
                                   </div>
-                                  {c.summary && (
+                                  {isEditing && chunkEditDraft && (
+                                    <div style={{
+                                      padding: 10, marginBottom: 6,
+                                      background: 'var(--bg-elevated)', borderRadius: 4,
+                                      display: 'grid', gap: 6,
+                                    }}>
+                                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                        <input value={chunkEditDraft.section}
+                                          onChange={e => setChunkEditDraft({ ...chunkEditDraft, section: e.target.value })}
+                                          placeholder="section (body_1 등)"
+                                          style={{ flex: '0 0 130px', padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 3 }} />
+                                        <input value={chunkEditDraft.role || ''}
+                                          onChange={e => setChunkEditDraft({ ...chunkEditDraft, role: e.target.value })}
+                                          placeholder="role (시연/디테일/proof 등)"
+                                          style={{ flex: '1 0 150px', padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 3 }} />
+                                        <input type="number" min={0} value={chunkEditDraft.primary_usp_id ?? ''}
+                                          onChange={e => setChunkEditDraft({ ...chunkEditDraft, primary_usp_id: e.target.value === '' ? null : parseInt(e.target.value) })}
+                                          placeholder="primary USP id"
+                                          style={{ flex: '0 0 110px', padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 3 }} />
+                                      </div>
+                                      <input value={chunkEditDraft.topic || ''}
+                                        onChange={e => setChunkEditDraft({ ...chunkEditDraft, topic: e.target.value })}
+                                        placeholder="topic" style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 3 }} />
+                                      <input value={chunkEditDraft.summary || ''}
+                                        onChange={e => setChunkEditDraft({ ...chunkEditDraft, summary: e.target.value })}
+                                        placeholder="summary" style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 3 }} />
+                                      <div style={{ display: 'flex', gap: 6 }}>
+                                        <button
+                                          onClick={async () => {
+                                            const next = chunks.map((x, i) => i === idx ? { ...chunkEditDraft, usp_ids: chunkEditDraft.primary_usp_id != null ? [chunkEditDraft.primary_usp_id] : (x.usp_ids || []) } : x)
+                                            await saveChunks(next)
+                                            setChunkEditing(null)
+                                            setChunkEditDraft(null)
+                                          }}
+                                          style={{ padding: '4px 12px', fontSize: 11, fontWeight: 600, background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 3, cursor: 'pointer' }}>
+                                          저장 (DB)
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {c.summary && !isEditing && (
                                     <div style={{ fontSize: 11, color: 'var(--text-secondary)', fontStyle: 'italic', marginBottom: 4 }}>
                                       {c.summary}
                                     </div>
@@ -733,6 +868,8 @@ export default function BenchDetail() {
                                   </div>
                                 </div>
                               )
+                              // unused — for type ref
+                              void editVal
                             })}
                           </div>
                         </div>

@@ -560,6 +560,40 @@ class PreviewMappingRequest(BaseModel):
     product_id: int
 
 
+class UpdateSectionChunksRequest(BaseModel):
+    chunks: list[dict]
+
+
+@app.patch("/api/script/section-chunks/{shortcode}")
+def update_section_chunks(shortcode: str, body: UpdateSectionChunksRequest, request: Request):
+    """ref의 section_chunks 분석 결과를 직접 수정 (분석이 잘못된 경우 보정용)."""
+    auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+
+    rows = _r.get(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=overall&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    if not rows:
+        raise HTTPException(404, "script_structure 없음")
+    overall = rows[0].get("overall") or {}
+    overall["section_chunks"] = body.chunks
+    overall["body_chunks"] = [
+        {**c, "body_n": c.get("section")} for c in body.chunks if (c.get("section") or "").startswith("body")
+    ]
+    r = _r.patch(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
+        headers={**H, "Prefer": "return=minimal"},
+        json={"overall": overall}, timeout=15,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:200])
+    return {"shortcode": shortcode, "count": len(body.chunks)}
+
+
 @app.post("/api/script/preview-mapping/{shortcode}")
 def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Request):
     """대본 생성 wizard용 — pre-planner만 돌려서 ref USP ↔ user USP 매핑 미리보기.

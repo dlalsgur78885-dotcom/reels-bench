@@ -44,6 +44,8 @@ export default function ScriptGenWizard() {
   const [chunkOverrides, setChunkOverrides] = useState<Record<string, number>>({})
   // chunk metadata 수정 (topic/role/section) — 이번 generation에만 적용
   const [chunkEdits, setChunkEdits] = useState<Record<string, { topic: string; role: string; section?: string }>>({})
+  // social proof override: ref_sp_id → user_sp_index (null = 매칭 안 함)
+  const [spOverrides, setSpOverrides] = useState<Record<number, number | null>>({})
   const [editingChunk, setEditingChunk] = useState<Record<string, boolean>>({})
 
   // 3. 페르소나
@@ -68,14 +70,40 @@ export default function ScriptGenWizard() {
     setMappingError('')
     setOverrides({})
     setChunkOverrides({})
+    setSpOverrides({})
     try {
       const r = await api.previewMapping(shortcode, pid)
       setMapping(r)
+      // SP 자동 매핑 (heuristic) → 초기 override 채움
+      const initSp: Record<number, number | null> = {}
+      r.social_proof_mapping?.forEach(m => { initSp[m.ref_sp_id] = m.user_sp_index })
+      setSpOverrides(initSp)
     } catch (e: any) {
       setMappingError(e.message || String(e))
     } finally {
       setMappingLoading(false)
     }
+  }
+
+  // user social_proof 저장 — DB 저장 + 로컬 mapping 갱신
+  const saveUserSocialProof = async (
+    next: Array<{ type: string; label: string; value: string; evidence?: string }>,
+  ): Promise<{ ok: boolean; error?: string }> => {
+    if (!productId || !mapping) return { ok: false, error: '상품 미로드' }
+    try {
+      await api.updateMyProduct(productId, {
+        name: mapping.product.name,
+        social_proof: next,
+        usps: mapping.product.usps,
+      })
+    } catch (e: any) {
+      return { ok: false, error: e.message || 'DB 저장 실패' }
+    }
+    setMapping({
+      ...mapping,
+      product: { ...mapping.product, social_proof: next as any },
+    })
+    return { ok: true }
   }
 
   // ref USP 라벨/설명 저장 — DB 저장 + 로컬 mapping 갱신
@@ -353,6 +381,7 @@ export default function ScriptGenWizard() {
             chunk_meta_override: Object.keys(chunkEdits).length
               ? chunkEdits
               : undefined,
+            social_proof_override: Object.keys(spOverrides).length ? spOverrides : undefined,
           }),
         })
         if (!r.ok) throw new Error(`${r.status} ${await r.text()}`)
@@ -431,6 +460,12 @@ export default function ScriptGenWizard() {
           }}
           onCreateUsp={createUspForRef}
           onSaveRefUsp={saveRefUsp}
+          onSaveUserSp={saveUserSocialProof}
+          spOverrides={spOverrides}
+          onSpOverride={(refSpId, userSpIndex) => {
+            const next = { ...spOverrides, [refSpId]: userSpIndex }
+            setSpOverrides(next)
+          }}
           onBack={() => setStep('product')}
           onNext={goToPersona}
         />
@@ -593,7 +628,7 @@ function StepProduct({
 function StepMapping({
   mapping, loading, error, overrides, chunkOverrides, unusedUsps, onChunkOverride,
   getEffectiveChunkUspId, chunkEdits, editingChunk, setChunkEdits, toggleChunkEdit,
-  onCreateUsp, onSaveRefUsp, onBack, onNext,
+  onCreateUsp, onSaveRefUsp, onSaveUserSp, spOverrides, onSpOverride, onBack, onNext,
 }: {
   mapping: MappingPreview | null
   loading: boolean
@@ -609,7 +644,10 @@ function StepMapping({
   toggleChunkEdit: (section: string, currentTopic: string, currentRole: string) => void
   onCreateUsp: (refUspId: number, name: string, description: string, reviews: string[]) => Promise<{ ok: boolean; error?: string }>
   onSaveRefUsp: (refUspId: number, fields: { label?: string; description?: string }) => Promise<{ ok: boolean; error?: string }>
+  spOverrides: Record<number, number | null>
+  onSpOverride: (refSpId: number, userSpIndex: number | null) => void
   onBack: () => void
+  onSaveUserSp: (next: Array<{ type: string; label: string; value: string; evidence?: string }>) => Promise<{ ok: boolean; error?: string }>
   onNext: () => void
 }) {
   const [creatingFor, setCreatingFor] = useState<number | null>(null)
@@ -620,6 +658,11 @@ function StepMapping({
   const [createErr, setCreateErr] = useState('')
   const [refUspEditing, setRefUspEditing] = useState<number | null>(null)
   const [refUspDraft, setRefUspDraft] = useState<{ label?: string; description?: string } | null>(null)
+  // social_proof 인라인 편집
+  const [spEditingIdx, setSpEditingIdx] = useState<number | null>(null)  // -1 = new, 0+ = edit
+  const [spDraft, setSpDraft] = useState<{ type: string; label: string; value: string; evidence: string }>({ type: 'authority', label: '', value: '', evidence: '' })
+  const [spSaving, setSpSaving] = useState(false)
+  const [spErr, setSpErr] = useState('')
 
   const startCreate = (refUspId: number, refDesc: string) => {
     setCreatingFor(refUspId)
@@ -991,6 +1034,237 @@ function StepMapping({
           })}
         </div>
       </div>
+
+      {mapping?.ref_social_proof && mapping.ref_social_proof.length > 0 && (
+        <div style={cardSt}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div style={labelSt}>사회적 증명 매핑</div>
+            <button
+              onClick={() => {
+                if (spEditingIdx === -1) {
+                  setSpEditingIdx(null); setSpErr('')
+                } else {
+                  setSpEditingIdx(-1)
+                  setSpDraft({ type: 'authority', label: '', value: '', evidence: '' })
+                  setSpErr('')
+                }
+              }}
+              style={{
+                padding: '4px 12px', fontSize: 11, fontWeight: 600,
+                background: spEditingIdx === -1 ? 'var(--bg-elevated)' : 'var(--accent)',
+                color: spEditingIdx === -1 ? 'var(--text-body)' : '#fff',
+                border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+              }}>
+              {spEditingIdx === -1 ? '취소' : '+ 추가'}
+            </button>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10 }}>
+            참고 릴스에 등장하는 신뢰 신호 ({mapping.ref_social_proof.length}개) → 우리 제품의 사회적 증명에 매핑.
+          </div>
+
+          {/* 우리 제품의 social_proof 목록 + 편집 */}
+          {(mapping.product.social_proof || []).length > 0 && (
+            <div style={{ marginBottom: 12, padding: 8, background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)' }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 6 }}>
+                우리 제품 social proof ({(mapping.product.social_proof || []).length}개)
+              </div>
+              <div style={{ display: 'grid', gap: 4 }}>
+                {(mapping.product.social_proof || []).map((sp: any, i: number) => (
+                  <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12 }}>
+                    <span style={{
+                      fontSize: 10, padding: '1px 6px', background: 'var(--bg-surface)',
+                      border: '1px solid var(--border)', borderRadius: 3,
+                    }}>{sp.type}</span>
+                    <span style={{ fontWeight: 600 }}>{sp.label}</span>
+                    <span style={{ color: 'var(--text-secondary)' }}>{sp.value}</span>
+                    {sp.evidence && (
+                      <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: 11 }}>"{sp.evidence}"</span>
+                    )}
+                    <button
+                      onClick={() => {
+                        setSpEditingIdx(i)
+                        setSpDraft({ type: sp.type || 'authority', label: sp.label || '', value: sp.value || '', evidence: sp.evidence || '' })
+                        setSpErr('')
+                      }}
+                      style={{ marginLeft: 'auto', padding: '1px 6px', fontSize: 10, background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 3, cursor: 'pointer' }}>
+                      ✏
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (!confirm('삭제할까요?')) return
+                        const next = (mapping.product.social_proof || []).filter((_: any, j: number) => j !== i)
+                        const r = await onSaveUserSp(next)
+                        if (!r.ok) alert('실패: ' + (r.error || ''))
+                      }}
+                      style={{ padding: '1px 6px', fontSize: 10, background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 3, cursor: 'pointer', color: 'var(--error)' }}>
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 추가/편집 폼 */}
+          {spEditingIdx !== null && (
+            <div style={{
+              marginBottom: 12, padding: 12,
+              background: 'var(--bg-base)', border: '1px solid var(--accent)',
+              borderRadius: 'var(--radius-sm)',
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)', marginBottom: 8 }}>
+                {spEditingIdx === -1 ? '새 사회적 증명 추가' : `사회적 증명 #${spEditingIdx + 1} 편집`}
+              </div>
+              <div style={{ display: 'grid', gap: 6 }}>
+                <select
+                  value={spDraft.type}
+                  onChange={(e) => setSpDraft({ ...spDraft, type: e.target.value })}
+                  style={{ padding: '6px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
+                  <option value="sales_volume">매출 (sales_volume)</option>
+                  <option value="review_volume">리뷰 수 (review_volume)</option>
+                  <option value="rating">평점 (rating)</option>
+                  <option value="authority">권위·인증 (authority)</option>
+                  <option value="scarcity">희소성 (scarcity)</option>
+                  <option value="award">수상 (award)</option>
+                  <option value="personal">개인 추천 (personal)</option>
+                </select>
+                <input
+                  value={spDraft.label}
+                  onChange={(e) => setSpDraft({ ...spDraft, label: e.target.value })}
+                  placeholder="라벨 (예: 누적 매출, 베스트셀러, 1만 후기)"
+                  style={{ padding: '7px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}
+                />
+                <input
+                  value={spDraft.value}
+                  onChange={(e) => setSpDraft({ ...spDraft, value: e.target.value })}
+                  placeholder="값 (예: 32억, 4.9, 1만개)"
+                  style={{ padding: '7px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}
+                />
+                <input
+                  value={spDraft.evidence}
+                  onChange={(e) => setSpDraft({ ...spDraft, evidence: e.target.value })}
+                  placeholder="추가 컨텍스트 (선택)"
+                  style={{ padding: '7px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}
+                />
+                {spErr && <div style={{ fontSize: 11, color: 'var(--error)' }}>{spErr}</div>}
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    onClick={async () => {
+                      if (!spDraft.label.trim() || !spDraft.value.trim()) {
+                        setSpErr('라벨과 값 필수')
+                        return
+                      }
+                      setSpSaving(true)
+                      setSpErr('')
+                      const cur = mapping.product.social_proof || []
+                      let next: any[]
+                      if (spEditingIdx === -1) {
+                        next = [...cur, {
+                          type: spDraft.type, label: spDraft.label.trim(),
+                          value: spDraft.value.trim(),
+                          evidence: spDraft.evidence.trim() || undefined,
+                        }]
+                      } else {
+                        next = cur.map((s: any, i: number) => i === spEditingIdx ? {
+                          type: spDraft.type, label: spDraft.label.trim(),
+                          value: spDraft.value.trim(),
+                          evidence: spDraft.evidence.trim() || undefined,
+                        } : s)
+                      }
+                      const r = await onSaveUserSp(next)
+                      setSpSaving(false)
+                      if (r.ok) {
+                        setSpEditingIdx(null)
+                      } else {
+                        setSpErr(r.error || '저장 실패')
+                      }
+                    }}
+                    disabled={spSaving}
+                    style={{
+                      padding: '6px 14px', fontSize: 12, fontWeight: 600,
+                      background: 'var(--accent)', color: '#fff', border: 'none',
+                      borderRadius: 'var(--radius-sm)', cursor: spSaving ? 'wait' : 'pointer',
+                      opacity: spSaving ? 0.6 : 1,
+                    }}>
+                    {spSaving ? '저장 중…' : '저장 (DB)'}
+                  </button>
+                  <button
+                    onClick={() => { setSpEditingIdx(null); setSpErr('') }}
+                    disabled={spSaving}
+                    style={{ padding: '6px 14px', fontSize: 12, background: 'var(--bg-surface)', color: 'var(--text-body)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', cursor: 'pointer' }}>
+                    취소
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {(mapping.product?.social_proof?.length ?? 0) === 0 && spEditingIdx === null && (
+            <div style={{ fontSize: 12, color: 'var(--warning)', padding: 10, background: 'rgba(245,158,11,0.1)', borderRadius: 6, marginBottom: 10 }}>
+              ⚠ 우리 제품에 등록된 사회적 증명이 없습니다. 위 "+ 추가" 버튼으로 추가하세요.
+            </div>
+          )}
+          <div style={{ display: 'grid', gap: 8 }}>
+            {mapping.ref_social_proof.map(rsp => {
+              const userIdx = spOverrides[rsp.id]
+              const userSp = userIdx != null ? mapping.product.social_proof[userIdx] : null
+              return (
+                <div key={rsp.id} style={{
+                  display: 'grid', gridTemplateColumns: '1fr auto 1fr',
+                  gap: 12, alignItems: 'center', padding: 10,
+                  background: 'var(--bg-surface)', border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius-sm)',
+                }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 2 }}>
+                      ref · {rsp.type} {rsp.strength === 'strong' && <span style={{ color: 'var(--success)' }}>★</span>}
+                    </div>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{rsp.label}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', fontStyle: 'italic', marginTop: 2 }}>
+                      "{rsp.evidence}"
+                    </div>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+                      {(rsp.appears_in || []).map(s => (
+                        <span key={s} style={{
+                          fontSize: 10, padding: '1px 6px', border: '1px solid var(--border-subtle)',
+                          borderRadius: 4, color: 'var(--text-muted)',
+                        }}>{s}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 16, color: 'var(--text-muted)' }}>→</div>
+                  <div>
+                    <select
+                      value={userIdx == null ? '' : String(userIdx)}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        onSpOverride(rsp.id, v === '' ? null : Number(v))
+                      }}
+                      style={{
+                        width: '100%', padding: '6px 10px', fontSize: 13,
+                        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                        background: 'var(--bg-base)', color: 'var(--text-primary)',
+                      }}
+                    >
+                      <option value="">— 매칭 없음 —</option>
+                      {mapping.product.social_proof.map((usp, i) => (
+                        <option key={i} value={i}>
+                          [{usp.type}] {usp.label}: {usp.value}
+                        </option>
+                      ))}
+                    </select>
+                    {userSp && (
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                        값: <strong style={{ color: 'var(--text-primary)' }}>{userSp.value}</strong>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {unusedUsps.length > 0 && (
         <div style={cardSt}>

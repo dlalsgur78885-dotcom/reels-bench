@@ -389,6 +389,8 @@ export const api = {
     get<ReferenceInfo>(`/api/script/reference-info/${sc}`),
   updateSectionChunks: (sc: string, chunks: any[]) =>
     patch<{ shortcode: string; count: number }>(`/api/script/section-chunks/${sc}`, { chunks }),
+  updateUspLayout: (sc: string, usps: any[]) =>
+    patch<{ shortcode: string; count: number }>(`/api/script/usp-layout/${sc}`, { usps }),
   previewMapping: (sc: string, product_id: number) =>
     post<{
       shortcode: string

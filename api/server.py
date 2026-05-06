@@ -564,6 +564,36 @@ class UpdateSectionChunksRequest(BaseModel):
     chunks: list[dict]
 
 
+class UpdateUspLayoutRequest(BaseModel):
+    usps: list[dict]
+
+
+@app.patch("/api/script/usp-layout/{shortcode}")
+def update_usp_layout(shortcode: str, body: UpdateUspLayoutRequest, request: Request):
+    """ref의 usp_layout 수동 수정 — 분석이 잘못된 경우 보정용."""
+    auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    rows = _r.get(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=overall&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    if not rows:
+        raise HTTPException(404, "script_structure 없음")
+    overall = rows[0].get("overall") or {}
+    overall["usp_layout"] = body.usps
+    r = _r.patch(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
+        headers={**H, "Prefer": "return=minimal"},
+        json={"overall": overall}, timeout=15,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:200])
+    return {"shortcode": shortcode, "count": len(body.usps)}
+
+
 @app.patch("/api/script/section-chunks/{shortcode}")
 def update_section_chunks(shortcode: str, body: UpdateSectionChunksRequest, request: Request):
     """ref의 section_chunks 분석 결과를 직접 수정 (분석이 잘못된 경우 보정용)."""

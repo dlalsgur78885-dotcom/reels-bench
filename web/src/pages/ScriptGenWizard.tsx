@@ -661,16 +661,19 @@ function StepMapping({
                     color: 'var(--text-secondary)',
                     padding: '3px 8px', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
                   }}>
-                    {chunk.section}
+                    {chunkEdits[chunk.section]?.section || chunk.section}
+                    {chunkEdits[chunk.section]?.section && chunkEdits[chunk.section]?.section !== chunk.section && (
+                      <span style={{ marginLeft: 4, color: 'var(--accent)', fontWeight: 600 }}>(수정됨)</span>
+                    )}
                   </span>
-                  {chunk.role && !editingChunk[chunk.section] && (
+                  {(chunkEdits[chunk.section]?.role || chunk.role) && !editingChunk[chunk.section] && (
                     <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                      {chunk.role}
+                      {chunkEdits[chunk.section]?.role || chunk.role}
                     </span>
                   )}
-                  {chunk.topic && !editingChunk[chunk.section] && (
+                  {(chunkEdits[chunk.section]?.topic || chunk.topic) && !editingChunk[chunk.section] && (
                     <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
-                      {chunk.topic}
+                      {chunkEdits[chunk.section]?.topic || chunk.topic}
                     </span>
                   )}
                   {mappingRec?.confidence === 'loose' && (

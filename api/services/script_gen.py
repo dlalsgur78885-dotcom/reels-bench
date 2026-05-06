@@ -25,6 +25,8 @@ _PRICING = {
     "gemini-3.1-pro-preview": {"in": 2.0, "out": 12.0},
     "gemini-3-pro-preview": {"in": 2.0, "out": 12.0},
     "gemini-3-flash-preview": {"in": 0.30, "out": 2.50},
+    "anthropic/claude-sonnet-4-6": {"in": 3.0, "out": 15.0},
+    "anthropic/claude-opus-4-7": {"in": 15.0, "out": 75.0},
 }
 
 
@@ -249,18 +251,23 @@ def analyze_ref_desire_arc(ref_usps: list[dict], section_chunks: list[dict]) -> 
 6. **desire_scene** — **시각적 장면** (충족된 순간)
 + **identity** — "이런 사람으로 보이고 싶다" 한 줄
 
-### 좋은 예
-대본: "남친이 귀엽다고 하면 게임 끝 / 더 설레게 만드는 잠옷"
-```
-{{
-  "name": "남친 인정 / 매력 어필",
-  "job_statement": "When 잠옷 차림으로 남친 만날 때, I want to 매력 잃지 않게 보이고 싶다, so I can 영상통화도 자신 있게 받을 수 있다",
-  "lf8": 4, "lf8_label": "성적 동반자 / 매력 어필",
-  "pain_scene": "잠옷 차림이 후줄근해서 남친 영상통화 거절한 순간",
-  "desire_scene": "잠옷 그대로 나가도 남친이 '오늘따라 예쁘다' 한 마디 하는 순간",
-  "identity": "집에서도 자기관리 놓치지 않는 여자"
-}}
-```
+### 좋은 예 (다양한 LF8 angle)
+
+**예 1 — 매력 어필 (LF8 #4)**: ref "남친이 귀엽다고 하면 게임 끝"
+- name="남친 인정 / 매력 어필", lf8=4
+- pain_scene="잠옷 차림이 후줄근해서 남친 영상통화 거절한 순간"
+- desire_scene="잠옷 그대로 나가도 남친이 '오늘따라 예쁘다' 한 마디 하는 순간"
+
+**예 2 — 사회 승인 / Social Proof (LF8 #8)**: ref "후기도 보지 마세요·칭찬 수두룩·매출 32억·안 산 분 속상"
+- name="검증된 베스트 / 안 사면 손해 (사회 승인)", lf8=8
+- pain_scene="다들 산 인기템을 나만 안 사서 친구 모임에서 뒤처지는 느낌"
+- desire_scene="다들 인정한 베스트셀러 입고 '이거 어디서 샀어?' 한 마디 듣는 순간"
+- identity="트렌드 빠르고 검증된 것만 사는 똑똑한 소비자"
+
+**예 3 — 절약 (LF8 #5)**: ref "여행 경비 반이나 아껴줄 거"
+- name="똑똑한 절약 / 호구 안 됨", lf8=5
+- pain_scene="정보 모르고 비싸게 결제해서 친구한테 '왜 그 가격에?' 들은 순간"
+- desire_scene="같은 여행에서 친구보다 30% 싸게 결제한 영수증 보며 뿌듯한 순간"
 
 ### ❌ 나쁜 예 (절대 X)
 - pain_scene: "답답함 / 불편함" (추상명사만, scene 아님)
@@ -280,7 +287,8 @@ def analyze_ref_desire_arc(ref_usps: list[dict], section_chunks: list[dict]) -> 
 JSON만 출력. 설명 X."""
     try:
         # Flash 사용 — desire 추출은 분류 작업이라 속도 우선
-        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=1500)
+        # max_tokens 4096 — 9필드 × 3 candidate Korean text 충분히
+        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=4096)
         if isinstance(result, list) and result:
             result = result[0]
         cands = (result or {}).get("candidates") or []
@@ -2017,6 +2025,100 @@ Desire 키워드는 다음 위치 중 **자연스럽게 어울리는 곳에만**
 }
 """)
     return "\n".join(parts)
+
+
+def call_openrouter(prompt: str, model: str, min_sentences: int | None = None, max_tokens: int = 8192) -> dict:
+    """OpenRouter 경유 호출 (Anthropic Claude 등) → JSON 응답 파싱.
+
+    model: "anthropic/claude-sonnet-4-6" 등 OpenRouter 모델 ID.
+    min_sentences: schema 강제는 OpenRouter에서 안 통하므로 prompt 수준 강제만 가능.
+    """
+    key = secrets_svc.get_secret("OPENROUTER_API_KEY", "") or os.getenv("OPENROUTER_API_KEY", "")
+    if not key:
+        raise RuntimeError("OPENROUTER_API_KEY 미설정")
+
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": 0.85,
+        "response_format": {"type": "json_object"},
+    }
+    r = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://reels-bench.vercel.app",
+            "X-Title": "reels-bench script_gen",
+        },
+        json=body, timeout=240,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"OpenRouter call {r.status_code}: {r.text[:300]}")
+    data = r.json()
+    # 비용 추적 (OpenAI 호환 usage)
+    try:
+        um = data.get("usage") or {}
+        in_tok = int(um.get("prompt_tokens", 0))
+        out_tok = int(um.get("completion_tokens", 0))
+        _cost_meter.append({"model": model, "in_tokens": in_tok, "out_tokens": out_tok})
+    except Exception:
+        pass
+    text = ""
+    try:
+        text = data["choices"][0]["message"]["content"]
+    except Exception:
+        raise RuntimeError(f"OpenRouter 응답 파싱 실패: {json.dumps(data)[:300]}")
+    finish_reason = ""
+    try:
+        finish_reason = data["choices"][0].get("finish_reason", "")
+    except Exception:
+        pass
+    if finish_reason in ("length", "max_tokens"):
+        logger.warning("OpenRouter response truncated (%s, %d chars)", finish_reason, len(text))
+    # JSON 파싱 (마크다운 펜스 제거 fallback)
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```", 2)[1] if "```" in cleaned[3:] else cleaned[3:]
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+        cleaned = cleaned.strip().rstrip("`").strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        # truncate 시 sentences 배열 살리기 (Gemini와 동일 로직)
+        if finish_reason in ("length", "max_tokens") or len(cleaned) > 14000:
+            try:
+                import re as _re
+                m = _re.search(r'"sentences"\s*:\s*\[', cleaned)
+                if m:
+                    arr_start = m.end()
+                    last_complete = arr_start
+                    depth = 0
+                    for i, ch in enumerate(cleaned[arr_start:], arr_start):
+                        if ch == '{': depth += 1
+                        elif ch == '}':
+                            depth -= 1
+                            if depth == 0: last_complete = i + 1
+                    salvaged = cleaned[:last_complete] + "]}"
+                    parsed = json.loads(salvaged)
+                    logger.warning("salvaged truncated OR response with %d sentences", len(parsed.get("sentences") or []))
+                    return parsed
+            except Exception as e2:
+                logger.warning("OR salvage failed: %s", e2)
+        raise
+
+
+def call_llm(prompt: str, model: str, min_sentences: int | None = None, max_tokens: int = 8192) -> dict:
+    """모델명 prefix로 Gemini vs OpenRouter 자동 라우팅.
+
+    "anthropic/" 또는 "openai/" prefix → OpenRouter
+    그 외 → Gemini direct API
+    """
+    if "/" in model and (model.startswith("anthropic/") or model.startswith("openai/") or model.startswith("meta-llama/")):
+        return call_openrouter(prompt, model, min_sentences=min_sentences, max_tokens=max_tokens)
+    return call_gemini(prompt, min_sentences=min_sentences, model=model, max_tokens=max_tokens)
 
 
 def call_gemini(prompt: str, min_sentences: int | None = None, model: str | None = None, max_tokens: int = 32768) -> dict:
@@ -4020,7 +4122,7 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     if ref_usps_layout:
         try:
             pre_prompt = _build_pre_planner_prompt(usps, ref_usps_layout, section_chunks or [])
-            pre_result = call_gemini(pre_prompt, model="gemini-3.1-pro-preview", max_tokens=2048)
+            pre_result = call_gemini(pre_prompt, model="gemini-3-flash-preview", max_tokens=2048)
             if isinstance(pre_result, list) and pre_result:
                 pre_result = pre_result[0]
             ref_by_id = {ru.get("id"): ru for ru in ref_usps_layout if isinstance(ru.get("id"), int)}
@@ -4237,20 +4339,25 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                 violations.append((i, "+".join(reasons)))
         return violations
 
+    # Writer 모델: env var WRITER_MODEL로 override 가능 (e.g. "anthropic/claude-sonnet-4-6")
+    writer_model = os.getenv("WRITER_MODEL", "").strip() or MODEL
+    if writer_model != MODEL:
+        logger.info("[writer] using override model: %s", writer_model)
+
     def _write_section(sec):
         prompt = _build_section_writer_prompt(sec, product_name, target_persona, usps, pain, desire, speech_level=speech_level)
         spec_list = sec.get("sentences") or []
         n_required = len(spec_list)
         try:
-            # min_sentences로 schema minItems 강제 — Pro가 spec 수 만큼 출력
-            r = call_gemini(prompt, model=MODEL, max_tokens=8192, min_sentences=n_required)
+            # min_sentences로 schema minItems 강제 — Gemini Pro가 spec 수 만큼 출력
+            r = call_llm(prompt, model=writer_model, max_tokens=8192, min_sentences=n_required)
             sentences = r.get("sentences") or []
             # count retry — 부족하면 한 번 더 (강조 prompt)
             if len(sentences) < n_required:
                 logger.warning("[writer] section=%s count short %d<%d — retry", sec.get("name"), len(sentences), n_required)
                 retry_prompt = prompt + f"\n\n## ⚠️ 재시도 — 정확히 {n_required}개 sentence 출력 필수\n이전 시도에서 {len(sentences)}개만 나왔습니다. 모든 spec({n_required}개)에 1:1 대응하는 sentence 객체를 만드세요. 합치기·생략 금지."
                 try:
-                    r2 = call_gemini(retry_prompt, model=MODEL, max_tokens=8192, min_sentences=n_required)
+                    r2 = call_llm(retry_prompt, model=writer_model, max_tokens=8192, min_sentences=n_required)
                     s2 = r2.get("sentences") or []
                     if len(s2) > len(sentences):
                         sentences = s2
@@ -4279,7 +4386,7 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                     )
                 retry_prompt = prompt + f"\n\n## ⚠️ 재시도 — 미러링 위반 검출\n{chr(10).join(bad_lines)}\n\n위 문장들을 다시 쓰세요. 시그니처(끝 어구) 보존 + 음절 수를 참고와 맞추기."
                 try:
-                    r2 = call_gemini(retry_prompt, model=MODEL, max_tokens=4096)
+                    r2 = call_llm(retry_prompt, model=writer_model, max_tokens=4096)
                     s2 = r2.get("sentences") or []
                     if s2 and len(s2) == len(sentences):
                         sentences = s2

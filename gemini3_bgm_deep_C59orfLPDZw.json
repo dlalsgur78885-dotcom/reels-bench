@@ -1,0 +1,68 @@
+{
+  "model": "gemini-3-pro-preview",
+  "shortcode": "C59orfLPDZw",
+  "elapsed_sec": 30.355624198913574,
+  "usage": {
+    "promptTokenCount": 2617,
+    "candidatesTokenCount": 540,
+    "totalTokenCount": 5045,
+    "promptTokensDetails": [
+      {
+        "modality": "AUDIO",
+        "tokenCount": 2249
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 368
+      }
+    ],
+    "thoughtsTokenCount": 1888
+  },
+  "analysis": {
+    "duration_sec": 89,
+    "bgm_segments": [
+      {
+        "start": "00:00",
+        "end": "00:06",
+        "state": "muted",
+        "mood": "none",
+        "genre": "none",
+        "tempo_bpm": 0,
+        "volume_level": "muted",
+        "identified": "unknown",
+        "change_reason": "영상 시작, BGM 없이 현장음 및 육성 대화만 존재"
+      },
+      {
+        "start": "00:06",
+        "end": "00:53",
+        "state": "playing",
+        "mood": "차분함, 신비로움, 서사적 빌드업",
+        "genre": "Cinematic Orchestral",
+        "tempo_bpm": 65,
+        "volume_level": "medium",
+        "identified": "unknown",
+        "change_reason": "스튜디오 내레이션 전환과 함께 잔잔한 시네마틱 스트링 BGM 페이드인"
+      },
+      {
+        "start": "00:53",
+        "end": "01:29",
+        "state": "playing",
+        "mood": "웅장함, 감동적, 결연함",
+        "genre": "Cinematic Orchestral",
+        "tempo_bpm": 65,
+        "volume_level": "medium",
+        "identified": "unknown",
+        "change_reason": "동일 곡 내 섹션 전환. 화자의 철학적 성찰이 깊어짐에 따라 악기 구성이 풍성해지며 감정선이 고조됨"
+      }
+    ],
+    "total_transitions": 2,
+    "narration_only_segments": [
+      {
+        "start": "00:00",
+        "end": "00:06",
+        "reason": "오프닝 현장 스케치로 BGM 없이 현장음과 음성만 활용됨"
+      }
+    ],
+    "analysis_note": "초입부 무음(현장음) 이후 하나의 시네마틱 트랙이 내레이션의 흐름에 맞춰 점진적으로 스케일을 키우며 몰입도를 높입니다."
+  }
+}

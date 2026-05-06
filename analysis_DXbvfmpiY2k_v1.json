@@ -1,0 +1,398 @@
+{
+  "shortcode": "DXbvfmpiY2k",
+  "model": "gemini-3-pro-preview",
+  "video_file": "_DXbvfmpiY2k.mp4",
+  "elapsed_sec": 36.23279571533203,
+  "usage": {
+    "reel": {
+      "promptTokenCount": 4333,
+      "candidatesTokenCount": 1366,
+      "totalTokenCount": 8196,
+      "promptTokensDetails": [
+        {
+          "modality": "VIDEO",
+          "tokenCount": 3906
+        },
+        {
+          "modality": "TEXT",
+          "tokenCount": 427
+        }
+      ],
+      "thoughtsTokenCount": 2497
+    },
+    "tts": {
+      "promptTokenCount": 1769,
+      "candidatesTokenCount": 910,
+      "totalTokenCount": 5360,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 679
+        },
+        {
+          "modality": "AUDIO",
+          "tokenCount": 1090
+        }
+      ],
+      "thoughtsTokenCount": 2681
+    },
+    "emotion_fine": {
+      "promptTokenCount": 2218,
+      "candidatesTokenCount": 1481,
+      "totalTokenCount": 6528,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 1128
+        },
+        {
+          "modality": "AUDIO",
+          "tokenCount": 1090
+        }
+      ],
+      "thoughtsTokenCount": 2829
+    }
+  },
+  "analysis": {
+    "duration_sec": 43,
+    "sound_effects": [
+      {
+        "time": "00:00",
+        "type": "swoosh",
+        "description": "도입부 텍스트 등장 및 역동적 동작 강조"
+      },
+      {
+        "time": "00:03",
+        "type": "camera shutter",
+        "description": "과거 사진 컷 전환 효과"
+      },
+      {
+        "time": "00:28",
+        "type": "swoosh",
+        "description": "공중 도약 동작의 타격감 부여"
+      }
+    ],
+    "bgm": [
+      {
+        "start": "00:00",
+        "end": "00:43",
+        "mood": "energetic",
+        "genre": "electronic pop",
+        "tempo": "fast",
+        "identified": "unknown"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "0.0",
+        "end": "3.3",
+        "emotion": "cheerful",
+        "intensity": 0.8,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "자신을 '수련에 미친 남자'로 당당하고 흥미롭게 소개하며 이목을 집중시킴"
+      },
+      {
+        "start": "3.3",
+        "end": "6.5",
+        "emotion": "calm",
+        "intensity": 0.5,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "10년 전 과거의 다혈질 사고뭉치 시절을 덤덤하게 회상함"
+      },
+      {
+        "start": "6.5",
+        "end": "10.1",
+        "emotion": "calm",
+        "intensity": 0.5,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "아버지의 권유로 골굴사 수련회에 참여했던 사실을 차분하게 설명함"
+      },
+      {
+        "start": "10.1",
+        "end": "13.3",
+        "emotion": "calm",
+        "intensity": 0.6,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "골굴사와 선무도에 대한 배경 지식을 명확하게 전달함"
+      },
+      {
+        "start": "13.3",
+        "end": "16.4",
+        "emotion": "serious",
+        "intensity": 0.7,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "선무도에 깊이 매료된 자신의 진지한 감정을 표현함"
+      },
+      {
+        "start": "16.4",
+        "end": "18.8",
+        "emotion": "calm",
+        "intensity": 0.5,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "결심 후 부모님께 말씀드린 상황의 도입을 담담하게 말함"
+      },
+      {
+        "start": "18.8",
+        "end": "21.7",
+        "emotion": "serious",
+        "intensity": 0.8,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "선무도 지도자 과정을 하겠다는 당차고 확고한 주장을 전달함"
+      },
+      {
+        "start": "21.7",
+        "end": "24.5",
+        "emotion": "calm",
+        "intensity": 0.5,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "부모님의 강한 반대 상황을 오히려 무덤덤하게 전함"
+      },
+      {
+        "start": "24.5",
+        "end": "28.0",
+        "emotion": "calm",
+        "intensity": 0.6,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "부모님의 허락과 진학 포기라는 큰 결정을 차분하게 서술함"
+      },
+      {
+        "start": "28.0",
+        "end": "30.6",
+        "emotion": "serious",
+        "intensity": 0.8,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "어린 나이에 지도자 과정을 시작한 결연한 마음가짐을 드러냄"
+      },
+      {
+        "start": "30.6",
+        "end": "33.6",
+        "emotion": "happy",
+        "intensity": 0.7,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "10년 차 선무도 사범이 된 현재의 모습을 자랑스럽고 긍정적으로 밝힘"
+      },
+      {
+        "start": "33.6",
+        "end": "37.4",
+        "emotion": "happy",
+        "intensity": 0.8,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "사람들에게 행복을 나누는 과정에서 느끼는 온화함과 기쁨"
+      },
+      {
+        "start": "37.4",
+        "end": "40.1",
+        "emotion": "excited",
+        "intensity": 0.7,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "전 세계에 수련법을 널리 전하고 싶다는 희망차고 고양된 다짐"
+      },
+      {
+        "start": "40.1",
+        "end": "43.5",
+        "emotion": "curious",
+        "intensity": 0.8,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "앞으로 꿈을 이룰 수 있을지 질문을 던지며 시청자의 호기심을 유발함"
+      }
+    ],
+    "hook": {
+      "time": "00:00",
+      "technique": "충격적인 텍스트와 비주얼",
+      "why": "'부모님도 포기한 수련에 미친 남자'라는 파격적인 문구와 사찰 배경의 아크로바틱한 발차기 동작이 시청자의 시선을 즉각적으로 사로잡음"
+    },
+    "narration": {
+      "language": "Korean",
+      "tone": "자신감 있고 경쾌함",
+      "pace": "fast"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:00",
+        "description": "사찰 배경 화려한 회전 발차기"
+      },
+      {
+        "time": "00:01",
+        "description": "산속 철봉 훈련"
+      },
+      {
+        "time": "00:03",
+        "description": "중학생 시절 과거 사진"
+      },
+      {
+        "time": "00:06",
+        "description": "골굴사 전경 및 무술 시연"
+      },
+      {
+        "time": "00:16",
+        "description": "부모님과의 일상 컷"
+      },
+      {
+        "time": "00:22",
+        "description": "바다 파도 속 훈련"
+      },
+      {
+        "time": "00:24",
+        "description": "근육질 상체 및 실루엣 발차기"
+      },
+      {
+        "time": "00:26",
+        "description": "동료들과의 훈련 및 단체 사진"
+      },
+      {
+        "time": "00:28",
+        "description": "사찰 앞 공중 다리 찢기 도약"
+      },
+      {
+        "time": "00:31",
+        "description": "야간 무대 브레이크댄스 퓨전 무술"
+      },
+      {
+        "time": "00:34",
+        "description": "명상 및 호흡 실내 지도"
+      },
+      {
+        "time": "00:37",
+        "description": "야외 파트너 아크로바틱 요가 동작"
+      },
+      {
+        "time": "00:40",
+        "description": "산속 턱걸이 뒷모습"
+      },
+      {
+        "time": "00:42",
+        "description": "전통 의상 착용 무술 시연 마무리"
+      }
+    ],
+    "audio_visual_sync_score": 0.9,
+    "sync_analysis": "빠른 템포의 BGM과 나레이션 호흡에 맞춰 1~2초 간격으로 다양한 훈련 컷들을 타이트하게 교차 편집하여 숏폼에 최적화된 리듬감을 만들어냄",
+    "viral_factors": [
+      "드라마틱한 개인 성장 스토리 (학업 포기 후 무술 선택)",
+      "시각적으로 압도적인 고난도 무술 및 아크로바틱 동작",
+      "단단한 근육질 몸매 등 시각적 매력 요소",
+      "지루할 틈 없는 빠른 화면 전환과 속도감"
+    ],
+    "audio_events": [
+      {
+        "time": "18.8",
+        "event": "pause",
+        "reason": "부모님께 자신의 확고한 의지를 말하기 전 잠시 뜸을 들임"
+      },
+      {
+        "time": "21.7",
+        "event": "pause",
+        "reason": "자신의 발언 직후 부모님의 반대 반응을 말하기 전 문장 간 호흡"
+      },
+      {
+        "time": "30.6",
+        "event": "pause",
+        "reason": "과거 이야기에서 현재 10년 차 사범이 된 시점으로 넘어가는 극적인 전환"
+      },
+      {
+        "time": "40.1",
+        "event": "pause",
+        "reason": "마지막 질문을 던지기 전 시청자의 이목을 집중시키기 위한 여백"
+      }
+    ],
+    "tts_script": [
+      {
+        "start": "0.0",
+        "end": "3.3",
+        "direction": "당당하게 시작한다",
+        "text": "나는 부모님도 포기한 수련의 미친남자다"
+      },
+      {
+        "start": "3.3",
+        "end": "6.5",
+        "direction": "덤덤하게 회상한다",
+        "text": "10년 전 중학생 시절 나는 다혈질 사고뭉치였다"
+      },
+      {
+        "start": "6.5",
+        "end": "10.1",
+        "direction": "차분하게 설명한다",
+        "text": "아버지의 권유로 골굴사라는 절에 여름방학 수련회를 참여했었다"
+      },
+      {
+        "start": "10.1",
+        "end": "13.3",
+        "direction": "명확하게 알려준다",
+        "text": "골굴사는 불교무예인 선무도 수련을 하는 사찰이었다"
+      },
+      {
+        "start": "13.3",
+        "end": "16.4",
+        "direction": "진지하게 이어간다",
+        "text": "몸과 마음을 함께 수련할 수 있는 선무도에 매료된 나는"
+      },
+      {
+        "start": "16.4",
+        "end": "18.8",
+        "direction": "담담하게 말한다",
+        "text": "집으로 돌아오자마자 부모님께 말씀드렸다"
+      },
+      {
+        "start": "18.8",
+        "end": "21.7",
+        "direction": "당차게 주장한다",
+        "text": "저 선무도 지도자 과정하러 골굴사 가고싶어요"
+      },
+      {
+        "start": "21.7",
+        "end": "24.5",
+        "direction": "무덤덤하게 전한다",
+        "text": "부모님은 나에게 미쳤냐고 절대 안된다고 하셨다"
+      },
+      {
+        "start": "24.5",
+        "end": "28.0",
+        "direction": "차분하게 덧붙인다",
+        "text": "하지만 자식이기는 부모 없다고 결국 고등학교 진학 포기를 하고"
+      },
+      {
+        "start": "28.0",
+        "end": "30.6",
+        "direction": "결연하게 서술한다",
+        "text": "17살에 선무도 지도자 과정을 시작하였다"
+      },
+      {
+        "start": "30.6",
+        "end": "33.6",
+        "direction": "자랑스럽게 밝힌다",
+        "text": "그렇게 올해로 수련 10년차 선무도 사범으로서"
+      },
+      {
+        "start": "33.6",
+        "end": "37.4",
+        "direction": "온화하게 덧붙인다",
+        "text": "사람들에게 몸과 마음과 호흡의 조화를 통한 행복을 나누고 있다"
+      },
+      {
+        "start": "37.4",
+        "end": "40.1",
+        "direction": "희망차게 다짐한다",
+        "text": "이 좋은 수련법을 전세계에 널리 전하고 싶다"
+      },
+      {
+        "start": "40.1",
+        "end": "43.5",
+        "direction": "흥미롭게 질문한다",
+        "text": "수련에 미친 이 남자는 선무도 세계화의 꿈을 이룰 수 있을까?"
+      }
+    ]
+  }
+}

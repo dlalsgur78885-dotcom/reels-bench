@@ -352,7 +352,7 @@ export default function ScriptGenWizard() {
 
     try {
       const token = await getAccessToken()
-      const calls = personas.map(async (persona): Promise<[string, GeneratedScript]> => {
+      const calls = personas.map(async (persona, idx): Promise<[string, GeneratedScript]> => {
         const r = await fetch(`${BASE}/api/script/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: token ? `Bearer ${token}` : '' },
@@ -386,17 +386,33 @@ export default function ScriptGenWizard() {
           }),
         })
         if (!r.ok) throw new Error(`${r.status} ${await r.text()}`)
-        return [persona ? persona.name : '기본', await r.json()]
+        const baseName = persona ? persona.name : '기본'
+        // 동일 이름 충돌 방지: idx로 unique 보장
+        const key = personas.length > 1 ? `${baseName} #${idx + 1}` : baseName
+        return [key, await r.json()]
       })
       const settled = await Promise.allSettled(calls)
+      console.log('[script/gen] personas count:', personas.length, 'settled:', settled.length)
       const out: Record<string, GeneratedScript> = {}
-      settled.forEach(s => {
+      const errors: string[] = []
+      settled.forEach((s, i) => {
         if (s.status === 'fulfilled') {
           const [name, draft] = s.value
+          console.log(`[script/gen] persona ${i + 1} OK, key="${name}"`)
           out[name] = draft
+        } else {
+          const msg = s.reason?.message || String(s.reason)
+          console.error(`[script/gen] persona ${i + 1} FAILED:`, msg)
+          errors.push(`P${i + 1}: ${msg}`)
         }
       })
-      if (Object.keys(out).length === 0) throw new Error('모든 호출 실패')
+      if (Object.keys(out).length === 0) {
+        throw new Error(`모든 호출 실패: ${errors.join(' | ')}`)
+      }
+      // 일부 실패도 사용자에게 알림
+      if (errors.length > 0) {
+        setGenError(`${errors.length}/${personas.length} 페르소나 실패: ${errors.join(' | ')}`)
+      }
       setGenResult(out)
       setStep('done')
     } catch (e: any) {
@@ -512,7 +528,7 @@ export default function ScriptGenWizard() {
       {step === 'generating' && (
         <div style={{ ...cardSt, textAlign: 'center', padding: 40 }}>
           <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>
-            대본 생성 중… (페르소나 {selectedPersonaIdx.size || 1}개 동시)
+            대본 생성 중… (페르소나 {(selectedPersonaIdx.size + selectedRefDesireIdx.size) || 1}개 동시)
           </div>
         </div>
       )}

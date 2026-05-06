@@ -3,7 +3,18 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
 import type { MyProduct } from '../api'
 
-interface USPItem { usp: string; reviews: string[] }
+interface USPItem { usp: string; description?: string; reviews: string[] }
+interface SocialProofItem { type: string; label: string; value: string; evidence?: string }
+
+const SP_TYPES: { key: string; label: string; placeholder: string }[] = [
+  { key: 'sales_volume', label: '매출/판매량', placeholder: '예: 누적 100억, 월 1억원' },
+  { key: 'review_volume', label: '후기/재구매', placeholder: '예: 후기 5천 개, 재구매율 80%' },
+  { key: 'rating', label: '평점', placeholder: '예: 별점 4.9, 만점' },
+  { key: 'authority', label: '권위/추천', placeholder: '예: BTS 사용, 의사 추천' },
+  { key: 'scarcity', label: '품절/랭킹', placeholder: '예: 베스트 1위, 5번째 리오더' },
+  { key: 'award', label: '수상/인증', placeholder: '예: FDA 승인, 올해의 OO' },
+  { key: 'personal', label: '본인 사용 (약함)', placeholder: '예: 5년째 사용 중' },
+]
 
 const labelSt: React.CSSProperties = { fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6, display: 'block' }
 const inputSt: React.CSSProperties = {
@@ -76,6 +87,7 @@ export default function MyProductEdit() {
 
   const [name, setName] = useState('')
   const [usps, setUsps] = useState<USPItem[]>([{ usp: '', reviews: [''] }])
+  const [socialProof, setSocialProof] = useState<SocialProofItem[]>([])
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(!isNew)
@@ -95,6 +107,7 @@ export default function MyProductEdit() {
       setOriginal(fromCache)
       setName(fromCache.name)
       setUsps(fromCache.usps?.length ? fromCache.usps : [{ usp: '', reviews: [''] }])
+      setSocialProof((fromCache as any).social_proof || [])
       setReplaceTo(fromCache.name)
       setLoading(false)
       return
@@ -107,6 +120,7 @@ export default function MyProductEdit() {
         setOriginal(p)
         setName(p.name)
         setUsps(p.usps?.length ? p.usps : [{ usp: '', reviews: [''] }])
+        setSocialProof((p as any).social_proof || [])
         setReplaceTo(p.name)
       }
       setLoading(false)
@@ -114,14 +128,25 @@ export default function MyProductEdit() {
   }, [isNew, productId])
 
   const cleanUsps = () => usps
-    .map(u => ({ usp: u.usp.trim(), reviews: u.reviews.map(r => r.trim()).filter(Boolean) }))
+    .map(u => ({
+      usp: u.usp.trim(),
+      description: (u.description || '').trim() || undefined,
+      reviews: u.reviews.map(r => r.trim()).filter(Boolean),
+    }))
     .filter(u => u.usp)
 
   const save = async () => {
     if (!name.trim()) { setErr('이름을 입력해주세요'); return }
     setBusy(true); setErr('')
     try {
-      const payload = { name: name.trim(), usps: cleanUsps() }
+      const cleanSp = socialProof
+        .map(sp => ({
+          type: sp.type, label: (sp.label || '').trim(),
+          value: (sp.value || '').trim(),
+          evidence: (sp.evidence || '').trim() || undefined,
+        }))
+        .filter(sp => sp.label && sp.value)
+      const payload = { name: name.trim(), usps: cleanUsps(), social_proof: cleanSp }
       if (isNew) await api.createMyProduct(payload)
       else await api.updateMyProduct(productId!, payload)
       invalidateCache()
@@ -236,11 +261,15 @@ export default function MyProductEdit() {
               <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
                 <input style={{ ...inputSt, flex: 1 }} value={u.usp}
                   onChange={e => setUsps(usps.map((x, idx) => idx === i ? { ...x, usp: e.target.value } : x))}
-                  placeholder={`USP ${i + 1}`} />
+                  placeholder={`USP ${i + 1} (한 줄)`} />
                 {usps.length > 1 && (
                   <button type="button" onClick={() => setUsps(usps.filter((_, idx) => idx !== i))} style={{ padding: '4px 10px', fontSize: 11, border: '1px solid var(--error)', borderRadius: 4, background: 'transparent', color: 'var(--error)', cursor: 'pointer' }}>USP 삭제</button>
                 )}
               </div>
+              <textarea style={{ ...textareaSt, marginBottom: 8, minHeight: 60, fontSize: 12 }}
+                value={u.description || ''}
+                onChange={e => setUsps(usps.map((x, idx) => idx === i ? { ...x, description: e.target.value } : x))}
+                placeholder="기능 설명 + 어디서 좋은지 (선택, 앱·서비스 추천) — 예: '사용자가 설정한 가격대로 떨어지면 푸시로 즉시 알려줘서, 평소 가격 모니터링 안 해도 자동 절약 가능'" />
               <div style={{ paddingLeft: 10, borderLeft: '2px solid var(--border)' }}>
                 {u.reviews.map((r, j) => (
                   <div key={j} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
@@ -258,8 +287,61 @@ export default function MyProductEdit() {
               </div>
             </div>
           ))}
-          <button type="button" onClick={() => setUsps([...usps, { usp: '', reviews: [''] }])}
+          <button type="button" onClick={() => setUsps([...usps, { usp: '', description: '', reviews: [''] }])}
             style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, border: '1px solid var(--accent)', borderRadius: 'var(--radius-sm)', background: 'var(--accent-light)', color: 'var(--accent)', cursor: 'pointer' }}>+ USP 추가</button>
+        </section>
+
+        <section className="section-card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <label style={labelSt}>사회적 증명 (Social Proof)</label>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+              매출·후기·평점·수상 등 신뢰 신호. body chunk에 USP와 함께 자연스럽게 결합되어 사용됨.
+            </div>
+          </div>
+          {socialProof.map((sp, i) => {
+            const meta = SP_TYPES.find(t => t.key === sp.type) || SP_TYPES[0]
+            return (
+              <div key={i} style={{ border: '1px solid var(--border-subtle)', borderRadius: 6, padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <select
+                    value={sp.type}
+                    onChange={e => setSocialProof(socialProof.map((x, idx) => idx === i ? { ...x, type: e.target.value } : x))}
+                    style={{ ...inputSt, width: 140 }}
+                  >
+                    {SP_TYPES.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
+                  </select>
+                  <input
+                    type="text" placeholder="라벨 (예: 32억 매출)"
+                    value={sp.label}
+                    onChange={e => setSocialProof(socialProof.map((x, idx) => idx === i ? { ...x, label: e.target.value } : x))}
+                    style={{ ...inputSt, flex: 1, minWidth: 140 }}
+                  />
+                  <button type="button"
+                    onClick={() => setSocialProof(socialProof.filter((_, idx) => idx !== i))}
+                    style={{ padding: '4px 10px', fontSize: 11, border: '1px solid var(--error)', borderRadius: 4, background: 'transparent', color: 'var(--error)', cursor: 'pointer' }}>
+                    삭제
+                  </button>
+                </div>
+                <input
+                  type="text" placeholder={meta.placeholder}
+                  value={sp.value}
+                  onChange={e => setSocialProof(socialProof.map((x, idx) => idx === i ? { ...x, value: e.target.value } : x))}
+                  style={inputSt}
+                />
+                <input
+                  type="text" placeholder="추가 컨텍스트 (선택, 예: '2024년 누적')"
+                  value={sp.evidence || ''}
+                  onChange={e => setSocialProof(socialProof.map((x, idx) => idx === i ? { ...x, evidence: e.target.value } : x))}
+                  style={{ ...inputSt, fontSize: 12 }}
+                />
+              </div>
+            )
+          })}
+          <button type="button"
+            onClick={() => setSocialProof([...socialProof, { type: 'sales_volume', label: '', value: '' }])}
+            style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, border: '1px solid var(--accent)', borderRadius: 'var(--radius-sm)', background: 'var(--accent-light)', color: 'var(--accent)', cursor: 'pointer', alignSelf: 'flex-start' }}>
+            + 사회적 증명 추가
+          </button>
         </section>
 
         {err && <div style={{ color: 'var(--error)', fontSize: 12 }}>{err}</div>}

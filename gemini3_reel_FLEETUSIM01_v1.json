@@ -1,0 +1,139 @@
+{
+  "model": "gemini-3-pro-preview",
+  "shortcode": "FLEETUSIM01",
+  "video_file": "_FLEETUSIM01.mp4",
+  "elapsed_sec": 26.273910760879517,
+  "usage": {
+    "promptTokenCount": 2662,
+    "candidatesTokenCount": 1133,
+    "totalTokenCount": 5217,
+    "promptTokensDetails": [
+      {
+        "modality": "VIDEO",
+        "tokenCount": 2235
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 427
+      }
+    ],
+    "thoughtsTokenCount": 1422
+  },
+  "analysis": {
+    "duration_sec": 25,
+    "sound_effects": [
+      {
+        "time": "00:00",
+        "type": "swoosh",
+        "description": "빠른 화면 전환 효과로 시선 집중"
+      },
+      {
+        "time": "00:02",
+        "type": "pop",
+        "description": "텍스트와 이모지 등장 강조"
+      },
+      {
+        "time": "00:05",
+        "type": "chime",
+        "description": "꿀팁을 소개할 때 기대감을 높임"
+      },
+      {
+        "time": "00:12",
+        "type": "pop",
+        "description": "개통 완료 정보 강조"
+      },
+      {
+        "time": "00:16",
+        "type": "cash_register",
+        "description": "할인 및 금전적 혜택 강조"
+      }
+    ],
+    "bgm": [
+      {
+        "start": "00:00",
+        "end": "00:25",
+        "mood": "energetic and cheerful",
+        "genre": "pop/electronic",
+        "tempo": "fast",
+        "identified": "unknown"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "00:00",
+        "end": "00:05",
+        "emotion": "surprised",
+        "intensity": 0.8,
+        "source": "speech",
+        "reason": "해외여행 시 겪는 불편함에 대한 질문으로 공감 유도"
+      },
+      {
+        "start": "00:05",
+        "end": "00:25",
+        "emotion": "excited",
+        "intensity": 0.9,
+        "source": "both",
+        "reason": "쉽고 빠른 해결책(eSIM)과 다양한 할인 혜택을 경쾌하게 소개"
+      }
+    ],
+    "hook": {
+      "time": "00:00",
+      "technique": "질문 및 비주얼",
+      "why": "여행자들이 흔히 고민하는 '로밍/유심' 문제를 직접적으로 질문하며 공감을 이끌어내고 빠른 화면 전환으로 이탈을 방지함"
+    },
+    "narration": {
+      "language": "Korean",
+      "tone": "밝고 설득력 있는 톤",
+      "pace": "빠름"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:00",
+        "description": "공항 내 통신사 로밍 센터"
+      },
+      {
+        "time": "00:01",
+        "description": "공항에서 스마트폰을 확인하는 여행객"
+      },
+      {
+        "time": "00:03",
+        "description": "비행기 탑승교를 걸어가는 장면"
+      },
+      {
+        "time": "00:05",
+        "description": "비행기 창문 밖 하늘 풍경"
+      },
+      {
+        "time": "00:06",
+        "description": "앱스토어에서 앱을 검색하는 화면"
+      },
+      {
+        "time": "00:09",
+        "description": "앱 내 국가 선택 및 요금제 확인 화면"
+      },
+      {
+        "time": "00:18",
+        "description": "일본 길거리의 현지 풍경"
+      },
+      {
+        "time": "00:20",
+        "description": "일본에서 먹는 식사(면 요리) 장면"
+      },
+      {
+        "time": "00:21",
+        "description": "비행기에서 내려다본 풍경 및 기내 스마트폰 설정 화면"
+      },
+      {
+        "time": "00:24",
+        "description": "브랜드 로고 및 앱 다운로드 안내 엔딩"
+      }
+    ],
+    "audio_visual_sync_score": 0.9,
+    "sync_analysis": "나레이션의 빠른 템포에 맞춰 화면 컷 전환이 매끄럽게 이루어지며, 중요한 혜택이나 정보가 텍스트로 나타날 때 적절한 효과음이 동기화되어 정보 전달력이 높음",
+    "viral_factors": [
+      "누구나 공감할 수 있는 해외여행 필수 준비물에 대한 실용적인 정보",
+      "무료 로밍 지원금, 쿠폰팩 등 명확한 금전적 혜택 제시",
+      "시청자가 지루할 틈을 주지 않는 빠른 호흡의 편집"
+    ]
+  }
+}

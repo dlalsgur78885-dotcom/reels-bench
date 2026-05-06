@@ -1,0 +1,154 @@
+{
+  "name": "데이터 인사이트 디자인 시스템",
+  "theme": "light",
+  "colors": {
+    "primary": {
+      "50": "#e3f2fd",
+      "100": "#bbdefb",
+      "200": "#90caf9",
+      "300": "#64b5f6",
+      "400": "#42a5f5",
+      "500": "#2196f3",
+      "600": "#1e88e5",
+      "700": "#1976d2",
+      "800": "#1565c0",
+      "900": "#0d47a1"
+    },
+    "neutral": {
+      "50": "#fafafa",
+      "100": "#f5f5f5",
+      "200": "#eeeeee",
+      "300": "#e0e0e0",
+      "400": "#bdbdbd",
+      "500": "#9e9e9e",
+      "600": "#757575",
+      "700": "#616161",
+      "800": "#424242",
+      "900": "#212121"
+    },
+    "accent": "#ff5722",
+    "background": {
+      "base": "#ffffff",
+      "surface": "#f4f6f8",
+      "elevated": "#ffffff"
+    },
+    "text": {
+      "primary": "#212121",
+      "secondary": "#757575",
+      "muted": "#9e9e9e",
+      "inverse": "#ffffff"
+    },
+    "border": {
+      "default": "#e0e0e0",
+      "subtle": "#eeeeee"
+    },
+    "semantic": {
+      "success": "#4caf50",
+      "warning": "#ff9800",
+      "error": "#f44336",
+      "info": "#2196f3"
+    }
+  },
+  "typography": {
+    "font_family": "Noto Sans",
+    "fallback": "Arial",
+    "scale": {
+      "h1": {
+        "size": "32px",
+        "weight": "700",
+        "line_height": "40px"
+      },
+      "h2": {
+        "size": "28px",
+        "weight": "600",
+        "line_height": "36px"
+      },
+      "h3": {
+        "size": "24px",
+        "weight": "500",
+        "line_height": "32px"
+      },
+      "body": {
+        "size": "16px",
+        "weight": "400",
+        "line_height": "24px"
+      },
+      "caption": {
+        "size": "12px",
+        "weight": "400",
+        "line_height": "16px"
+      },
+      "label": {
+        "size": "14px",
+        "weight": "500",
+        "line_height": "20px"
+      }
+    }
+  },
+  "spacing": {
+    "unit": "8px",
+    "xs": "4px",
+    "sm": "8px",
+    "md": "16px",
+    "lg": "24px",
+    "xl": "32px",
+    "2xl": "40px"
+  },
+  "border_radius": {
+    "sm": "4px",
+    "md": "8px",
+    "lg": "16px",
+    "xl": "24px",
+    "full": "9999px"
+  },
+  "shadow": {
+    "sm": "0 1px 3px rgba(0, 0, 0, 0.12)",
+    "md": "0 4px 6px rgba(0, 0, 0, 0.1)",
+    "lg": "0 10px 20px rgba(0, 0, 0, 0.15)"
+  },
+  "components": {
+    "card": {
+      "padding": "16px",
+      "radius": "8px",
+      "border": "1px solid #e0e0e0",
+      "shadow": "0 1px 3px rgba(0, 0, 0, 0.12)",
+      "background": "#ffffff"
+    },
+    "button_primary": {
+      "bg": "#2196f3",
+      "text": "#ffffff",
+      "radius": "4px",
+      "padding": "12px 16px",
+      "font_weight": "600"
+    },
+    "button_secondary": {
+      "bg": "#ffffff",
+      "text": "#2196f3",
+      "radius": "4px",
+      "border": "1px solid #2196f3"
+    },
+    "kpi_card": {
+      "bg": "#f4f6f8",
+      "value_size": "24px",
+      "label_size": "14px",
+      "padding": "16px"
+    },
+    "table": {
+      "header_bg": "#eeeeee",
+      "row_hover": "#f5f5f5",
+      "border": "1px solid #e0e0e0"
+    },
+    "sidebar": {
+      "bg": "#ffffff",
+      "width": "240px",
+      "active_item_bg": "#e3f2fd",
+      "text_color": "#212121"
+    }
+  },
+  "layout": {
+    "max_width": "1200px",
+    "grid_columns": 12,
+    "gap": "16px"
+  },
+  "design_rationale": "데이터 분석 대시보드에서 시각적 명확성을 높이기 위해 명료하고 깔끔한 디자인을 채택했습니다. 색상과 타이포그래피는 정보의 우선순위를 명확히 하고, 시각적 피로를 줄이는 데 중점을 두었습니다. 다양한 사용자 환경에 쉽게 적응할 수 있도록 유연한 레이아웃과 컴포넌트 스타일을 제공하여 사용자의 경험을 향상시키고자 했습니다."
+}

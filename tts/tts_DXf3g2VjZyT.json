@@ -1,0 +1,53 @@
+{
+  "shortcode": "DXf3g2VjZyT",
+  "model": "gemini-3-pro-preview",
+  "whisper_segments": 5,
+  "usage": {
+    "promptTokenCount": 630,
+    "candidatesTokenCount": 311,
+    "totalTokenCount": 2400,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 400
+      },
+      {
+        "modality": "AUDIO",
+        "tokenCount": 230
+      }
+    ],
+    "thoughtsTokenCount": 1459
+  },
+  "tts_script": [
+    {
+      "start": "0.0",
+      "end": "1.9",
+      "direction": "자신감 있게 강조한다",
+      "text": "대한항공 마일리지 45배 빠르게 쌓기"
+    },
+    {
+      "start": "1.9",
+      "end": "3.4",
+      "direction": "자랑스럽게 말한다",
+      "text": "전 이 방법으로 1등석도 타봤어요"
+    },
+    {
+      "start": "3.4",
+      "end": "5.8",
+      "direction": "진지하게 설명한다",
+      "text": "신용카드로 100마일 모으려면 10만원 써야 하는데"
+    },
+    {
+      "start": "5.8",
+      "end": "7.7",
+      "direction": "신나게 강조한다",
+      "text": "네이버 포인트 쓰면 2200원 들어요"
+    },
+    {
+      "start": "7.7",
+      "end": "9.1",
+      "direction": "친절하게 제안한다",
+      "text": "궁금하면 댓글로 마일리지 남겨주세요"
+    }
+  ]
+}

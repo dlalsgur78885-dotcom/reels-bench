@@ -1,0 +1,121 @@
+{
+  "model": "gemini-3-pro-preview",
+  "shortcode": "doe0k1ruAaU",
+  "video_file": "_doe0k1ruAaU.mp4",
+  "elapsed_sec": 41.485350131988525,
+  "usage": {
+    "promptTokenCount": 3422,
+    "candidatesTokenCount": 1085,
+    "totalTokenCount": 7517,
+    "promptTokensDetails": [
+      {
+        "modality": "VIDEO",
+        "tokenCount": 2995
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 427
+      }
+    ],
+    "thoughtsTokenCount": 3010
+  },
+  "analysis": {
+    "duration_sec": 33,
+    "sound_effects": [
+      {
+        "time": "00:00",
+        "type": "swoosh",
+        "description": "오프닝 텍스트 등장 시 시선 유도"
+      },
+      {
+        "time": "00:06",
+        "type": "pop",
+        "description": "기존 가격에 빨간 원이 그려질 때 강조"
+      },
+      {
+        "time": "00:15",
+        "type": "swoosh",
+        "description": "할인 전후 가격 비교 화면으로 전환될 때 환기"
+      }
+    ],
+    "bgm": [
+      {
+        "start": "00:00",
+        "end": "00:33",
+        "mood": "경쾌함, 은근한 긴장감",
+        "genre": "일렉트로닉/비트",
+        "tempo": "빠름",
+        "identified": "unknown"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "00:00",
+        "end": "00:06",
+        "emotion": "surprised",
+        "intensity": 0.9,
+        "source": "both",
+        "reason": "모니터를 가리키며 '그동안 싹 다 속았습니다'라는 강력한 멘트와 텍스트로 충격 유발"
+      },
+      {
+        "start": "00:06",
+        "end": "00:15",
+        "emotion": "excited",
+        "intensity": 0.7,
+        "source": "speech",
+        "reason": "URL의 특정 숫자를 바꾸라는 비밀스러운 팁을 제시하며 기대감 조성"
+      },
+      {
+        "start": "00:15",
+        "end": "00:33",
+        "emotion": "happy",
+        "intensity": 0.9,
+        "source": "both",
+        "reason": "실제로 저렴해진 가격을 직관적으로 보여주고 연박 시 더 큰 혜택이 있음을 증명하여 만족감 제공"
+      }
+    ],
+    "hook": {
+      "time": "00:00",
+      "technique": "충격/비주얼",
+      "why": "손가락으로 모니터를 공격적으로 가리키는 시각적 행동과 '속았다'는 대사가 시청자의 손실 회피 심리를 강하게 자극하여 스크롤을 멈추게 함"
+    },
+    "narration": {
+      "language": "Korean",
+      "tone": "확신에 차고 다급하며 유익한 정보를 전수하는 톤",
+      "pace": "빠름"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:02",
+        "description": "아고다 검색 및 캘린더 화면"
+      },
+      {
+        "time": "00:06",
+        "description": "할인 전 높은 가격을 보여주는 예약 화면"
+      },
+      {
+        "time": "00:09",
+        "description": "브라우저 상단 URL 주소창의 cid 숫자를 하이라이트하는 컷"
+      },
+      {
+        "time": "00:15",
+        "description": "숫자 변경 후 가격이 떨어진 화면을 위아래로 배치하여 비교"
+      },
+      {
+        "time": "00:22",
+        "description": "가격 차이가 발생하는 원리(마케팅 비용 등)를 설명하는 텍스트 팝업"
+      },
+      {
+        "time": "00:27",
+        "description": "연박 시 엄청난 가격 차이를 보여주는 영수증 비교 화면"
+      }
+    ],
+    "audio_visual_sync_score": 0.95,
+    "sync_analysis": "말하는 내용(가격, 주소창, 숫자 변경, 연박 금액 등)과 화면에 띄우는 텍스트 및 줌인 타이밍이 한 치의 오차 없이 맞아떨어져 정보 전달력이 매우 높음.",
+    "viral_factors": [
+      "누구나 즉시 따라할 수 있는 매우 실용적인 금전 절약 팁",
+      "대형 호텔 예약 플랫폼의 가격 정책의 허점을 찌르는 듯한 통쾌함",
+      "단 30초 안에 Before/After 결과를 숫자로 명확히 증명하는 직관성"
+    ]
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "shortcode": "DUc4okXlDvl",
+  "model": "gemini-3-pro-preview",
+  "whisper_segments": 4,
+  "usage": {
+    "promptTokenCount": 1643,
+    "candidatesTokenCount": 947,
+    "totalTokenCount": 5545,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 948
+      },
+      {
+        "modality": "AUDIO",
+        "tokenCount": 695
+      }
+    ],
+    "thoughtsTokenCount": 2955
+  },
+  "tts_script": [
+    {
+      "start": "0.0",
+      "end": "6.2",
+      "direction": "친절하게 설명한다",
+      "text": "KTX 탔는데 뒷사람 때문에 불편하다면? 앞으로 참지 마세요. 이제 출발 후에도 앱에서 직접 자리를 바꿀 수 있습니다."
+    },
+    {
+      "start": "6.2",
+      "end": "11.4",
+      "direction": "명확하게 강조한다",
+      "text": "쿨웨이 톡에서 좌석 변경 눌러 원하는 빈자리로 쓱 이동하면 끝. 단, 변경 기회는 딱 한 번뿐입니다."
+    },
+    {
+      "start": "11.4",
+      "end": "19.9",
+      "direction": "경쾌하게 추천한다",
+      "text": "그리고 표 살 때 일반석의 대피 도우미로 바꿔 예약해보세요. 일반석이 매진일 때도 예약 가능하고 표값의 10%나 마일리지로 정립해주니 사실상 꿀좌석이죠."
+    },
+    {
+      "start": "19.9",
+      "end": "27.8",
+      "direction": "활기차게 권유한다",
+      "text": "마지막으로 VI 미리 보기 기능. 타기 전에 컨센트가 어딨는지, 창문은 어딨는지 미리 보고 명당 자리 잡으세요. 이제 이 영상 저장하고 꼭 써먹으세요."
+    }
+  ]
+}

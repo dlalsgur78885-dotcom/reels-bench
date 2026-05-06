@@ -1,0 +1,100 @@
+{
+  "model": "gemini-3-pro-preview",
+  "shortcode": "DXf3g2VjZyT",
+  "video_file": "_DXf3g2VjZyT.mp4",
+  "elapsed_sec": 27.533184051513672,
+  "usage": {
+    "promptTokenCount": 1232,
+    "candidatesTokenCount": 759,
+    "totalTokenCount": 4273,
+    "promptTokensDetails": [
+      {
+        "modality": "VIDEO",
+        "tokenCount": 805
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 427
+      }
+    ],
+    "thoughtsTokenCount": 2282
+  },
+  "analysis": {
+    "duration_sec": 9,
+    "sound_effects": [
+      {
+        "time": "00:03",
+        "type": "swoosh",
+        "description": "텍스트 등장 강조"
+      }
+    ],
+    "bgm": [
+      {
+        "start": "00:00",
+        "end": "00:09",
+        "mood": "트렌디/신나는",
+        "genre": "팝",
+        "tempo": "빠름",
+        "identified": "Sped-up pop track"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "00:00",
+        "end": "00:09",
+        "emotion": "excited",
+        "intensity": 0.8,
+        "source": "both",
+        "reason": "빠른 템포의 음악, 럭셔리한 시각 자료, 흥미로운 꿀팁 제공"
+      }
+    ],
+    "hook": {
+      "time": "00:00",
+      "technique": "비주얼/충격",
+      "why": "퍼스트 클래스 좌석이라는 시각적 자극과 '45배 빠르게'라는 과장된 텍스트로 즉각적인 호기심 유발"
+    },
+    "narration": {
+      "language": "한국어",
+      "tone": "정보전달/빠름",
+      "pace": "매우 빠름"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:01",
+        "description": "좌석에서 어메니티 컷으로 전환"
+      },
+      {
+        "time": "00:02",
+        "description": "어메니티에서 터널 걷는 모습으로 전환"
+      },
+      {
+        "time": "00:03",
+        "description": "터널에서 기내 침대 세팅으로 전환"
+      },
+      {
+        "time": "00:04",
+        "description": "침대에서 창문 밖 풍경으로 전환"
+      },
+      {
+        "time": "00:05",
+        "description": "창문에서 샴페인 따르는 모습으로 전환"
+      },
+      {
+        "time": "00:06",
+        "description": "샴페인에서 기내 모니터와 발 모습으로 전환"
+      },
+      {
+        "time": "00:07",
+        "description": "발 모습에서 기내식 코스로 전환"
+      }
+    ],
+    "audio_visual_sync_score": 0.9,
+    "sync_analysis": "빠른 TTS 내레이션 속도와 비트가 빠른 배경음악에 맞춰 시각적 컷 전환이 매우 빠르게 이루어져 속도감이 잘 맞음",
+    "viral_factors": [
+      "퍼스트 클래스라는 동경 요소",
+      "마일리지 적립 꿀팁(정보성)",
+      "빠른 화면 전환으로 이탈률 방지",
+      "댓글 유도를 통한 인게이지먼트 극대화"
+    ]
+  }
+}

@@ -1,0 +1,65 @@
+# Large binaries / models (not needed for API)
+sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/
+sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
+*.tar.bz2
+*.mp4
+*.mp3
+*.wav
+
+# Local caches (won't persist on Vercel anyway)
+thumbs/
+frames/
+extra_cache/
+
+# Generated HTML outputs (not served by API)
+/result_*.html
+/compare_*.html
+/*.html
+
+# Analysis caches / configs
+analysis_*_cache.json
+batch_frames_result.json
+compare_*_result.json
+compare_quality_data.json
+config.json
+_debug_*.txt
+
+# Screenshots / dev artifacts
+*.png
+*.jpg
+screenshot_*
+ss_*
+test_frame*
+녹음*
+화면*
+새 폴더/
+
+# Dev tooling
+.agents/
+.claude/
+.github/
+.streamlit/
+agents/
+dashboard/
+design_review/
+docs/
+web/node_modules/
+__pycache__/
+*.pyc
+skills-lock.json
+SESSION_STATUS.md
+
+# Legacy / standalone scripts (not imported by api/)
+cli.py
+collect_channels.py
+compare_quality.py
+gen_05sec_batch.py
+gen_ab_pages.py
+gen_analysis_pages.py
+get_batch_result.py
+refresh_urls.py
+test_1sec_compare.py
+test_batch_frames.py
+test_qwen_vision.py
+debug_dom.js
+scrape_comments.js

@@ -1,0 +1,63 @@
+{
+  "shortcode": "DXf3g2VjZyT",
+  "model": "gemini-3-pro-preview",
+  "elapsed_sec": 18.87722611427307,
+  "usage": {
+    "promptTokenCount": 599,
+    "candidatesTokenCount": 488,
+    "totalTokenCount": 2765,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 369
+      },
+      {
+        "modality": "AUDIO",
+        "tokenCount": 230
+      }
+    ],
+    "thoughtsTokenCount": 1678
+  },
+  "emotion_timeline": [
+    {
+      "start": "0.0",
+      "end": "1.9",
+      "emotion": "confident",
+      "intensity": 0.9,
+      "source": "speech",
+      "reason": "'자신감 있게 강조한다'는 디렉션과 '45배 빠르게'라는 정보성 후킹 멘트에서 화자의 강한 확신이 드러남"
+    },
+    {
+      "start": "1.9",
+      "end": "3.4",
+      "emotion": "proud",
+      "intensity": 0.8,
+      "source": "speech",
+      "reason": "'자랑스럽게 말한다'는 디렉션과 본인의 1등석 탑승 성공 경험을 공유하며 과시하는 톤이 나타남"
+    },
+    {
+      "start": "3.4",
+      "end": "5.8",
+      "emotion": "neutral",
+      "intensity": 0.6,
+      "source": "speech",
+      "reason": "'진지하게 설명한다'는 디렉션에 맞게, 기존 방식의 단점을 객관적인 수치(10만원)로 차분하고 진중하게 전달함"
+    },
+    {
+      "start": "5.8",
+      "end": "7.7",
+      "emotion": "excited",
+      "intensity": 0.9,
+      "source": "speech",
+      "reason": "'신나게 강조한다'는 디렉션과 비용이 2200원으로 대폭 줄어드는 해결책을 제시하며 매우 들뜬 목소리가 예상됨"
+    },
+    {
+      "start": "7.7",
+      "end": "9.1",
+      "emotion": "happy",
+      "intensity": 0.7,
+      "source": "speech",
+      "reason": "'친절하게 제안한다'는 디렉션과 시청자의 행동(댓글)을 유도하기 위해 밝고 긍정적인 어조로 마무리함"
+    }
+  ]
+}

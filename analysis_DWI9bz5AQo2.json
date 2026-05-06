@@ -1,0 +1,240 @@
+{
+  "shortcode": "DWI9bz5AQo2",
+  "model": "gemini-3-pro-preview",
+  "video_file": "_DWI9bz5AQo2.mp4",
+  "elapsed_sec": 30.744844436645508,
+  "usage": {
+    "reel": {
+      "promptTokenCount": 2306,
+      "candidatesTokenCount": 1182,
+      "totalTokenCount": 5721,
+      "promptTokensDetails": [
+        {
+          "modality": "VIDEO",
+          "tokenCount": 1879
+        },
+        {
+          "modality": "TEXT",
+          "tokenCount": 427
+        }
+      ],
+      "thoughtsTokenCount": 2233
+    },
+    "tts": {
+      "promptTokenCount": 1018,
+      "candidatesTokenCount": 460,
+      "totalTokenCount": 2298,
+      "promptTokensDetails": [
+        {
+          "modality": "AUDIO",
+          "tokenCount": 536
+        },
+        {
+          "modality": "TEXT",
+          "tokenCount": 482
+        }
+      ],
+      "thoughtsTokenCount": 820
+    },
+    "emotion_fine": {
+      "promptTokenCount": 1009,
+      "candidatesTokenCount": 598,
+      "totalTokenCount": 3030,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 473
+        },
+        {
+          "modality": "AUDIO",
+          "tokenCount": 536
+        }
+      ],
+      "thoughtsTokenCount": 1423
+    }
+  },
+  "analysis": {
+    "duration_sec": 21,
+    "sound_effects": [],
+    "bgm": [
+      {
+        "start": "00:00",
+        "end": "00:21",
+        "mood": "트렌디하고 경쾌한",
+        "genre": "팝/로파이",
+        "tempo": "보통",
+        "identified": "알 수 없음"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "0.0",
+        "end": "1.2",
+        "emotion": "surprised",
+        "intensity": 0.9,
+        "source": "speech",
+        "reason": "놀랍게 묻는 어조와 '들어왔다고?'라는 반문에서 큰 놀라움이 나타남"
+      },
+      {
+        "start": "1.2",
+        "end": "5.7",
+        "emotion": "neutral",
+        "intensity": 0.4,
+        "source": "speech",
+        "reason": "일본에서의 과거 경험을 차분한 목소리로 설명하며 상황을 전개함"
+      },
+      {
+        "start": "5.7",
+        "end": "8.9",
+        "emotion": "curious",
+        "intensity": 0.7,
+        "source": "speech",
+        "reason": "유명 디자이너가 만든 가방이라는 사실을 밝히며 청자의 흥미와 호기심을 유발하는 톤"
+      },
+      {
+        "start": "8.9",
+        "end": "12.4",
+        "emotion": "happy",
+        "intensity": 0.8,
+        "source": "speech",
+        "reason": "심플한 디자인이 예쁘다며 자신의 취향을 신나고 밝게 표현함"
+      },
+      {
+        "start": "12.4",
+        "end": "16.6",
+        "emotion": "sad",
+        "intensity": 0.6,
+        "source": "speech",
+        "reason": "꼭 사고 싶었는데 줄이 길어서 사지 못했다는 아쉬움과 실망감을 담아 말함"
+      },
+      {
+        "start": "16.6",
+        "end": "19.5",
+        "emotion": "excited",
+        "intensity": 0.9,
+        "source": "speech",
+        "reason": "한정 수량으로 한국에서 구매할 수 있다는 사실을 매우 흥분되고 들뜬 목소리로 알림"
+      },
+      {
+        "start": "19.5",
+        "end": "21.4",
+        "emotion": "confident",
+        "intensity": 0.7,
+        "source": "speech",
+        "reason": "댓글을 남기면 링크를 주겠다는 확실하고 친절한 행동 유도(CTA) 발화"
+      }
+    ],
+    "hook": {
+      "time": "00:00",
+      "technique": "질문",
+      "why": "'이거 한국에 들어왔다고?'라는 호기심을 자극하는 질문으로 시작하여 시청자가 어떤 아이템인지 끝까지 보게 만듦"
+    },
+    "narration": {
+      "language": "한국어",
+      "tone": "친근하면서도 정보를 빠르게 전달하는 톤 (AI 음성 추정)",
+      "pace": "약간 빠름"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:01",
+        "description": "가방 단독 샷에서 유니클로 매장 앞 도로 풍경으로 전환"
+      },
+      {
+        "time": "00:02",
+        "description": "도로 풍경에서 가방을 들고 있는 손 클로즈업으로 전환"
+      },
+      {
+        "time": "00:03",
+        "description": "일반인 모델의 가방 착용샷으로 전환"
+      },
+      {
+        "time": "00:05",
+        "description": "가방을 멘 다른 모습으로 전환"
+      },
+      {
+        "time": "00:06",
+        "description": "해외 화보 느낌의 프로 모델 착용샷으로 전환"
+      },
+      {
+        "time": "00:09",
+        "description": "매장에서 가방을 메고 찍은 거울 셀카 컷으로 전환"
+      },
+      {
+        "time": "00:12",
+        "description": "가방에 노트북/책을 넣는 수납력 시연 컷으로 전환"
+      },
+      {
+        "time": "00:14",
+        "description": "가방 측면 주머니에 텀블러를 넣는 컷으로 전환"
+      },
+      {
+        "time": "00:15",
+        "description": "가방을 메고 걸어가는 뒷모습 컷으로 전환"
+      },
+      {
+        "time": "00:17",
+        "description": "다시 일반인 모델의 착용샷으로 전환"
+      },
+      {
+        "time": "00:19",
+        "description": "가방과 인형 키링 클로즈업 컷으로 전환"
+      },
+      {
+        "time": "00:20",
+        "description": "거울 셀카 컷으로 전환하며 마무리"
+      }
+    ],
+    "audio_visual_sync_score": 0.9,
+    "sync_analysis": "나레이션의 내용과 시각적 자료(매장 앞 줄, 디자이너 언급 시 화보, 수납력 설명 시 물건 넣는 장면)가 매우 직관적으로 매칭되어 이해도를 높임.",
+    "viral_factors": [
+      "유명 브랜드(유니클로)와 유명 디자이너(지방시)의 콜라보라는 화제성",
+      "오픈런, 긴 줄 등 군중 심리를 자극하는 희소성",
+      "수납력(보부상백)이라는 실용적인 장점 시각화",
+      "'가방 남겨주시면 링크 보내드릴게요'라는 명확한 CTA로 댓글 인게이지먼트 극대화"
+    ],
+    "tts_script": [
+      {
+        "start": "0.0",
+        "end": "1.2",
+        "direction": "놀랍게 묻는다",
+        "text": "이거 한국에 들어왔다고?"
+      },
+      {
+        "start": "1.2",
+        "end": "5.7",
+        "direction": "차분하게 설명한다",
+        "text": "얼마 전에 일본 갔다가 유니클로 매장 앞에 줄이 빽빽하게 서 있길래 뭔가 하고 봤더니"
+      },
+      {
+        "start": "5.7",
+        "end": "8.9",
+        "direction": "흥미롭게 말한다",
+        "text": "지방시 총괄 디자이너가 만들었다는 이 가방 때문이더라고요."
+      },
+      {
+        "start": "8.9",
+        "end": "12.4",
+        "direction": "신나게 말한다",
+        "text": "저도 보부상팩 매니아라서 심플한 디자인이 너무 예쁜데다가"
+      },
+      {
+        "start": "12.4",
+        "end": "16.6",
+        "direction": "아쉽게 말한다",
+        "text": "수납이랑 착용감이 미쳤다길래 꼭 사고 싶었는데 줄이 너무 길어서 못 사 왔거든요."
+      },
+      {
+        "start": "16.6",
+        "end": "19.5",
+        "direction": "흥분되게 알린다",
+        "text": "근데 이거 지금 한정 수량으로 한국에서 살 수 있다는 거 있죠?"
+      },
+      {
+        "start": "19.5",
+        "end": "21.4",
+        "direction": "친절하게 안내한다",
+        "text": "가방 남겨주시면 링크 보내드릴게요."
+      }
+    ]
+  }
+}

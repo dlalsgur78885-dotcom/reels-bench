@@ -1,0 +1,281 @@
+{
+  "shortcode": "TRIPCOMJJ1",
+  "model": "gemini-3-pro-preview",
+  "video_file": "_TRIPCOMJJ1.mp4",
+  "elapsed_sec": 35.29554605484009,
+  "usage": {
+    "reel": {
+      "promptTokenCount": 3263,
+      "candidatesTokenCount": 878,
+      "totalTokenCount": 6754,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 427
+        },
+        {
+          "modality": "VIDEO",
+          "tokenCount": 2836
+        }
+      ],
+      "thoughtsTokenCount": 2613
+    },
+    "tts": {
+      "promptTokenCount": 1370,
+      "candidatesTokenCount": 740,
+      "totalTokenCount": 4406,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 582
+        },
+        {
+          "modality": "AUDIO",
+          "tokenCount": 788
+        }
+      ],
+      "thoughtsTokenCount": 2296
+    },
+    "emotion_fine": {
+      "promptTokenCount": 1408,
+      "candidatesTokenCount": 988,
+      "totalTokenCount": 4234,
+      "promptTokensDetails": [
+        {
+          "modality": "AUDIO",
+          "tokenCount": 788
+        },
+        {
+          "modality": "TEXT",
+          "tokenCount": 620
+        }
+      ],
+      "thoughtsTokenCount": 1838
+    }
+  },
+  "analysis": {
+    "duration_sec": 32,
+    "sound_effects": [],
+    "bgm": [
+      {
+        "start": "00:00",
+        "end": "00:32",
+        "mood": "upbeat, cheerful",
+        "genre": "electronic pop instrumental",
+        "tempo": "fast",
+        "identified": "unknown"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "0.0",
+        "end": "4.0",
+        "emotion": "confident",
+        "intensity": 0.8,
+        "source": "speech",
+        "reason": "시청자의 기존 고정관념을 깨는 사실을 확신에 찬 목소리로 강조함"
+      },
+      {
+        "start": "4.0",
+        "end": "5.1",
+        "emotion": "curious",
+        "intensity": 0.7,
+        "source": "speech",
+        "reason": "새로운 정보를 제시하기 전 시청자의 호기심을 유발하는 질문을 던짐"
+      },
+      {
+        "start": "5.1",
+        "end": "7.6",
+        "emotion": "neutral",
+        "intensity": 0.6,
+        "source": "speech",
+        "reason": "본인이 과거에 비싸게 구매했던 경험을 진지하고 차분하게 설명함"
+      },
+      {
+        "start": "7.6",
+        "end": "10.4",
+        "emotion": "curious",
+        "intensity": 0.8,
+        "source": "speech",
+        "reason": "큰 가격 차이에 대한 강한 의문을 제기하며 궁금증을 극대화함"
+      },
+      {
+        "start": "10.4",
+        "end": "11.4",
+        "emotion": "confident",
+        "intensity": 0.7,
+        "source": "speech",
+        "reason": "자신이 직접 그 비결을 알려주겠다며 친절하고 자신감 있게 제안함"
+      },
+      {
+        "start": "11.4",
+        "end": "15.5",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "source": "speech",
+        "reason": "일반적인 항공권 예매 시스템의 특징을 객관적이고 차분하게 설명함"
+      },
+      {
+        "start": "15.5",
+        "end": "18.1",
+        "emotion": "confident",
+        "intensity": 0.6,
+        "source": "speech",
+        "reason": "저렴한 항공권이 존재하는 이유를 명확하고 또렷하게 짚어줌"
+      },
+      {
+        "start": "18.1",
+        "end": "20.7",
+        "emotion": "confident",
+        "intensity": 0.8,
+        "source": "speech",
+        "reason": "일반 검색으로는 찾기 어렵다는 점을 단호하게 강조함"
+      },
+      {
+        "start": "20.7",
+        "end": "23.1",
+        "emotion": "excited",
+        "intensity": 0.7,
+        "source": "speech",
+        "reason": "해결책인 앱과 할인 코드를 소개하며 분위기가 경쾌하고 기대감 있게 전환됨"
+      },
+      {
+        "start": "23.1",
+        "end": "26.1",
+        "emotion": "excited",
+        "intensity": 0.8,
+        "source": "speech",
+        "reason": "파격적인 가격 혜택(10만 원)을 언급하며 흥미를 고조시킴"
+      },
+      {
+        "start": "26.1",
+        "end": "28.7",
+        "emotion": "happy",
+        "intensity": 0.7,
+        "source": "speech",
+        "reason": "저렴한 일본 왕복 항공권 혜택을 밝은 톤으로 기분 좋게 안내함"
+      },
+      {
+        "start": "28.7",
+        "end": "31.7",
+        "emotion": "excited",
+        "intensity": 0.9,
+        "source": "speech",
+        "reason": "한정 수량이라는 점을 강조하며 시청자의 빠른 행동(FOMO)을 다급하게 촉구함"
+      }
+    ],
+    "hook": {
+      "time": "00:00",
+      "technique": "질문 및 문제 제기 (Question & Problem posing)",
+      "why": "여행객이라면 누구나 공감하는 '비싼 항공권' 문제를 짚고, '나만 비싸게 산 건 아닐까?' 하는 불안감과 호기심을 즉각적으로 자극함"
+    },
+    "narration": {
+      "language": "Korean",
+      "tone": "차분하면서도 친절한 정보 전달 톤 (AI 보이스 느낌)",
+      "pace": "다소 빠름"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:00",
+        "description": "공항 터미널 배경 위로 화자의 모습과 후킹 텍스트 오버레이"
+      },
+      {
+        "time": "00:05",
+        "description": "손에 든 실물 비행기 표 컷팅 후 공항 창밖 풍경 전환"
+      },
+      {
+        "time": "00:10",
+        "description": "Trip.com 앱 UI로 전환되어 일반적인 항공권 검색 결과 스크롤링"
+      },
+      {
+        "time": "00:20",
+        "description": "앱 메인 화면 검색창에 특정 키워드(jjo123)를 타이핑하는 화면"
+      },
+      {
+        "time": "00:24",
+        "description": "검색 결과인 특가 페이지 진입 및 10만원 이하의 저렴한 항공권 목록들 스크롤링"
+      }
+    ],
+    "audio_visual_sync_score": 0.95,
+    "sync_analysis": "나레이션이 '일반 검색창', '할인 코드 검색', '특가 페이지'를 언급할 때마다 정확히 일치하는 앱 화면 녹화본이 재생되어 시청자가 방법을 직관적으로 이해할 수 있게 완벽히 동기화됨",
+    "viral_factors": [
+      "누구나 원하는 '여행 경비 절약(항공권 싸게 사는 법)'이라는 고관여 주제",
+      "80만원 vs 10만원대라는 극단적이고 시각적인 가격 비교 효과",
+      "특정 앱(Trip.com)과 특정 검색어(jjo123)라는 당장 따라해볼 수 있는 매우 구체적인 '시크릿 팁' 제공"
+    ],
+    "tts_script": [
+      {
+        "start": "0.0",
+        "end": "4.0",
+        "direction": "자신감 있게 강조한다",
+        "text": "비행기표가 비싼 게 아니라 비싼 비행기표만 검색하고 계셨다고"
+      },
+      {
+        "start": "4.0",
+        "end": "5.1",
+        "direction": "흥미롭게 묻는다",
+        "text": "사실 알고 있으셨나요?"
+      },
+      {
+        "start": "5.1",
+        "end": "7.6",
+        "direction": "진지하게 설명한다",
+        "text": "내가 80만 원대에 샀던 비행각표를"
+      },
+      {
+        "start": "7.6",
+        "end": "10.4",
+        "direction": "의아하게 질문한다",
+        "text": "왜 남들은 20만 원대에 30만 원대에 살 수 있었는지"
+      },
+      {
+        "start": "10.4",
+        "end": "11.4",
+        "direction": "친절하게 제안한다",
+        "text": "제가 알려드릴게요"
+      },
+      {
+        "start": "11.4",
+        "end": "15.5",
+        "direction": "차분하게 설명한다",
+        "text": "보통 일반적으로 검색해서 나오는 잘 팔리는 비행기표 말고"
+      },
+      {
+        "start": "15.5",
+        "end": "18.1",
+        "direction": "명확하게 짚어준다",
+        "text": "잘 팔리지 않아 저렴하게 가격을 낮춘 비행기표는"
+      },
+      {
+        "start": "18.1",
+        "end": "20.7",
+        "direction": "단호하게 강조한다",
+        "text": "일반 검색창에 검색해도 잘 나오지 않아요?"
+      },
+      {
+        "start": "20.7",
+        "end": "23.1",
+        "direction": "경쾌하게 소개한다",
+        "text": "이럴 때 티립더컴 앱에서 할인 코드를 검색하면"
+      },
+      {
+        "start": "23.1",
+        "end": "26.1",
+        "direction": "흥미롭게 설명한다",
+        "text": "최저가 항공권 페이지를 클릭하면 10만 원"
+      },
+      {
+        "start": "26.1",
+        "end": "28.7",
+        "direction": "밝게 안내한다",
+        "text": "주 후반대 일본 왕복 항공권도 찾아볼 수 있어요"
+      },
+      {
+        "start": "28.7",
+        "end": "31.7",
+        "direction": "다급하게 당부한다",
+        "text": "다만 수량이 매번 한정적이니 확인하러 가보세요"
+      }
+    ]
+  }
+}

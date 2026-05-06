@@ -1,0 +1,17 @@
+{
+  "name": "reels-bench-cron",
+  "version": "1.0.0",
+  "description": "Vercel Node functions for cron jobs (FB Ads scraping)",
+  "private": true,
+  "engines": {
+    "node": "20.x"
+  },
+  "dependencies": {
+    "@sparticuz/chromium": "^131.0.1",
+    "playwright-core": "1.49.1"
+  },
+  "devDependencies": {
+    "@vercel/node": "^3.0.0",
+    "typescript": "^5.0.0"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "릴스벤치 — 네이버 상품 수집",
+  "version": "0.1.1",
+  "description": "네이버 스마트스토어/브랜드스토어 상품 페이지에서 상품 정보·리뷰를 수집해 USP 분석에 사용합니다.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "릴스벤치 수집기"
+  },
+  "permissions": ["activeTab", "scripting", "storage", "downloads"],
+  "host_permissions": [
+    "https://smartstore.naver.com/*",
+    "https://*.smartstore.naver.com/*",
+    "https://brand.naver.com/*",
+    "https://*.brand.naver.com/*",
+    "https://reels-bench.vercel.app/*",
+    "http://localhost:*/*"
+  ]
+}

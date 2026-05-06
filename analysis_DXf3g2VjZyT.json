@@ -1,0 +1,198 @@
+{
+  "shortcode": "DXf3g2VjZyT",
+  "model": "gemini-3-pro-preview",
+  "video_file": "_DXf3g2VjZyT.mp4",
+  "elapsed_sec": 27.533184051513672,
+  "usage": {
+    "reel": {
+      "promptTokenCount": 1232,
+      "candidatesTokenCount": 759,
+      "totalTokenCount": 4273,
+      "promptTokensDetails": [
+        {
+          "modality": "VIDEO",
+          "tokenCount": 805
+        },
+        {
+          "modality": "TEXT",
+          "tokenCount": 427
+        }
+      ],
+      "thoughtsTokenCount": 2282
+    },
+    "tts": {
+      "promptTokenCount": 630,
+      "candidatesTokenCount": 311,
+      "totalTokenCount": 2400,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 400
+        },
+        {
+          "modality": "AUDIO",
+          "tokenCount": 230
+        }
+      ],
+      "thoughtsTokenCount": 1459
+    },
+    "emotion_fine": {
+      "promptTokenCount": 599,
+      "candidatesTokenCount": 488,
+      "totalTokenCount": 2765,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 369
+        },
+        {
+          "modality": "AUDIO",
+          "tokenCount": 230
+        }
+      ],
+      "thoughtsTokenCount": 1678
+    }
+  },
+  "analysis": {
+    "duration_sec": 9,
+    "sound_effects": [
+      {
+        "time": "00:03",
+        "type": "swoosh",
+        "description": "텍스트 등장 강조"
+      }
+    ],
+    "bgm": [
+      {
+        "start": "00:00",
+        "end": "00:09",
+        "mood": "트렌디/신나는",
+        "genre": "팝",
+        "tempo": "빠름",
+        "identified": "Sped-up pop track"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "0.0",
+        "end": "1.9",
+        "emotion": "confident",
+        "intensity": 0.9,
+        "source": "speech",
+        "reason": "'자신감 있게 강조한다'는 디렉션과 '45배 빠르게'라는 정보성 후킹 멘트에서 화자의 강한 확신이 드러남"
+      },
+      {
+        "start": "1.9",
+        "end": "3.4",
+        "emotion": "proud",
+        "intensity": 0.8,
+        "source": "speech",
+        "reason": "'자랑스럽게 말한다'는 디렉션과 본인의 1등석 탑승 성공 경험을 공유하며 과시하는 톤이 나타남"
+      },
+      {
+        "start": "3.4",
+        "end": "5.8",
+        "emotion": "neutral",
+        "intensity": 0.6,
+        "source": "speech",
+        "reason": "'진지하게 설명한다'는 디렉션에 맞게, 기존 방식의 단점을 객관적인 수치(10만원)로 차분하고 진중하게 전달함"
+      },
+      {
+        "start": "5.8",
+        "end": "7.7",
+        "emotion": "excited",
+        "intensity": 0.9,
+        "source": "speech",
+        "reason": "'신나게 강조한다'는 디렉션과 비용이 2200원으로 대폭 줄어드는 해결책을 제시하며 매우 들뜬 목소리가 예상됨"
+      },
+      {
+        "start": "7.7",
+        "end": "9.1",
+        "emotion": "happy",
+        "intensity": 0.7,
+        "source": "speech",
+        "reason": "'친절하게 제안한다'는 디렉션과 시청자의 행동(댓글)을 유도하기 위해 밝고 긍정적인 어조로 마무리함"
+      }
+    ],
+    "hook": {
+      "time": "00:00",
+      "technique": "비주얼/충격",
+      "why": "퍼스트 클래스 좌석이라는 시각적 자극과 '45배 빠르게'라는 과장된 텍스트로 즉각적인 호기심 유발"
+    },
+    "narration": {
+      "language": "한국어",
+      "tone": "정보전달/빠름",
+      "pace": "매우 빠름"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:01",
+        "description": "좌석에서 어메니티 컷으로 전환"
+      },
+      {
+        "time": "00:02",
+        "description": "어메니티에서 터널 걷는 모습으로 전환"
+      },
+      {
+        "time": "00:03",
+        "description": "터널에서 기내 침대 세팅으로 전환"
+      },
+      {
+        "time": "00:04",
+        "description": "침대에서 창문 밖 풍경으로 전환"
+      },
+      {
+        "time": "00:05",
+        "description": "창문에서 샴페인 따르는 모습으로 전환"
+      },
+      {
+        "time": "00:06",
+        "description": "샴페인에서 기내 모니터와 발 모습으로 전환"
+      },
+      {
+        "time": "00:07",
+        "description": "발 모습에서 기내식 코스로 전환"
+      }
+    ],
+    "audio_visual_sync_score": 0.9,
+    "sync_analysis": "빠른 TTS 내레이션 속도와 비트가 빠른 배경음악에 맞춰 시각적 컷 전환이 매우 빠르게 이루어져 속도감이 잘 맞음",
+    "viral_factors": [
+      "퍼스트 클래스라는 동경 요소",
+      "마일리지 적립 꿀팁(정보성)",
+      "빠른 화면 전환으로 이탈률 방지",
+      "댓글 유도를 통한 인게이지먼트 극대화"
+    ],
+    "tts_script": [
+      {
+        "start": "0.0",
+        "end": "1.9",
+        "direction": "자신감 있게 강조한다",
+        "text": "대한항공 마일리지 45배 빠르게 쌓기"
+      },
+      {
+        "start": "1.9",
+        "end": "3.4",
+        "direction": "자랑스럽게 말한다",
+        "text": "전 이 방법으로 1등석도 타봤어요"
+      },
+      {
+        "start": "3.4",
+        "end": "5.8",
+        "direction": "진지하게 설명한다",
+        "text": "신용카드로 100마일 모으려면 10만원 써야 하는데"
+      },
+      {
+        "start": "5.8",
+        "end": "7.7",
+        "direction": "신나게 강조한다",
+        "text": "네이버 포인트 쓰면 2200원 들어요"
+      },
+      {
+        "start": "7.7",
+        "end": "9.1",
+        "direction": "친절하게 제안한다",
+        "text": "궁금하면 댓글로 마일리지 남겨주세요"
+      }
+    ]
+  }
+}

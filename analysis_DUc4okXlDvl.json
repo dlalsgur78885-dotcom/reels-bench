@@ -1,0 +1,189 @@
+{
+  "shortcode": "DUc4okXlDvl",
+  "model": "gemini-3-pro-preview",
+  "video_file": "_DUc4okXlDvl.mp4",
+  "elapsed_sec": 35.25997996330261,
+  "usage": {
+    "reel": {
+      "promptTokenCount": 2914,
+      "candidatesTokenCount": 923,
+      "totalTokenCount": 6805,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 427
+        },
+        {
+          "modality": "VIDEO",
+          "tokenCount": 2487
+        }
+      ],
+      "thoughtsTokenCount": 2968
+    },
+    "tts": {
+      "promptTokenCount": 1643,
+      "candidatesTokenCount": 947,
+      "totalTokenCount": 5545,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 948
+        },
+        {
+          "modality": "AUDIO",
+          "tokenCount": 695
+        }
+      ],
+      "thoughtsTokenCount": 2955
+    },
+    "emotion_fine": {}
+  },
+  "analysis": {
+    "duration_sec": 28,
+    "sound_effects": [],
+    "bgm": [
+      {
+        "start": "00:00",
+        "end": "00:28",
+        "mood": "upbeat, energetic",
+        "genre": "electronic/pop",
+        "tempo": "fast",
+        "identified": "unknown"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "0.0",
+        "end": "2.5",
+        "emotion": "curious",
+        "intensity": 0.7,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "질문을 던지며 청자의 호기심을 유발하는 톤"
+      },
+      {
+        "start": "2.5",
+        "end": "6.2",
+        "emotion": "cheerful",
+        "intensity": 0.8,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "불편을 해소할 수 있는 긍정적인 해결책 제시"
+      },
+      {
+        "start": "6.2",
+        "end": "11.4",
+        "emotion": "serious",
+        "intensity": 0.6,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "앱 사용 방법과 기회가 한 번뿐이라는 제약 사항 안내"
+      },
+      {
+        "start": "11.4",
+        "end": "19.9",
+        "emotion": "excited",
+        "intensity": 0.9,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "마일리지 적립 등 숨겨진 꿀팁을 신나게 공유"
+      },
+      {
+        "start": "19.9",
+        "end": "27.8",
+        "emotion": "cheerful",
+        "intensity": 0.8,
+        "delivery": "normal",
+        "source": "speech",
+        "reason": "마지막 유용한 기능 소개 및 영상 저장 독려"
+      }
+    ],
+    "hook": {
+      "time": "00:00",
+      "technique": "비주얼 및 공감대 자극",
+      "why": "대중교통을 이용하며 누구나 한 번쯤 겪거나 상상해 본 최악의 민폐 상황(발 올리기)을 시각적 이미지로 보여주어 즉각적인 분노와 공감을 이끌어내고, 이후 등장할 해결책에 집중하게 만듦"
+    },
+    "narration": {
+      "language": "Korean",
+      "tone": "informative, confident, energetic",
+      "pace": "fast"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:03",
+        "description": "발을 올린 승객 이미지에서 KTX 열차 내부 통로 뷰로 전환"
+      },
+      {
+        "time": "00:05",
+        "description": "코레일톡 앱의 '좌석변경' 메뉴와 버튼을 강조하는 화면으로 전환"
+      },
+      {
+        "time": "00:09",
+        "description": "햇살이 들어오는 쾌적한 빈 KTX 일반석 좌석 모습으로 짧게 전환"
+      },
+      {
+        "time": "00:10",
+        "description": "코레일톡 앱 예약 화면에서 일반석을 '대피도우미'로 변경하는 UI 화면으로 전환"
+      },
+      {
+        "time": "00:19",
+        "description": "스마트폰에서 코레일톡 앱의 'VR 미리보기' 기능을 조작하여 객실 내부를 살피는 화면으로 전환"
+      },
+      {
+        "time": "00:25",
+        "description": "승강장으로 빠르게 진입하는 KTX 열차의 외부 모습으로 전환되며 마무리"
+      }
+    ],
+    "audio_visual_sync_score": 0.95,
+    "sync_analysis": "내레이션에서 언급되는 특정 앱 기능(좌석변경, 대피도우미, VR 미리보기)에 맞춰 화면이 해당 UI나 상황으로 오차 없이 전환되어 시청자의 이해도를 극대화함",
+    "viral_factors": [
+      "시청자의 공감과 짜증을 유발하는 강력한 오프닝 훅",
+      "대다수가 모르는 코레일톡 앱의 실질적인 혜택과 유용한 꿀팁(마일리지 적립, 자리 이동 등) 제공",
+      "숏폼 트렌드에 맞는 매우 빠른 말빠르기와 지루함 없는 화면 전환",
+      "영상을 '저장'하도록 유도하는 명확한 클로징 멘트(CTA)"
+    ],
+    "audio_events": [
+      {
+        "time": "6.2",
+        "event": "pause",
+        "reason": "첫 번째 기능 소개가 끝나고 세부 조건으로 넘어가는 시점의 호흡"
+      },
+      {
+        "time": "11.4",
+        "event": "pause",
+        "reason": "첫 번째 팁 설명이 완전히 끝나고 두 번째 꿀팁으로 화제가 전환됨"
+      },
+      {
+        "time": "19.9",
+        "event": "pause",
+        "reason": "마지막 꿀팁으로 넘어가기 전 잠시 쉬어가는 구간"
+      }
+    ],
+    "tts_script": [
+      {
+        "start": "0.0",
+        "end": "6.2",
+        "direction": "친절하게 설명한다",
+        "text": "KTX 탔는데 뒷사람 때문에 불편하다면? 앞으로 참지 마세요. 이제 출발 후에도 앱에서 직접 자리를 바꿀 수 있습니다."
+      },
+      {
+        "start": "6.2",
+        "end": "11.4",
+        "direction": "명확하게 강조한다",
+        "text": "쿨웨이 톡에서 좌석 변경 눌러 원하는 빈자리로 쓱 이동하면 끝. 단, 변경 기회는 딱 한 번뿐입니다."
+      },
+      {
+        "start": "11.4",
+        "end": "19.9",
+        "direction": "경쾌하게 추천한다",
+        "text": "그리고 표 살 때 일반석의 대피 도우미로 바꿔 예약해보세요. 일반석이 매진일 때도 예약 가능하고 표값의 10%나 마일리지로 정립해주니 사실상 꿀좌석이죠."
+      },
+      {
+        "start": "19.9",
+        "end": "27.8",
+        "direction": "활기차게 권유한다",
+        "text": "마지막으로 VI 미리 보기 기능. 타기 전에 컨센트가 어딨는지, 창문은 어딨는지 미리 보고 명당 자리 잡으세요. 이제 이 영상 저장하고 꼭 써먹으세요."
+      }
+    ]
+  }
+}

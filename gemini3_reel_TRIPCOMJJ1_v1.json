@@ -1,0 +1,93 @@
+{
+  "model": "gemini-3-pro-preview",
+  "shortcode": "TRIPCOMJJ1",
+  "video_file": "_TRIPCOMJJ1.mp4",
+  "elapsed_sec": 35.29554605484009,
+  "usage": {
+    "promptTokenCount": 3263,
+    "candidatesTokenCount": 878,
+    "totalTokenCount": 6754,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 427
+      },
+      {
+        "modality": "VIDEO",
+        "tokenCount": 2836
+      }
+    ],
+    "thoughtsTokenCount": 2613
+  },
+  "analysis": {
+    "duration_sec": 32,
+    "sound_effects": [],
+    "bgm": [
+      {
+        "start": "00:00",
+        "end": "00:32",
+        "mood": "upbeat, cheerful",
+        "genre": "electronic pop instrumental",
+        "tempo": "fast",
+        "identified": "unknown"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "00:00",
+        "end": "00:10",
+        "emotion": "surprised",
+        "intensity": 0.7,
+        "source": "speech",
+        "reason": "남들은 싸게 사는데 본인만 비싸게 샀다는 상황을 제시하여 시청자의 억울함과 호기심 유발"
+      },
+      {
+        "start": "00:10",
+        "end": "00:32",
+        "emotion": "excited",
+        "intensity": 0.9,
+        "source": "both",
+        "reason": "숨겨진 코드를 통해 10만원대의 매우 저렴한 특가 항공권을 찾는 방법을 공개하며 기대감 고조"
+      }
+    ],
+    "hook": {
+      "time": "00:00",
+      "technique": "질문 및 문제 제기 (Question & Problem posing)",
+      "why": "여행객이라면 누구나 공감하는 '비싼 항공권' 문제를 짚고, '나만 비싸게 산 건 아닐까?' 하는 불안감과 호기심을 즉각적으로 자극함"
+    },
+    "narration": {
+      "language": "Korean",
+      "tone": "차분하면서도 친절한 정보 전달 톤 (AI 보이스 느낌)",
+      "pace": "다소 빠름"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:00",
+        "description": "공항 터미널 배경 위로 화자의 모습과 후킹 텍스트 오버레이"
+      },
+      {
+        "time": "00:05",
+        "description": "손에 든 실물 비행기 표 컷팅 후 공항 창밖 풍경 전환"
+      },
+      {
+        "time": "00:10",
+        "description": "Trip.com 앱 UI로 전환되어 일반적인 항공권 검색 결과 스크롤링"
+      },
+      {
+        "time": "00:20",
+        "description": "앱 메인 화면 검색창에 특정 키워드(jjo123)를 타이핑하는 화면"
+      },
+      {
+        "time": "00:24",
+        "description": "검색 결과인 특가 페이지 진입 및 10만원 이하의 저렴한 항공권 목록들 스크롤링"
+      }
+    ],
+    "audio_visual_sync_score": 0.95,
+    "sync_analysis": "나레이션이 '일반 검색창', '할인 코드 검색', '특가 페이지'를 언급할 때마다 정확히 일치하는 앱 화면 녹화본이 재생되어 시청자가 방법을 직관적으로 이해할 수 있게 완벽히 동기화됨",
+    "viral_factors": [
+      "누구나 원하는 '여행 경비 절약(항공권 싸게 사는 법)'이라는 고관여 주제",
+      "80만원 vs 10만원대라는 극단적이고 시각적인 가격 비교 효과",
+      "특정 앱(Trip.com)과 특정 검색어(jjo123)라는 당장 따라해볼 수 있는 매우 구체적인 '시크릿 팁' 제공"
+    ]
+  }
+}

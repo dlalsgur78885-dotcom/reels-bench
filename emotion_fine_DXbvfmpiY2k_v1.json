@@ -1,0 +1,171 @@
+{
+  "shortcode": "DXbvfmpiY2k",
+  "model": "gemini-3-pro-preview",
+  "elapsed_sec": 36.07091999053955,
+  "usage": {
+    "promptTokenCount": 2218,
+    "candidatesTokenCount": 1481,
+    "totalTokenCount": 6528,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 1128
+      },
+      {
+        "modality": "AUDIO",
+        "tokenCount": 1090
+      }
+    ],
+    "thoughtsTokenCount": 2829
+  },
+  "emotion_timeline": [
+    {
+      "start": "0.0",
+      "end": "3.3",
+      "emotion": "cheerful",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "자신을 '수련에 미친 남자'로 당당하고 흥미롭게 소개하며 이목을 집중시킴"
+    },
+    {
+      "start": "3.3",
+      "end": "6.5",
+      "emotion": "calm",
+      "intensity": 0.5,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "10년 전 과거의 다혈질 사고뭉치 시절을 덤덤하게 회상함"
+    },
+    {
+      "start": "6.5",
+      "end": "10.1",
+      "emotion": "calm",
+      "intensity": 0.5,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "아버지의 권유로 골굴사 수련회에 참여했던 사실을 차분하게 설명함"
+    },
+    {
+      "start": "10.1",
+      "end": "13.3",
+      "emotion": "calm",
+      "intensity": 0.6,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "골굴사와 선무도에 대한 배경 지식을 명확하게 전달함"
+    },
+    {
+      "start": "13.3",
+      "end": "16.4",
+      "emotion": "serious",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "선무도에 깊이 매료된 자신의 진지한 감정을 표현함"
+    },
+    {
+      "start": "16.4",
+      "end": "18.8",
+      "emotion": "calm",
+      "intensity": 0.5,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "결심 후 부모님께 말씀드린 상황의 도입을 담담하게 말함"
+    },
+    {
+      "start": "18.8",
+      "end": "21.7",
+      "emotion": "serious",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "선무도 지도자 과정을 하겠다는 당차고 확고한 주장을 전달함"
+    },
+    {
+      "start": "21.7",
+      "end": "24.5",
+      "emotion": "calm",
+      "intensity": 0.5,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "부모님의 강한 반대 상황을 오히려 무덤덤하게 전함"
+    },
+    {
+      "start": "24.5",
+      "end": "28.0",
+      "emotion": "calm",
+      "intensity": 0.6,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "부모님의 허락과 진학 포기라는 큰 결정을 차분하게 서술함"
+    },
+    {
+      "start": "28.0",
+      "end": "30.6",
+      "emotion": "serious",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "어린 나이에 지도자 과정을 시작한 결연한 마음가짐을 드러냄"
+    },
+    {
+      "start": "30.6",
+      "end": "33.6",
+      "emotion": "happy",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "10년 차 선무도 사범이 된 현재의 모습을 자랑스럽고 긍정적으로 밝힘"
+    },
+    {
+      "start": "33.6",
+      "end": "37.4",
+      "emotion": "happy",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "사람들에게 행복을 나누는 과정에서 느끼는 온화함과 기쁨"
+    },
+    {
+      "start": "37.4",
+      "end": "40.1",
+      "emotion": "excited",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "전 세계에 수련법을 널리 전하고 싶다는 희망차고 고양된 다짐"
+    },
+    {
+      "start": "40.1",
+      "end": "43.5",
+      "emotion": "curious",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "앞으로 꿈을 이룰 수 있을지 질문을 던지며 시청자의 호기심을 유발함"
+    }
+  ],
+  "audio_events": [
+    {
+      "time": "18.8",
+      "event": "pause",
+      "reason": "부모님께 자신의 확고한 의지를 말하기 전 잠시 뜸을 들임"
+    },
+    {
+      "time": "21.7",
+      "event": "pause",
+      "reason": "자신의 발언 직후 부모님의 반대 반응을 말하기 전 문장 간 호흡"
+    },
+    {
+      "time": "30.6",
+      "event": "pause",
+      "reason": "과거 이야기에서 현재 10년 차 사범이 된 시점으로 넘어가는 극적인 전환"
+    },
+    {
+      "time": "40.1",
+      "event": "pause",
+      "reason": "마지막 질문을 던지기 전 시청자의 이목을 집중시키기 위한 여백"
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "shortcode": "doe0k1ruAaU",
+  "model": "gemini-3-pro-preview",
+  "elapsed_sec": 44.597275733947754,
+  "usage": {},
+  "emotion_timeline": [
+    {
+      "start": "0.0",
+      "end": "2.2",
+      "emotion": "frustrated",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "속았다는 억울함과 허탈함을 감탄사와 함께 토로함"
+    },
+    {
+      "start": "2.2",
+      "end": "5.8",
+      "emotion": "calm",
+      "intensity": 0.6,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "흔히 겪는 일상적인 예약 상황을 가정하며 자연스럽게 이야기를 전개함"
+    },
+    {
+      "start": "5.8",
+      "end": "7.0",
+      "emotion": "serious",
+      "intensity": 0.9,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "절대 안 된다고 강한 어조로 시청자의 주의를 환기시킴"
+    },
+    {
+      "start": "7.0",
+      "end": "13.0",
+      "emotion": "calm",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "화면의 금액과 URL 구조를 논리적이고 차분하게 안내함"
+    },
+    {
+      "start": "13.0",
+      "end": "15.4",
+      "emotion": "excited",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "간단히 숫자를 바꾸는 것만으로 해결된다는 점을 흥미롭게 제시함"
+    },
+    {
+      "start": "15.4",
+      "end": "19.0",
+      "emotion": "cheerful",
+      "intensity": 0.8,
+      "delivery": "very_fast",
+      "source": "speech",
+      "reason": "가격이 즉시 저렴해진 결과를 보여주며 긍정적이고 신나는 톤을 띰"
+    },
+    {
+      "start": "19.0",
+      "end": "27.7",
+      "emotion": "serious",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "가격 변동의 원인인 접속 경로와 수수료 정책을 객관적으로 분석함"
+    },
+    {
+      "start": "27.8",
+      "end": "33.0",
+      "emotion": "excited",
+      "intensity": 0.9,
+      "delivery": "very_fast",
+      "source": "speech",
+      "reason": "큰 금액 차이를 강조하며 꿀팁 활용을 시청자에게 강력히 권장함"
+    }
+  ],
+  "audio_events": [
+    {
+      "time": "5.7",
+      "event": "pause",
+      "reason": "'근데 절대 안됩니다'라고 반전 경고를 하기 전 주의 집중을 위한 짧은 침묵"
+    },
+    {
+      "time": "27.7",
+      "event": "pause",
+      "reason": "설명을 마친 후, 더 큰 할인폭을 강조하는 결론(연박 시 10만원)으로 넘어가기 전 호흡 조절"
+    }
+  ]
+}

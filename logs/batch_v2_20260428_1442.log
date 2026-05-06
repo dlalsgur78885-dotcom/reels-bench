@@ -1,0 +1,46 @@
+[auto_analyze] 미분석 reels 조회 (limit=11)...
+  대상: 10개
+    DW3rf1WgTLm
+    DXJwSDpAVWQ
+    DU0ekjliYhF
+    DXHHuvxEg3k
+    DXJczZKETaw
+    DWfyZ1Hk_wf
+    DR1Y6Y3k0-M
+    DXeQXqfkVL6
+    DU39B9kE9rI
+    DWOf42ZiQd0
+
+[1/10] DW3rf1WgTLm
+Script structure parse error: Unterminated string starting at: line 11 column 17 (char 459)
+  [OK] analyzed in 85s
+
+[2/10] DXJwSDpAVWQ
+  [OK] analyzed in 69s
+
+[3/10] DU0ekjliYhF
+Pro audio call error: Expecting value: line 1 column 1 (char 0)
+  [OK] analyzed in 110s
+
+[4/10] DXHHuvxEg3k
+  [OK] analyzed in 75s
+
+[5/10] DXJczZKETaw
+  [OK] analyzed in 96s
+
+[6/10] DWfyZ1Hk_wf
+  [OK] analyzed in 69s
+
+[7/10] DR1Y6Y3k0-M
+  [OK] analyzed in 60s
+
+[8/10] DXeQXqfkVL6
+  [OK] analyzed in 94s
+
+[9/10] DU39B9kE9rI
+  [OK] analyzed in 78s
+
+[10/10] DWOf42ZiQd0
+  [OK] analyzed in 75s
+
+[result] {'analyzed': 10, 'metadata_only': 0, 'failed': 0}

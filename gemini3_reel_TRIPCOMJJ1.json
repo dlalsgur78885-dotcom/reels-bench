@@ -1,0 +1,140 @@
+{
+  "model": "gemini-3-pro-preview",
+  "shortcode": "TRIPCOMJJ1",
+  "video_file": "_TRIPCOMJJ1.mp4",
+  "elapsed_sec": 31.19137454032898,
+  "usage": {
+    "promptTokenCount": 3263,
+    "candidatesTokenCount": 1158,
+    "totalTokenCount": 6243,
+    "promptTokensDetails": [
+      {
+        "modality": "VIDEO",
+        "tokenCount": 2836
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 427
+      }
+    ],
+    "thoughtsTokenCount": 1822
+  },
+  "analysis": {
+    "duration_sec": 32,
+    "sound_effects": [
+      {
+        "time": "00:04",
+        "type": "swoosh",
+        "description": "화면 전환 효과"
+      },
+      {
+        "time": "00:10",
+        "type": "swoosh",
+        "description": "앱 화면으로의 전환 강조"
+      },
+      {
+        "time": "00:20",
+        "type": "타이핑 소리",
+        "description": "검색어(할인코드) 입력 행동 강조"
+      },
+      {
+        "time": "00:24",
+        "type": "pop",
+        "description": "특정 배너 클릭 강조"
+      },
+      {
+        "time": "00:26",
+        "type": "금전등록기(cha-ching) 소리",
+        "description": "저렴한 가격(돈 절약) 강조"
+      }
+    ],
+    "bgm": [
+      {
+        "start": "00:00",
+        "end": "00:32",
+        "mood": "경쾌하고 밝은",
+        "genre": "광고/팝",
+        "tempo": "보통-빠름",
+        "identified": null
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "00:00",
+        "end": "00:05",
+        "emotion": "surprised",
+        "intensity": 0.7,
+        "source": "speech",
+        "reason": "비행기 표가 비싸다는 편견을 깨는 도발적인 질문"
+      },
+      {
+        "start": "00:05",
+        "end": "00:25",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "source": "speech",
+        "reason": "정보를 전달하고 방법을 설명하는 차분한 톤"
+      },
+      {
+        "start": "00:25",
+        "end": "00:32",
+        "emotion": "excited",
+        "intensity": 0.8,
+        "source": "both",
+        "reason": "매우 저렴한 가격 공개 및 한정 수량임을 알리며 행동 유도(FOMO)"
+      }
+    ],
+    "hook": {
+      "time": "00:00",
+      "technique": "질문/충격",
+      "why": "'비싼 비행기표만 검색하고 알고 있으셨나요?'라는 질문으로 시청자의 손실 회피 심리를 자극하고 이목을 집중시킴"
+    },
+    "narration": {
+      "language": "Korean",
+      "tone": "정보전달, 친절함, 설득력 있는",
+      "pace": "보통"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:00",
+        "description": "공항 배경 위로 말하는 여성의 얼굴 합성"
+      },
+      {
+        "time": "00:04",
+        "description": "공항 복도를 걸으며 종이 항공권을 들고 있는 모습"
+      },
+      {
+        "time": "00:06",
+        "description": "공항 창밖으로 보이는 비행기 풍경"
+      },
+      {
+        "time": "00:09",
+        "description": "여성의 얼굴과 트립닷컴 로고 등장"
+      },
+      {
+        "time": "00:10",
+        "description": "트립닷컴 앱 일반 검색 화면 녹화본"
+      },
+      {
+        "time": "00:20",
+        "description": "앱 검색창에 특정 코드(jjo123)를 입력하는 화면"
+      },
+      {
+        "time": "00:24",
+        "description": "검색 결과 페이지(Trip.Pulse) 및 배너 클릭"
+      },
+      {
+        "time": "00:26",
+        "description": "저렴한 특가 항공권 목록이 스크롤되는 화면"
+      }
+    ],
+    "audio_visual_sync_score": 0.9,
+    "sync_analysis": "내레이션의 설명과 스마트폰 화면 녹화 영상의 행동(타이핑, 클릭)이 정확히 일치하며, 중요한 순간에 효과음이 적절히 배치됨",
+    "viral_factors": [
+      "돈 절약 꿀팁(실용적 가치)",
+      "아는 사람만 아는 '시크릿 코드' 제공",
+      "따라하기 쉬운 명확한 스크린 레코딩 튜토리얼",
+      "한정 수량 강조를 통한 FOMO 유발"
+    ]
+  }
+}

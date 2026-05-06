@@ -1,0 +1,131 @@
+{
+  "shortcode": "DSSR8rEk0b6",
+  "model": "gemini-3-pro-preview",
+  "whisper_segments": 18,
+  "usage": {
+    "promptTokenCount": 2213,
+    "candidatesTokenCount": 2778,
+    "totalTokenCount": 7684,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 1173
+      },
+      {
+        "modality": "AUDIO",
+        "tokenCount": 1040
+      }
+    ],
+    "thoughtsTokenCount": 2693
+  },
+  "tts_script": [
+    {
+      "start": "0.0",
+      "end": "2.9",
+      "direction": "흥미롭게 말한다",
+      "text": "일본 여행 가기 전에 당신의 피드에 이 뉴스가 떴다면"
+    },
+    {
+      "start": "2.9",
+      "end": "5.0",
+      "direction": "단호하게 권유한다",
+      "text": "지금 바로 저장하고 친구한테 공유해."
+    },
+    {
+      "start": "5.0",
+      "end": "6.9",
+      "direction": "자신있게 자랑한다",
+      "text": "여행 경비를 반이나 아껴줄 거거든."
+    },
+    {
+      "start": "6.9",
+      "end": "9.0",
+      "direction": "또박또박 강조한다",
+      "text": "DM 폭주했던 일본 후보 할인 코드."
+    },
+    {
+      "start": "9.0",
+      "end": "10.8",
+      "direction": "공감하며 묻는다",
+      "text": "일본 택시 진짜 비싼 거 알지?"
+    },
+    {
+      "start": "10.8",
+      "end": "14.1",
+      "direction": "다정하게 제안한다",
+      "text": "여기 있는 일본 후보 할인 코드 입력하고 발 아프게 걸어다니지 말자."
+    },
+    {
+      "start": "14.1",
+      "end": "15.9",
+      "direction": "신나게 말한다",
+      "text": "일본 가면 쇼핑몰 쓸어와야 되잖아."
+    },
+    {
+      "start": "15.9",
+      "end": "18.6",
+      "direction": "친절하게 설명한다",
+      "text": "기본 면세 10%에 추가 할인까지 되는 쿠폰들."
+    },
+    {
+      "start": "18.6",
+      "end": "21.1",
+      "direction": "안심시키며 말한다",
+      "text": "여기저기 흩어진 쿠폰 찾느라 고생할 필요 없어."
+    },
+    {
+      "start": "21.1",
+      "end": "24.0",
+      "direction": "명확하게 알려준다",
+      "text": "그냥 이 사이트 들어가서 이미지 저장하고 보여주면 돼."
+    },
+    {
+      "start": "24.0",
+      "end": "25.9",
+      "direction": "은밀하게 속삭인다",
+      "text": "이건 진짜 나만 알고 싶은 꿀팁인데"
+    },
+    {
+      "start": "25.9",
+      "end": "29.6",
+      "direction": "신나게 설명한다",
+      "text": "이 사이트 들어가면 클룩에서 추가 할인 받을 수 있는 쿠폰이 쫙 뜨거든?"
+    },
+    {
+      "start": "29.6",
+      "end": "31.3",
+      "direction": "간결하게 나열한다",
+      "text": "일본 호텔 이심 투어."
+    },
+    {
+      "start": "31.3",
+      "end": "33.4",
+      "direction": "흥분하며 강조한다",
+      "text": "최대 50% 할인되는 쿠폰도 있으니까"
+    },
+    {
+      "start": "33.4",
+      "end": "35.4",
+      "direction": "활기차게 권유한다",
+      "text": "미리 미리 확인하고 싸게 예약하자고."
+    },
+    {
+      "start": "35.4",
+      "end": "37.4",
+      "direction": "진지하게 말한다",
+      "text": "이 모든 정보를 한 번에 받고 싶다면"
+    },
+    {
+      "start": "37.4",
+      "end": "40.0",
+      "direction": "또박또박 요구한다",
+      "text": "다다의 팔로우하고 댓글에 일본 쿠폰 남겨줘."
+    },
+    {
+      "start": "40.0",
+      "end": "41.3",
+      "direction": "시원하게 약속한다",
+      "text": "바로 DM으로 쏴줄게."
+    }
+  ]
+}

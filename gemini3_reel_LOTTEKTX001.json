@@ -1,0 +1,147 @@
+{
+  "model": "gemini-3-pro-preview",
+  "shortcode": "LOTTEKTX001",
+  "video_file": "_LOTTEKTX001.mp4",
+  "elapsed_sec": 33.8438286781311,
+  "usage": {
+    "promptTokenCount": 3891,
+    "candidatesTokenCount": 1341,
+    "totalTokenCount": 7234,
+    "promptTokensDetails": [
+      {
+        "modality": "VIDEO",
+        "tokenCount": 3464
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 427
+      }
+    ],
+    "thoughtsTokenCount": 2002
+  },
+  "analysis": {
+    "duration_sec": 39,
+    "sound_effects": [
+      {
+        "time": "00:01",
+        "type": "swoosh",
+        "description": "텍스트와 불꽃 이모지가 나타날 때 시선을 끌고 당혹스러운 상황을 강조"
+      },
+      {
+        "time": "00:06",
+        "type": "swoosh",
+        "description": "G car 로고가 등장하며 해결책을 제시하는 화면 전환 효과"
+      },
+      {
+        "time": "00:24",
+        "type": "ka-ching",
+        "description": "중복 할인 혜택을 설명할 때 금전적 이득을 강조하기 위함"
+      },
+      {
+        "time": "00:35",
+        "type": "ding",
+        "description": "편지봉투 아이콘 등장 시 메시지 알림음을 사용하여 댓글 작성(CTA) 유도"
+      }
+    ],
+    "bgm": [
+      {
+        "start": "00:04",
+        "end": "00:39",
+        "mood": "트렌디하고 경쾌함",
+        "genre": "Lo-fi Hip Hop",
+        "tempo": "미드 템포",
+        "identified": "unknown"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "00:00",
+        "end": "00:04",
+        "emotion": "angry",
+        "intensity": 0.7,
+        "source": "speech",
+        "reason": "KTX를 놓치고 돈을 날린 답답한 상황을 불꽃 이모지와 함께 표현"
+      },
+      {
+        "start": "00:04",
+        "end": "00:21",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "source": "speech",
+        "reason": "G car 앱의 기능과 KTX 패키지 예약 방법을 차분하게 설명"
+      },
+      {
+        "start": "00:22",
+        "end": "00:32",
+        "emotion": "excited",
+        "intensity": 0.8,
+        "source": "speech",
+        "reason": "쿠폰과 패키지 중복 할인, 포인트 적립 등 강력한 혜택을 강조"
+      },
+      {
+        "start": "00:32",
+        "end": "00:39",
+        "emotion": "happy",
+        "intensity": 0.9,
+        "source": "both",
+        "reason": "쉽고 빠른 여행 준비 완료에 대한 만족감과 아름다운 여행지 풍경 제공"
+      }
+    ],
+    "hook": {
+      "time": "00:00",
+      "technique": "공감/부정적 상황 제시",
+      "why": "누구나 겪을 수 있는 '기차 놓침+돈 날림'이라는 부정적인 상황을 초반에 배치하여 시청자의 공감과 호기심을 즉각적으로 유발함"
+    },
+    "narration": {
+      "language": "Korean",
+      "tone": "도입부는 하소연하듯, 본론은 친절하고 명확한 정보 전달, 후반부는 경쾌함",
+      "pace": "빠름"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:00",
+        "description": "기차역 플랫폼 배경"
+      },
+      {
+        "time": "00:04",
+        "description": "코레일 앱 예약 화면"
+      },
+      {
+        "time": "00:06",
+        "description": "주행 중인 기차 외부와 G car 로고 등장"
+      },
+      {
+        "time": "00:10",
+        "description": "KTX 패키지 프로모션 안내 배너"
+      },
+      {
+        "time": "00:12",
+        "description": "G car 앱에서 패키지를 예약하는 UI 시연"
+      },
+      {
+        "time": "00:18",
+        "description": "기차 내부 좌석, 예매 내역 확인 화면"
+      },
+      {
+        "time": "00:23",
+        "description": "결제 금액 및 중복 할인 내역 텍스트 강조"
+      },
+      {
+        "time": "00:27",
+        "description": "대교를 달리는 시원한 주행 뷰"
+      },
+      {
+        "time": "00:33",
+        "description": "벚꽃길을 걷는 여행자 뒷모습과 CTA 메시지"
+      }
+    ],
+    "audio_visual_sync_score": 0.9,
+    "sync_analysis": "내레이션의 설명 속도에 맞춰 앱 사용 화면이 정확히 전환되며, 핵심 혜택(할인, 댓글 유도)이 등장할 때 적절한 효과음이 시각적 이펙트와 잘 매칭됨",
+    "viral_factors": [
+      "일상적인 불편함(기차 놓침)에 대한 명확한 해결책(통합 예약 앱) 제시",
+      "최대 40% 할인이라는 강력하고 직관적인 금전적 혜택 강조",
+      "댓글 작성을 유도하여 인스타그램 알고리즘상 인게이지먼트를 높이는 구조",
+      "시원한 드라이빙 뷰와 벚꽃길 등 시각적으로 매력적인 여행 영상 포함"
+    ]
+  }
+}

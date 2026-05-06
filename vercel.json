@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "buildCommand": "cd web && npm install && npm run build",
+  "builds": [
+    { "src": "api/index.py", "use": "@vercel/python", "config": { "maxDuration": 600 } },
+    { "src": "api/cron/fb-scrape.ts", "use": "@vercel/node", "config": { "maxDuration": 300 } }
+  ],
+  "routes": [
+    { "src": "/api/cron/fb-scrape", "dest": "/api/cron/fb-scrape.ts" },
+    { "src": "/(.*)", "dest": "/api/index.py" }
+  ]
+}

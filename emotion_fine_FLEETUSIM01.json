@@ -1,0 +1,137 @@
+{
+  "shortcode": "FLEETUSIM01",
+  "model": "gemini-3-pro-preview",
+  "elapsed_sec": 37.7827730178833,
+  "usage": {},
+  "emotion_timeline": [
+    {
+      "start": "0.0",
+      "end": "1.5",
+      "emotion": "curious",
+      "intensity": 0.6,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "청자의 주의를 환기하는 질문형 어조"
+    },
+    {
+      "start": "1.5",
+      "end": "2.9",
+      "emotion": "frustrated",
+      "intensity": 0.5,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "기존 방식의 불편함을 지적하는 답답한 톤"
+    },
+    {
+      "start": "2.9",
+      "end": "4.1",
+      "emotion": "cheerful",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "새로운 대안을 제시하며 밝아지는 분위기"
+    },
+    {
+      "start": "4.1",
+      "end": "6.6",
+      "emotion": "happy",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "자신의 만족스러운 경험을 공유하며 호의적인 태도"
+    },
+    {
+      "start": "6.6",
+      "end": "9.8",
+      "emotion": "calm",
+      "intensity": 0.5,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "정확한 앱 설치 방법을 전달하기 위한 차분하고 명확한 톤"
+    },
+    {
+      "start": "9.8",
+      "end": "12.5",
+      "emotion": "cheerful",
+      "intensity": 0.8,
+      "delivery": "very_fast",
+      "source": "speech",
+      "reason": "빠르고 간편한 과정을 강조하는 속도감 있는 발화"
+    },
+    {
+      "start": "12.5",
+      "end": "15.2",
+      "emotion": "excited",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "가입 시 제공되는 혜택을 강조하며 들뜬 목소리"
+    },
+    {
+      "start": "15.2",
+      "end": "16.9",
+      "emotion": "excited",
+      "intensity": 0.8,
+      "delivery": "very_fast",
+      "source": "speech",
+      "reason": "연이은 추가 할인을 빠르게 어필"
+    },
+    {
+      "start": "16.9",
+      "end": "19.4",
+      "emotion": "excited",
+      "intensity": 0.9,
+      "delivery": "shouts",
+      "source": "speech",
+      "reason": "금전적 지원금 혜택을 가장 강하게 강조"
+    },
+    {
+      "start": "19.4",
+      "end": "21.4",
+      "emotion": "happy",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "비용 부담을 줄인 것에 대한 높은 만족감"
+    },
+    {
+      "start": "21.4",
+      "end": "22.5",
+      "emotion": "curious",
+      "intensity": 0.6,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "결론을 내기 전 청자의 이목을 다시 끄는 짧은 질문"
+    },
+    {
+      "start": "22.5",
+      "end": "23.9",
+      "emotion": "serious",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "해결책을 단호하고 확신 있게 선언"
+    },
+    {
+      "start": "23.9",
+      "end": "25.4",
+      "emotion": "excited",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "행동을 즉각적으로 유도하는 활기찬 마무리"
+    }
+  ],
+  "audio_events": [
+    {
+      "time": "2.9",
+      "event": "pause",
+      "reason": "문제점을 질문한 후 해결책을 제시하기 전 짧은 호흡"
+    },
+    {
+      "time": "21.4",
+      "event": "pause",
+      "reason": "마무리 요약으로 넘어가기 전 주의를 집중시키기 위한 끊어 읽기"
+    }
+  ]
+}

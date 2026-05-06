@@ -1,0 +1,95 @@
+{
+  "shortcode": "TRIPCOMJJ1",
+  "model": "gemini-3-pro-preview",
+  "whisper_segments": 12,
+  "usage": {
+    "promptTokenCount": 1370,
+    "candidatesTokenCount": 740,
+    "totalTokenCount": 4406,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 582
+      },
+      {
+        "modality": "AUDIO",
+        "tokenCount": 788
+      }
+    ],
+    "thoughtsTokenCount": 2296
+  },
+  "tts_script": [
+    {
+      "start": "0.0",
+      "end": "4.0",
+      "direction": "자신감 있게 강조한다",
+      "text": "비행기표가 비싼 게 아니라 비싼 비행기표만 검색하고 계셨다고"
+    },
+    {
+      "start": "4.0",
+      "end": "5.1",
+      "direction": "흥미롭게 묻는다",
+      "text": "사실 알고 있으셨나요?"
+    },
+    {
+      "start": "5.1",
+      "end": "7.6",
+      "direction": "진지하게 설명한다",
+      "text": "내가 80만 원대에 샀던 비행각표를"
+    },
+    {
+      "start": "7.6",
+      "end": "10.4",
+      "direction": "의아하게 질문한다",
+      "text": "왜 남들은 20만 원대에 30만 원대에 살 수 있었는지"
+    },
+    {
+      "start": "10.4",
+      "end": "11.4",
+      "direction": "친절하게 제안한다",
+      "text": "제가 알려드릴게요"
+    },
+    {
+      "start": "11.4",
+      "end": "15.5",
+      "direction": "차분하게 설명한다",
+      "text": "보통 일반적으로 검색해서 나오는 잘 팔리는 비행기표 말고"
+    },
+    {
+      "start": "15.5",
+      "end": "18.1",
+      "direction": "명확하게 짚어준다",
+      "text": "잘 팔리지 않아 저렴하게 가격을 낮춘 비행기표는"
+    },
+    {
+      "start": "18.1",
+      "end": "20.7",
+      "direction": "단호하게 강조한다",
+      "text": "일반 검색창에 검색해도 잘 나오지 않아요?"
+    },
+    {
+      "start": "20.7",
+      "end": "23.1",
+      "direction": "경쾌하게 소개한다",
+      "text": "이럴 때 티립더컴 앱에서 할인 코드를 검색하면"
+    },
+    {
+      "start": "23.1",
+      "end": "26.1",
+      "direction": "흥미롭게 설명한다",
+      "text": "최저가 항공권 페이지를 클릭하면 10만 원"
+    },
+    {
+      "start": "26.1",
+      "end": "28.7",
+      "direction": "밝게 안내한다",
+      "text": "주 후반대 일본 왕복 항공권도 찾아볼 수 있어요"
+    },
+    {
+      "start": "28.7",
+      "end": "31.7",
+      "direction": "다급하게 당부한다",
+      "text": "다만 수량이 매번 한정적이니 확인하러 가보세요"
+    }
+  ]
+}

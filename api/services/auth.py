@@ -2,12 +2,15 @@
 import hashlib
 import secrets
 import os
+import time
 import requests
 from fastapi import Request, HTTPException, Depends
 from . import supabase
 
 # supabase 서비스의 session 재사용 (connection pool 공유)
 _S = supabase.get_session()
+_USER_PROFILE_CACHE_TTL = 60
+_user_profile_cache: dict[str, tuple[float, dict]] = {}
 
 
 def _hash_key(raw: str) -> str:
@@ -171,6 +174,11 @@ def require_user(request: Request) -> dict:
     user_id = _decode_jwt_sub(token)
     if not user_id:
         raise HTTPException(401, "invalid JWT format")
+    cached = _user_profile_cache.get(token)
+    if cached and time.time() - cached[0] < _USER_PROFILE_CACHE_TTL:
+        profile = cached[1]
+        if profile.get("active"):
+            return profile
 
     with ThreadPoolExecutor(max_workers=2) as ex:
         f_verify = ex.submit(verify_jwt, token)
@@ -181,6 +189,7 @@ def require_user(request: Request) -> dict:
     profile = f_profile.result()
     if not profile or not profile.get("active"):
         raise HTTPException(403, "profile not found or inactive")
+    _user_profile_cache[token] = (time.time(), profile)
     return profile
 
 

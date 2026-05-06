@@ -1,0 +1,367 @@
+{
+  "shortcode": "DSdHVfnk2QJ",
+  "model": "gemini-3-pro-preview (auto worker)",
+  "video_file": "",
+  "elapsed_sec": 0,
+  "usage": {},
+  "analysis": {
+    "duration_sec": 52.4,
+    "tts_script": [
+      {
+        "end": "2.2",
+        "text": "일본 가서 안 사면 후회하는 필수템 추천",
+        "start": "0.0",
+        "direction": "경쾌하게 소개한다"
+      },
+      {
+        "end": "5.4",
+        "text": "개털도 물미역으로 만들어주는 핵 강추 헤어팩",
+        "start": "2.2",
+        "direction": "들뜨게 추천한다"
+      },
+      {
+        "end": "7.1",
+        "text": "이제 이거 없으면 머리 못 감음",
+        "start": "5.4",
+        "direction": "단호하게 말한다"
+      },
+      {
+        "end": "9.0",
+        "text": "헤어오일에 진심인 사람인데",
+        "start": "7.1",
+        "direction": "밝게 고백한다"
+      },
+      {
+        "end": "11.4",
+        "text": "허니오일보다 가볍고 일려향이 미쳤음",
+        "start": "9.0",
+        "direction": "놀랍게 감탄한다"
+      },
+      {
+        "end": "13.8",
+        "text": "기능도 다 다르고 향도 다 달라서 고민하다가",
+        "start": "11.4",
+        "direction": "진지하게 고민한다"
+      },
+      {
+        "end": "15.1",
+        "text": "그냥 다 사옴",
+        "start": "13.8",
+        "direction": "무심하게 내뱉는다"
+      },
+      {
+        "end": "18.4",
+        "text": "맨솔에담 나이트케어 립과 탱글한 입술 만들어주는 립홍듀",
+        "start": "15.1",
+        "direction": "신나게 소개한다"
+      },
+      {
+        "end": "20.8",
+        "text": "나 이제 립홍듀 없이 못 사는 사람이 됨",
+        "start": "18.4",
+        "direction": "과장되게 강조한다"
+      },
+      {
+        "end": "24.1",
+        "text": "립홍듀 바르고 틴트 바르면 각질의 기억도 안 보임",
+        "start": "20.8",
+        "direction": "자랑스럽게 말한다"
+      },
+      {
+        "end": "26.6",
+        "text": "일본에서 6년 연속 1위한 마스크팩인데",
+        "start": "24.1",
+        "direction": "자신있게 설명한다"
+      },
+      {
+        "end": "30.3",
+        "text": "내가 산 보라색은 엑소존과 글루타치온 함유되어 있고",
+        "start": "26.6",
+        "direction": "빠르게 알려준다"
+      },
+      {
+        "end": "32.8",
+        "text": "에센스도 한가득 들어서 개촉촉함",
+        "start": "30.3",
+        "direction": "만족스럽게 칭찬한다"
+      },
+      {
+        "end": "34.9",
+        "text": "스틱형으로 바르기도 쉽고",
+        "start": "32.8",
+        "direction": "친절하게 설명한다"
+      },
+      {
+        "end": "39.1",
+        "text": "우리 엄마도 좋아하는 아가발 되는 발뒤꿈치 촉촉해지는 스틱임",
+        "start": "34.9",
+        "direction": "뿌듯하게 덧붙인다"
+      },
+      {
+        "end": "41.9",
+        "text": "승무원 언니들의 엠병템인 고보습 나이트크림인데",
+        "start": "39.1",
+        "direction": "은밀하게 속삭인다"
+      },
+      {
+        "end": "43.6",
+        "text": "이거 바르고 아침에 일어났는데",
+        "start": "41.9",
+        "direction": "호기심있게 묘사한다"
+      },
+      {
+        "end": "45.7",
+        "text": "아기 피부 돼서 바로 더 쟁여둠",
+        "start": "43.6",
+        "direction": "격렬하게 강조한다"
+      },
+      {
+        "end": "50.1",
+        "text": "한국인들은 잘 모르는 찐 일본인 추천 아이크림인데",
+        "start": "45.7",
+        "direction": "확고하게 주장한다"
+      },
+      {
+        "end": "52.4",
+        "text": "다크서클과 잔주름에 엄청 좋음",
+        "start": "50.1",
+        "direction": "강력하게 어필한다"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "end": "00:02",
+        "start": "00:00",
+        "reason": "필수템을 소개하며 시청자의 기대감을 유발함",
+        "source": "speech",
+        "emotion": "excited",
+        "delivery": "normal",
+        "intensity": 0.8
+      },
+      {
+        "end": "00:05",
+        "start": "00:02",
+        "reason": "제품의 드라마틱한 효과를 강조하며 흥분함",
+        "source": "both",
+        "emotion": "excited",
+        "delivery": "very_fast",
+        "intensity": 0.9
+      },
+      {
+        "end": "00:07",
+        "start": "00:05",
+        "reason": "제품 없이는 안 된다며 단호하게 필요성을 어필함",
+        "source": "speech",
+        "emotion": "serious",
+        "delivery": "normal",
+        "intensity": 0.7
+      },
+      {
+        "end": "00:09",
+        "start": "00:07",
+        "reason": "자신의 취향을 밝히며 밝은 톤으로 말함",
+        "source": "speech",
+        "emotion": "cheerful",
+        "delivery": "normal",
+        "intensity": 0.7
+      },
+      {
+        "end": "00:11",
+        "start": "00:09",
+        "reason": "제품의 향과 가벼운 제형에 크게 감탄함",
+        "source": "speech",
+        "emotion": "excited",
+        "delivery": "normal",
+        "intensity": 0.9
+      },
+      {
+        "end": "00:13",
+        "start": "00:11",
+        "reason": "다양한 종류 사이에서 고민했던 상황을 회상함",
+        "source": "speech",
+        "emotion": "curious",
+        "delivery": "normal",
+        "intensity": 0.6
+      },
+      {
+        "end": "00:15",
+        "start": "00:13",
+        "reason": "결국 모두 구매했다며 통쾌해하고 만족함",
+        "source": "speech",
+        "emotion": "happy",
+        "delivery": "normal",
+        "intensity": 0.8
+      },
+      {
+        "end": "00:18",
+        "start": "00:15",
+        "reason": "새로운 립 제품 카테고리를 신나게 소개함",
+        "source": "both",
+        "emotion": "cheerful",
+        "delivery": "normal",
+        "intensity": 0.8
+      },
+      {
+        "end": "00:20",
+        "start": "00:18",
+        "reason": "제품에 완전히 정착했음을 진지하게 강조함",
+        "source": "speech",
+        "emotion": "serious",
+        "delivery": "normal",
+        "intensity": 0.8
+      },
+      {
+        "end": "00:24",
+        "start": "00:20",
+        "reason": "각질 부각이 없다는 극적인 효과를 빠르게 자랑함",
+        "source": "speech",
+        "emotion": "excited",
+        "delivery": "very_fast",
+        "intensity": 0.9
+      },
+      {
+        "end": "00:26",
+        "start": "00:24",
+        "reason": "6년 연속 1위라는 객관적 사실을 신뢰감 있게 전달함",
+        "source": "speech",
+        "emotion": "serious",
+        "delivery": "normal",
+        "intensity": 0.7
+      },
+      {
+        "end": "00:30",
+        "start": "00:26",
+        "reason": "제품에 함유된 핵심 성분을 또박또박 설명함",
+        "source": "speech",
+        "emotion": "serious",
+        "delivery": "normal",
+        "intensity": 0.6
+      },
+      {
+        "end": "00:32",
+        "start": "00:30",
+        "reason": "풍부한 에센스 양에 만족하며 칭찬함",
+        "source": "speech",
+        "emotion": "happy",
+        "delivery": "normal",
+        "intensity": 0.8
+      },
+      {
+        "end": "00:34",
+        "start": "00:32",
+        "reason": "사용의 편리함을 가볍고 친절하게 언급함",
+        "source": "speech",
+        "emotion": "cheerful",
+        "delivery": "normal",
+        "intensity": 0.7
+      },
+      {
+        "end": "00:39",
+        "start": "00:34",
+        "reason": "가족도 만족하는 뛰어난 보습 효과를 뿌듯하게 공유함",
+        "source": "both",
+        "emotion": "happy",
+        "delivery": "normal",
+        "intensity": 0.8
+      },
+      {
+        "end": "00:41",
+        "start": "00:39",
+        "reason": "승무원 추천템이라는 타이틀로 권위를 부여함",
+        "source": "speech",
+        "emotion": "serious",
+        "delivery": "normal",
+        "intensity": 0.7
+      },
+      {
+        "end": "00:43",
+        "start": "00:41",
+        "reason": "사용 후 다음 날 아침의 극적인 변화를 예고함",
+        "source": "speech",
+        "emotion": "curious",
+        "delivery": "normal",
+        "intensity": 0.6
+      },
+      {
+        "end": "00:45",
+        "start": "00:43",
+        "reason": "아기 피부처럼 변한 효과에 흥분하여 재구매를 밝힘",
+        "source": "speech",
+        "emotion": "excited",
+        "delivery": "normal",
+        "intensity": 0.9
+      },
+      {
+        "end": "00:50",
+        "start": "00:45",
+        "reason": "현지인 추천템이라는 희소성을 확고하게 어필함",
+        "source": "speech",
+        "emotion": "serious",
+        "delivery": "normal",
+        "intensity": 0.8
+      },
+      {
+        "end": "00:52",
+        "start": "00:50",
+        "reason": "특정 피부 고민에 탁월하다며 강력하게 마무리지음",
+        "source": "speech",
+        "emotion": "excited",
+        "delivery": "normal",
+        "intensity": 0.9
+      }
+    ],
+    "audio_events": [],
+    "bgm": [
+      {
+        "start": "00:00",
+        "end": "00:52",
+        "mood": "트렌디하고 통통 튀는 분위기",
+        "genre": "Pop/Electronic",
+        "tempo": 125,
+        "identified": "unknown"
+      }
+    ],
+    "sound_effects": [
+      {
+        "time": "00:00",
+        "type": "Swoosh",
+        "description": "영상 시작 전환 효과음"
+      },
+      {
+        "time": "00:02",
+        "type": "Pop",
+        "description": "헤어팩 제품 등장 효과음"
+      },
+      {
+        "time": "00:15",
+        "type": "Pop",
+        "description": "립케어 제품 전환 효과음"
+      },
+      {
+        "time": "00:24",
+        "type": "Swoosh",
+        "description": "마스크팩 제품 전환 효과음"
+      },
+      {
+        "time": "00:39",
+        "type": "Sparkle",
+        "description": "나이트크림 제품 등장 효과음"
+      },
+      {
+        "time": "00:45",
+        "type": "Pop",
+        "description": "아이크림 제품 등장 효과음"
+      }
+    ],
+    "visual_cuts": [],
+    "hook": {},
+    "narration": {
+      "pace": "Fast",
+      "tone": "Energetic and persuasive",
+      "language": "Korean"
+    },
+    "audio_visual_sync_score": 0,
+    "sync_analysis": "트렌디한 팝 배경음악 위로 빠르고 열정적인 목소리가 다양한 뷰티 아이템의 장점을 쉴 틈 없이 어필하는 숏폼 오디오",
+    "viral_factors": []
+  }
+}

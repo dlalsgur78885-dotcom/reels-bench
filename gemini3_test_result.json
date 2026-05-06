@@ -1,0 +1,50 @@
+{
+  "model": "gemini-3-pro-preview",
+  "video": "녹음 2026-04-07 034010.mp4",
+  "elapsed_sec": 22.859506368637085,
+  "usage": {
+    "promptTokenCount": 799,
+    "candidatesTokenCount": 401,
+    "totalTokenCount": 3063,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 364
+      },
+      {
+        "modality": "VIDEO",
+        "tokenCount": 435
+      }
+    ],
+    "thoughtsTokenCount": 1863
+  },
+  "analysis": {
+    "duration_sec": 4,
+    "sound_effects": [],
+    "bgm": [],
+    "emotion_timeline": [
+      {
+        "start": "00:00",
+        "end": "00:04",
+        "emotion": "neutral",
+        "confidence": 0.9,
+        "source": "speech",
+        "reason": "오디오에서 중국어 화자가 원유 비축량과 관련된 내용을 감정의 동요 없이 건조하고 차분한 정보 전달 톤으로 말하고 있음"
+      }
+    ],
+    "hook_moment": {
+      "time": "00:00",
+      "why": "유튜브 시청 지속 시간 분석 그래프를 움직이는 시각적 요소가 시청자의 시선을 끌지만, 내용과 무관한 중국어 음성이 나와 인지적 부조화를 일으킴"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:00",
+        "description": "한국어 유튜브 스튜디오 시청 지속 시간 분석 화면이 나타나고, 재생바를 드래그하여 그래프의 여러 구간을 탐색하는 단일 컷 유지"
+      }
+    ],
+    "overall": {
+      "mood": "시각적 정보(유튜브 분석)와 청각적 정보(원유 관련 내레이션)가 완전히 분리된 혼란스럽고 무미건조한 분위기",
+      "audio_visual_sync": "화면은 유튜브 쇼츠/릴스 분석 화면을 보여주나, 오디오는 원유 5천만 배럴에 대해 이야기하는 중국어 내레이션으로 시청각적 연관성 및 동기화가 전혀 이루어지지 않음"
+    }
+  }
+}

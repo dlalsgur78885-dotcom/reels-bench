@@ -1,0 +1,154 @@
+{
+  "name": "TetherMax Elevate",
+  "theme": "light",
+  "colors": {
+    "primary": {
+      "50": "#e8f1fd",
+      "100": "#c4dafb",
+      "200": "#9fc3f8",
+      "300": "#7aacf5",
+      "400": "#5594f3",
+      "500": "#307df0",
+      "600": "#2664c3",
+      "700": "#1d4b96",
+      "800": "#133269",
+      "900": "#0a193d"
+    },
+    "neutral": {
+      "50": "#f8f9fb",
+      "100": "#eceef3",
+      "200": "#e0e3eb",
+      "300": "#d4d8e3",
+      "400": "#c8ccdb",
+      "500": "#bcc1d3",
+      "600": "#959aa9",
+      "700": "#6e737f",
+      "800": "#474b56",
+      "900": "#20222c"
+    },
+    "accent": "#307df0",
+    "background": {
+      "base": "#F8F9FB",
+      "surface": "#FFFFFF",
+      "elevated": "#F2F3F7"
+    },
+    "text": {
+      "primary": "#121721",
+      "secondary": "#76787E",
+      "muted": "#8B94A9",
+      "inverse": "#FFFFFF"
+    },
+    "border": {
+      "default": "#DDE1E9",
+      "subtle": "#EBEDF2"
+    },
+    "semantic": {
+      "success": "#00C853",
+      "warning": "#FFAB00",
+      "error": "#FF4842",
+      "info": "#0B7AFF"
+    }
+  },
+  "typography": {
+    "font_family": "Pretendard Variable",
+    "fallback": "sans-serif",
+    "scale": {
+      "h1": {
+        "size": "22px",
+        "weight": "600",
+        "line_height": "1.3"
+      },
+      "h2": {
+        "size": "20px",
+        "weight": "600",
+        "line_height": "1.4"
+      },
+      "h3": {
+        "size": "18px",
+        "weight": "600",
+        "line_height": "1.4"
+      },
+      "body": {
+        "size": "15px",
+        "weight": "400",
+        "line_height": "1.6"
+      },
+      "caption": {
+        "size": "13px",
+        "weight": "400",
+        "line_height": "1.5"
+      },
+      "label": {
+        "size": "14px",
+        "weight": "500",
+        "line_height": "1.3"
+      }
+    }
+  },
+  "spacing": {
+    "unit": "4px",
+    "xs": "4px",
+    "sm": "8px",
+    "md": "16px",
+    "lg": "24px",
+    "xl": "32px",
+    "2xl": "40px"
+  },
+  "border_radius": {
+    "sm": "4px",
+    "md": "8px",
+    "lg": "12px",
+    "xl": "16px",
+    "full": "9999px"
+  },
+  "shadow": {
+    "sm": "0 1px 2px rgba(0,0,0,0.05)",
+    "md": "0 4px 6px rgba(0,0,0,0.1)",
+    "lg": "0 10px 20px rgba(0,0,0,0.15)"
+  },
+  "components": {
+    "card": {
+      "padding": "16px",
+      "radius": "12px",
+      "border": "1px solid #DDE1E9",
+      "shadow": "0 4px 6px rgba(0,0,0,0.1)",
+      "background": "#FFFFFF"
+    },
+    "button_primary": {
+      "bg": "#307df0",
+      "text": "#FFFFFF",
+      "radius": "8px",
+      "padding": "12px 16px",
+      "font_weight": "600"
+    },
+    "button_secondary": {
+      "bg": "#FFFFFF",
+      "text": "#307df0",
+      "radius": "8px",
+      "border": "1px solid #DDE1E9"
+    },
+    "kpi_card": {
+      "bg": "#FFFFFF",
+      "value_size": "22px",
+      "label_size": "12px",
+      "padding": "16px"
+    },
+    "table": {
+      "header_bg": "#F2F3F7",
+      "row_hover": "#F8FAFB",
+      "border": "1px solid #DDE1E9"
+    },
+    "sidebar": {
+      "bg": "#FFFFFF",
+      "width": "240px",
+      "active_item_bg": "rgba(11,122,255,0.08)",
+      "text_color": "#1A1B1C"
+    }
+  },
+  "layout": {
+    "max_width": "1200px",
+    "grid_columns": 12,
+    "gap": "16px"
+  },
+  "design_rationale": "디자인은 2025년 최신 SaaS 대시보드 트렌드를 반영하여 깔끔하고 미니멀한 스타일을 유지하면서도 현대적인 감각을 더했습니다. 전체적인 색상은 사용자에게 편안함을 주며, 간격과 그림자를 조정하여 콘텐츠 간의 명확한 구분을 제공합니다. 부드러운 전환 효과를 추가하여 사용자 경험을 향상시켰습니다."
+}

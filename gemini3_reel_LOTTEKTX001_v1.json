@@ -1,0 +1,189 @@
+{
+  "model": "gemini-3-pro-preview",
+  "shortcode": "LOTTEKTX001",
+  "video_file": "_LOTTEKTX001.mp4",
+  "elapsed_sec": 44.434388399124146,
+  "usage": {
+    "promptTokenCount": 3891,
+    "candidatesTokenCount": 1840,
+    "totalTokenCount": 8596,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 427
+      },
+      {
+        "modality": "VIDEO",
+        "tokenCount": 3464
+      }
+    ],
+    "thoughtsTokenCount": 2865
+  },
+  "analysis": {
+    "duration_sec": 38,
+    "sound_effects": [
+      {
+        "time": "00:00",
+        "type": "swoosh",
+        "description": "첫 텍스트 등장 시 시선 집중 유도"
+      },
+      {
+        "time": "00:01",
+        "type": "불타는 소리(fire crackle)",
+        "description": "'돈날리게 됐어요'라는 위기/스트레스 상황을 시각적(불 이모지) 및 청각적으로 강조"
+      },
+      {
+        "time": "00:04",
+        "type": "pop/click",
+        "description": "화면 전환 및 앱 예약 화면 등장 알림"
+      },
+      {
+        "time": "00:10",
+        "type": "swoosh",
+        "description": "중요 정보(KTX 패키지란?) 팝업 등장"
+      },
+      {
+        "time": "00:12",
+        "type": "화면 터치음",
+        "description": "실제 앱을 조작하는 느낌 부여"
+      },
+      {
+        "time": "00:23",
+        "type": "금전 등록기 소리(cha-ching)",
+        "description": "할인 혜택과 결제 금액을 보여줄 때 극적인 절약 효과 강조"
+      },
+      {
+        "time": "00:25",
+        "type": "pop",
+        "description": "'중복할인' 텍스트 강조"
+      },
+      {
+        "time": "00:33",
+        "type": "샤라랑(sparkle)",
+        "description": "벚꽃길 등장과 함께 성공적인 여행 준비의 설렘과 기쁨 표현"
+      },
+      {
+        "time": "00:35",
+        "type": "알림음(ding)",
+        "description": "편지 아이콘과 함께 댓글 작성 유도(CTA) 강조"
+      }
+    ],
+    "bgm": [
+      {
+        "start": "00:08",
+        "end": "00:38",
+        "mood": "경쾌한, 트렌디한, 여행의 설렘",
+        "genre": "Lofi / Chill Pop Instrumental",
+        "tempo": "mid-tempo",
+        "identified": "unknown"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "00:00",
+        "end": "00:03",
+        "emotion": "surprised",
+        "intensity": 0.8,
+        "source": "speech",
+        "reason": "기차를 놓치고 당황해하는 오프닝 상황"
+      },
+      {
+        "start": "00:04",
+        "end": "00:22",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "source": "speech",
+        "reason": "해결책인 G car 앱의 기능을 차분하고 명확하게 설명"
+      },
+      {
+        "start": "00:23",
+        "end": "00:32",
+        "emotion": "excited",
+        "intensity": 0.8,
+        "source": "speech",
+        "reason": "쿠폰 할인, 패키지 할인 등 금전적 혜택을 설명하며 목소리 톤이 높아짐"
+      },
+      {
+        "start": "00:33",
+        "end": "00:38",
+        "emotion": "happy",
+        "intensity": 0.9,
+        "source": "both",
+        "reason": "아름다운 여행지 풍경과 밝은 음악, 모든 준비가 끝났다는 만족감"
+      }
+    ],
+    "hook": {
+      "time": "00:00",
+      "technique": "충격/공감(상황 제시)",
+      "why": "떠나는 기차를 향해 다급하게 손을 흔드는 모습과 'KTX 놓치고 돈날리게 됐어요'라는 텍스트가 누구나 겪을 수 있는 최악의 상황을 제시하여 시청자의 호기심과 몰입도를 즉각적으로 끌어올림."
+    },
+    "narration": {
+      "language": "Korean",
+      "tone": "정보 전달 시에는 차분하고, 혜택이나 결과를 말할 때는 밝고 경쾌함",
+      "pace": "빠름 (쇼츠/릴스 포맷에 최적화된 템포로 지루함 방지)"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:00",
+        "description": "떠나는 KTX와 다급한 손짓"
+      },
+      {
+        "time": "00:04",
+        "description": "스마트폰 코레일 예매 화면"
+      },
+      {
+        "time": "00:06",
+        "description": "달리는 기차 뷰와 G car 로고"
+      },
+      {
+        "time": "00:08",
+        "description": "기차 창밖의 노을/바다 풍경"
+      },
+      {
+        "time": "00:10",
+        "description": "KTX 패키지 설명 그래픽 팝업"
+      },
+      {
+        "time": "00:12",
+        "description": "실제 스마트폰에서 앱을 조작하는 손"
+      },
+      {
+        "time": "00:15",
+        "description": "앱 내 시간 설정 및 차량 매칭 지도 화면"
+      },
+      {
+        "time": "00:18",
+        "description": "기차 좌석에서 확인하는 모바일 티켓 화면"
+      },
+      {
+        "time": "00:23",
+        "description": "결제 금액 및 중복 할인 내역 텍스트 화면"
+      },
+      {
+        "time": "00:27",
+        "description": "맑은 하늘 아래 대형 대교를 렌터카로 건너는 주행 뷰"
+      },
+      {
+        "time": "00:32",
+        "description": "앱스토어 다운로드 화면"
+      },
+      {
+        "time": "00:33",
+        "description": "만개한 벚꽃길을 신나게 뛰어가는 뒷모습"
+      },
+      {
+        "time": "00:35",
+        "description": "벚꽃길 배경 위 댓글 유도(이메일 아이콘) 오버레이"
+      }
+    ],
+    "audio_visual_sync_score": 0.95,
+    "sync_analysis": "나레이션에서 언급하는 내용(예: 할인, 앱 화면, 여행 준비 끝)이 시각적 화면과 정확히 일치하며, 텍스트가 팝업되거나 주요 정보가 나올 때마다 적절한 효과음이 삽입되어 정보 전달의 타격감이 매우 좋음.",
+    "viral_factors": [
+      "시선을 끄는 '실패 경험(기차 놓침)' 오프닝",
+      "실질적인 문제 해결 및 꿀팁(G car 앱 연동) 제공",
+      "'최대 40% 추가 중복 할인' 등 자극적인 혜택 강조",
+      "시각적으로 매력적인 여행 푸티지(대교 주행 뷰, 벚꽃길) 삽입",
+      "특정 단어('G car')를 댓글로 남기면 정보를 주겠다는 확실한 참여 유도(CTA)로 알고리즘 부스팅 노림"
+    ]
+  }
+}

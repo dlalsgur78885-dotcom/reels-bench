@@ -1,0 +1,76 @@
+{
+  "model": "gemini-3-pro-preview",
+  "shortcode": "DXWeet6D7dV",
+  "input_mode": "audio_only",
+  "audio_file": "_DXWeet6D7dV.mp3",
+  "audio_size_bytes": 395535,
+  "elapsed_sec": 21.256075859069824,
+  "usage": {
+    "promptTokenCount": 896,
+    "candidatesTokenCount": 514,
+    "totalTokenCount": 3042,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 280
+      },
+      {
+        "modality": "AUDIO",
+        "tokenCount": 616
+      }
+    ],
+    "thoughtsTokenCount": 1632
+  },
+  "analysis": {
+    "duration_sec": 24,
+    "sound_effects": [
+      {
+        "time": "00:11",
+        "type": "폭발음",
+        "description": "영상의 폭발 장면에 맞춘 효과음으로 갑작스러운 충격과 임팩트를 줌"
+      }
+    ],
+    "bgm": [
+      {
+        "start": "00:00",
+        "end": "00:24",
+        "mood": "열정적이고 에너제틱함",
+        "genre": "Rock",
+        "tempo": "빠름",
+        "identified": "Queen - I Was Born To Love You"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "00:00",
+        "end": "00:11",
+        "emotion": "excited",
+        "intensity": 0.8,
+        "source": "music",
+        "reason": "에너지 넘치고 긍정적인 분위기의 록 음악"
+      },
+      {
+        "start": "00:11",
+        "end": "00:13",
+        "emotion": "surprised",
+        "intensity": 0.9,
+        "source": "both",
+        "reason": "평화로운 음악 중에 갑작스럽게 터지는 큰 폭발음"
+      },
+      {
+        "start": "00:13",
+        "end": "00:24",
+        "emotion": "excited",
+        "intensity": 0.8,
+        "source": "music",
+        "reason": "폭발음 이후 다시 원래의 열정적인 노래 하이라이트로 이어짐"
+      }
+    ],
+    "narration": {
+      "language": "해당 없음",
+      "tone": "해당 없음",
+      "pace": "해당 없음"
+    },
+    "audio_summary": "경쾌하고 유명한 록 음악(Queen)을 BGM으로 전반에 깔고, 중간(11초)에 강렬한 폭발음을 삽입하여 극적인 시청각적 대비를 이룬 구성"
+  }
+}

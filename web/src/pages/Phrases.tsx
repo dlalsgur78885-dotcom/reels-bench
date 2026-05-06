@@ -47,6 +47,10 @@ export default function Phrases() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
+  const setParamsIfChanged = useCallback((next: BenchFilters) => {
+    setParams(prev => JSON.stringify(prev) === JSON.stringify(next) ? prev : next)
+  }, [])
+
   return (
     <>
       <div className="page-header">
@@ -54,7 +58,7 @@ export default function Phrases() {
         <p>{loading ? '불러오는 중…' : `${fmtNum(total)}개 분석된 릴스`}</p>
       </div>
 
-      <BenchFilterControls onChange={setParams} />
+      <BenchFilterControls onChange={setParamsIfChanged} />
 
       <div
         className="segment-group"

@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import type { AdItem, AdsFilters } from '../api'
 import { fmtNum } from '../utils'
@@ -7,12 +8,14 @@ import Pagination from '../components/Pagination'
 const PAGE_SIZE = 30
 
 export default function Ads() {
+  const [searchParams] = useSearchParams()
+  const initialQ = searchParams.get('q') || ''
   const [items, setItems] = useState<AdItem[]>([])
   const [total, setTotal] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
   const [loading, setLoading] = useState(false)
-  const [params, setParams] = useState<AdsFilters>({ sort: 'recent' })
-  const [search, setSearch] = useState('')
+  const [params, setParams] = useState<AdsFilters>({ sort: 'recent', q: initialQ || undefined })
+  const [search, setSearch] = useState(initialQ)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [showFilters, setShowFilters] = useState(false)
@@ -33,6 +36,13 @@ export default function Ads() {
     setCurrentPage(1)
     load(1, params)
   }, [params, load])
+
+  // URL ?q= 변경 시 검색어 동기화 (광고주 → /ads?q=... 네비 후 다시 다른 광고주 클릭 등)
+  useEffect(() => {
+    const q = searchParams.get('q') || ''
+    setSearch(q)
+    setParams(prev => ({ ...prev, q: q || undefined }))
+  }, [searchParams])
 
   const goPage = (p: number) => {
     if (p < 1 || p > totalPages || p === currentPage) return

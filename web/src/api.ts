@@ -453,13 +453,19 @@ export const api = {
   previewMapping: (sc: string, product_id: number) =>
     post<{
       shortcode: string
-      product: { id: number; name: string; usps: any[] }
+      product: { id: number; name: string; usps: any[]; social_proof: SocialProofItem[] }
       ref_usps: Array<{ id: number; label: string; description: string; appears_in: string[] }>
+      ref_social_proof: Array<{ id: number; type: string; label: string; evidence: string; appears_in: string[]; strength?: string }>
       section_chunks: Array<{ section: string; topic: string; role: string; primary_usp_id: number | null; summary: string; sentences?: { start: number; end: number; text: string }[] }>
       usp_mapping: Array<{
         ref_usp_id: number; ref_label: string; ref_description: string; ref_appears_in: string[]
         user_usp_id: number | null; user_usp_name: string | null; reason: string
         confidence?: 'strong' | 'loose' | 'none'
+      }>
+      social_proof_mapping: Array<{
+        ref_sp_id: number; ref_type: string; ref_label: string; ref_evidence: string
+        ref_appears_in: string[]; ref_strength?: string
+        user_sp_index: number | null; user_sp_label: string | null; user_sp_value: string | null
       }>
       unused_user_usps: Array<{ user_usp_id: number; user_usp_name: string }>
       unmatched_ref_usps: Array<{ ref_usp_id: number; ref_label: string; ref_description: string; reason: string }>
@@ -479,9 +485,9 @@ export const api = {
     del<{ deleted: boolean }>(`/api/admin/secrets/${encodeURIComponent(name)}`),
   // My Products
   listMyProducts: () => cachedGet<MyProduct[]>('/api/my-products', 30_000),
-  createMyProduct: (data: { name: string; persona?: string; usps?: any[] }) =>
+  createMyProduct: (data: { name: string; persona?: string; usps?: any[]; social_proof?: any[] }) =>
     post<MyProduct>('/api/my-products', data).then(r => { clearClientCache('/api/my-products'); return r }),
-  updateMyProduct: (id: number, data: { name: string; persona?: string; usps?: any[] }) =>
+  updateMyProduct: (id: number, data: { name: string; persona?: string; usps?: any[]; social_proof?: any[] }) =>
     patch<MyProduct>(`/api/my-products/${id}`, data).then(r => { clearClientCache('/api/my-products'); return r }),
   deleteMyProduct: (id: number) => del<{ message: string }>(`/api/my-products/${id}`)
     .then(r => { clearClientCache('/api/my-products'); return r }),
@@ -539,12 +545,20 @@ export interface PersonaCandidate {
   tone_hint: string
 }
 
+export interface SocialProofItem {
+  type: 'sales_volume' | 'review_volume' | 'rating' | 'authority' | 'scarcity' | 'award' | 'personal'
+  label: string
+  value: string  // 구체 수치 (예: "32억", "4.9", "BTS")
+  evidence?: string  // 추가 컨텍스트
+}
+
 export interface MyProduct {
   id: number
   owner_id: string
   name: string
   persona: string | null
   usps: { usp: string; reviews: string[] }[]
+  social_proof?: SocialProofItem[]
   created_at: string
   updated_at: string
   is_shared?: boolean

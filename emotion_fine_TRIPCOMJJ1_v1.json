@@ -1,0 +1,119 @@
+{
+  "shortcode": "TRIPCOMJJ1",
+  "model": "gemini-3-pro-preview",
+  "elapsed_sec": 24.438753843307495,
+  "usage": {
+    "promptTokenCount": 1408,
+    "candidatesTokenCount": 988,
+    "totalTokenCount": 4234,
+    "promptTokensDetails": [
+      {
+        "modality": "AUDIO",
+        "tokenCount": 788
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 620
+      }
+    ],
+    "thoughtsTokenCount": 1838
+  },
+  "emotion_timeline": [
+    {
+      "start": "0.0",
+      "end": "4.0",
+      "emotion": "confident",
+      "intensity": 0.8,
+      "source": "speech",
+      "reason": "시청자의 기존 고정관념을 깨는 사실을 확신에 찬 목소리로 강조함"
+    },
+    {
+      "start": "4.0",
+      "end": "5.1",
+      "emotion": "curious",
+      "intensity": 0.7,
+      "source": "speech",
+      "reason": "새로운 정보를 제시하기 전 시청자의 호기심을 유발하는 질문을 던짐"
+    },
+    {
+      "start": "5.1",
+      "end": "7.6",
+      "emotion": "neutral",
+      "intensity": 0.6,
+      "source": "speech",
+      "reason": "본인이 과거에 비싸게 구매했던 경험을 진지하고 차분하게 설명함"
+    },
+    {
+      "start": "7.6",
+      "end": "10.4",
+      "emotion": "curious",
+      "intensity": 0.8,
+      "source": "speech",
+      "reason": "큰 가격 차이에 대한 강한 의문을 제기하며 궁금증을 극대화함"
+    },
+    {
+      "start": "10.4",
+      "end": "11.4",
+      "emotion": "confident",
+      "intensity": 0.7,
+      "source": "speech",
+      "reason": "자신이 직접 그 비결을 알려주겠다며 친절하고 자신감 있게 제안함"
+    },
+    {
+      "start": "11.4",
+      "end": "15.5",
+      "emotion": "neutral",
+      "intensity": 0.5,
+      "source": "speech",
+      "reason": "일반적인 항공권 예매 시스템의 특징을 객관적이고 차분하게 설명함"
+    },
+    {
+      "start": "15.5",
+      "end": "18.1",
+      "emotion": "confident",
+      "intensity": 0.6,
+      "source": "speech",
+      "reason": "저렴한 항공권이 존재하는 이유를 명확하고 또렷하게 짚어줌"
+    },
+    {
+      "start": "18.1",
+      "end": "20.7",
+      "emotion": "confident",
+      "intensity": 0.8,
+      "source": "speech",
+      "reason": "일반 검색으로는 찾기 어렵다는 점을 단호하게 강조함"
+    },
+    {
+      "start": "20.7",
+      "end": "23.1",
+      "emotion": "excited",
+      "intensity": 0.7,
+      "source": "speech",
+      "reason": "해결책인 앱과 할인 코드를 소개하며 분위기가 경쾌하고 기대감 있게 전환됨"
+    },
+    {
+      "start": "23.1",
+      "end": "26.1",
+      "emotion": "excited",
+      "intensity": 0.8,
+      "source": "speech",
+      "reason": "파격적인 가격 혜택(10만 원)을 언급하며 흥미를 고조시킴"
+    },
+    {
+      "start": "26.1",
+      "end": "28.7",
+      "emotion": "happy",
+      "intensity": 0.7,
+      "source": "speech",
+      "reason": "저렴한 일본 왕복 항공권 혜택을 밝은 톤으로 기분 좋게 안내함"
+    },
+    {
+      "start": "28.7",
+      "end": "31.7",
+      "emotion": "excited",
+      "intensity": 0.9,
+      "source": "speech",
+      "reason": "한정 수량이라는 점을 강조하며 시청자의 빠른 행동(FOMO)을 다급하게 촉구함"
+    }
+  ]
+}

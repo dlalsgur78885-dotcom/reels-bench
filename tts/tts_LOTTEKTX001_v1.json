@@ -1,0 +1,119 @@
+{
+  "shortcode": "LOTTEKTX001",
+  "model": "gemini-3-pro-preview",
+  "whisper_segments": 16,
+  "usage": {
+    "promptTokenCount": 1613,
+    "candidatesTokenCount": 948,
+    "totalTokenCount": 4744,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 645
+      },
+      {
+        "modality": "AUDIO",
+        "tokenCount": 968
+      }
+    ],
+    "thoughtsTokenCount": 2183
+  },
+  "tts_script": [
+    {
+      "start": "0.0",
+      "end": "1.4",
+      "direction": "울먹이며 말한다",
+      "text": "저 드디어 됐어요"
+    },
+    {
+      "start": "1.4",
+      "end": "3.8",
+      "direction": "속상하게 하소연한다",
+      "text": "KTX도 치고 돈 날리게 됐어요"
+    },
+    {
+      "start": "3.8",
+      "end": "6.3",
+      "direction": "차분하게 설명한다",
+      "text": "그래서 여행 다시 예약하다가 알게 됐는데"
+    },
+    {
+      "start": "6.3",
+      "end": "9.5",
+      "direction": "또박또박 안내한다",
+      "text": "지카에서 KTX랑 카쉐어링을 한 번에 예약할 수 있는"
+    },
+    {
+      "start": "9.5",
+      "end": "12.1",
+      "direction": "밝게 소개한다",
+      "text": "KTX 패키지 서비스를 출시했더라고요"
+    },
+    {
+      "start": "12.1",
+      "end": "15.1",
+      "direction": "친절하게 설명한다",
+      "text": "지카앱에서 KTX 패키지 서비스를 예약하면"
+    },
+    {
+      "start": "15.1",
+      "end": "17.7",
+      "direction": "경쾌하게 덧붙인다",
+      "text": "도착 시간에 맞춰 차량 자동 매칭도 되고"
+    },
+    {
+      "start": "17.7",
+      "end": "21.8",
+      "direction": "만족스럽게 말한다",
+      "text": "KTX 승차권과 지카 대여 내역도 간편하게 확인할 수 있더라고요"
+    },
+    {
+      "start": "21.8",
+      "end": "23.3",
+      "direction": "힘주어 강조한다",
+      "text": "개인적으로 제일 좋았던 건"
+    },
+    {
+      "start": "23.3",
+      "end": "25.2",
+      "direction": "신나게 나열한다",
+      "text": "쿠폰 할인에 패키지 할인까지"
+    },
+    {
+      "start": "25.2",
+      "end": "26.7",
+      "direction": "기쁘게 강조한다",
+      "text": "중복 할인 가능하다는 거"
+    },
+    {
+      "start": "26.7",
+      "end": "29.7",
+      "direction": "들뜨게 덧붙인다",
+      "text": "여기다가 차량 대여 최대 40% 추가 중복 할인과"
+    },
+    {
+      "start": "29.7",
+      "end": "32.2",
+      "direction": "웃으며 알려준다",
+      "text": "KTX 10% 지포인트 적립 혜택도 있어요"
+    },
+    {
+      "start": "32.2",
+      "end": "35.0",
+      "direction": "활기차게 외친다",
+      "text": "이제 어플 하나만 있으면 1분만에 여행 준비 끝!"
+    },
+    {
+      "start": "35.0",
+      "end": "36.5",
+      "direction": "다정하게 권유한다",
+      "text": "댓글에 지카 남겨주시면"
+    },
+    {
+      "start": "36.5",
+      "end": "38.7",
+      "direction": "상냥하게 마무리한다",
+      "text": "프로모션 페이지와 상세 내용 전달 드릴게요"
+    }
+  ]
+}

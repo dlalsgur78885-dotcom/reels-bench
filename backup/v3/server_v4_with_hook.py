@@ -1,0 +1,2075 @@
+"""
+FastAPI backend — routes only
+Run: uvicorn api.server:app --port 8000
+"""
+
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Response, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+from pydantic import BaseModel
+from concurrent.futures import ThreadPoolExecutor
+import time, threading, logging, os, re
+from datetime import datetime, timezone
+
+logger = logging.getLogger("uvicorn.error")
+
+from services import supabase, pipeline, thumb, comments, script_gen
+from services import secrets as secrets_svc
+
+app = FastAPI(title="Reels Bench API")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# API Key 인증 미들웨어 — 외부 origin은 X-API-Key 필수
+from services import auth as auth_svc  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+
+_PUBLIC_API_PATHS = {
+    "/api/health",
+    "/api/_debug/fs",
+    "/api/_debug/auth",
+}
+_OUR_DOMAINS = ("reels-bench.vercel.app", "localhost", "127.0.0.1")
+
+
+@app.middleware("http")
+async def api_key_middleware(request, call_next):
+    path = request.url.path
+    # /api/* 외 (정적 자원, SPA route)는 무관
+    if not path.startswith("/api/"):
+        return await call_next(request)
+    # 공개 endpoint
+    if path in _PUBLIC_API_PATHS:
+        return await call_next(request)
+
+    # same-origin (자체 사이트) → skip
+    origin = request.headers.get("origin", "")
+    referer = request.headers.get("referer", "")
+    if any(d in origin for d in _OUR_DOMAINS) or any(d in referer for d in _OUR_DOMAINS):
+        return await call_next(request)
+
+    # 외부 → API Key 요구
+    api_key = (
+        request.headers.get("X-API-Key")
+        or request.headers.get("x-api-key")
+        or request.query_params.get("api_key")
+    )
+    if not auth_svc.verify_key(api_key):
+        return JSONResponse(
+            {"error": "unauthorized",
+             "detail": "Missing or invalid API key. Use X-API-Key header or ?api_key= query."},
+            status_code=401,
+        )
+
+    return await call_next(request)
+
+
+# ── Script Generation ──
+
+class ScriptGenRequest(BaseModel):
+    product_name: str
+    pain: str = ""
+    desire: str = ""
+    usps: list[dict]  # 광고에 들어갈 USP 목록 (첫 항목 = 메인, 나머지 = 서브)
+    reference_shortcodes: list[str]
+    refine: bool = True  # False = 1차만 (draft), True = 1차+2차
+    target_persona: dict | None = None  # { name, scenario, signals, tone_hint }
+
+
+@app.post("/api/script/generate")
+def gen_script(req: ScriptGenRequest):
+    if not req.product_name.strip():
+        raise HTTPException(400, "제품명/서비스명 필수")
+    if not req.reference_shortcodes:
+        raise HTTPException(400, "참고 릴스 1개 이상 필요")
+    # === 진단 로그 ===
+    logger.info(
+        "[script/gen] product=%r refs=%s refine=%s persona=%s usps=%d (sizes=%s) pain_len=%d desire_len=%d",
+        req.product_name, req.reference_shortcodes, req.refine,
+        (req.target_persona or {}).get("name", "(null)"),
+        len(req.usps or []),
+        [len((u or {}).get("reviews") or []) for u in (req.usps or [])],
+        len(req.pain or ""), len(req.desire or ""),
+    )
+    try:
+        script_gen.reset_cost_meter()
+        result = script_gen.generate(
+            product_name=req.product_name,
+            pain=req.pain,
+            desire=req.desire,
+            usps=req.usps or [],
+            reference_shortcodes=req.reference_shortcodes,
+            refine=req.refine,
+            target_persona=req.target_persona,
+        )
+        n_sentences = len(result.get("sentences") or [])
+        cost = script_gen.summarize_cost()
+        result["_cost"] = cost
+        logger.info(
+            "[script/gen] DONE sentences=%d duration=%s refined=%s cost=$%.4f (%d calls, in=%d out=%d)",
+            n_sentences, result.get("duration_target_sec"), result.get("_refined", False),
+            cost["total_cost_usd"], cost["total_calls"], cost["total_in_tokens"], cost["total_out_tokens"],
+        )
+        return result
+    except Exception as e:
+        logger.error("[script/gen] FAILED: %s", e)
+        raise HTTPException(500, f"스크립트 생성 실패: {e}")
+
+
+class PersonaExtractRequest(BaseModel):
+    usp: str
+    reviews: list[str]
+    pain_solved: str = ""
+    product_id: int | None = None  # 옵션: 제공 시 캐시 lookup·write
+    usp_index: int | None = None
+
+
+@app.post("/api/script/personas")
+def extract_personas(req: PersonaExtractRequest):
+    if not req.usp.strip() or not req.reviews:
+        raise HTTPException(400, "usp·reviews 필수")
+
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+
+    # 1. 캐시 lookup
+    if req.product_id is not None and req.usp_index is not None:
+        try:
+            r = _r.get(
+                f"{SUPA}/rest/v1/my_products?id=eq.{req.product_id}&select=usps",
+                headers={"apikey": SK, "Authorization": f"Bearer {SK}"},
+                timeout=5,
+            )
+            if r.status_code == 200 and r.json():
+                usps = r.json()[0].get("usps") or []
+                if 0 <= req.usp_index < len(usps):
+                    cached = usps[req.usp_index].get("personas")
+                    if cached and isinstance(cached, list) and len(cached) > 0:
+                        logger.info("[personas] CACHE HIT product=%s usp_idx=%s", req.product_id, req.usp_index)
+                        return {"personas": cached, "_cached": True}
+        except Exception as e:
+            logger.warning("personas cache lookup failed: %s", e)
+
+    # 2. Gemini 호출
+    try:
+        personas = script_gen.extract_personas(req.usp, req.reviews, req.pain_solved)
+    except Exception as e:
+        raise HTTPException(500, f"페르소나 추출 실패: {e}")
+
+    # 3. 캐시 write back (best-effort)
+    if personas and req.product_id is not None and req.usp_index is not None:
+        try:
+            r = _r.get(
+                f"{SUPA}/rest/v1/my_products?id=eq.{req.product_id}&select=usps",
+                headers={"apikey": SK, "Authorization": f"Bearer {SK}"},
+                timeout=5,
+            )
+            if r.status_code == 200 and r.json():
+                usps = r.json()[0].get("usps") or []
+                if 0 <= req.usp_index < len(usps):
+                    usps[req.usp_index]["personas"] = personas
+                    _r.patch(
+                        f"{SUPA}/rest/v1/my_products?id=eq.{req.product_id}",
+                        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                                 "Content-Type": "application/json", "Prefer": "return=minimal"},
+                        json={"usps": usps},
+                        timeout=5,
+                    )
+                    logger.info("[personas] cached %d personas product=%s usp_idx=%s", len(personas), req.product_id, req.usp_index)
+        except Exception as e:
+            logger.warning("personas cache write failed: %s", e)
+
+    return {"personas": personas, "_cached": False}
+
+
+class UspPersonasUpdateRequest(BaseModel):
+    usp_index: int
+    personas: list[dict]
+
+
+@app.patch("/api/my-products/{pid}/usp-personas")
+def update_usp_personas(pid: int, req: UspPersonasUpdateRequest, request: Request):
+    """USP의 personas 캐시를 사용자가 직접 수정/추가/삭제."""
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    # ownership
+    own = _r.get(
+        f"{SUPA}/rest/v1/my_products?id=eq.{pid}&select=owner_id,usps",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+    ).json()
+    if not own or own[0]["owner_id"] != me["id"]:
+        raise HTTPException(403, "권한 없음")
+    usps = own[0].get("usps") or []
+    if req.usp_index < 0 or req.usp_index >= len(usps):
+        raise HTTPException(400, "usp_index 범위 초과")
+    usps[req.usp_index]["personas"] = req.personas
+    r = _r.patch(
+        f"{SUPA}/rest/v1/my_products?id=eq.{pid}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=minimal"},
+        json={"usps": usps}, timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:200])
+    return {"message": "갱신 완료", "personas": req.personas}
+
+
+@app.post("/api/script/classify-sentences/{shortcode}")
+def classify_sentences_for_reel(shortcode: str, request: Request):
+    """기존 분석된 릴스에 sentence-level section 분류 backfill."""
+    auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    # 1. transcripts + structure 가져오기
+    trans = _r.get(
+        f"{SUPA}/rest/v1/reels_transcripts?shortcode=eq.{shortcode}&select=transcript,segments&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    if not trans:
+        raise HTTPException(404, "transcript 없음")
+    sentences = trans[0].get("segments") or []
+    transcript = trans[0].get("transcript", "")
+    if not sentences:
+        raise HTTPException(400, "sentences 없음")
+    struct = _r.get(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=hook,intro,body,cta&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    if not struct:
+        raise HTTPException(400, "script_structure 없음 — 분석 먼저 완료해야 함")
+    structure = struct[0]
+    # 2. 분류
+    try:
+        classified = script_gen.classify_sentence_sections(sentences, structure)
+    except Exception as e:
+        raise HTTPException(500, f"분류 실패: {e}")
+    if not classified or len(classified) != len(sentences):
+        raise HTTPException(500, "분류 결과 비정상")
+    # 3. 저장 (UPSERT)
+    upsert_url = f"{SUPA}/rest/v1/reels_transcripts?on_conflict=shortcode"
+    r = _r.post(upsert_url, headers={
+        **H,
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=minimal",
+    }, json={
+        "shortcode": shortcode,
+        "transcript": transcript,
+        "language": "ko",
+        "segments": classified,
+    }, timeout=15)
+    if r.status_code not in (200, 201, 204):
+        raise HTTPException(r.status_code, r.text[:200])
+    # 분류 통계
+    from collections import Counter
+    sec_counts = Counter(c.get("section", "?") for c in classified)
+    return {
+        "shortcode": shortcode,
+        "total_sentences": len(classified),
+        "sections": dict(sec_counts),
+    }
+
+
+@app.get("/api/script/reference-info/{shortcode}")
+def reference_info(shortcode: str):
+    """참고 릴스의 구조 정보 (분류·문장 수·body 슬롯 수) — UI 가이드용."""
+    try:
+        ref = script_gen.fetch_reference(shortcode)
+        if not ref:
+            raise HTTPException(404, "참고 릴스 데이터 없음")
+        props = script_gen.analyze_reference_proportions(ref)
+        body_class = script_gen.classify_body_structure(ref)
+        return {
+            "shortcode": shortcode,
+            "duration_sec": props.get("total_sec"),
+            "total_sentences": len(ref.get("sentences") or []),
+            "body_slot_count": len(props.get("body_slots") or []),
+            "body_class": body_class,  # { type, guide }
+            "recommended_usps": (
+                1 if body_class.get("type") in ("단일USP_카테고리분할", "단일진행")
+                else len(props.get("body_slots") or [])  # 멀티USP_1대1: 슬롯 수만큼 USP
+            ),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"참고 분석 실패: {e}")
+
+
+class ScriptRefineRequest(BaseModel):
+    draft: dict
+    usps: list[dict] = []  # 통일 도시 추출용
+    reference_shortcode: str | None = None  # 참고 길이 매칭용
+
+
+@app.post("/api/script/refine")
+def refine_script(req: ScriptRefineRequest):
+    if not req.draft or not req.draft.get("sentences"):
+        raise HTTPException(400, "draft.sentences 필수")
+    try:
+        script_gen.reset_cost_meter()
+        unified = script_gen.select_unified_scenario(req.usps or [])
+        # 참고 릴스 fetch — 길이 매칭용
+        ref_info = None
+        if req.reference_shortcode:
+            try:
+                ref = script_gen.fetch_reference(req.reference_shortcode)
+                if ref:
+                    ref_sents = [s for s in (ref.get("sentences") or []) if s.get("text", "").strip()]
+                    ref_duration = max((float(s.get("end", 0)) for s in ref_sents), default=0) if ref_sents else 0
+                    ref_info = {
+                        "sentence_count": len(ref_sents),
+                        "duration": ref_duration,
+                        "sentences": ref_sents,
+                    }
+            except Exception as e:
+                logger.warning("ref fetch failed in refine: %s", e)
+        # B. Pro 3.1 어색 검출 (도메인 정합 + 구체 교정안)
+        awkward_info = []
+        try:
+            ref_for_aw = (ref_info or {}).get("sentences") or []
+            tp = req.draft.get("_target_persona") or {}
+            pn = req.draft.get("_product_name", "") or ""
+            awkward_info = script_gen.detect_awkward_sentences(
+                req.draft.get("sentences") or [],
+                ref_for_aw,
+                product_name=pn,
+                target_persona=tp,
+            )
+            if awkward_info:
+                logger.info("[refine] %d awkward sentences detected (Pro)", len(awkward_info))
+        except Exception as e:
+            logger.warning("[refine] awkward detection failed: %s", e)
+
+        # main USP 키워드 누락 체크 — Hook 첫 문장 + CTA 마지막 문장 위치만 (강제 X, 자연스러움 우선)
+        try:
+            target_persona = req.draft.get("_target_persona") or {}
+            main_kws = script_gen._extract_main_usp_keywords(req.usps or [], target_persona)
+            if main_kws:
+                draft_sents = req.draft.get("sentences") or []
+                plan = req.draft.get("_plan") or {}
+                # hook 첫 위치 + cta 마지막 위치만 체크
+                check_indices: list[int] = []  # 0-based
+                flat_idx = 0
+                hook_first_idx = None
+                cta_last_idx = None
+                for sec in (plan.get("sections") or []):
+                    sec_name = sec.get("name", "")
+                    sents = sec.get("sentences") or []
+                    if not sents:
+                        continue
+                    if sec_name == "hook" and hook_first_idx is None:
+                        hook_first_idx = flat_idx
+                    if sec_name == "cta":
+                        cta_last_idx = flat_idx + len(sents) - 1
+                    flat_idx += len(sents)
+                if hook_first_idx is not None:
+                    check_indices.append(hook_first_idx)
+                if cta_last_idx is not None and cta_last_idx != hook_first_idx:
+                    check_indices.append(cta_last_idx)
+
+                missing_main = []
+                for i in check_indices:
+                    if i >= len(draft_sents):
+                        continue
+                    text = draft_sents[i].get("text", "")
+                    if not any(kw in text for kw in main_kws):
+                        missing_main.append({
+                            "idx": i + 1,
+                            "text": text,
+                            "reason": f"main USP 키워드 누락 (이 핵심 위치엔 필수: {', '.join(main_kws[:3])})",
+                        })
+                if missing_main:
+                    logger.info("[refine] %d main USP keyword missing at hook-first/cta-last: %s", len(missing_main), [m["idx"] for m in missing_main])
+                    awkward_info.extend(missing_main)
+        except Exception as e:
+            logger.warning("[refine] main USP keyword check failed: %s", e)
+        prompt = script_gen.build_refine_prompt(req.draft, unified.get("city"), ref_info=ref_info, usps=req.usps, awkward_info=awkward_info)
+        draft_n = len(req.draft.get("sentences") or [])
+        # 길이 매칭: ref 있으면 그 수로, 없으면 draft 그대로
+        if ref_info and ref_info["sentence_count"] > 0:
+            target_n = ref_info["sentence_count"]
+            min_n = max(1, target_n - 2)
+        else:
+            target_n = draft_n
+            min_n = max(1, draft_n - 2) if draft_n else None
+        refined = script_gen.call_gemini(prompt, min_sentences=min_n)
+        if isinstance(refined, list) and refined:
+            refined = refined[0]
+        if not isinstance(refined, dict) or not refined.get("sentences"):
+            raise RuntimeError("refine 결과가 비어있습니다")
+        # per-sentence 길이 검증 + 자동 retry
+        if ref_info and ref_info.get("sentences"):
+            violations = script_gen._find_refine_overflow(refined.get("sentences") or [], ref_info["sentences"])
+            if violations:
+                logger.warning("[refine] overflow at indices: %s", [(v[0], v[1], v[2]) for v in violations])
+                try:
+                    retry_prompt = script_gen.build_refine_retry_prompt(refined, violations, ref_info["sentences"])
+                    retry = script_gen.call_gemini(retry_prompt, min_sentences=min_n)
+                    if isinstance(retry, list) and retry:
+                        retry = retry[0]
+                    if isinstance(retry, dict) and retry.get("sentences"):
+                        # per-sentence merge — 각 violation 위치에서 retry가 더 짧으면 그 문장만 교체
+                        merged = list(refined.get("sentences") or [])
+                        retry_sents = retry.get("sentences") or []
+                        # 안전장치: retry가 원본보다 50% 이하 문장만 갖고 있으면 스킵 (Gemini가 일부만 출력한 경우)
+                        if len(retry_sents) < len(merged) * 0.5:
+                            logger.warning("[refine] retry returned only %d/%d sentences — skipping merge", len(retry_sents), len(merged))
+                            retry_sents = []
+                        ref_sents_arr = ref_info["sentences"]
+                        improved = 0
+                        for v_idx, v_gen_syl, v_ref_syl, _, _ in violations:
+                            if v_idx >= len(merged) or v_idx >= len(retry_sents):
+                                continue
+                            new_text = (retry_sents[v_idx] or {}).get("text", "")
+                            if not new_text.strip():
+                                continue
+                            new_syl = script_gen._count_kor_syllables(new_text)
+                            # retry가 더 짧고 ref ±15% 이내면 교체
+                            if new_syl < v_gen_syl and new_syl <= v_ref_syl * 1.15:
+                                merged[v_idx] = {**merged[v_idx], "text": new_text}
+                                improved += 1
+                        if improved:
+                            logger.info("[refine] retry improved %d/%d sentences", improved, len(violations))
+                            refined["sentences"] = merged
+                except Exception as e:
+                    logger.warning("[refine] retry failed: %s", e)
+        refined["_refined"] = True
+        # _references_used 보존
+        if req.draft.get("_references_used"):
+            refined["_references_used"] = req.draft["_references_used"]
+        cost = script_gen.summarize_cost()
+        refined["_cost"] = cost
+        logger.info("[refine] cost=$%.4f (%d calls, in=%d out=%d)",
+                    cost["total_cost_usd"], cost["total_calls"], cost["total_in_tokens"], cost["total_out_tokens"])
+        return refined
+    except Exception as e:
+        raise HTTPException(500, f"다듬기 실패: {e}")
+
+
+# ── Admin Secrets (Vault) ──
+
+class SecretUpsertRequest(BaseModel):
+    name: str
+    value: str
+    description: str = ""
+
+
+@app.get("/api/admin/secrets")
+def list_secrets(request: Request):
+    """admin: 등록된 시크릿 메타정보 (값 X)."""
+    auth_svc.require_admin(request)
+    try:
+        items = secrets_svc.list_secrets()
+        return items
+    except Exception as e:
+        raise HTTPException(500, f"시크릿 조회 실패: {e}")
+
+
+@app.post("/api/admin/secrets")
+def upsert_secret(req: SecretUpsertRequest, request: Request):
+    """admin: 시크릿 생성·갱신. 캐시 즉시 무효화."""
+    auth_svc.require_admin(request)
+    if not req.name.strip() or not req.value.strip():
+        raise HTTPException(400, "name·value 필수")
+    try:
+        sid = secrets_svc.upsert_secret(req.name.strip(), req.value, req.description)
+        return {"id": sid, "name": req.name, "message": "갱신 완료"}
+    except Exception as e:
+        raise HTTPException(500, f"시크릿 저장 실패: {e}")
+
+
+@app.delete("/api/admin/secrets/{name}")
+def delete_secret(name: str, request: Request):
+    """admin: 시크릿 삭제."""
+    auth_svc.require_admin(request)
+    try:
+        ok = secrets_svc.delete_secret(name)
+        return {"deleted": ok}
+    except Exception as e:
+        raise HTTPException(500, f"시크릿 삭제 실패: {e}")
+
+
+# ── My Products ──
+
+class MyProductIn(BaseModel):
+    name: str
+    persona: str | None = None
+    usps: list[dict] = []
+
+
+@app.get("/api/my-products")
+def list_my_products(request: Request):
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+
+    # 소유 + 공유받은 상품을 병렬로 조회
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_own = ex.submit(
+            _r.get,
+            f"{SUPA}/rest/v1/my_products?owner_id=eq.{me['id']}&select=*&order=updated_at.desc",
+            headers=H, timeout=10,
+        )
+        f_shared = ex.submit(
+            _r.get,
+            f"{SUPA}/rest/v1/my_product_shares?shared_with_id=eq.{me['id']}"
+            f"&select=permission,product:my_products(*)",
+            headers=H, timeout=10,
+        )
+
+    own = f_own.result().json() or []
+    shared_rows = f_shared.result().json() or []
+
+    me_name = (me.get("display_name") or (me.get("email") or "").split("@")[0])
+    for p in own:
+        p["is_shared"] = False
+        p["permission"] = "owner"
+        p["owner_name"] = me_name
+
+    # 소유자 이름 매핑 (공유받은 상품이 있을 때만)
+    name_map: dict[str, str] = {}
+    owner_ids = list({row["product"]["owner_id"] for row in shared_rows if row.get("product")})
+    if owner_ids:
+        prof = _r.get(
+            f"{SUPA}/rest/v1/profiles?id=in.({','.join(owner_ids)})&select=id,display_name,email",
+            headers=H, timeout=10,
+        ).json() or []
+        for p in prof:
+            name_map[p["id"]] = p.get("display_name") or (p.get("email") or "").split("@")[0]
+
+    shared = []
+    for row in shared_rows:
+        prod = row.get("product")
+        if not prod:
+            continue
+        prod["is_shared"] = True
+        prod["permission"] = row["permission"]
+        prod["owner_name"] = name_map.get(prod["owner_id"], "?")
+        shared.append(prod)
+
+    merged = own + shared
+    merged.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
+    return merged
+
+
+@app.post("/api/my-products")
+def create_my_product(req: MyProductIn, request: Request):
+    me = auth_svc.require_user(request)
+    if not req.name.strip():
+        raise HTTPException(400, "이름 필수")
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.post(
+        f"{SUPA}/rest/v1/my_products",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json={"owner_id": me["id"], "name": req.name, "persona": req.persona, "usps": req.usps},
+        timeout=10,
+    )
+    if r.status_code not in (200, 201):
+        raise HTTPException(r.status_code, r.text[:200])
+    return r.json()[0] if r.json() else {}
+
+
+@app.patch("/api/my-products/{pid}")
+def update_my_product(pid: int, req: MyProductIn, request: Request):
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    # 소유자 OR 수정 권한 share
+    own = _r.get(f"{SUPA}/rest/v1/my_products?id=eq.{pid}&select=owner_id",
+        headers=H, timeout=10).json()
+    if not own:
+        raise HTTPException(404, "상품 없음")
+    if own[0]["owner_id"] != me["id"]:
+        share = _r.get(
+            f"{SUPA}/rest/v1/my_product_shares?product_id=eq.{pid}"
+            f"&shared_with_id=eq.{me['id']}&permission=eq.edit&select=id&limit=1",
+            headers=H, timeout=10,
+        ).json()
+        if not share:
+            raise HTTPException(403, "권한 없음")
+    r = _r.patch(
+        f"{SUPA}/rest/v1/my_products?id=eq.{pid}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json={"name": req.name, "persona": req.persona, "usps": req.usps},
+        timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:200])
+    return r.json()[0] if r.json() else {}
+
+
+@app.delete("/api/my-products/{pid}")
+def delete_my_product(pid: int, request: Request):
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.delete(
+        f"{SUPA}/rest/v1/my_products?id=eq.{pid}&owner_id=eq.{me['id']}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}", "Prefer": "return=minimal"},
+        timeout=10,
+    )
+    return {"message": "삭제 완료"}
+
+
+# ── My Products: 공유 ──
+
+class ShareCreateRequest(BaseModel):
+    user_ids: list[str]
+    permission: str = "view"  # 'view' | 'edit'
+
+
+def _assert_product_owner(pid: int, me_id: str) -> None:
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    rows = _r.get(
+        f"{SUPA}/rest/v1/my_products?id=eq.{pid}&select=owner_id",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}"},
+        timeout=10,
+    ).json()
+    if not rows:
+        raise HTTPException(404, "상품 없음")
+    if rows[0]["owner_id"] != me_id:
+        raise HTTPException(403, "공유 관리는 소유자만 가능")
+
+
+@app.get("/api/my-products/{pid}/shares")
+def list_product_shares(pid: int, request: Request):
+    """소유자: 이 상품을 누구에게 공유했는지 + 권한."""
+    me = auth_svc.require_user(request)
+    _assert_product_owner(pid, me["id"])
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+
+    shares = _r.get(
+        f"{SUPA}/rest/v1/my_product_shares?product_id=eq.{pid}"
+        f"&select=shared_with_id,permission,created_at&order=created_at.desc",
+        headers=H, timeout=10,
+    ).json() or []
+
+    if not shares:
+        return []
+
+    user_ids = [s["shared_with_id"] for s in shares]
+    prof = _r.get(
+        f"{SUPA}/rest/v1/profiles?id=in.({','.join(user_ids)})&select=id,email,display_name",
+        headers=H, timeout=10,
+    ).json() or []
+    pmap = {p["id"]: p for p in prof}
+    for s in shares:
+        p = pmap.get(s["shared_with_id"]) or {}
+        s["display_name"] = p.get("display_name") or (p.get("email") or "").split("@")[0]
+        s["email"] = p.get("email")
+    return shares
+
+
+@app.post("/api/my-products/{pid}/shares")
+def create_product_shares(pid: int, req: ShareCreateRequest, request: Request):
+    me = auth_svc.require_user(request)
+    _assert_product_owner(pid, me["id"])
+    if req.permission not in ("view", "edit"):
+        raise HTTPException(400, "permission must be view or edit")
+
+    rows = [
+        {"product_id": pid, "shared_with_id": uid, "permission": req.permission, "created_by": me["id"]}
+        for uid in req.user_ids if uid and uid != me["id"]
+    ]
+    if not rows:
+        return {"message": "변경 없음", "count": 0}
+
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.post(
+        f"{SUPA}/rest/v1/my_product_shares?on_conflict=product_id,shared_with_id",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json",
+                 "Prefer": "resolution=merge-duplicates,return=representation"},
+        json=rows, timeout=10,
+    )
+    if r.status_code not in (200, 201):
+        raise HTTPException(r.status_code, r.text[:200])
+    return {"message": f"{len(rows)}명에게 공유", "count": len(rows)}
+
+
+@app.delete("/api/my-products/{pid}/shares/{user_id}")
+def delete_product_share(pid: int, user_id: str, request: Request):
+    me = auth_svc.require_user(request)
+    _assert_product_owner(pid, me["id"])
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    _r.delete(
+        f"{SUPA}/rest/v1/my_product_shares?product_id=eq.{pid}&shared_with_id=eq.{user_id}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}", "Prefer": "return=minimal"},
+        timeout=10,
+    )
+    return {"message": "공유 해제 완료"}
+
+
+@app.get("/api/users/shareable")
+def list_shareable_users(request: Request):
+    """공유 대상 picker용 — 활성 사용자 (자기 제외). 일반 직원도 호출 가능."""
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    rows = _r.get(
+        f"{SUPA}/rest/v1/profiles?active=eq.true"
+        f"&select=id,email,display_name&order=display_name.asc.nullslast",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}"},
+        timeout=10,
+    ).json() or []
+    return [u for u in rows if u["id"] != me["id"]]
+
+
+# ── Auth ──
+
+def _update_last_login(user_id: str) -> None:
+    """응답을 막지 않도록 background에서 실행."""
+    try:
+        SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+        KEY = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or "").strip()
+        _r = supabase.get_session()
+        _r.patch(
+            f"{SUPA}/rest/v1/profiles?id=eq.{user_id}",
+            headers={"apikey": KEY, "Authorization": f"Bearer {KEY}",
+                     "Content-Type": "application/json", "Prefer": "return=minimal"},
+            json={"last_login_at": datetime.now(timezone.utc).isoformat()},
+            timeout=3,
+        )
+    except Exception:
+        pass
+
+
+@app.get("/api/me")
+def get_me(request: Request, background_tasks: BackgroundTasks):
+    """현재 로그인한 사용자 profile. last_login_at은 응답 후 background로 갱신."""
+    profile = auth_svc.require_user(request)
+    background_tasks.add_task(_update_last_login, profile["id"])
+    return profile
+
+
+@app.get("/api/users")
+def list_users(request: Request):
+    """admin: 전체 직원 목록."""
+    auth_svc.require_admin(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    KEY = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.get(
+        f"{SUPA}/rest/v1/profiles?select=id,email,display_name,role,active,can_delete_reels,created_at,last_login_at&order=created_at.desc",
+        headers={"apikey": KEY, "Authorization": f"Bearer {KEY}"},
+        timeout=15,
+    )
+    return r.json() if r.status_code == 200 else []
+
+
+class UserInviteRequest(BaseModel):
+    email: str
+    display_name: str | None = None
+    role: str = "employee"
+    password: str | None = None  # 미입력 시 임시 비밀번호 자동 생성
+
+
+@app.post("/api/users")
+def invite_user(req: UserInviteRequest, request: Request):
+    """admin: 신규 직원 계정 생성. Supabase Admin API로 사용자 생성 + email_confirmed=true."""
+    inviter = auth_svc.require_admin(request)
+    if req.role not in ("admin", "employee"):
+        raise HTTPException(400, "role must be admin or employee")
+
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    if not SK:
+        raise HTTPException(500, "SUPABASE_SERVICE_ROLE_KEY 필요")
+
+    import secrets
+    _r = supabase.get_session()
+    pw = req.password or ("Tmp_" + secrets.token_urlsafe(12))
+
+    # 1. auth user 생성 (admin API)
+    create = _r.post(
+        f"{SUPA}/auth/v1/admin/users",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}", "Content-Type": "application/json"},
+        json={"email": req.email, "password": pw, "email_confirm": True},
+        timeout=15,
+    )
+    if create.status_code not in (200, 201):
+        raise HTTPException(create.status_code, f"auth create failed: {create.text[:200]}")
+    new_user = create.json()
+    new_id = new_user.get("id")
+
+    # 2. trigger가 profiles row를 만들었을 것 → role/display_name/created_by 업데이트
+    patch = _r.patch(
+        f"{SUPA}/rest/v1/profiles?id=eq.{new_id}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json={
+            "role": req.role,
+            "display_name": req.display_name,
+            "created_by": inviter["id"],
+        },
+        timeout=10,
+    )
+    profile = patch.json()[0] if patch.status_code in (200, 201) and patch.json() else None
+    return {
+        "message": f"{req.email} 초대 완료. 임시 비밀번호: {pw}",
+        "profile": profile,
+        "temp_password": pw,
+    }
+
+
+class UserUpdateRequest(BaseModel):
+    role: str | None = None
+    active: bool | None = None
+    display_name: str | None = None
+    can_delete_reels: bool | None = None
+
+
+@app.patch("/api/users/{user_id}")
+def update_user(user_id: str, req: UserUpdateRequest, request: Request):
+    auth_svc.require_admin(request)
+    payload: dict = {}
+    if req.role is not None:
+        if req.role not in ("admin", "employee"):
+            raise HTTPException(400, "invalid role")
+        payload["role"] = req.role
+    if req.active is not None:
+        payload["active"] = req.active
+    if req.display_name is not None:
+        payload["display_name"] = req.display_name
+    if req.can_delete_reels is not None:
+        payload["can_delete_reels"] = req.can_delete_reels
+    if not payload:
+        raise HTTPException(400, "nothing to update")
+
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.patch(
+        f"{SUPA}/rest/v1/profiles?id=eq.{user_id}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json=payload, timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:200])
+    return r.json()[0] if r.json() else {}
+
+
+@app.delete("/api/users/{user_id}")
+def delete_user(user_id: str, request: Request):
+    """admin: auth.users 삭제 → trigger로 profiles도 cascade."""
+    admin = auth_svc.require_admin(request)
+    if user_id == admin["id"]:
+        raise HTTPException(400, "자기 자신은 삭제할 수 없습니다")
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    if not SK:
+        raise HTTPException(500, "SUPABASE_SERVICE_ROLE_KEY 필요")
+    _r = supabase.get_session()
+    r = _r.delete(
+        f"{SUPA}/auth/v1/admin/users/{user_id}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}"},
+        timeout=15,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:200])
+    return {"message": "삭제 완료"}
+
+
+# ── Data Endpoints ──
+
+def _infer_frame_count(shortcode: str) -> int:
+    """Return expected frame count, falling back to frame analysis timestamps."""
+    meta = supabase.sb_get("reels_metadata", f"shortcode=eq.{shortcode}&select=video_duration&limit=1")
+    duration = int(meta[0].get("video_duration") or 0) if meta else 0
+    if duration > 0:
+        return duration
+
+    rows = supabase.sb_get("opus_analyses", f"shortcode=eq.{shortcode}&select=analysis&limit=1")
+    analysis = rows[0].get("analysis") if rows else ""
+    if not analysis:
+        return 0
+
+    secs = [
+        int(match.group(1))
+        for match in re.finditer(r"\[(\d+)\s*(?:sec|\uCD08)?\]", analysis, flags=re.IGNORECASE)
+    ]
+    if not secs:
+        return 0
+    return max(secs) + 1
+
+
+def _storage_frame_images(shortcode: str) -> dict:
+    rows = supabase.storage_list("frames", shortcode)
+    frames = {}
+    base = f"{supabase.SUPABASE_URL}/storage/v1/object/public/frames/{shortcode}"
+    for row in rows:
+        name = str(row.get("name") or "")
+        stem = name.rsplit(".", 1)[0]
+        if not (name.lower().endswith(".webp") or name.lower().endswith(".jpg")) or not stem.isdigit():
+            continue
+        sec = int(stem)
+        # webp 우선
+        if sec not in frames or name.lower().endswith(".webp"):
+            frames[sec] = f"{base}/{name}"
+    return dict(sorted(frames.items()))
+
+
+def _frame_image_urls(shortcode: str) -> dict:
+    storage_frames = _storage_frame_images(shortcode)
+    if storage_frames:
+        return storage_frames
+
+    count = _infer_frame_count(shortcode)
+    if count <= 0:
+        return {}
+    base = f"{supabase.SUPABASE_URL}/storage/v1/object/public/frames/{shortcode}"
+    return {sec: f"{base}/{sec}.webp" for sec in range(1, count + 1)}
+
+
+@app.get("/api/reels")
+def get_reels():
+    rows = supabase.sb_get("reels", "select=shortcode,url,account_category,collected_at&order=collected_at.desc&limit=100")
+    return Response(
+        content=__import__("json").dumps(rows),
+        media_type="application/json",
+        headers={"Cache-Control": "private, max-age=30"},  # private: CDN cache X, 인증 우회 방지
+    )
+
+
+@app.get("/api/metadata")
+def get_all_metadata(page: int = 1, limit: int = 200):
+    """페이징 지원. limit 최대 1000."""
+    limit = min(max(1, limit), 1000)
+    page = max(1, page)
+    offset = (page - 1) * limit
+    rows = supabase.sb_get(
+        "reels_metadata",
+        f"select=shortcode,play_count,like_count,comment_count,video_duration,"
+        f"thumbnail_url,video_url,caption_text,author_username,author_full_name,"
+        f"music_artist,music_title,taken_at"
+        f"&order=taken_at.desc.nullslast&limit={limit}&offset={offset}",
+    )
+    return Response(
+        content=__import__("json").dumps(rows),
+        media_type="application/json",
+        headers={
+            "Cache-Control": "private, max-age=60",
+            "X-Page": str(page),
+            "X-Limit": str(limit),
+            "X-Count": str(len(rows)),
+        },
+    )
+
+
+@app.get("/api/metadata/{shortcode}")
+def get_metadata(shortcode: str):
+    rows = supabase.sb_get("reels_metadata", f"shortcode=eq.{shortcode}&limit=1")
+    if rows:
+        return rows[0]
+    raise HTTPException(404, "Not found")
+
+
+@app.get("/api/transcripts")
+def get_all_transcripts():
+    return supabase.sb_get("reels_transcripts", "select=shortcode,transcript,language&limit=10000")
+
+
+@app.get("/api/transcripts/{shortcode}")
+def get_transcript(shortcode: str):
+    rows = supabase.sb_get("reels_transcripts", f"shortcode=eq.{shortcode}&limit=1")
+    if rows:
+        return rows[0]
+    raise HTTPException(404, "Not found")
+
+
+@app.get("/api/analyses")
+def get_all_analyses():
+    db = supabase.sb_get("opus_analyses", "select=shortcode,analysis,analyzed_at&limit=10000")
+    db_codes = {r["shortcode"] for r in db}
+    for sc, data in pipeline.analysis_cache.items():
+        if sc not in db_codes:
+            db.append(data)
+    return db
+
+
+@app.get("/api/analyses/{shortcode}")
+def get_analysis(shortcode: str):
+    rows = supabase.sb_get("opus_analyses", f"shortcode=eq.{shortcode}&limit=1")
+    if rows:
+        return rows[0]
+    if shortcode in pipeline.analysis_cache:
+        return pipeline.analysis_cache[shortcode]
+    raise HTTPException(404, "Not found")
+
+
+@app.get("/api/comments/{shortcode}")
+def get_comments(shortcode: str):
+    return supabase.sb_get("reels_comments", f"shortcode=eq.{shortcode}&limit=500")
+
+
+@app.get("/api/extra/{shortcode}")
+def get_extra(shortcode: str):
+    data = pipeline.extra_cache.get(shortcode, {}) or {}
+    # 캐시에 없는 항목들을 병렬 DB 조회 (5개 → ~0.5s)
+    need_category = not data.get("category")
+    need_script = not data.get("script_structure")
+    need_comments = not data.get("comment_triggers")
+    need_audio = not data.get("pro_audio") and not data.get("audio_emotions")
+    need_sentences = not data.get("sentences")
+    need_frames = not data.get("frame_images")
+
+    tasks = {}
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        if need_category:
+            tasks["category"] = ex.submit(supabase.sb_get, "reels_category",
+                f"shortcode=eq.{shortcode}&limit=1")
+        if need_script:
+            tasks["script"] = ex.submit(supabase.sb_get, "reels_script_structure",
+                f"shortcode=eq.{shortcode}&limit=1")
+        if need_comments:
+            tasks["comments"] = ex.submit(supabase.sb_get, "reels_comment_analysis",
+                f"shortcode=eq.{shortcode}&limit=1")
+        if need_audio:
+            tasks["audio"] = ex.submit(supabase.sb_get, "reels_pro_audio",
+                f"shortcode=eq.{shortcode}&select=audio_emotions,pro_audio,bgm_changes&limit=1")
+        if need_sentences:
+            tasks["sentences"] = ex.submit(supabase.sb_get, "reels_transcripts",
+                f"shortcode=eq.{shortcode}&select=segments&limit=1")
+        if need_frames:
+            tasks["meta_dur"] = ex.submit(supabase.sb_get, "reels_metadata",
+                f"shortcode=eq.{shortcode}&select=video_duration&limit=1")
+
+    if "category" in tasks:
+        rows = tasks["category"].result()
+        if rows:
+            r = rows[0]
+            data["category"] = {"topic": r.get("topic"), "topic_detail": r.get("topic_detail"),
+                                "style": r.get("style"), "tags": r.get("tags")}
+    if "script" in tasks:
+        rows = tasks["script"].result()
+        if rows:
+            r = rows[0]
+            data["script_structure"] = {"hook": r.get("hook"), "intro": r.get("intro"),
+                                        "body": r.get("body"), "cta": r.get("cta"), "overall": r.get("overall")}
+    if "comments" in tasks:
+        rows = tasks["comments"].result()
+        if rows:
+            data["comment_triggers"] = {"triggers": rows[0].get("triggers"), "summary": rows[0].get("summary")}
+    if "audio" in tasks:
+        rows = tasks["audio"].result()
+        if rows:
+            r = rows[0]
+            if r.get("pro_audio"):
+                data["pro_audio"] = r["pro_audio"]
+            if r.get("audio_emotions"):
+                data["audio_emotions"] = r["audio_emotions"]
+            if r.get("bgm_changes"):
+                data["bgm_changes"] = r["bgm_changes"]
+    if "sentences" in tasks:
+        rows = tasks["sentences"].result()
+        if rows and rows[0].get("segments"):
+            segs = rows[0]["segments"]
+            data["sentences"] = segs
+            sc_by_sec = {}
+            for seg in segs:
+                start = int(seg.get("start", 0))
+                end = int(seg.get("end", start + 1))
+                text = seg.get("text", "")
+                for s in range(start + 1, end + 2):
+                    if s not in sc_by_sec:
+                        sc_by_sec[s] = text
+            data["script_by_sec"] = sc_by_sec
+    if "meta_dur" in tasks:
+        frame_images = _frame_image_urls(shortcode)
+        if frame_images:
+            data["frame_images"] = frame_images
+    return Response(
+        content=__import__("json").dumps(data),
+        media_type="application/json",
+        headers={"Cache-Control": "private, max-age=300"},
+    )
+
+
+@app.get("/api/frame-images/{shortcode}")
+def get_frame_images(shortcode: str):
+    """Return frame images as {sec: url} from Supabase Storage. HEAD 체크 없이 URL만 구성 (브라우저가 404 처리)."""
+    result = _frame_image_urls(shortcode)
+    # video_duration만 조회해서 URL 일괄 생성 (HEAD 생략)
+    if result:
+        return Response(
+            content=__import__("json").dumps(result),
+            media_type="application/json",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+    # 로컬 / in-memory 폴백 (분석 중인 경우)
+    from pathlib import Path
+    frames_dir = Path(__file__).parent.parent / "frames" / shortcode
+    if frames_dir.exists():
+        import base64
+        result = {}
+        for f in sorted(frames_dir.glob("*.jpg")):
+            sec = int(f.stem)
+            result[sec] = base64.b64encode(f.read_bytes()).decode()
+        if result:
+            return result
+    status = pipeline.analysis_status.get(shortcode, {})
+    if status.get("status") == "done" and "frame_images" in status:
+        return status["frame_images"]
+    return {}
+
+
+# ── Bench cache (in-memory, background refresh) ──
+
+
+_BENCH_CACHE_TTL = 120  # seconds
+_bench_mem: dict = {"data": None, "ts": 0.0}
+_bench_lock = threading.Lock()
+
+
+def _refresh_bench():
+    """Fetch from Supabase, build merged list, store in module-level dict."""
+    try:
+        with ThreadPoolExecutor(max_workers=5) as ex:
+            f_reels = ex.submit(supabase.sb_get, "reels",
+                "select=shortcode,url,account_category,collected_at&order=collected_at.desc&limit=50000")
+            f_meta = ex.submit(supabase.sb_get, "reels_metadata",
+                "select=shortcode,play_count,like_count,comment_count,video_duration,thumbnail_url,author_username,taken_at&limit=50000")
+            f_opus = ex.submit(supabase.sb_get, "opus_analyses",
+                "select=shortcode&limit=50000")
+            f_class = ex.submit(supabase.sb_get, "reels_pro_audio",
+                "select=shortcode,classification&limit=50000")
+
+        reels = f_reels.result()
+        meta_map = {m["shortcode"]: m for m in f_meta.result()}
+        analysis_scs = {a["shortcode"] for a in f_opus.result()}
+        class_map = {r["shortcode"]: (r.get("classification") or {}) for r in f_class.result()}
+
+        items = []
+        total_plays = total_likes = 0
+        for r in reels:
+            m = meta_map.get(r["shortcode"], {})
+            plays = m.get("play_count") or 0
+            likes = m.get("like_count") or 0
+            total_plays += plays
+            total_likes += likes
+            cls = class_map.get(r["shortcode"]) or {}
+            items.append({
+                "shortcode": r["shortcode"],
+                "author": m.get("author_username") or "",
+                "play_count": plays,
+                "like_count": likes,
+                "comment_count": m.get("comment_count") or 0,
+                "thumbnail_url": m.get("thumbnail_url") or "",
+                "collected_at": r.get("collected_at") or "",
+                "analyzed": r["shortcode"] in analysis_scs,
+                "ad_suitability": cls.get("ad_suitability") or None,
+                "usp_count": cls.get("usp_count") or None,
+                "body_structure": cls.get("body_structure") or None,
+                "hook_type": cls.get("hook_type") or None,
+                "cta_type": cls.get("cta_type") or None,
+            })
+
+        with _bench_lock:
+            _bench_mem["data"] = {
+                "items": items,
+                "stats": {
+                    "total_reels": len(items),
+                    "total_plays": total_plays,
+                    "total_likes": total_likes,
+                    "analyzed_count": len(analysis_scs),
+                },
+            }
+            _bench_mem["ts"] = time.time()
+        logger.info(f"[BenchCache] refreshed {len(items)} items")
+        # trigger thumbnail download for missing ones
+        thumb_items = [(i["shortcode"], i["thumbnail_url"]) for i in items if i["thumbnail_url"]]
+        threading.Thread(target=thumb.download_batch, args=(thumb_items,), daemon=True).start()
+    except Exception as e:
+        logger.error(f"[BenchCache] refresh failed: {e}")
+
+
+def _get_bench() -> dict:
+    if time.time() - _bench_mem["ts"] > _BENCH_CACHE_TTL or _bench_mem["data"] is None:
+        _refresh_bench()
+    with _bench_lock:
+        return _bench_mem["data"]
+
+
+# Warm on module import (works with --reload)
+threading.Thread(target=_refresh_bench, daemon=True).start()
+
+
+def _er(i: dict) -> float:
+    return round(i["like_count"] / i["play_count"] * 100, 2) if i["play_count"] else 0
+
+
+def _filter_and_sort_bench(
+    items: list, *,
+    sort: str = "plays",
+    q: str = "", plays_min: int = 0, plays_max: int = 0,
+    er_min: float = 0, er_max: float = 0,
+    date_from: str = "", date_to: str = "",
+    ad_suitability: str = "", usp_count: str = "",
+    body_structure: str = "", hook_type: str = "", cta_type: str = "",
+) -> list:
+    """벤치 캐시에서 가져온 items에 필터·정렬 일괄 적용."""
+    if q:
+        ql = q.lower()
+        items = [i for i in items if ql in i["shortcode"].lower() or ql in i["author"].lower()]
+    if plays_min > 0:
+        items = [i for i in items if i["play_count"] >= plays_min]
+    if plays_max > 0:
+        items = [i for i in items if i["play_count"] <= plays_max]
+    if er_min > 0:
+        items = [i for i in items if _er(i) >= er_min]
+    if er_max > 0:
+        items = [i for i in items if _er(i) <= er_max]
+    if date_from:
+        items = [i for i in items if i["collected_at"][:10] >= date_from]
+    if date_to:
+        items = [i for i in items if i["collected_at"][:10] <= date_to]
+
+    def _multi(field: str, val: str, current: list):
+        opts = [v.strip() for v in val.split(",") if v.strip()]
+        return [i for i in current if i.get(field) in opts]
+    if ad_suitability:
+        items = _multi("ad_suitability", ad_suitability, items)
+    if usp_count:
+        opts = [int(v) for v in usp_count.split(",") if v.strip().isdigit()]
+        items = [i for i in items if i.get("usp_count") in opts]
+    if body_structure:
+        items = _multi("body_structure", body_structure, items)
+    if hook_type:
+        items = _multi("hook_type", hook_type, items)
+    if cta_type:
+        items = _multi("cta_type", cta_type, items)
+
+    if sort == "plays":
+        items = sorted(items, key=lambda i: i["play_count"], reverse=True)
+    elif sort == "likes":
+        items = sorted(items, key=lambda i: i["like_count"], reverse=True)
+    elif sort == "er":
+        items = sorted(items, key=lambda i: _er(i), reverse=True)
+    elif sort == "recent":
+        items = sorted(items, key=lambda i: i["collected_at"], reverse=True)
+    return items
+
+
+@app.get("/api/bench")
+def get_bench(
+    page: int = Query(1, ge=1),
+    limit: int = Query(30, ge=1, le=100),
+    sort: str = Query("plays"),
+    q: str = Query(""),
+    plays_min: int = Query(0, ge=0),
+    plays_max: int = Query(0, ge=0),
+    er_min: float = Query(0, ge=0),
+    er_max: float = Query(0, ge=0),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    ad_suitability: str = Query(""),
+    usp_count: str = Query(""),
+    body_structure: str = Query(""),
+    hook_type: str = Query(""),
+    cta_type: str = Query(""),
+):
+    cache = _get_bench()
+    if not cache:
+        return {"items": [], "stats": {}, "total": 0, "page": 1, "has_more": False}
+    stats = cache["stats"]
+    items = _filter_and_sort_bench(
+        list(cache["items"]),
+        sort=sort, q=q,
+        plays_min=plays_min, plays_max=plays_max,
+        er_min=er_min, er_max=er_max,
+        date_from=date_from, date_to=date_to,
+        ad_suitability=ad_suitability, usp_count=usp_count,
+        body_structure=body_structure, hook_type=hook_type, cta_type=cta_type,
+    )
+
+    total = len(items)
+    start = (page - 1) * limit
+    page_items = items[start:start + limit]
+
+    return Response(
+        content=__import__("json").dumps({
+            "items": page_items,
+            "stats": stats,
+            "total": total,
+            "page": page,
+            "has_more": start + limit < total,
+        }),
+        media_type="application/json",
+        headers={"Cache-Control": "private, max-age=30"},
+    )
+
+
+@app.get("/api/phrases")
+def get_phrases(
+    part: str = Query("hook_intro"),  # 'hook_intro' | 'cta'
+    page: int = Query(1, ge=1),
+    limit: int = Query(30, ge=1, le=100),
+    sort: str = Query("plays"),
+    q: str = Query(""),
+    plays_min: int = Query(0, ge=0),
+    plays_max: int = Query(0, ge=0),
+    er_min: float = Query(0, ge=0),
+    er_max: float = Query(0, ge=0),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    ad_suitability: str = Query(""),
+    usp_count: str = Query(""),
+    body_structure: str = Query(""),
+    hook_type: str = Query(""),
+    cta_type: str = Query(""),
+):
+    """문구별 보기 — bench와 동일 필터 + part(hook_intro|cta)별 텍스트."""
+    if part not in ("hook_intro", "cta"):
+        raise HTTPException(400, "part must be hook_intro or cta")
+
+    cache = _get_bench()
+    if not cache:
+        return {"items": [], "total": 0, "page": 1, "has_more": False}
+
+    items = _filter_and_sort_bench(
+        list(cache["items"]),
+        sort=sort, q=q,
+        plays_min=plays_min, plays_max=plays_max,
+        er_min=er_min, er_max=er_max,
+        date_from=date_from, date_to=date_to,
+        ad_suitability=ad_suitability, usp_count=usp_count,
+        body_structure=body_structure, hook_type=hook_type, cta_type=cta_type,
+    )
+    # 분석된 릴스만 (script_structure가 있을 수 있는 후보)
+    items = [i for i in items if i.get("analyzed")]
+
+    total_pre = len(items)
+    # 페이지 단위로 잘라서 script_structure 조회 (효율)
+    start = (page - 1) * limit
+    page_items = items[start:start + limit]
+    if not page_items:
+        return {"items": [], "total": 0, "page": page, "has_more": False}
+
+    scs = [i["shortcode"] for i in page_items]
+    select = "shortcode," + ("hook,intro" if part == "hook_intro" else "cta")
+    rows = supabase.sb_get(
+        "reels_script_structure",
+        f"shortcode=in.({','.join(scs)})&select={select}",
+    ) or []
+    by_sc = {r["shortcode"]: r for r in rows}
+
+    out = []
+    for i in page_items:
+        rec = by_sc.get(i["shortcode"]) or {}
+        if part == "hook_intro":
+            hook = rec.get("hook") or {}
+            intro = rec.get("intro") or {}
+            hook_text = (hook.get("text") or "").strip()
+            intro_text = (intro.get("text") or "").strip()
+            if not hook_text and not intro_text:
+                continue
+            out.append({
+                "shortcode": i["shortcode"],
+                "author": i["author"],
+                "play_count": i["play_count"],
+                "like_count": i["like_count"],
+                "thumbnail_url": i.get("thumbnail_url") or "",
+                "hook_text": hook_text,
+                "hook_type": hook.get("type") or "",
+                "hook_seconds": hook.get("seconds") or "",
+                "intro_text": intro_text,
+                "intro_seconds": intro.get("seconds") or "",
+            })
+        else:
+            cta = rec.get("cta") or {}
+            cta_text = (cta.get("text") or "").strip()
+            if not cta_text:
+                continue
+            out.append({
+                "shortcode": i["shortcode"],
+                "author": i["author"],
+                "play_count": i["play_count"],
+                "like_count": i["like_count"],
+                "thumbnail_url": i.get("thumbnail_url") or "",
+                "cta_text": cta_text,
+                "cta_type": cta.get("type") or "",
+                "cta_seconds": cta.get("seconds") or "",
+            })
+
+    return {
+        "items": out,
+        "total": total_pre,
+        "page": page,
+        "has_more": start + limit < total_pre,
+    }
+
+
+_REEL_CHILD_TABLES = [
+    "reels_pro_audio",
+    "reels_comment_analysis",
+    "reels_script_structure",
+    "reels_category",
+    "reels_comments",
+    "reels_transcripts",
+    "reels_metadata",
+    "opus_analyses",
+]
+
+
+def _is_valid_shortcode(sc: str) -> bool:
+    return bool(sc) and sc.replace("_", "").replace("-", "").isalnum()
+
+
+def _delete_one_reel(shortcode: str) -> bool:
+    """자식 8개 테이블 병렬 삭제 → 모두 끝나면 부모 삭제."""
+    with ThreadPoolExecutor(max_workers=len(_REEL_CHILD_TABLES)) as ex:
+        futures = [ex.submit(supabase.sb_delete, t, f"shortcode=eq.{shortcode}") for t in _REEL_CHILD_TABLES]
+        for fut, t in zip(futures, _REEL_CHILD_TABLES):
+            try:
+                fut.result()
+            except Exception as e:
+                logger.warning(f"[DeleteReel] {t} for {shortcode}: {e}")
+    return supabase.sb_delete("reels", f"shortcode=eq.{shortcode}")
+
+
+@app.delete("/api/reels/{shortcode}")
+def delete_reel(shortcode: str, request: Request):
+    """admin 또는 can_delete_reels 권한자: 릴스 + 모든 자식 테이블 정리."""
+    auth_svc.require_can_delete_reels(request)
+    if not _is_valid_shortcode(shortcode):
+        raise HTTPException(400, "invalid shortcode")
+    if not _delete_one_reel(shortcode):
+        raise HTTPException(500, "릴스 삭제 실패")
+    _bench_mem["ts"] = 0
+    return {"message": f"{shortcode} 삭제 완료"}
+
+
+class BulkDeleteRequest(BaseModel):
+    shortcodes: list[str]
+
+
+@app.post("/api/reels/bulk-delete")
+def bulk_delete_reels(req: BulkDeleteRequest, request: Request):
+    """다량 삭제 — admin OR can_delete_reels. 릴스 단위로 병렬 처리."""
+    auth_svc.require_can_delete_reels(request)
+    valid = [sc for sc in (req.shortcodes or []) if _is_valid_shortcode(sc)]
+    if not valid:
+        raise HTTPException(400, "삭제할 shortcode가 없습니다")
+    if len(valid) > 100:
+        raise HTTPException(400, "한 번에 100개 이하로 요청하세요")
+
+    deleted: list[str] = []
+    failed: list[str] = []
+    # 동시 8개씩 — Vercel 타임아웃 방지
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        future_map = {ex.submit(_delete_one_reel, sc): sc for sc in valid}
+        for fut, sc in future_map.items():
+            try:
+                ok = fut.result()
+                (deleted if ok else failed).append(sc)
+            except Exception as e:
+                logger.warning(f"[BulkDelete] {sc}: {e}")
+                failed.append(sc)
+    _bench_mem["ts"] = 0
+    return {"deleted": deleted, "failed": failed, "deleted_count": len(deleted), "failed_count": len(failed)}
+
+
+# ── Dashboard (legacy, kept for other pages) ──
+
+_dashboard_cache: dict = {"data": None, "ts": 0}
+_DASHBOARD_TTL = 120
+
+@app.get("/api/dashboard")
+def get_dashboard():
+    now = time.time()
+    if _dashboard_cache["data"] and now - _dashboard_cache["ts"] < _DASHBOARD_TTL:
+        return _dashboard_cache["data"]
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        f_reels = ex.submit(supabase.sb_get, "reels", "select=shortcode,url,account_category,collected_at&order=collected_at.desc&limit=100")
+        f_meta = ex.submit(supabase.sb_get, "reels_metadata", "select=shortcode,play_count,like_count,comment_count,video_duration,thumbnail_url,video_url,caption_text,author_username,music_artist,music_title,taken_at&limit=10000")
+        f_trans = ex.submit(supabase.sb_get, "reels_transcripts", "select=shortcode,transcript,language&limit=10000")
+        f_opus = ex.submit(supabase.sb_get, "opus_analyses", "select=shortcode,analysis,analyzed_at&limit=10000")
+
+    reels = f_reels.result()
+    meta = f_meta.result()
+    analyses = f_opus.result()
+    meta_map = {m["shortcode"]: m for m in meta}
+    analysis_map = {a["shortcode"]: a for a in analyses}
+
+    total_plays = sum(meta_map.get(r["shortcode"], {}).get("play_count") or 0 for r in reels)
+    total_likes = sum(meta_map.get(r["shortcode"], {}).get("like_count") or 0 for r in reels)
+
+    result = {
+        "reels": reels, "metadata": meta,
+        "transcripts": f_trans.result(), "analyses": analyses,
+        "stats": {
+            "total_reels": len(reels), "total_plays": total_plays,
+            "total_likes": total_likes,
+            "analyzed_count": sum(1 for r in reels if r["shortcode"] in analysis_map),
+        },
+    }
+    _dashboard_cache["data"] = result
+    _dashboard_cache["ts"] = now
+    return result
+
+
+# ── Thumbnails (local disk) ──
+
+@app.get("/api/thumb/{shortcode}")
+def get_thumb(shortcode: str):
+    """Storage 308 redirect만. CDN 프록시 폴백 없음 — 영구화 강제."""
+    from fastapi.responses import RedirectResponse
+    if thumb.exists_in_storage(shortcode):
+        return RedirectResponse(
+            url=thumb.storage_url(shortcode),
+            status_code=308,
+            headers={"Cache-Control": "public, max-age=2592000, immutable"},
+        )
+    raise HTTPException(404, "Thumbnail not found in storage")
+
+
+@app.post("/api/thumbs/download")
+def download_thumbs(background_tasks: BackgroundTasks):
+    """Trigger background download of all missing thumbnails from DB URLs."""
+    background_tasks.add_task(_download_missing_thumbs)
+    on_disk = thumb.count()
+    return {"message": "다운로드 시작", "on_disk": on_disk}
+
+
+def _download_missing_thumbs():
+    """Fetch thumbnail URLs from DB and download missing ones."""
+    meta = supabase.sb_get("reels_metadata", "select=shortcode,thumbnail_url&limit=50000")
+    items = [(m["shortcode"], m.get("thumbnail_url", "")) for m in meta]
+    thumb.download_batch(items)
+
+
+# ── Analysis ──
+
+class AnalyzeRequest(BaseModel):
+    shortcode: str
+
+@app.post("/api/analyze")
+def start_analysis(req: AnalyzeRequest, background_tasks: BackgroundTasks):
+    if pipeline.analysis_status.get(req.shortcode, {}).get("status") == "running":
+        return {"message": "이미 분석 중"}
+    background_tasks.add_task(pipeline.run, req.shortcode)
+    pipeline.analysis_status[req.shortcode] = {"status": "running", "step": "시작", "progress": 0}
+    return {"message": "분석 시작", "shortcode": req.shortcode}
+
+@app.get("/api/analysis-status/{shortcode}")
+def get_analysis_status(shortcode: str):
+    return pipeline.analysis_status.get(shortcode, {"status": "idle"})
+
+
+# ── Single Reel Intake ──
+
+def _normalize_shortcode(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    raw = raw.split("?")[0].split("#")[0].rstrip("/")
+    match = re.search(r"instagram\.com/(?:reel|p|tv)/([^/?#]+)", raw, re.I)
+    if match:
+        return re.sub(r"[^A-Za-z0-9_-]", "", match.group(1))
+    parts = [p for p in raw.split("/") if p]
+    candidate = parts[-1] if parts else raw
+    return re.sub(r"[^A-Za-z0-9_-]", "", candidate)
+
+
+def _fetch_hiker_metadata(shortcode: str) -> dict:
+    key = os.getenv("HIKER_API_KEY")
+    if not key:
+        return {}
+    _r = supabase.get_session()
+    try:
+        r = _r.get(
+            "https://api.hikerapi.com/v1/media/by/code",
+            params={"code": shortcode},
+            headers={"accept": "application/json", "x-access-key": key},
+            timeout=20,
+        )
+        if r.status_code != 200:
+            return {}
+        d = r.json()
+    except Exception:
+        return {}
+
+    return {
+        "shortcode": shortcode,
+        "thumbnail_url": d.get("thumbnail_url"),
+        "video_url": d.get("video_url"),
+        "play_count": d.get("play_count"),
+        "like_count": d.get("like_count"),
+        "comment_count": d.get("comment_count"),
+        "video_duration": d.get("video_duration"),
+        "caption_text": (
+            d.get("caption", {}).get("text") if isinstance(d.get("caption"), dict)
+            else d.get("caption_text")
+        ),
+        "author_username": (
+            d.get("user", {}).get("username") if isinstance(d.get("user"), dict)
+            else d.get("author_username")
+        ),
+        "author_full_name": (
+            d.get("user", {}).get("full_name") if isinstance(d.get("user"), dict)
+            else d.get("author_full_name")
+        ),
+        "music_title": (
+            ((d.get("clips_metadata") or {}).get("music_info") or {})
+            .get("music_asset_info", {}).get("title")
+            if isinstance(d.get("clips_metadata"), dict) else None
+        ),
+        "taken_at": d.get("taken_at_date"),
+    }
+
+
+class ReelAddRequest(BaseModel):
+    url: str
+    analyze: bool = False
+
+
+@app.post("/api/reels")
+def add_reel(req: ReelAddRequest, background_tasks: BackgroundTasks):
+    shortcode = _normalize_shortcode(req.url)
+    if not shortcode:
+        raise HTTPException(400, "릴스 URL 또는 shortcode가 필요합니다")
+
+    existing_meta = supabase.sb_get("reels_metadata", f"shortcode=eq.{shortcode}&limit=1")
+    metadata = existing_meta[0] if existing_meta else _fetch_hiker_metadata(shortcode)
+    author = metadata.get("author_username") or ""
+    reel_url = f"https://www.instagram.com/reel/{shortcode}/"
+
+    existing_reel = supabase.sb_get("reels", f"shortcode=eq.{shortcode}&select=shortcode&limit=1")
+    if not existing_reel:
+        ok = supabase.sb_post("reels", {
+            "shortcode": shortcode,
+            "url": reel_url,
+            "source": "manual",
+            "collected_at": datetime.now(timezone.utc).isoformat(),
+        })
+        if not ok:
+            raise HTTPException(500, "릴스 저장 실패")
+
+    if metadata:
+        clean_meta = {k: v for k, v in metadata.items() if v is not None or k == "shortcode"}
+        # CDN URL은 DB에 저장하지 않음 — storage 업로드 후 storage URL로만 저장
+        cdn_url = clean_meta.pop("thumbnail_url", None)
+        supabase.sb_post("reels_metadata", clean_meta)
+        if cdn_url:
+            try:
+                thumb.download(shortcode, cdn_url)  # 성공 시 _update_db_url로 storage URL 저장
+            except Exception as e:
+                logger.warning("thumb download error: %s", e)
+
+    if req.analyze and pipeline.analysis_status.get(shortcode, {}).get("status") != "running":
+        background_tasks.add_task(pipeline.run, shortcode)
+        pipeline.analysis_status[shortcode] = {"status": "running", "step": "시작", "progress": 0}
+
+    threading.Thread(target=_refresh_bench, daemon=True).start()
+    return {
+        "message": "릴스 추가 완료",
+        "shortcode": shortcode,
+        "url": reel_url,
+        "author": author,
+        "has_metadata": bool(metadata),
+        "analysis_started": bool(req.analyze),
+    }
+
+
+# ── Text Analysis (for Claude Code to submit results) ──
+
+class TextAnalysisResult(BaseModel):
+    shortcode: str
+    script_structure: dict | None = None
+    category: dict | None = None
+
+@app.get("/api/pending-text-analysis")
+def get_pending_text_analysis(limit: int = Query(10, ge=1, le=100)):
+    """Return reels that need script_structure or category analysis."""
+    analyzed = supabase.sb_get("opus_analyses", "select=shortcode&limit=50000")
+    pending = []
+    for a in analyzed:
+        sc = a["shortcode"]
+        extra = pipeline.extra_cache.get(sc, {})
+        if not extra.get("script_structure") or not extra.get("category"):
+            pending.append(sc)
+        if len(pending) >= limit:
+            break
+    return {"pending": pending, "count": len(pending)}
+
+
+@app.get("/api/text-analysis-data/{shortcode}")
+def get_text_analysis_data(shortcode: str):
+    """Return transcript + frame_analysis + caption for Claude Code to analyze."""
+    trans = supabase.sb_get("reels_transcripts", f"shortcode=eq.{shortcode}&limit=1")
+    meta = supabase.sb_get("reels_metadata", f"shortcode=eq.{shortcode}&select=caption_text&limit=1")
+    analysis = supabase.sb_get("opus_analyses", f"shortcode=eq.{shortcode}&limit=1")
+    extra = pipeline.extra_cache.get(shortcode, {})
+    return {
+        "shortcode": shortcode,
+        "transcript": trans[0]["transcript"] if trans else "",
+        "caption": meta[0].get("caption_text", "") if meta else "",
+        "frame_analysis": analysis[0].get("analysis", "") if analysis else "",
+        "has_script_structure": bool(extra.get("script_structure")),
+        "has_category": bool(extra.get("category")),
+    }
+
+
+@app.post("/api/text-analysis")
+def save_text_analysis(req: TextAnalysisResult):
+    """Save script_structure and category from Claude Code."""
+    sc = req.shortcode
+    data = {}
+    if req.script_structure:
+        data["script_structure"] = req.script_structure
+    if req.category:
+        data["category"] = req.category
+    if data:
+        pipeline.extra_cache[sc] = data
+    return {"message": "저장 완료", "shortcode": sc}
+
+
+class ExtraUpdateRequest(BaseModel):
+    shortcode: str
+    script_structure: dict | None = None
+    category: dict | None = None
+    sentences: list[dict] | None = None
+
+@app.patch("/api/extra/{shortcode}")
+def update_extra(shortcode: str, req: ExtraUpdateRequest):
+    """Update script_structure / category / sentences (user edit)."""
+    data = pipeline.extra_cache.get(shortcode, {}) or {}
+    if req.script_structure is not None:
+        data["script_structure"] = req.script_structure
+    if req.category is not None:
+        data["category"] = req.category
+    if req.sentences is not None:
+        data["sentences"] = req.sentences
+        # script_by_sec 재계산
+        sc_by_sec = {}
+        for seg in req.sentences:
+            try:
+                start = int(seg.get("start", 0))
+                end = int(seg.get("end", start + 1))
+                text = (seg.get("text") or "").strip()
+                for s in range(start + 1, end + 2):
+                    if s not in sc_by_sec:
+                        sc_by_sec[s] = text
+            except Exception:
+                continue
+        data["script_by_sec"] = sc_by_sec
+        # DB의 reels_transcripts.segments도 업데이트 (UPSERT)
+        try:
+            _r = supabase.get_session()
+            transcript_text = " ".join((s.get("text") or "").strip() for s in req.sentences if (s.get("text") or "").strip())
+            _r.post(
+                f"{supabase.SUPABASE_URL}/rest/v1/reels_transcripts?on_conflict=shortcode",
+                headers={**supabase.SUPABASE_HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
+                json={"shortcode": shortcode, "transcript": transcript_text, "language": "ko", "segments": req.sentences},
+                timeout=15,
+            )
+        except Exception as e:
+            logger.warning("transcripts upsert failed: %s", e)
+    pipeline.extra_cache[shortcode] = data
+    return {"message": "수정 완료", "shortcode": shortcode}
+
+
+# ── Comments ──
+
+@app.post("/api/comments/{shortcode}/fetch")
+def fetch_and_save_comments(shortcode: str):
+    cmts = comments.fetch_playwright(shortcode)
+    if cmts:
+        _r = supabase.get_session()
+        _r.post(
+            f"{supabase.SUPABASE_URL}/rest/v1/reels_comments",
+            headers={**supabase.SUPABASE_HEADERS, "Prefer": "resolution=merge-duplicates"},
+            json=cmts,
+        )
+    return {"count": len(cmts), "comments": cmts}
+
+
+# ── Channels (monitored_channels) ──
+
+def _normalize_instagram_username(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    raw = raw.split("?")[0].split("#")[0].rstrip("/")
+    parts = [p for p in raw.split("/") if p]
+    username = parts[-1] if parts else raw
+    if username in {"instagram.com", "www.instagram.com"} and len(parts) >= 2:
+        username = parts[-1]
+    username = username.lstrip("@").strip()
+    if username.lower() in {"reel", "p", "stories", "explore"}:
+        return ""
+    return re.sub(r"[^A-Za-z0-9._]", "", username)
+
+
+@app.get("/api/channels")
+def get_channels():
+    return supabase.sb_get("monitored_channels", "select=*&order=created_at.desc&limit=500")
+
+
+class ChannelAddRequest(BaseModel):
+    username: str
+
+@app.post("/api/channels")
+def add_channel(req: ChannelAddRequest):
+    username = _normalize_instagram_username(req.username)
+    if not username:
+        raise HTTPException(400, "username이 필요합니다")
+    ok = supabase.sb_post("monitored_channels", {"username": username, "is_active": True})
+    if ok:
+        return {"message": f"@{username} 추가 완료", "username": username}
+    raise HTTPException(500, "추가 실패")
+
+
+class ChannelUpdateRequest(BaseModel):
+    is_active: bool | None = None
+
+@app.patch("/api/channels/{username}")
+def update_channel(username: str, req: ChannelUpdateRequest):
+    data = {}
+    if req.is_active is not None:
+        data["is_active"] = req.is_active
+    if data:
+        supabase.sb_patch("monitored_channels", f"username=eq.{username}", data)
+    return {"message": "수정 완료", "username": username}
+
+
+@app.delete("/api/channels/{username}")
+def delete_channel(username: str):
+    username = _normalize_instagram_username(username)
+    if not username:
+        raise HTTPException(400, "username이 필요합니다")
+
+    ok = supabase.sb_delete("monitored_channels", f"username=eq.{username}")
+    if ok:
+        return {"message": f"@{username} 삭제 완료"}
+    raise HTTPException(500, "삭제 실패 (DB 오류)")
+
+
+@app.delete("/api/channels/by-id/{channel_id}")
+def delete_channel_by_id(channel_id: int):
+    ok = supabase.sb_delete("monitored_channels", f"id=eq.{channel_id}")
+    if ok:
+        return {"message": "삭제 완료", "id": channel_id}
+    raise HTTPException(500, "삭제 실패 (DB 오류)")
+
+
+@app.get("/api/users/{username}/analysis")
+def get_user_analysis(username: str, limit: int = Query(24, ge=1, le=100)):
+    username = _normalize_instagram_username(username)
+    if not username:
+        raise HTTPException(400, "username이 필요합니다")
+
+    # 1. metadata에서 author 필터로 한 번에 모든 필드 (이전: shortcode만 조회 후 재조회)
+    meta = supabase.sb_get(
+        "reels_metadata",
+        f"author_username=eq.{username}"
+        f"&select=shortcode,play_count,like_count,comment_count,video_duration,thumbnail_url,caption_text,author_username,taken_at"
+        f"&limit=500",
+    )
+    if not meta:
+        return {
+            "username": username,
+            "stats": {
+                "total_reels": 0,
+                "analyzed_count": 0,
+                "total_plays": 0,
+                "total_likes": 0,
+                "avg_er": 0,
+                "best_shortcode": None,
+            },
+            "items": [],
+            "insights": {
+                "top_reel": None,
+                "top_tags": [],
+                "latest_analyzed_at": None,
+                "summary": "아직 이 계정에서 수집된 릴스가 없습니다.",
+            },
+        }
+
+    shortcodes = [m["shortcode"] for m in meta if m.get("shortcode")]
+    sc_filter = ",".join(shortcodes)
+
+    # 2. reels / analyses / categories 병렬 조회
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_reels = ex.submit(
+            supabase.sb_get, "reels",
+            f"shortcode=in.({sc_filter})&select=shortcode,url,account_category,collected_at&order=collected_at.desc&limit=500",
+        )
+        f_analyses = ex.submit(
+            supabase.sb_get, "opus_analyses",
+            f"shortcode=in.({sc_filter})&select=shortcode,analysis,analyzed_at&limit=500",
+        )
+        f_categories = ex.submit(
+            supabase.sb_get, "reels_category",
+            f"shortcode=in.({sc_filter})&select=shortcode,topic,style,tags&limit=500",
+        )
+    reels = f_reels.result() or []
+    analyses = f_analyses.result() or []
+    categories = f_categories.result() or []
+
+    meta_map = {m["shortcode"]: m for m in meta}
+    analysis_map = {a["shortcode"]: a for a in analyses}
+    category_map = {c["shortcode"]: c for c in categories}
+
+    def excerpt(text: str) -> str:
+        cleaned = re.sub(r"[#*_>`\-\[\]]", "", text or "")
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned[:220] + ("..." if len(cleaned) > 220 else "")
+
+    items = []
+    total_plays = total_likes = 0
+    top_tags: dict[str, int] = {}
+    for r in reels:
+        sc = r.get("shortcode")
+        m = meta_map.get(sc, {})
+        a = analysis_map.get(sc)
+        c = category_map.get(sc, {})
+        plays = m.get("play_count") or 0
+        likes = m.get("like_count") or 0
+        total_plays += plays
+        total_likes += likes
+        for tag in c.get("tags") or []:
+            if isinstance(tag, str) and tag.strip():
+                top_tags[tag.strip()] = top_tags.get(tag.strip(), 0) + 1
+        items.append({
+            "shortcode": sc,
+            "url": r.get("url") or f"https://www.instagram.com/reel/{sc}/",
+            "author": m.get("author_username") or username,
+            "play_count": plays,
+            "like_count": likes,
+            "comment_count": m.get("comment_count") or 0,
+            "thumbnail_url": m.get("thumbnail_url") or "",
+            "collected_at": r.get("collected_at") or "",
+            "taken_at": m.get("taken_at"),
+            "analyzed": bool(a),
+            "analysis_excerpt": excerpt(a.get("analysis", "")) if a else "",
+            "analyzed_at": a.get("analyzed_at") if a else None,
+            "topic": c.get("topic"),
+            "style": c.get("style"),
+            "tags": c.get("tags") or [],
+        })
+
+    items = sorted(items, key=lambda i: i["play_count"], reverse=True)
+    analyzed_count = sum(1 for i in items if i["analyzed"])
+    best = items[0] if items else None
+    avg_er = round(total_likes / total_plays * 100, 2) if total_plays else 0
+    latest_analyzed_at = max([i["analyzed_at"] for i in items if i["analyzed_at"]] or [None])
+    sorted_tags = sorted(top_tags.items(), key=lambda kv: kv[1], reverse=True)[:8]
+
+    summary = "분석된 릴스가 아직 없습니다."
+    if best and analyzed_count:
+        summary = f"가장 강한 릴스는 {best['play_count']:,} 조회의 {best['shortcode']}이며, 평균 ER은 {avg_er}%입니다."
+
+    return {
+        "username": username,
+        "stats": {
+            "total_reels": len(items),
+            "analyzed_count": analyzed_count,
+            "total_plays": total_plays,
+            "total_likes": total_likes,
+            "avg_er": avg_er,
+            "best_shortcode": best["shortcode"] if best else None,
+        },
+        "items": items[:limit],
+        "insights": {
+            "top_reel": best,
+            "top_tags": [{"tag": tag, "count": count} for tag, count in sorted_tags],
+            "latest_analyzed_at": latest_analyzed_at,
+            "summary": summary,
+        },
+    }
+
+
+@app.get("/api/_debug/auth")
+def debug_auth(request: Request):
+    """API key 디버그용 — env + verify 결과 노출."""
+    import hashlib
+    _r = supabase.get_session()
+    api_key = request.headers.get("X-API-Key") or request.headers.get("x-api-key")
+    info = {
+        "has_supabase_url": bool((os.getenv("SUPABASE_URL") or "").strip()),
+        "has_service_key": bool(os.getenv("SUPABASE_SERVICE_ROLE_KEY")),
+        "service_key_prefix": (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "")[:20],
+        "has_anon_key": bool(os.getenv("SUPABASE_ANON_KEY")),
+        "api_key_received": api_key[:11] + "..." if api_key else None,
+    }
+    if api_key:
+        h = hashlib.sha256(api_key.encode()).hexdigest()
+        info["expected_hash"] = h
+        SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+        SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+        try:
+            r = _r.get(
+                f"{SUPA}/rest/v1/api_keys?key_hash=eq.{h}&select=*",
+                headers={"apikey": SK, "Authorization": f"Bearer {SK}"},
+                timeout=10,
+            )
+            info["lookup_status"] = r.status_code
+            info["lookup_body"] = r.text[:500]
+        except Exception as e:
+            info["lookup_error"] = str(e)
+    return info
+
+
+@app.get("/api/_debug/fs")
+def debug_fs():
+    import os
+    here = Path(__file__).parent
+    root = here.parent
+    return {
+        "cwd": os.getcwd(),
+        "__file__": str(Path(__file__)),
+        "api_dir_contents": sorted(p.name for p in here.iterdir()) if here.is_dir() else None,
+        "root_dir_contents": sorted(p.name for p in root.iterdir()) if root.is_dir() else None,
+        "api_public_exists": (here / "public").is_dir(),
+        "root_public_exists": (root / "public").is_dir(),
+        "api_public_files": sorted(p.name for p in (here / "public").iterdir()) if (here / "public").is_dir() else None,
+    }
+
+
+# ── Serve built frontend (must be last: catches all non-API routes) ──
+_PUBLIC_DIR = Path(__file__).parent.parent / "web" / "dist"
+
+
+@app.get("/{full_path:path}")
+def spa_fallback(full_path: str):
+    """정적 자원이 있으면 그걸, 없으면 SPA index.html (React Router 호환)."""
+    from fastapi.responses import FileResponse
+    if not _PUBLIC_DIR.is_dir():
+        raise HTTPException(503, "frontend not deployed")
+    # 정적 파일 (assets/app.js, favicon.svg 등)
+    if full_path:
+        file = _PUBLIC_DIR / full_path
+        if file.is_file() and _PUBLIC_DIR in file.resolve().parents:
+            return FileResponse(str(file))
+    # SPA fallback — React Router가 client-side routing
+    index = _PUBLIC_DIR / "index.html"
+    if index.is_file():
+        return FileResponse(str(index), media_type="text/html")
+    raise HTTPException(404, "Not found")

@@ -1,0 +1,108 @@
+{
+  "emotion_timeline": [
+    {
+      "start": "0.0",
+      "end": "1.5",
+      "emotion": "curious",
+      "intensity": 0.6,
+      "source": "speech",
+      "reason": "친근하게 질문하는 어조로 사용자의 현재 로밍 습관에 대한 호기심을 표현함"
+    },
+    {
+      "start": "1.5",
+      "end": "2.9",
+      "emotion": "sad",
+      "intensity": 0.5,
+      "source": "speech",
+      "reason": "불편하게 물리 유심을 찾는 상황에 대해 안타까움을 섞어 묻는 톤"
+    },
+    {
+      "start": "2.9",
+      "end": "4.1",
+      "emotion": "confident",
+      "intensity": 0.8,
+      "source": "speech",
+      "reason": "자신은 편리한 이심만을 사용하고 있다는 점을 자신감 있게 강조함"
+    },
+    {
+      "start": "4.1",
+      "end": "6.6",
+      "emotion": "happy",
+      "intensity": 0.7,
+      "source": "speech",
+      "reason": "직접 경험한 좋은 꿀팁을 친절하고 기분 좋게 공유하려는 태도"
+    },
+    {
+      "start": "6.6",
+      "end": "9.8",
+      "emotion": "confident",
+      "intensity": 0.6,
+      "source": "speech",
+      "reason": "앱 설치 경로와 방법을 흔들림 없이 명확하게 안내함"
+    },
+    {
+      "start": "9.8",
+      "end": "12.5",
+      "emotion": "excited",
+      "intensity": 0.7,
+      "source": "speech",
+      "reason": "3분이라는 짧은 시간 안에 개통된다는 장점을 경쾌하게 어필함"
+    },
+    {
+      "start": "12.5",
+      "end": "15.2",
+      "emotion": "excited",
+      "intensity": 0.8,
+      "source": "speech",
+      "reason": "웰컴 할인 쿠폰 혜택을 신나는 목소리로 설명하여 기대감을 고조시킴"
+    },
+    {
+      "start": "15.2",
+      "end": "16.9",
+      "emotion": "happy",
+      "intensity": 0.7,
+      "source": "speech",
+      "reason": "다중 구매 시 제공되는 추가 할인을 밝고 긍정적인 톤으로 덧붙임"
+    },
+    {
+      "start": "16.9",
+      "end": "19.4",
+      "emotion": "excited",
+      "intensity": 0.9,
+      "source": "speech",
+      "reason": "친구 초대 시 제공되는 5,000원 지원금을 매우 흥분된 목소리로 강력하게 강조함"
+    },
+    {
+      "start": "19.4",
+      "end": "21.4",
+      "emotion": "proud",
+      "intensity": 0.8,
+      "source": "speech",
+      "reason": "자신의 선택으로 비용 부담을 줄인 것에 대해 크게 만족하며 자랑스러워함"
+    },
+    {
+      "start": "21.4",
+      "end": "22.5",
+      "emotion": "curious",
+      "intensity": 0.7,
+      "source": "speech",
+      "reason": "청자에게 '여행 전 로밍 준비?'라고 질문하며 다시 한번 주의를 환기시킴"
+    },
+    {
+      "start": "22.5",
+      "end": "23.9",
+      "emotion": "confident",
+      "intensity": 0.9,
+      "source": "speech",
+      "reason": "다른 대안 없이 '플릿 이심 하나면 끝'이라는 강한 확신을 전달함"
+    },
+    {
+      "start": "23.9",
+      "end": "25.4",
+      "emotion": "excited",
+      "intensity": 0.8,
+      "source": "speech",
+      "reason": "앱 다운로드를 유도하며 전체 영상을 활기차고 에너지 넘치게 마무리함"
+    }
+  ]
+}

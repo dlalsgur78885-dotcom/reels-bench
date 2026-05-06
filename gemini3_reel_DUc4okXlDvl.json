@@ -1,0 +1,98 @@
+{
+  "model": "gemini-3-pro-preview",
+  "shortcode": "DUc4okXlDvl",
+  "video_file": "_DUc4okXlDvl.mp4",
+  "elapsed_sec": 35.25997996330261,
+  "usage": {
+    "promptTokenCount": 2914,
+    "candidatesTokenCount": 923,
+    "totalTokenCount": 6805,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 427
+      },
+      {
+        "modality": "VIDEO",
+        "tokenCount": 2487
+      }
+    ],
+    "thoughtsTokenCount": 2968
+  },
+  "analysis": {
+    "duration_sec": 28,
+    "sound_effects": [],
+    "bgm": [
+      {
+        "start": "00:00",
+        "end": "00:28",
+        "mood": "upbeat, energetic",
+        "genre": "electronic/pop",
+        "tempo": "fast",
+        "identified": "unknown"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "00:00",
+        "end": "00:03",
+        "emotion": "angry",
+        "intensity": 0.8,
+        "source": "both",
+        "reason": "뒷자리 승객이 앞좌석에 발을 올리는 민폐 상황을 시각적으로 보여주고 문제 상황을 제시함"
+      },
+      {
+        "start": "00:03",
+        "end": "00:28",
+        "emotion": "excited",
+        "intensity": 0.7,
+        "source": "speech",
+        "reason": "문제를 해결할 수 있는 KTX 앱의 숨겨진 유용한 꿀팁들을 빠르고 경쾌하게 설명함"
+      }
+    ],
+    "hook": {
+      "time": "00:00",
+      "technique": "비주얼 및 공감대 자극",
+      "why": "대중교통을 이용하며 누구나 한 번쯤 겪거나 상상해 본 최악의 민폐 상황(발 올리기)을 시각적 이미지로 보여주어 즉각적인 분노와 공감을 이끌어내고, 이후 등장할 해결책에 집중하게 만듦"
+    },
+    "narration": {
+      "language": "Korean",
+      "tone": "informative, confident, energetic",
+      "pace": "fast"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:03",
+        "description": "발을 올린 승객 이미지에서 KTX 열차 내부 통로 뷰로 전환"
+      },
+      {
+        "time": "00:05",
+        "description": "코레일톡 앱의 '좌석변경' 메뉴와 버튼을 강조하는 화면으로 전환"
+      },
+      {
+        "time": "00:09",
+        "description": "햇살이 들어오는 쾌적한 빈 KTX 일반석 좌석 모습으로 짧게 전환"
+      },
+      {
+        "time": "00:10",
+        "description": "코레일톡 앱 예약 화면에서 일반석을 '대피도우미'로 변경하는 UI 화면으로 전환"
+      },
+      {
+        "time": "00:19",
+        "description": "스마트폰에서 코레일톡 앱의 'VR 미리보기' 기능을 조작하여 객실 내부를 살피는 화면으로 전환"
+      },
+      {
+        "time": "00:25",
+        "description": "승강장으로 빠르게 진입하는 KTX 열차의 외부 모습으로 전환되며 마무리"
+      }
+    ],
+    "audio_visual_sync_score": 0.95,
+    "sync_analysis": "내레이션에서 언급되는 특정 앱 기능(좌석변경, 대피도우미, VR 미리보기)에 맞춰 화면이 해당 UI나 상황으로 오차 없이 전환되어 시청자의 이해도를 극대화함",
+    "viral_factors": [
+      "시청자의 공감과 짜증을 유발하는 강력한 오프닝 훅",
+      "대다수가 모르는 코레일톡 앱의 실질적인 혜택과 유용한 꿀팁(마일리지 적립, 자리 이동 등) 제공",
+      "숏폼 트렌드에 맞는 매우 빠른 말빠르기와 지루함 없는 화면 전환",
+      "영상을 '저장'하도록 유도하는 명확한 클로징 멘트(CTA)"
+    ]
+  }
+}

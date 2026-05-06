@@ -1,0 +1,127 @@
+{
+  "model": "gemini-3-pro-preview",
+  "shortcode": "DXWeet6D7dV",
+  "video_file": "_DXWeet6D7dV.mp4",
+  "elapsed_sec": 31.73504137992859,
+  "usage": {
+    "promptTokenCount": 2643,
+    "candidatesTokenCount": 1050,
+    "totalTokenCount": 5814,
+    "promptTokensDetails": [
+      {
+        "modality": "VIDEO",
+        "tokenCount": 2216
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 427
+      }
+    ],
+    "thoughtsTokenCount": 2121
+  },
+  "analysis": {
+    "duration_sec": 25,
+    "sound_effects": [
+      {
+        "time": "00:00",
+        "type": "swoosh",
+        "description": "첫 텍스트 등장 시 시선 집중을 위한 효과"
+      },
+      {
+        "time": "00:11",
+        "type": "폭발음/유리 깨지는 소리",
+        "description": "'최초 특가 미쳤고요'라는 텍스트의 파격성을 코믹하게 강조"
+      },
+      {
+        "time": "00:24",
+        "type": "알림음(벨)",
+        "description": "영상 마지막에 '정보 받으세요'라는 행동 유도(CTA)를 강조"
+      }
+    ],
+    "bgm": [
+      {
+        "start": "00:00",
+        "end": "00:25",
+        "mood": "신나고 경쾌함",
+        "genre": "팝/락",
+        "tempo": "빠름",
+        "identified": "알 수 없음"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "00:00",
+        "end": "00:03",
+        "emotion": "surprised",
+        "intensity": 0.8,
+        "source": "text",
+        "reason": "도발적인 질문형 텍스트로 시청자의 호기심 자극"
+      },
+      {
+        "start": "00:03",
+        "end": "00:25",
+        "emotion": "excited",
+        "intensity": 0.9,
+        "source": "both",
+        "reason": "밝고 빠른 음악과 다채로운 여행지 풍경, 즐거워하는 가족의 모습"
+      }
+    ],
+    "hook": {
+      "time": "00:00",
+      "technique": "질문",
+      "why": "'국내 항공사들 진짜 어떡하죠...?'라는 도발적인 질문을 던져 어떤 파격적인 정보가 있는지 끝까지 보게 만듦"
+    },
+    "narration": {
+      "language": "한국어 (텍스트)",
+      "tone": "흥미유발, 경쾌함",
+      "pace": "빠름"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:00",
+        "description": "공항 체크인 카운터 앞"
+      },
+      {
+        "time": "00:03",
+        "description": "섬에어 항공기 탑승 장면"
+      },
+      {
+        "time": "00:06",
+        "description": "케이블카 및 해양 전경"
+      },
+      {
+        "time": "00:07",
+        "description": "아쿠아리움 내부"
+      },
+      {
+        "time": "00:10",
+        "description": "식당에서 맛있게 밥 먹는 아이"
+      },
+      {
+        "time": "00:12",
+        "description": "기내에서 책을 보는 아이"
+      },
+      {
+        "time": "00:18",
+        "description": "노을 지는 바닷가 방파제 위 점프"
+      },
+      {
+        "time": "00:22",
+        "description": "카스테라 빵을 양손에 들고 신난 아빠"
+      },
+      {
+        "time": "00:24",
+        "description": "항공권을 들고 미소 짓는 아이"
+      }
+    ],
+    "audio_visual_sync_score": 0.85,
+    "sync_analysis": "빠른 템포의 BGM 비트에 맞춰 1~2초 간격으로 다채로운 여행지 화면이 빠르게 전환되며 역동성을 살렸고, 주요 텍스트 등장 시 효과음을 매치하여 시청각적 주목도를 높임",
+    "viral_factors": [
+      "귀여운 아이의 리액션",
+      "실용적인 국내 여행/특가 정보 제공",
+      "호기심을 유발하는 강렬한 첫 문구",
+      "아름답고 다채로운 남해안 관광지 영상미",
+      "지루할 틈 없는 빠른 화면 전환"
+    ]
+  }
+}

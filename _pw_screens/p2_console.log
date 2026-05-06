@@ -1,0 +1,4 @@
+[verbose] [DOM] Input elements should have autocomplete attributes (suggested: "current-password"): (More info: https://goo.gl/9p2vKq) %o
+[log] [script/gen] personas count: 2 settled: 2
+[log] [script/gen] persona 1 OK, key="[참고 대본] 검증된 베스트셀러 / 사회적 승인 #1"
+[log] [script/gen] persona 2 OK, key="[참고 대본] 인생템 정착 / 편안함의 극치 #2"

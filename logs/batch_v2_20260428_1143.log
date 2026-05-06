@@ -1,0 +1,297 @@
+Gemini call error: 'candidates'
+Pro audio call error: Expecting value: line 1 column 1 (char 0)
+Gemini call error: 'candidates'
+Gemini call error: 'content'
+Gemini call error: 'content'
+Gemini call error: 'content'
+Traceback (most recent call last):
+  File "C:\Users\PC\Desktop\클코\인스타 채널 정리\api\services\pipeline.py", line 172, in run
+    _download_video(video_url, video_path)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\PC\Desktop\클코\인스타 채널 정리\api\services\pipeline.py", line 81, in _download_video
+    r.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\PC\AppData\Roaming\Python\Python314\site-packages\requests\models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: https://scontent-iad6-1.cdninstagram.com/o1/v/t2/f2/m86/AQOPGC-SDXl2KN20BnoCBAuhbSBu-Mvz_doyreZrbAJksFk3Kc-jsTCP8wdDK_YsBcgHTZgJPAa93Z9rd9yQgvhiaKZ5HHQ0ZUKaCRk.mp4?_nc_cat=107&_nc_sid=5e9851&_nc_ht=scontent-iad6-1.cdninstagram.com&_nc_ohc=KQCzwBngcMAQ7kNvwHCdT_m&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5JTlNUQUdSQU0uQ0xJUFMuQzMuNzIwLmRhc2hfYmFzZWxpbmVfMV92MSIsInhwdl9hc3NldF9pZCI6MTE3Njg5NTAwNDE2MzA4OSwiYXNzZXRfYWdlX2RheXMiOjExNiwidmlfdXNlY2FzZV9pZCI6MTAwOTksImR1cmF0aW9uX3MiOjE1LCJ1cmxnZW5fc291cmNlIjoid3d3In0%3D&ccb=17-1&vs=81708939fd724d1b&_nc_vs=HBksFQIYUmlnX3hwdl9yZWVsc19wZXJtYW5lbnRfc3JfcHJvZC8yNjQ4QjYxRkY4MzY3OTJCNzJDQkRGN0U3NzY0MEU5OV92aWRlb19kYXNoaW5pdC5tcDQVAALIARIAFQIYR2lnX3hwdl9yZWVsc19wZXJtYW5lbnRfc3JfcHJvZC8xMzU3OTAyNjIyMjA4MzI2XzY4MjUzODA5ODg4MDI2Njc2NDkubXA0FQICyAESACgAGAAbAogHdXNlX29pbAExEnByb2dyZXNzaXZlX3JlY2lwZQExFQAAJqLwyYqnmJcEFQIoAkMzLBdALrtkWhysCBgSZGFzaF9iYXNlbGluZV8xX3YxEQB1_gdl5p0BAA&_nc_gid=MHO5xRvJqa7HibOiRLz6EQ&_nc_ss=7a22e&_nc_zt=28&oh=00_Af0cOWD7uTk7qmCwhW4PS6ZJHh3GxfcnfUB0FigIHhUL5w&oe=69F22968
+Script structure parse error: Unterminated string starting at: line 30 column 13 (char 1337)
+[auto_analyze] 미분석 reels 조회 (limit=69)...
+  대상: 69개
+    DXbM_z4jWSR
+    DXjBYUDnKef
+    DQ1QDVZEgcI
+    DWrBFp3E2Go
+    DVCwkbpEj-1
+    DUIa90lEj5a
+    DTSOQWdjziQ
+    DXY6rq2EcQi
+    DVDI9xTkZrQ
+    DXEfn7jERiU
+    DV5ONB-keWc
+    DVBHwjhAe05
+    DWldxtjj2jN
+    DQgYOEPAd_8
+    DTSpJDrgX6U
+    DW2uCfCkV7c
+    DXMXz41k66W
+    DTSMWNDkYql
+    DW5uZS3iV7u
+    DXefQPsEd1d
+    DXjWqU_k4tt
+    DWBhuACEjv6
+    DWUH9KXCCsC
+    DVPyU4kCdPM
+    DTwVj6ngeFw
+    DVlOz_6E4Sr
+    DXTBB9IkUVF
+    DVqcIpjk4J2
+    DUXDOT0kqIJ
+    DVQaODnARSA
+    DW8RMZOidf9
+    DVIi5y4k4xn
+    DUKwI68kTE1
+    DU2MSWEj2Lt
+    DTsefs0kYSk
+    DT5SW9ykl39
+    DQjDU_YkvCO
+    DSXMOo0D_Gw
+    DQcL1DvkmT-
+    DRelHqsE4dm
+    DS7avFykfD2
+    DQ6sR4Vk2Q8
+    DXjRpLOj1U2
+    DT-Ytv2k1eP
+    DXl-LGXTw0g
+    DXgc2LFj36V
+    DU-3T4JEkk5
+    DUSnoBxk3_a
+    DS9me19Ezd2
+    DTSioApEuQd
+    DRhSQjfEjRi
+    DUx1kcvEzW2
+    DRHEB7cE-XG
+    DRvlSpKD-4U
+    DRy8NHMEql9
+    DWbIq6thRVG
+    DUFmZZ-Cey9
+    DRFAnIrDyq3
+    DRMULXwAetY
+    DUCvkwRid-O
+    DVseA9bEf_l
+    DQ0Px7tktUS
+    DSeESV4E0bL
+    DT9f-LUDmRF
+    DQjN85cEfdi
+    DTXFHZPj74U
+    DUS5KQikrIy
+    DXl6uQmAXis
+    DQl2gFwkh-t
+
+[1/69] DXbM_z4jWSR
+  [OK] analyzed in 103s
+
+[2/69] DXjBYUDnKef
+  [OK] analyzed in 83s
+
+[3/69] DQ1QDVZEgcI
+  [OK] analyzed in 74s
+
+[4/69] DWrBFp3E2Go
+  [OK] analyzed in 110s
+
+[5/69] DVCwkbpEj-1
+  [OK] analyzed in 86s
+
+[6/69] DUIa90lEj5a
+  [OK] analyzed in 91s
+
+[7/69] DTSOQWdjziQ
+  [OK] analyzed in 89s
+
+[8/69] DXY6rq2EcQi
+  [OK] analyzed in 86s
+
+[9/69] DVDI9xTkZrQ
+  [OK] analyzed in 85s
+
+[10/69] DXEfn7jERiU
+  [OK] analyzed in 148s
+
+[11/69] DV5ONB-keWc
+  [OK] analyzed in 95s
+
+[12/69] DVBHwjhAe05
+  [OK] analyzed in 91s
+
+[13/69] DWldxtjj2jN
+  [OK] analyzed in 97s
+
+[14/69] DQgYOEPAd_8
+  [OK] analyzed in 158s
+
+[15/69] DTSpJDrgX6U
+  [OK] analyzed in 87s
+
+[16/69] DW2uCfCkV7c
+  [OK] analyzed in 97s
+
+[17/69] DXMXz41k66W
+  [OK] analyzed in 99s
+
+[18/69] DTSMWNDkYql
+  [OK] analyzed in 101s
+
+[19/69] DW5uZS3iV7u
+  [OK] analyzed in 116s
+
+[20/69] DXefQPsEd1d
+  [OK] analyzed in 101s
+
+[21/69] DXjWqU_k4tt
+  [OK] analyzed in 94s
+
+[22/69] DWBhuACEjv6
+  [OK] analyzed in 90s
+
+[23/69] DWUH9KXCCsC
+  [OK] analyzed in 115s
+
+[24/69] DVPyU4kCdPM
+  [OK] analyzed in 107s
+
+[25/69] DTwVj6ngeFw
+  [OK] analyzed in 84s
+
+[26/69] DVlOz_6E4Sr
+  [OK] analyzed in 90s
+
+[27/69] DXTBB9IkUVF
+  [OK] analyzed in 108s
+
+[28/69] DVqcIpjk4J2
+  [OK] analyzed in 104s
+
+[29/69] DUXDOT0kqIJ
+  [OK] analyzed in 104s
+
+[30/69] DVQaODnARSA
+  [OK] analyzed in 144s
+
+[31/69] DW8RMZOidf9
+  [OK] analyzed in 86s
+
+[32/69] DVIi5y4k4xn
+  [OK] analyzed in 95s
+
+[33/69] DUKwI68kTE1
+  [OK] analyzed in 79s
+
+[34/69] DU2MSWEj2Lt
+  [OK] analyzed in 94s
+
+[35/69] DTsefs0kYSk
+  [OK] analyzed in 103s
+
+[36/69] DT5SW9ykl39
+  [OK] analyzed in 73s
+
+[37/69] DQjDU_YkvCO
+  [OK] analyzed in 78s
+
+[38/69] DSXMOo0D_Gw
+  [OK] analyzed in 131s
+
+[39/69] DQcL1DvkmT-
+  [OK] analyzed in 82s
+
+[40/69] DRelHqsE4dm
+  [OK] analyzed in 131s
+
+[41/69] DS7avFykfD2
+  [OK] analyzed in 72s
+
+[42/69] DQ6sR4Vk2Q8
+  [OK] analyzed in 108s
+
+[43/69] DXjRpLOj1U2
+  [OK] analyzed in 92s
+
+[44/69] DT-Ytv2k1eP
+  [OK] analyzed in 124s
+
+[45/69] DXl-LGXTw0g
+  [OK] analyzed in 81s
+
+[46/69] DXgc2LFj36V
+  [OK] analyzed in 101s
+
+[47/69] DU-3T4JEkk5
+  [OK] analyzed in 97s
+
+[48/69] DUSnoBxk3_a
+  [OK] analyzed in 99s
+
+[49/69] DS9me19Ezd2
+  [WARN] status=error msg=500 Server Error: Internal Server Error for url: https://scontent-iad6-1.cdninstagram.com/o1/v/t2/f2/m86/AQOPGC-SDXl2KN20BnoCBAuhbSBu-Mvz_doyreZrbAJksFk3Kc-jsTCP8wdDK_YsBcgHTZgJPAa93Z9rd9yQgvhiaKZ5HHQ0ZUKaCRk.mp4?_nc_cat=107&_nc_sid=5e9851&_nc_ht=scontent-iad6-1.cdninstagram.com&_nc_ohc=KQCzwBngcMAQ7kNvwHCdT_m&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5JTlNUQUdSQU0uQ0xJUFMuQzMuNzIwLmRhc2hfYmFzZWxpbmVfMV92MSIsInhwdl9hc3NldF9pZCI6MTE3Njg5NTAwNDE2MzA4OSwiYXNzZXRfYWdlX2RheXMiOjExNiwidmlfdXNlY2FzZV9pZCI6MTAwOTksImR1cmF0aW9uX3MiOjE1LCJ1cmxnZW5fc291cmNlIjoid3d3In0%3D&ccb=17-1&vs=81708939fd724d1b&_nc_vs=HBksFQIYUmlnX3hwdl9yZWVsc19wZXJtYW5lbnRfc3JfcHJvZC8yNjQ4QjYxRkY4MzY3OTJCNzJDQkRGN0U3NzY0MEU5OV92aWRlb19kYXNoaW5pdC5tcDQVAALIARIAFQIYR2lnX3hwdl9yZWVsc19wZXJtYW5lbnRfc3JfcHJvZC8xMzU3OTAyNjIyMjA4MzI2XzY4MjUzODA5ODg4MDI2Njc2NDkubXA0FQICyAESACgAGAAbAogHdXNlX29pbAExEnByb2dyZXNzaXZlX3JlY2lwZQExFQAAJqLwyYqnmJcEFQIoAkMzLBdALrtkWhysCBgSZGFzaF9iYXNlbGluZV8xX3YxEQB1_gdl5p0BAA&_nc_gid=MHO5xRvJqa7HibOiRLz6EQ&_nc_ss=7a22e&_nc_zt=28&oh=00_Af0cOWD7uTk7qmCwhW4PS6ZJHh3GxfcnfUB0FigIHhUL5w&oe=69F22968
+
+[50/69] DTSioApEuQd
+  [OK] analyzed in 111s
+
+[51/69] DRhSQjfEjRi
+  [OK] analyzed in 130s
+
+[52/69] DUx1kcvEzW2
+  [OK] analyzed in 104s
+
+[53/69] DRHEB7cE-XG
+  [OK] analyzed in 78s
+
+[54/69] DRvlSpKD-4U
+  [OK] analyzed in 80s
+
+[55/69] DRy8NHMEql9
+  [OK] analyzed in 141s
+
+[56/69] DWbIq6thRVG
+  [OK] analyzed in 110s
+
+[57/69] DUFmZZ-Cey9
+  [OK] analyzed in 100s
+
+[58/69] DRFAnIrDyq3
+  [OK] analyzed in 77s
+
+[59/69] DRMULXwAetY
+  [OK] analyzed in 123s
+
+[60/69] DUCvkwRid-O
+  [OK] analyzed in 105s
+
+[61/69] DVseA9bEf_l
+  [OK] analyzed in 114s
+
+[62/69] DQ0Px7tktUS
+  [OK] analyzed in 101s
+
+[63/69] DSeESV4E0bL
+  [OK] analyzed in 81s
+
+[64/69] DT9f-LUDmRF
+  [OK] analyzed in 101s
+
+[65/69] DQjN85cEfdi
+  [OK] analyzed in 93s
+
+[66/69] DTXFHZPj74U
+  [OK] analyzed in 117s
+
+[67/69] DUS5KQikrIy
+  [OK] analyzed in 66s
+
+[68/69] DXl6uQmAXis
+  [OK] analyzed in 106s
+
+[69/69] DQl2gFwkh-t
+  [OK] analyzed in 109s
+
+[result] {'analyzed': 68, 'metadata_only': 0, 'failed': 1}

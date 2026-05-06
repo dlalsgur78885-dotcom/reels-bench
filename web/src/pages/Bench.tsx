@@ -9,6 +9,15 @@ import BenchFilterControls from '../components/BenchFilterControls'
 import { useMe } from '../auth'
 
 const PAGE_SIZE = 50
+const prefetchedDetails = new Set<string>()
+const prefetchTimers = new Map<string, number>()
+let benchDetailChunkPrefetched = false
+
+function prefetchBenchDetailChunk() {
+  if (benchDetailChunkPrefetched) return
+  benchDetailChunkPrefetched = true
+  import('./BenchDetail').catch(() => {})
+}
 
 export default function Bench() {
   const [items, setItems] = useState<BenchItem[]>([])
@@ -41,6 +50,11 @@ export default function Bench() {
     setCurrentPage(1)
     load(1, params)
   }, [params, load])
+
+  useEffect(() => {
+    const timer = window.setTimeout(prefetchBenchDetailChunk, 500)
+    return () => window.clearTimeout(timer)
+  }, [])
 
   const goPage = (p: number) => {
     if (p < 1 || p > totalPages || p === currentPage) return
@@ -82,6 +96,30 @@ export default function Bench() {
     if (selectMode) toggleSelect(r.shortcode)
     else navigate(`/bench/${r.shortcode}`)
   }
+  const setParamsIfChanged = useCallback((next: BenchFilters) => {
+    setParams(prev => JSON.stringify(prev) === JSON.stringify(next) ? prev : next)
+  }, [])
+  const prefetchDetail = (sc: string) => {
+    if (selectMode || !sc) return
+    prefetchBenchDetailChunk()
+    if (prefetchedDetails.has(sc)) return
+    prefetchedDetails.add(sc)
+    api.detail(sc).catch(() => {})
+  }
+  const schedulePrefetchDetail = (sc: string) => {
+    if (selectMode || !sc || prefetchedDetails.has(sc) || prefetchTimers.has(sc)) return
+    const timer = window.setTimeout(() => {
+      prefetchTimers.delete(sc)
+      prefetchDetail(sc)
+    }, 220)
+    prefetchTimers.set(sc, timer)
+  }
+  const cancelPrefetchDetail = (sc: string) => {
+    const timer = prefetchTimers.get(sc)
+    if (!timer) return
+    window.clearTimeout(timer)
+    prefetchTimers.delete(sc)
+  }
 
   const bulkDelete = async () => {
     if (selected.size === 0 || deleting) return
@@ -116,7 +154,7 @@ export default function Bench() {
         <p>{stats ? subtitleParts.join(' · ') : '불러오는 중…'}</p>
       </div>
 
-      <BenchFilterControls onChange={setParams} />
+      <BenchFilterControls onChange={setParamsIfChanged} />
 
       {canDelete && (
         <div style={{
@@ -175,6 +213,9 @@ export default function Bench() {
               type="button"
               className="reel-card"
               onClick={() => onCardClick(r)}
+              onMouseEnter={() => schedulePrefetchDetail(r.shortcode)}
+              onMouseLeave={() => cancelPrefetchDetail(r.shortcode)}
+              onFocus={() => prefetchDetail(r.shortcode)}
               aria-label={selectMode
                 ? `@${r.author || '알 수 없음'} ${checked ? '선택 해제' : '선택'}`
                 : `@${r.author || '알 수 없음'} 릴스 분석 보기`}
@@ -214,13 +255,39 @@ export default function Bench() {
                   <span className="stat-pill">&#9829; {fmtNum(r.like_count)}</span>
                   {er > 0 && <span className="stat-pill">{er}%</span>}
                 </div>
-                {(r.usp_count || r.body_structure || r.hook_type) && (
-                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
-                    {r.usp_count && <span className="tag-pill tag-pill--small">USP {r.usp_count}</span>}
-                    {r.body_structure && <span className="tag-pill tag-pill--small">{r.body_structure}</span>}
-                    {r.hook_type && <span className="tag-pill tag-pill--small">{r.hook_type}</span>}
-                  </div>
-                )}
+                {((r as any).topic || (r as any).ad_format) && (() => {
+                  const fc: Record<string, string> = {
+                    '광고형': '#10b981', '후기형': '#3b82f6', '정보형': '#a855f7',
+                    '브랜딩형': '#ec4899', '유머형': '#f59e0b', '일상형': '#ef4444',
+                  }
+                  const tc: Record<string, string> = {
+                    '패션': '#3b82f6', '여행/숙박': '#0ea5e9', '뷰티': '#ec4899',
+                    '푸드': '#f97316', '사업/창업': '#a855f7', '교육/자기계발': '#eab308',
+                    '직장/커리어': '#64748b', '반려동물': '#10b981', '부동산': '#92400e',
+                  }
+                  const fmt = (r as any).ad_format
+                  const fmtColor = fmt ? (fc[fmt] || '#6b7280') : '#9ca3af'
+                  const topic = (r as any).topic
+                  const topicColor = topic ? (tc[topic] || '#6b7280') : '#9ca3af'
+                  return (
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+                      {topic && (
+                        <span className="tag-pill tag-pill--small" style={{ background: topicColor, color: '#fff', borderColor: topicColor }}>
+                          {topic}{(r as any).topic_detail ? `·${(r as any).topic_detail}` : ''}
+                        </span>
+                      )}
+                      {fmt ? (
+                        <span className="tag-pill tag-pill--small" style={{ background: fmtColor, color: '#fff', borderColor: fmtColor }}>
+                          {fmt}{(r as any).ad_suitability_score != null ? ` ${(r as any).ad_suitability_score}` : ''}
+                        </span>
+                      ) : (
+                        <span className="tag-pill tag-pill--small" style={{ background: 'transparent', color: '#9ca3af', borderColor: '#9ca3af', borderStyle: 'dashed' }}>
+                          분석필요
+                        </span>
+                      )}
+                    </div>
+                  )
+                })()}
               </div>
             </button>
           )

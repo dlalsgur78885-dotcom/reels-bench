@@ -1,0 +1,133 @@
+{
+  "shortcode": "TRIPCOMJJ1",
+  "model": "gemini-3-pro-preview",
+  "elapsed_sec": 39.03797936439514,
+  "usage": {},
+  "emotion_timeline": [
+    {
+      "start": "0.0",
+      "end": "4.0",
+      "emotion": "serious",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "소비자의 잘못된 검색 습관을 지적하는 도입부"
+    },
+    {
+      "start": "4.0",
+      "end": "5.1",
+      "emotion": "curious",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "시청자의 주의를 환기하기 위한 질문"
+    },
+    {
+      "start": "5.1",
+      "end": "7.6",
+      "emotion": "frustrated",
+      "intensity": 0.9,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "비싸게 구매했던 과거 경험에 대한 억울함"
+    },
+    {
+      "start": "7.6",
+      "end": "10.4",
+      "emotion": "curious",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "저렴하게 구매한 타인들에 대한 강한 의문"
+    },
+    {
+      "start": "10.4",
+      "end": "11.4",
+      "emotion": "cheerful",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "비법을 전수하겠다는 자신감과 긍정적인 태도"
+    },
+    {
+      "start": "11.4",
+      "end": "15.5",
+      "emotion": "calm",
+      "intensity": 0.6,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "비행기표 검색 시스템에 대한 차분한 정보 전달"
+    },
+    {
+      "start": "15.5",
+      "end": "18.1",
+      "emotion": "mischievously",
+      "intensity": 0.7,
+      "delivery": "whispers",
+      "source": "speech",
+      "reason": "남들이 모르는 꿀팁을 은밀하게 알려주려는 태도"
+    },
+    {
+      "start": "18.1",
+      "end": "20.7",
+      "emotion": "serious",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "일반적인 검색 방식의 한계를 명확히 짚음"
+    },
+    {
+      "start": "20.7",
+      "end": "23.1",
+      "emotion": "excited",
+      "intensity": 0.8,
+      "delivery": "very_fast",
+      "source": "speech",
+      "reason": "해결책인 앱을 소개하며 고조되는 텐션"
+    },
+    {
+      "start": "23.1",
+      "end": "26.1",
+      "emotion": "excited",
+      "intensity": 0.9,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "10만 원이라는 파격적인 최저가를 강조"
+    },
+    {
+      "start": "26.1",
+      "end": "28.7",
+      "emotion": "happy",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "저렴한 일본 왕복 항공권 혜택에 대한 기쁨"
+    },
+    {
+      "start": "28.7",
+      "end": "31.7",
+      "emotion": "nervous",
+      "intensity": 0.7,
+      "delivery": "very_fast",
+      "source": "speech",
+      "reason": "수량 한정으로 인해 서둘러야 한다는 다급함 표현"
+    }
+  ],
+  "audio_events": [
+    {
+      "time": "5.1",
+      "event": "pause",
+      "reason": "질문을 던진 후 청자의 집중을 이끌어내기 위한 짧은 쉼"
+    },
+    {
+      "time": "10.4",
+      "event": "clears_throat",
+      "reason": "해결책을 본격적으로 제시하기 전 환기"
+    },
+    {
+      "time": "20.7",
+      "event": "pause",
+      "reason": "할인 앱을 소개하기 전 극적인 효과를 위한 호흡"
+    }
+  ]
+}

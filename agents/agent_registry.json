@@ -1,0 +1,87 @@
+{
+  "version": "1.2.0",
+  "updated": "2026-04-28",
+  "project": "인스타 릴스 트렌드 분석",
+  "method": "최적화된 계정의 릴스탭 피드 관찰 (검색 X, 릴스탭 추천 영상만 체크)",
+  "pipeline": [
+    "orchestrator",
+    "collector",
+    "transcriber",
+    "analyzer",
+    "reporter",
+    "executor",
+    "designer"
+  ],
+  "agents": {
+    "orchestrator": {
+      "name": "Orchestrator Agent",
+      "role": "릴스탭 피드 관찰 파이프라인을 관리. 어떤 계정으로 릴스탭을 열지, 언제 수집할지 조율하는 중앙 제어 에이전트",
+      "active": true,
+      "downstream": ["collector", "transcriber", "analyzer", "reporter", "executor"]
+    },
+    "collector": {
+      "name": "Collector Agent",
+      "role": "최적화된 계정의 릴스탭을 열어 한 세션당 4~6개 릴스를 시청하고 기록하는 에이전트. 릴스 링크 수집 → API 1회 호출로 메타데이터(조회수/좋아요/댓글수/공유수/오디오) 수집 + 웹 스크래핑으로 댓글 내용 수집",
+      "active": true,
+      "upstream": "orchestrator",
+      "downstream": ["transcriber"]
+    },
+    "transcriber": {
+      "name": "Transcriber Agent",
+      "role": "수집된 릴스 영상에서 대본을 추출하는 에이전트. 비디오 URL → ffmpeg 오디오 추출 → Whisper STT로 음성을 텍스트로 변환",
+      "active": true,
+      "upstream": "collector",
+      "downstream": ["analyzer"],
+      "tools": {
+        "audio_extract": "ffmpeg",
+        "stt": "OpenAI Whisper (로컬)",
+        "stt_fallback": "OpenAI Whisper API"
+      },
+      "process": [
+        "1. collector로부터 비디오 URL 수신",
+        "2. ffmpeg으로 오디오 추출 (mp3/wav)",
+        "3. Whisper로 음성 → 텍스트 변환",
+        "4. 타임스탬프 포함 대본 생성",
+        "5. analyzer에게 대본 데이터 전달"
+      ]
+    },
+    "analyzer": {
+      "name": "Analyzer Agent",
+      "role": "릴스탭에 반복적으로 뜨는 패턴을 분석하는 에이전트. 메타데이터 + 대본을 기반으로 알고리즘 추천 패턴(오디오/포맷/주제/화법) 트렌드를 도출",
+      "active": true,
+      "upstream": "transcriber",
+      "downstream": ["reporter"]
+    },
+    "reporter": {
+      "name": "Reporter Agent",
+      "role": "릴스탭 추천 트렌드 분석 결과를 정리하여 리포트로 생성하는 에이전트. 현재 알고리즘이 밀어주는 콘텐츠 유형을 요약",
+      "active": true,
+      "upstream": "analyzer",
+      "downstream": []
+    },
+    "executor": {
+      "name": "Executor Agent",
+      "role": "분석 결과를 바탕으로 계정 최적화 방향 제안 및 릴스탭 관찰 스케줄링을 수행하는 에이전트",
+      "active": true,
+      "upstream": "orchestrator",
+      "downstream": []
+    },
+    "designer": {
+      "name": "Designer Agent",
+      "role": "3개 LLM 조합 UI/UX 디자인 에이전트. Gemini(시각분석) → GPT-4o(디자인설계) → Sonnet(코드생성) 파이프라인으로 대시보드 디자인 시스템을 생성",
+      "active": true,
+      "upstream": "orchestrator",
+      "downstream": [],
+      "models": {
+        "visual_analysis": "Gemini 2.5 Flash",
+        "design_system": "GPT-5.5",
+        "code_generation": "Claude Sonnet 4.6"
+      },
+      "tools": {
+        "visual": "Gemini Vision API",
+        "design": "OpenAI Chat API",
+        "code": "Anthropic Messages API (폴백: 로컬 변환)"
+      }
+    }
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "shortcode": "DXbvfmpiY2k",
+  "model": "gemini-3-pro-preview",
+  "whisper_segments": 14,
+  "usage": {
+    "promptTokenCount": 2096,
+    "candidatesTokenCount": 2253,
+    "totalTokenCount": 6718,
+    "promptTokensDetails": [
+      {
+        "modality": "AUDIO",
+        "tokenCount": 1090
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 1006
+      }
+    ],
+    "thoughtsTokenCount": 2369
+  },
+  "tts_script": [
+    {
+      "start": 0.0,
+      "end": 3.3,
+      "direction": "당당하게 선언한다",
+      "text": "나는 부모님도 포기한 수련의 미친남자다"
+    },
+    {
+      "start": 3.3,
+      "end": 6.5,
+      "direction": "담담하게 회상한다",
+      "text": "10년 전 중학생 시절 나는 다혈질 사고뭉치였다"
+    },
+    {
+      "start": 6.5,
+      "end": 10.1,
+      "direction": "차분하게 설명한다",
+      "text": "아버지의 권유로 골굴사라는 절에 여름방학 수련회를 참여했었다"
+    },
+    {
+      "start": 10.1,
+      "end": 13.3,
+      "direction": "진지하게 설명한다",
+      "text": "골굴사는 불교무예인 선무도 수련을 하는 사찰이었다"
+    },
+    {
+      "start": 13.3,
+      "end": 16.4,
+      "direction": "열정적으로 말한다",
+      "text": "몸과 마음을 함께 수련할 수 있는 선무도에 매료된 나는"
+    },
+    {
+      "start": 16.4,
+      "end": 18.8,
+      "direction": "단호하게 말한다",
+      "text": "집으로 돌아오자마자 부모님께 말씀드렸다"
+    },
+    {
+      "start": 18.8,
+      "end": 21.7,
+      "direction": "간절하게 부탁한다",
+      "text": "저 선무도 지도자 과정하러 골굴사 가고싶어요"
+    },
+    {
+      "start": 21.7,
+      "end": 24.5,
+      "direction": "억울하게 토로한다",
+      "text": "부모님은 나에게 미쳤냐고 절대 안된다고 하셨다"
+    },
+    {
+      "start": 24.5,
+      "end": 28.0,
+      "direction": "덤덤하게 말한다",
+      "text": "하지만 자식이기는 부모 없다고 결국 고등학교 진학 포기를 하고"
+    },
+    {
+      "start": 28.0,
+      "end": 30.6,
+      "direction": "뿌듯하게 말한다",
+      "text": "17살에 선무도 지도자 과정을 시작하였다"
+    },
+    {
+      "start": 30.6,
+      "end": 33.6,
+      "direction": "진지하게 이어간다",
+      "text": "그렇게 올해로 수련 10년차 선무도 사범으로서"
+    },
+    {
+      "start": 33.6,
+      "end": 37.4,
+      "direction": "따뜻하게 말한다",
+      "text": "사람들에게 몸과 마음과 호흡의 조화를 통한 행복을 나누고 있다"
+    },
+    {
+      "start": 37.4,
+      "end": 40.1,
+      "direction": "당차게 외친다",
+      "text": "이 좋은 수련법을 전세계에 널리 전하고 싶다"
+    },
+    {
+      "start": 40.1,
+      "end": 43.5,
+      "direction": "호기심있게 묻는다",
+      "text": "수련에 미친 이 남자는 선무도 세계화의 꿈을 이룰 수 있을까?"
+    }
+  ]
+}

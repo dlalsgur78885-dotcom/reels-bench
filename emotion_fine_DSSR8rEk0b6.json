@@ -1,0 +1,192 @@
+{
+  "shortcode": "DSSR8rEk0b6",
+  "model": "gemini-3-pro-preview",
+  "elapsed_sec": 38.73513960838318,
+  "usage": {},
+  "emotion_timeline": [
+    {
+      "start": "0.0",
+      "end": "2.9",
+      "emotion": "curious",
+      "intensity": 0.6,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "시청자의 이목을 끌기 위해 호기심을 유발하는 어조"
+    },
+    {
+      "start": "2.9",
+      "end": "5.0",
+      "emotion": "serious",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "중요한 행동을 촉구하기 위한 단호한 말투"
+    },
+    {
+      "start": "5.0",
+      "end": "6.9",
+      "emotion": "cheerful",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "돈을 절약할 수 있다는 긍정적인 기대감"
+    },
+    {
+      "start": "6.9",
+      "end": "9.0",
+      "emotion": "excited",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "인기 있는 정보를 전달하며 텐션이 올라감"
+    },
+    {
+      "start": "9.0",
+      "end": "10.8",
+      "emotion": "serious",
+      "intensity": 0.6,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "현실적인 문제(높은 택시비)를 제기하며 진지해짐"
+    },
+    {
+      "start": "10.8",
+      "end": "14.1",
+      "emotion": "cheerful",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "고생하지 말자는 다정한 해결책 제시"
+    },
+    {
+      "start": "14.1",
+      "end": "15.9",
+      "emotion": "excited",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "쇼핑에 대한 즐거운 기대감 표출"
+    },
+    {
+      "start": "15.9",
+      "end": "18.6",
+      "emotion": "cheerful",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "면세 및 추가 할인 정보를 밝게 설명함"
+    },
+    {
+      "start": "18.6",
+      "end": "21.1",
+      "emotion": "calm",
+      "intensity": 0.6,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "불필요한 고생을 덜어주는 안심시키는 톤"
+    },
+    {
+      "start": "21.1",
+      "end": "24.0",
+      "emotion": "cheerful",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "간편한 방법을 알려주며 경쾌해짐"
+    },
+    {
+      "start": "24.0",
+      "end": "25.9",
+      "emotion": "mischievously",
+      "intensity": 0.8,
+      "delivery": "whispers",
+      "source": "speech",
+      "reason": "나만 알고 싶은 비밀스러운 꿀팁을 조심스레 전달"
+    },
+    {
+      "start": "25.9",
+      "end": "29.6",
+      "emotion": "excited",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "쿠폰이 많다는 사실을 신나게 알림"
+    },
+    {
+      "start": "29.6",
+      "end": "31.3",
+      "emotion": "calm",
+      "intensity": 0.5,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "적용 가능한 카테고리를 차분하게 나열함"
+    },
+    {
+      "start": "31.3",
+      "end": "33.4",
+      "emotion": "excited",
+      "intensity": 0.9,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "최대 50%라는 파격적인 할인을 강조"
+    },
+    {
+      "start": "33.4",
+      "end": "35.4",
+      "emotion": "cheerful",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "저렴하게 예약하자는 활기찬 권유"
+    },
+    {
+      "start": "35.4",
+      "end": "37.4",
+      "emotion": "serious",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "정보를 얻기 위한 필수 조건을 진지하게 설명"
+    },
+    {
+      "start": "37.4",
+      "end": "40.0",
+      "emotion": "cheerful",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "참여를 독려하는 밝은 어조"
+    },
+    {
+      "start": "40.0",
+      "end": "41.3",
+      "emotion": "excited",
+      "intensity": 0.8,
+      "delivery": "very_fast",
+      "source": "speech",
+      "reason": "보상을 즉각적으로 주겠다는 호기로운 약속"
+    }
+  ],
+  "audio_events": [
+    {
+      "time": "5.0",
+      "event": "pause",
+      "reason": "행동 촉구 후 혜택을 말하기 전 기대감을 높이는 휴지"
+    },
+    {
+      "time": "24.0",
+      "event": "pause",
+      "reason": "비밀스러운 꿀팁을 공개하기 전 주의를 집중시키는 휴지"
+    },
+    {
+      "time": "25.9",
+      "event": "gasps",
+      "reason": "비밀을 털어놓은 후 중요한 정보를 이어가기 위해 숨을 가볍게 들이마심"
+    },
+    {
+      "time": "35.4",
+      "event": "pause",
+      "reason": "마지막으로 이벤트 참여를 유도하기 위해 결론을 말하기 전의 휴지"
+    }
+  ]
+}

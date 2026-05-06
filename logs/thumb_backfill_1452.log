@@ -1,0 +1,17 @@
+reels 테이블에서 최근 250개 shortcode 조회...
+대상: 248개
+  진행 20/248  {'uploaded': 20}
+  진행 40/248  {'uploaded': 28, 'already_in_storage': 12}
+  진행 60/248  {'uploaded': 48, 'already_in_storage': 12}
+  진행 80/248  {'uploaded': 68, 'already_in_storage': 12}
+  진행 100/248  {'uploaded': 88, 'already_in_storage': 12}
+  진행 120/248  {'uploaded': 92, 'already_in_storage': 28}
+  진행 140/248  {'uploaded': 92, 'already_in_storage': 48}
+  진행 160/248  {'uploaded': 92, 'already_in_storage': 68}
+  진행 180/248  {'uploaded': 92, 'already_in_storage': 88}
+  진행 200/248  {'uploaded': 92, 'already_in_storage': 108}
+  진행 220/248  {'uploaded': 92, 'already_in_storage': 128}
+  진행 240/248  {'uploaded': 92, 'already_in_storage': 148}
+  진행 248/248  {'uploaded': 92, 'already_in_storage': 156}
+
+결과: {'uploaded': 92, 'already_in_storage': 156}

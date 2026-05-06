@@ -1,0 +1,187 @@
+{
+  "model": "gemini-3-pro-preview",
+  "shortcode": "DXbvfmpiY2k",
+  "video_file": "_DXbvfmpiY2k.mp4",
+  "elapsed_sec": 38.062016248703,
+  "usage": {
+    "promptTokenCount": 4333,
+    "candidatesTokenCount": 1661,
+    "totalTokenCount": 8485,
+    "promptTokensDetails": [
+      {
+        "modality": "VIDEO",
+        "tokenCount": 3906
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 427
+      }
+    ],
+    "thoughtsTokenCount": 2491
+  },
+  "analysis": {
+    "duration_sec": 44,
+    "sound_effects": [
+      {
+        "time": "00:00",
+        "type": "swoosh",
+        "description": "오프닝 텍스트 등장 시 시선 집중 및 역동성 부여"
+      },
+      {
+        "time": "00:01",
+        "type": "swoosh",
+        "description": "장면 전환 시 빠른 속도감 강조"
+      },
+      {
+        "time": "00:03",
+        "type": "swoosh",
+        "description": "과거 사진 등장 강조"
+      },
+      {
+        "time": "00:16",
+        "type": "swoosh",
+        "description": "상황 설명 텍스트 등장 강조"
+      }
+    ],
+    "bgm": [
+      {
+        "start": "00:00",
+        "end": "00:44",
+        "mood": "동기부여, 결연함, 희망참",
+        "genre": "Cinematic Pop / Electronic",
+        "tempo": "빠름",
+        "identified": "unknown"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "00:00",
+        "end": "00:05",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "source": "speech",
+        "reason": "자신의 과거 문제아 시절을 담담하게 서술"
+      },
+      {
+        "start": "00:05",
+        "end": "00:15",
+        "emotion": "excited",
+        "intensity": 0.7,
+        "source": "both",
+        "reason": "선무도를 처음 접하고 매료되는 과정에서의 설렘"
+      },
+      {
+        "start": "00:15",
+        "end": "00:25",
+        "emotion": "determined",
+        "intensity": 0.9,
+        "source": "both",
+        "reason": "부모님의 극심한 반대에도 불구하고 고등학교 진학을 포기하며 자신의 길을 선택하는 굳은 의지"
+      },
+      {
+        "start": "00:25",
+        "end": "00:44",
+        "emotion": "happy",
+        "intensity": 0.8,
+        "source": "both",
+        "reason": "사범으로서 사람들을 가르치고 선무도를 세계에 알리고자 하는 긍정적인 비전과 자부심"
+      }
+    ],
+    "hook": {
+      "time": "00:00",
+      "technique": "충격적인 문구와 시각적 자극",
+      "why": "'부모님도 포기한 수련에 미친남자'라는 자극적이고 궁금증을 유발하는 텍스트와 함께 전통 사찰 앞에서 고난이도 공중 발차기를 하는 모습이 시청자의 스크롤을 즉각적으로 멈추게 함"
+    },
+    "narration": {
+      "language": "한국어",
+      "tone": "차분하고 진정성 있는 회고조",
+      "pace": "보통"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:00",
+        "description": "사찰 앞 공중 발차기"
+      },
+      {
+        "time": "00:01",
+        "description": "숲 속 철봉 턱걸이"
+      },
+      {
+        "time": "00:03",
+        "description": "초등학생 시절 사진"
+      },
+      {
+        "time": "00:04",
+        "description": "중학생 시절 사진"
+      },
+      {
+        "time": "00:06",
+        "description": "골굴사 입구 계단 전경"
+      },
+      {
+        "time": "00:08",
+        "description": "야외 선무도 시범"
+      },
+      {
+        "time": "00:15",
+        "description": "어머니와 빙수를 먹는 일상적인 모습"
+      },
+      {
+        "time": "00:18",
+        "description": "실내 문 앞에서 다짐하는 모습"
+      },
+      {
+        "time": "00:20",
+        "description": "골굴사로 향하는 길"
+      },
+      {
+        "time": "00:21",
+        "description": "파도치는 바다에서 수련하는 거친 모습"
+      },
+      {
+        "time": "00:22",
+        "description": "근육질 상반신 흑백 사진"
+      },
+      {
+        "time": "00:24",
+        "description": "단체 선무도 시범"
+      },
+      {
+        "time": "00:26",
+        "description": "타이어 위에서 다리 찢기 훈련"
+      },
+      {
+        "time": "00:27",
+        "description": "도복을 입고 공중 발차기"
+      },
+      {
+        "time": "00:30",
+        "description": "야간 야외 시범 행사"
+      },
+      {
+        "time": "00:33",
+        "description": "실내에서 수강생들을 지도하는 사범의 모습"
+      },
+      {
+        "time": "00:36",
+        "description": "건물 앞에서 2인 아크로바틱 동작"
+      },
+      {
+        "time": "00:40",
+        "description": "숲 속 철봉 턱걸이 훈련 재등장"
+      },
+      {
+        "time": "00:42",
+        "description": "전통 복장으로 무술 자세 시연"
+      }
+    ],
+    "audio_visual_sync_score": 0.85,
+    "sync_analysis": "나레이션의 스토리텔링 흐름(과거 문제아 -> 선무도 만남 -> 부모님 반대 -> 수련 및 현재)에 맞춰 과거 사진, 바다 수련 영상, 현재 지도 모습 등 적절한 시각 자료가 정확하게 매칭되어 몰입도를 크게 높임.",
+    "viral_factors": [
+      "보통 사람은 하기 힘든 화려한 무술 및 아크로바틱 동작과 신체 능력",
+      "문제아에서 한 무술의 사범으로 성장한 한 편의 영화 같은 극적인 스토리텔링",
+      "'선무도'라는 대중에게 다소 생소하고 신비로운 한국 전통 무술 소재의 매력",
+      "역경(부모님의 반대)을 딛고 꿈을 좇는 열정적인 메시지가 주는 강한 동기부여"
+    ]
+  }
+}

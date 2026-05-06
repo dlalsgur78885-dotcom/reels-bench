@@ -1,0 +1,180 @@
+{
+  "model": "gemini-3-pro-preview",
+  "shortcode": "DSSR8rEk0b6",
+  "video_file": "_DSSR8rEk0b6.mp4",
+  "elapsed_sec": 37.03902268409729,
+  "usage": {
+    "promptTokenCount": 4154,
+    "candidatesTokenCount": 1610,
+    "totalTokenCount": 8116,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 427
+      },
+      {
+        "modality": "VIDEO",
+        "tokenCount": 3727
+      }
+    ],
+    "thoughtsTokenCount": 2352
+  },
+  "analysis": {
+    "duration_sec": 42,
+    "sound_effects": [
+      {
+        "time": "00:03",
+        "type": "swoosh",
+        "description": "텍스트 트랜지션 및 화면 전환 강조"
+      },
+      {
+        "time": "00:05",
+        "type": "chime",
+        "description": "꿀팁을 알려준다는 주의 환기 및 집중 유도"
+      },
+      {
+        "time": "00:11",
+        "type": "pop",
+        "description": "할인코드 목록 이미지 등장 강조"
+      },
+      {
+        "time": "00:16",
+        "type": "swoosh",
+        "description": "빠른 할인 쿠폰 이미지 전환 효과"
+      },
+      {
+        "time": "00:26",
+        "type": "typing",
+        "description": "검색하는 동작의 현실감 부여"
+      },
+      {
+        "time": "00:27",
+        "type": "pop",
+        "description": "검색 결과 및 추가 할인 정보 등장 강조"
+      }
+    ],
+    "bgm": [
+      {
+        "start": "00:00",
+        "end": "00:42",
+        "mood": "energetic, upbeat",
+        "genre": "electronic pop",
+        "tempo": "fast",
+        "identified": "unknown sped-up track"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "00:00",
+        "end": "00:10",
+        "emotion": "excited",
+        "intensity": 0.8,
+        "source": "both",
+        "reason": "빠른 템포의 음악과 다급하고 신나는 목소리로 유용한 정보 제공 예고"
+      },
+      {
+        "start": "00:10",
+        "end": "00:24",
+        "emotion": "neutral",
+        "intensity": 0.6,
+        "source": "speech",
+        "reason": "구체적인 할인 혜택과 방법을 빠르고 정확하게 전달하는데 집중"
+      },
+      {
+        "start": "00:24",
+        "end": "00:35",
+        "emotion": "excited",
+        "intensity": 0.9,
+        "source": "speech",
+        "reason": "'나만 알고 싶은 꿀팁'이라며 강조하며 목소리 톤이 다시 높아지고 기대감 상승"
+      },
+      {
+        "start": "00:35",
+        "end": "00:42",
+        "emotion": "happy",
+        "intensity": 0.8,
+        "source": "both",
+        "reason": "밝은 표정과 긍정적인 톤으로 댓글 이벤트를 유도하며 시청자와 소통 마무리"
+      }
+    ],
+    "hook": {
+      "time": "00:00",
+      "technique": "비주얼(화려한 시부야 교차로) + 텍스트(알고리즘을 언급한 행동 유도)",
+      "why": "시청자에게 이 영상이 우연이 아닌 꼭 필요한 정보라는 느낌을 주어 즉각적인 저장과 시청을 유도함"
+    },
+    "narration": {
+      "language": "Korean",
+      "tone": "친근하고 활기차며, 친구에게 꿀팁을 전수하는 듯한 반말 톤",
+      "pace": "빠름"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:00",
+        "description": "시부야 스크램블 교차로 타임랩스"
+      },
+      {
+        "time": "00:02",
+        "description": "도쿄 거리의 마리오 카트 주행 모습"
+      },
+      {
+        "time": "00:04",
+        "description": "함께 걸어가는 두 여성"
+      },
+      {
+        "time": "00:05",
+        "description": "밤거리 일루미네이션을 가리키는 여성"
+      },
+      {
+        "time": "00:07",
+        "description": "일본 택시 기사 뒷모습과 탑승한 모습"
+      },
+      {
+        "time": "00:11",
+        "description": "우버 프로모션 할인코드 엑셀 표"
+      },
+      {
+        "time": "00:14",
+        "description": "일본 번화가 쇼핑 거리"
+      },
+      {
+        "time": "00:15",
+        "description": "쇼핑 바구니와 바코드 스캔"
+      },
+      {
+        "time": "00:16",
+        "description": "돈키호테 등 각종 드럭스토어 할인 쿠폰 이미지 몽타주"
+      },
+      {
+        "time": "00:21",
+        "description": "일본 쇼핑 할인 쿠폰 웹사이트 화면"
+      },
+      {
+        "time": "00:24",
+        "description": "빈티지 의류 샵 거울 셀카"
+      },
+      {
+        "time": "00:26",
+        "description": "할인 쿠폰 사이트 검색 스마트폰 화면 녹화"
+      },
+      {
+        "time": "00:35",
+        "description": "오사카 도톤보리 전경"
+      },
+      {
+        "time": "00:38",
+        "description": "비행기 창문 밖 하늘 뷰"
+      },
+      {
+        "time": "00:40",
+        "description": "야간 강가를 배경으로 카메라를 향해 웃으며 인사하는 여성"
+      }
+    ],
+    "audio_visual_sync_score": 0.85,
+    "sync_analysis": "빠른 비트의 배경음악과 일치하는 속도감 있는 화면 전환, 그리고 정보가 나타날 때마다 삽입된 효과음이 시각적 요소를 잘 강조해 줌.",
+    "viral_factors": [
+      "실제 여행 경비를 아낄 수 있는 실질적인 정보(우버, 쇼핑, 숙소 등 다양한 할인코드) 압축 제공",
+      "정보가 매우 빠르게 지나가 시청자가 텍스트를 읽기 위해 영상을 반복 재생하거나 멈추게 만들어 체류 시간 증가",
+      "특정 키워드('일본쿠폰')를 댓글로 달면 DM으로 정보를 보내주는 자동화 시스템을 활용하여 높은 댓글 참여도(인게이지먼트) 유도"
+    ]
+  }
+}

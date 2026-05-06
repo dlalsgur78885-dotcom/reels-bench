@@ -1,0 +1,65 @@
+{
+  "shortcode": "DWI9bz5AQo2",
+  "model": "gemini-3-pro-preview",
+  "whisper_segments": 7,
+  "usage": {
+    "promptTokenCount": 1018,
+    "candidatesTokenCount": 460,
+    "totalTokenCount": 2298,
+    "promptTokensDetails": [
+      {
+        "modality": "AUDIO",
+        "tokenCount": 536
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 482
+      }
+    ],
+    "thoughtsTokenCount": 820
+  },
+  "tts_script": [
+    {
+      "start": "0.0",
+      "end": "1.2",
+      "direction": "놀랍게 묻는다",
+      "text": "이거 한국에 들어왔다고?"
+    },
+    {
+      "start": "1.2",
+      "end": "5.7",
+      "direction": "차분하게 설명한다",
+      "text": "얼마 전에 일본 갔다가 유니클로 매장 앞에 줄이 빽빽하게 서 있길래 뭔가 하고 봤더니"
+    },
+    {
+      "start": "5.7",
+      "end": "8.9",
+      "direction": "흥미롭게 말한다",
+      "text": "지방시 총괄 디자이너가 만들었다는 이 가방 때문이더라고요."
+    },
+    {
+      "start": "8.9",
+      "end": "12.4",
+      "direction": "신나게 말한다",
+      "text": "저도 보부상팩 매니아라서 심플한 디자인이 너무 예쁜데다가"
+    },
+    {
+      "start": "12.4",
+      "end": "16.6",
+      "direction": "아쉽게 말한다",
+      "text": "수납이랑 착용감이 미쳤다길래 꼭 사고 싶었는데 줄이 너무 길어서 못 사 왔거든요."
+    },
+    {
+      "start": "16.6",
+      "end": "19.5",
+      "direction": "흥분되게 알린다",
+      "text": "근데 이거 지금 한정 수량으로 한국에서 살 수 있다는 거 있죠?"
+    },
+    {
+      "start": "19.5",
+      "end": "21.4",
+      "direction": "친절하게 안내한다",
+      "text": "가방 남겨주시면 링크 보내드릴게요."
+    }
+  ]
+}

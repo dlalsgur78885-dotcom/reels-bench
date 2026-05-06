@@ -1,0 +1,156 @@
+{
+  "shortcode": "DXbvfmpiY2k",
+  "model": "gemini-3-pro-preview",
+  "elapsed_sec": 35.71631932258606,
+  "usage": {},
+  "emotion_timeline": [
+    {
+      "start": 0.0,
+      "end": 3.3,
+      "emotion": "cheerful",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "자기 자신을 유쾌하게 소개하는 톤"
+    },
+    {
+      "start": 3.3,
+      "end": 6.5,
+      "emotion": "calm",
+      "intensity": 0.5,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "과거의 철없던 시절을 차분히 회고함"
+    },
+    {
+      "start": 6.5,
+      "end": 10.1,
+      "emotion": "calm",
+      "intensity": 0.4,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "수련회 참여 계기를 설명함"
+    },
+    {
+      "start": 10.1,
+      "end": 13.3,
+      "emotion": "serious",
+      "intensity": 0.6,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "사찰의 특성을 진지하게 전달함"
+    },
+    {
+      "start": 13.3,
+      "end": 16.4,
+      "emotion": "excited",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "선무도에 매료되었던 당시의 벅찬 감정"
+    },
+    {
+      "start": 16.4,
+      "end": 18.8,
+      "emotion": "serious",
+      "intensity": 0.6,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "부모님께 결심을 말하려는 단호한 태도"
+    },
+    {
+      "start": 18.8,
+      "end": 21.7,
+      "emotion": "excited",
+      "intensity": 0.9,
+      "delivery": "shouts",
+      "source": "speech",
+      "reason": "과거의 간절했던 외침을 재현함"
+    },
+    {
+      "start": 21.7,
+      "end": 24.5,
+      "emotion": "frustrated",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "부모님의 거센 반대에 부딪혔던 상황"
+    },
+    {
+      "start": 24.5,
+      "end": 28.0,
+      "emotion": "calm",
+      "intensity": 0.5,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "반대를 극복하고 진로를 정한 결과를 담담히 서술함"
+    },
+    {
+      "start": 28.0,
+      "end": 30.6,
+      "emotion": "happy",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "원하던 수련을 마침내 시작한 뿌듯함"
+    },
+    {
+      "start": 30.6,
+      "end": 33.6,
+      "emotion": "calm",
+      "intensity": 0.6,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "시간이 흘러 현재 사범이 된 상황 설명"
+    },
+    {
+      "start": 33.6,
+      "end": 37.4,
+      "emotion": "happy",
+      "intensity": 0.7,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "사람들에게 행복을 나누는 것에 대한 긍정적 감정"
+    },
+    {
+      "start": 37.4,
+      "end": 40.1,
+      "emotion": "excited",
+      "intensity": 0.8,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "세계화라는 큰 포부를 강하게 드러냄"
+    },
+    {
+      "start": 40.1,
+      "end": 43.5,
+      "emotion": "curious",
+      "intensity": 0.6,
+      "delivery": "normal",
+      "source": "speech",
+      "reason": "시청자들의 흥미를 유발하는 질문 형식"
+    }
+  ],
+  "audio_events": [
+    {
+      "time": 6.5,
+      "event": "pause",
+      "reason": "회상에서 설명으로 넘어가는 문장 사이의 호흡"
+    },
+    {
+      "time": 18.8,
+      "event": "pause",
+      "reason": "부모님께 직접 대사를 전달하기 전의 간격"
+    },
+    {
+      "time": 24.5,
+      "event": "pause",
+      "reason": "반대 상황에서 반전으로 넘어가는 부분의 여운"
+    },
+    {
+      "time": 40.1,
+      "event": "pause",
+      "reason": "결론적인 질문을 던지기 전 시선 집중을 위한 휴지"
+    }
+  ]
+}

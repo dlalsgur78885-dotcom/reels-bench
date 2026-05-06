@@ -1,0 +1,142 @@
+{
+  "model": "gemini-3-pro-preview",
+  "shortcode": "C59orfLPDZw",
+  "video_file": "_C59orfLPDZw.mp4",
+  "elapsed_sec": 34.567816495895386,
+  "usage": {
+    "promptTokenCount": 8435,
+    "candidatesTokenCount": 1014,
+    "totalTokenCount": 11989,
+    "promptTokensDetails": [
+      {
+        "modality": "VIDEO",
+        "tokenCount": 8008
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 427
+      }
+    ],
+    "thoughtsTokenCount": 2540
+  },
+  "analysis": {
+    "duration_sec": 90,
+    "sound_effects": [
+      {
+        "time": "00:00",
+        "type": "swoosh",
+        "description": "자막 등장 및 시선 집중"
+      },
+      {
+        "time": "00:05",
+        "type": "웃음소리",
+        "description": "초반의 유쾌한 분위기 형성"
+      },
+      {
+        "time": "00:06",
+        "type": "swoosh",
+        "description": "타이틀 화면으로의 컷 전환 강조"
+      }
+    ],
+    "bgm": [
+      {
+        "start": "00:06",
+        "end": "01:30",
+        "mood": "진지함/성찰적/시네마틱",
+        "genre": "Instrumental",
+        "tempo": "보통",
+        "identified": "unknown"
+      }
+    ],
+    "emotion_timeline": [
+      {
+        "start": "00:00",
+        "end": "00:06",
+        "emotion": "happy",
+        "intensity": 0.7,
+        "source": "speech",
+        "reason": "출연진 간의 가벼운 농담과 웃음"
+      },
+      {
+        "start": "00:06",
+        "end": "00:37",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "source": "speech",
+        "reason": "와인 선정 과정과 독특한 블렌딩에 대한 객관적인 설명"
+      },
+      {
+        "start": "00:37",
+        "end": "01:18",
+        "emotion": "excited",
+        "intensity": 0.8,
+        "source": "both",
+        "reason": "와인의 특성을 자신의 삶의 변화와 철학(정반합, 람보르기니 타는 부처)에 빗대어 열정적으로 이야기함"
+      },
+      {
+        "start": "01:18",
+        "end": "01:30",
+        "emotion": "neutral",
+        "intensity": 0.6,
+        "source": "speech",
+        "reason": "시청자에게 피드백을 요청하며 차분하게 마무리"
+      }
+    ],
+    "hook": {
+      "time": "00:06",
+      "technique": "텍스트/비주얼",
+      "why": "'30일안에 와인 만들기'라는 명확하고 도전적인 목표를 텍스트로 제시하여 프로젝트에 대한 호기심을 유발함"
+    },
+    "narration": {
+      "language": "Korean",
+      "tone": "차분/진정성/철학적",
+      "pace": "보통"
+    },
+    "visual_cuts": [
+      {
+        "time": "00:00",
+        "description": "인물 클로즈업 및 대화"
+      },
+      {
+        "time": "00:06",
+        "description": "프로젝트 타이틀 텍스트 화면"
+      },
+      {
+        "time": "00:08",
+        "description": "바 내부에서 여러 와인을 보여주는 풀샷"
+      },
+      {
+        "time": "00:23",
+        "description": "전문가의 와인 설명 인물 컷"
+      },
+      {
+        "time": "00:38",
+        "description": "테이블에 앉아 자신의 스토리를 이야기하는 인물 컷"
+      },
+      {
+        "time": "00:53",
+        "description": "와인을 시음하는 인물 컷"
+      },
+      {
+        "time": "01:01",
+        "description": "자신의 가치관을 이야기하는 다른 인물의 컷"
+      },
+      {
+        "time": "01:06",
+        "description": "다 함께 테이블에 모여있는 그룹 컷"
+      },
+      {
+        "time": "01:09",
+        "description": "다시 인물 단독 컷으로 돌아와 마무리 멘트"
+      }
+    ],
+    "audio_visual_sync_score": 0.9,
+    "sync_analysis": "말하는 화자에 맞춰 컷 전환이 자연스럽게 이루어지며, 핵심 단어가 자막으로 팝업되는 타이밍이 음성과 정확히 일치하여 내용의 전달력을 높임.",
+    "viral_factors": [
+      "피노누아와 까베르네 쇼비뇽이라는 금기시되는 와인 블렌딩에 대한 정보적 흥미",
+      "'람보르기니 타는 부처'라는 뇌리에 박히는 독특한 카피라이팅",
+      "단순한 상품 소개를 넘어 개인의 삶과 철학을 투영한 진정성 있는 스토리텔링",
+      "결정 권한을 시청자에게 넘겨 댓글 참여를 유도하는 구조"
+    ]
+  }
+}

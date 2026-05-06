@@ -635,6 +635,19 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
     전체 생성을 안 돌리므로 빠름 (Gemini 1회). 매칭/미매칭 USP 분석 + chunk 컨텍스트 같이 반환.
     """
     auth_svc.require_user(request)
+    try:
+        return _preview_mapping_impl(shortcode, body)
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback as _tb
+        tb = _tb.format_exc()
+        logger.error("[preview-mapping] sc=%s pid=%s 500: %s\n%s", shortcode, body.product_id, e, tb)
+        # 프런트에서도 원인 보이게 메시지에 stage 박음
+        raise HTTPException(500, f"preview-mapping 실패: {type(e).__name__}: {e}")
+
+
+def _preview_mapping_impl(shortcode: str, body: PreviewMappingRequest):
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()

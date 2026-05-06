@@ -3682,7 +3682,10 @@ ref USP는 이미 분석되어 있고, 각 chunk가 어느 ref USP를 다루는�
 1. **각 ref USP id별로 1개의 user_usp_id 선택** (또는 null = 매칭 불가)
 2. 의미·기능이 가까운 USP를 매칭. 표면 키워드보다 **mechanism/혜택의 일치**.
 3. ref MAIN이라고 무조건 우리 USP1로 가지 말 것 — 우리 USP 중 의미가 가장 가까운 것이 sub여도 OK.
-4. 여러 ref USP가 같은 user USP로 매핑돼도 OK.
+4. **⭐ 다양성 우선 (가장 중요)** — 가능한 한 **1:1 매핑** 시도. user USP가 충분하면 같은 user USP를 여러 ref USP에 중복 사용하지 말 것.
+   - ref USP 7개, user USP 9개라면 가급적 **7개 다른 user USP**에 매핑
+   - 같은 user USP 중복 매핑은 **다른 user USP 후보를 다 검토한 후 정말 안 맞을 때만**
+   - 차선의 user USP라도 unused이면 그걸 우선 (1순위 USP가 이미 다른 ref USP에 쓰였으면 2순위 unused USP 선택)
 5. **ref USP가 우리 어느 USP와도 안 맞으면 null** — null인 ref USP의 chunks는 generic 시나리오로 처리됨.
 
 ## ⭐ confidence (매칭 강도 — 필수)

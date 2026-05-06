@@ -382,6 +382,7 @@ export default function ScriptGenWizard() {
               ? chunkEdits
               : undefined,
             social_proof_override: Object.keys(spOverrides).length ? spOverrides : undefined,
+            user_social_proof: mapping?.product?.social_proof || [],
           }),
         })
         if (!r.ok) throw new Error(`${r.status} ${await r.text()}`)

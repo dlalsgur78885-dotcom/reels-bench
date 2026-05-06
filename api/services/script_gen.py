@@ -3136,7 +3136,7 @@ def _detect_speech_level(texts: list[str]) -> str:
     return "혼합"
 
 
-def _build_section_writer_prompt(section: dict, product_name: str, target_persona: dict | None, usps: list[dict], pain: str, desire: str, speech_level: str = "혼합") -> str:
+def _build_section_writer_prompt(section: dict, product_name: str, target_persona: dict | None, usps: list[dict], pain: str, desire: str, speech_level: str = "혼합", user_social_proof: list[dict] | None = None) -> str:
     """섹션별 작성자 prompt — outline 받아 문장 N개 작성. 섹션 타입별 가이드 추가."""
     section_name = section.get("name", "")
     sentences_spec = section.get("sentences") or []
@@ -3280,6 +3280,33 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
 - ref 도메인 단어 그대로 박힘 ("일본 우버" 같은 단어가 잠옷 광고에 등장)
 """
 
+    # social_proof block
+    sp_block = ""
+    if user_social_proof:
+        sp_lines = []
+        for sp in user_social_proof:
+            label = (sp.get("label") or "").strip()
+            value = (sp.get("value") or "").strip()
+            type_ = (sp.get("type") or "").strip()
+            evidence = (sp.get("evidence") or "").strip()
+            if label or value:
+                line = f"  - [{type_}] **{label}**: {value}"
+                if evidence:
+                    line += f" ({evidence})"
+                sp_lines.append(line)
+        if sp_lines:
+            sp_block = """
+## 📊 우리 제품 Social Proof (신뢰 신호)
+""" + "\n".join(sp_lines) + """
+
+### ⚠️ 사용 룰
+- ref가 social proof angle을 사용하는 자리(intro/body proof·요약/cta)에 위 신호를 **구체 수치 그대로** 박아 넣을 것
+- 어절·음절 허용 범위 안에서 자연스럽게 — "32억 매출" / "1만 후기" / "베스트셀러" 같이 명사구로 짧게
+- ref 문장에 숫자가 있는 자리(예: ref "여행 경비 반이나" / "DM 폭주") → 우리도 social proof 수치 사용 ("32억 매출이 증명" / "1만 후기로 검증")
+- ❌ 가짜 수치 만들지 말 것 — 위 목록에 있는 값만 사용
+- ref가 social proof를 안 쓰면 우리도 강제로 박지 말 것 — ref 톤 미러링 우선
+"""
+
     section_guidance = _section_specific_guidance(section_name, has_destination=False)
     _sn = section_name.lower()
 
@@ -3319,6 +3346,7 @@ direction은 **성우가 어떻게 읽을지**만. 마케팅 전략 X.
 
 {speech_block}
 {section_guidance}
+{sp_block}
 
 ## 🔢 숫자 구체성 (⭐⭐ ref에 숫자 있으면 미러링 권장)
 
@@ -4013,7 +4041,7 @@ def _classify_ref_sections(primary: dict) -> list[tuple[str, list[dict]]]:
     ]
 
 
-def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None) -> dict:
+def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None, user_social_proof: list[dict] | None = None) -> dict:
     """v4 = B버전: Pre-Planner Flash + Section Planners parallel + Writers parallel."""
     import concurrent.futures as _cf
 
@@ -4345,7 +4373,7 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
         logger.info("[writer] using override model: %s", writer_model)
 
     def _write_section(sec):
-        prompt = _build_section_writer_prompt(sec, product_name, target_persona, usps, pain, desire, speech_level=speech_level)
+        prompt = _build_section_writer_prompt(sec, product_name, target_persona, usps, pain, desire, speech_level=speech_level, user_social_proof=user_social_proof)
         spec_list = sec.get("sentences") or []
         n_required = len(spec_list)
         try:
@@ -4491,7 +4519,7 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     return draft
 
 
-def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None) -> dict:
+def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None, user_social_proof: list[dict] | None = None) -> dict:
     """엔드투엔드 — 참고 릴스 fetch → 1차 생성 → (선택) 2차 다듬기 → 최종.
 
     usp_mapping_override: ref_usp_id → user_usp_id 수동 매핑 (ref USP 단위).
@@ -4510,7 +4538,8 @@ def generate(product_name: str, pain: str, desire: str, usps: list[dict], refere
     draft = _generate_multistep(product_name, pain, desire, usps, primary, target_persona,
                                 usp_mapping_override=usp_mapping_override,
                                 chunk_usp_override=chunk_usp_override,
-                                chunk_meta_override=chunk_meta_override)
+                                chunk_meta_override=chunk_meta_override,
+                                user_social_proof=user_social_proof)
 
     # 2차 다듬기 (선택)
     if refine:

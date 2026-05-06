@@ -551,56 +551,60 @@ export default function BenchDetail() {
 
       {tab === 'script' && (
         <div>
-          {extra?.script_structure && (
+          {extra && (
             <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-                <div className="eyebrow-label" style={{ marginBottom: 0 }}>대본 구조</div>
-                <button className="btn-ghost"
-                  onClick={() => {
-                    setEditing('script')
-                    const ss = extra.script_structure || {} as any
-                    setEditForm({
-                      hook: { text: '', type: '', seconds: '', analysis: '', ...(ss.hook || {}) },
-                      intro: { text: '', seconds: '', analysis: '', ...(ss.intro || {}) },
-                      body: { text: '', seconds: '', analysis: '', key_points: [], ...(ss.body || {}) },
-                      cta: { text: '', type: '', seconds: '', analysis: '', ...(ss.cta || {}) },
-                      overall: { flow: '', strength: '', weakness: '', ...(ss.overall || {}) },
-                    })
-                    setEditError('')
-                  }}>
-                  수정
-                </button>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
-                {([
-                  ['Hook', 'hook'],
-                  ['Intro', 'intro'],
-                  ['Body', 'body'],
-                  ['CTA', 'cta'],
-                ] as const).map(([title, key]) => {
-                  const sec = (extra.script_structure as any)?.[key] || {}
-                  return (
-                    <div key={key} className="section-card">
-                      <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>{title}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
-                        {sec.seconds}{sec.type ? ` | ${sec.type}` : ''}
-                      </div>
-                      <div style={{ fontSize: 13, color: 'var(--text-body)', lineHeight: 1.6, marginBottom: 8 }}>
-                        "{(sec.text || '').substring(0, 150)}{(sec.text || '').length > 150 ? '...' : ''}"
-                      </div>
-                      <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                        {sec.analysis || ''}
-                      </div>
+              {extra.script_structure && (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                    <div className="eyebrow-label" style={{ marginBottom: 0 }}>대본 구조</div>
+                    <button className="btn-ghost"
+                      onClick={() => {
+                        setEditing('script')
+                        const ss = extra.script_structure || {} as any
+                        setEditForm({
+                          hook: { text: '', type: '', seconds: '', analysis: '', ...(ss.hook || {}) },
+                          intro: { text: '', seconds: '', analysis: '', ...(ss.intro || {}) },
+                          body: { text: '', seconds: '', analysis: '', key_points: [], ...(ss.body || {}) },
+                          cta: { text: '', type: '', seconds: '', analysis: '', ...(ss.cta || {}) },
+                          overall: { flow: '', strength: '', weakness: '', ...(ss.overall || {}) },
+                        })
+                        setEditError('')
+                      }}>
+                      수정
+                    </button>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+                    {([
+                      ['Hook', 'hook'],
+                      ['Intro', 'intro'],
+                      ['Body', 'body'],
+                      ['CTA', 'cta'],
+                    ] as const).map(([title, key]) => {
+                      const sec = (extra.script_structure as any)?.[key] || {}
+                      return (
+                        <div key={key} className="section-card">
+                          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>{title}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+                            {sec.seconds}{sec.type ? ` | ${sec.type}` : ''}
+                          </div>
+                          <div style={{ fontSize: 13, color: 'var(--text-body)', lineHeight: 1.6, marginBottom: 8 }}>
+                            "{(sec.text || '').substring(0, 150)}{(sec.text || '').length > 150 ? '...' : ''}"
+                          </div>
+                          <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                            {sec.analysis || ''}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {extra.script_structure.overall && (
+                    <div className="section-card section-card--block" style={{ marginBottom: 20 }}>
+                      <strong>Flow:</strong> {extra.script_structure.overall.flow}<br />
+                      <strong style={{ color: 'var(--success)' }}>Strength:</strong> {extra.script_structure.overall.strength}<br />
+                      <strong style={{ color: 'var(--error)' }}>Improve:</strong> {extra.script_structure.overall.weakness}
                     </div>
-                  )
-                })}
-              </div>
-              {extra.script_structure.overall && (
-                <div className="section-card section-card--block" style={{ marginBottom: 20 }}>
-                  <strong>Flow:</strong> {extra.script_structure.overall.flow}<br />
-                  <strong style={{ color: 'var(--success)' }}>Strength:</strong> {extra.script_structure.overall.strength}<br />
-                  <strong style={{ color: 'var(--error)' }}>Improve:</strong> {extra.script_structure.overall.weakness}
-                </div>
+                  )}
+                </>
               )}
               {/* USP Layout 카드 — ref가 어느 USP를 어느 섹션에 배치했는지 */}
               {(() => {

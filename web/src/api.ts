@@ -20,6 +20,49 @@ async function get<T>(path: string): Promise<T> {
   return r.json()
 }
 
+const CLIENT_CACHE_PREFIX = 'rb_api_cache:'
+const inflightGets = new Map<string, Promise<unknown>>()
+
+function readClientCache<T>(path: string, ttlMs: number): T | null {
+  try {
+    const raw = sessionStorage.getItem(CLIENT_CACHE_PREFIX + path)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || Date.now() - parsed.t > ttlMs) return null
+    return parsed.data as T
+  } catch { return null }
+}
+
+function writeClientCache(path: string, data: unknown) {
+  try {
+    sessionStorage.setItem(CLIENT_CACHE_PREFIX + path, JSON.stringify({ t: Date.now(), data }))
+  } catch {}
+}
+
+async function cachedGet<T>(path: string, ttlMs = 30_000): Promise<T> {
+  const cached = readClientCache<T>(path, ttlMs)
+  if (cached !== null) return cached
+  const existing = inflightGets.get(path) as Promise<T> | undefined
+  if (existing) return existing
+  const promise = get<T>(path)
+    .then(data => {
+      writeClientCache(path, data)
+      return data
+    })
+    .finally(() => inflightGets.delete(path))
+  inflightGets.set(path, promise)
+  return promise
+}
+
+function clearClientCache(prefix: string) {
+  try {
+    for (let i = sessionStorage.length - 1; i >= 0; i--) {
+      const key = sessionStorage.key(i)
+      if (key?.startsWith(CLIENT_CACHE_PREFIX + prefix)) sessionStorage.removeItem(key)
+    }
+  } catch {}
+}
+
 async function post<T>(path: string, body: unknown): Promise<T> {
   const r = await authedFetch(path, {
     method: 'POST',
@@ -324,7 +367,7 @@ export const api = {
     if (p.body_structure) params.set('body_structure', p.body_structure)
     if (p.hook_type) params.set('hook_type', p.hook_type)
     if (p.cta_type) params.set('cta_type', p.cta_type)
-    return get<BenchPage>(`/api/bench?${params}`)
+    return cachedGet<BenchPage>(`/api/bench?${params}`, 30_000)
   },
   ads: (p: AdsFilters = {}) => {
     const params = new URLSearchParams()
@@ -354,31 +397,36 @@ export const api = {
     if (p.body_structure) params.set('body_structure', p.body_structure)
     if (p.hook_type) params.set('hook_type', p.hook_type)
     if (p.cta_type) params.set('cta_type', p.cta_type)
-    return get<PhrasesPage>(`/api/phrases?${params}`)
+    return cachedGet<PhrasesPage>(`/api/phrases?${params}`, 30_000)
   },
   dashboard: () => get<DashboardData>('/api/dashboard'),
   reels: () => get<Reel[]>('/api/reels'),
   addReel: (url: string, analyze = false) => post<ReelAddResult>('/api/reels', { url, analyze }),
   metadata: (sc: string) => get<Metadata>(`/api/metadata/${sc}`),
-  detail: (sc: string) => get<DetailData>(`/api/detail/${sc}`),
+  detail: (sc: string) => cachedGet<DetailData>(`/api/detail/${sc}`, 45_000),
   transcript: (sc: string) => get<Transcript>(`/api/transcripts/${sc}`),
   analysis: (sc: string) => get<Analysis>(`/api/analyses/${sc}`),
-  comments: (sc: string) => get<{ comment_text: string; comment_author: string; comment_likes: number }[]>(`/api/comments/${sc}`),
+  comments: (sc: string) => cachedGet<{ comment_text: string; comment_author: string; comment_likes: number }[]>(`/api/comments/${sc}`, 45_000),
   startAnalysis: (sc: string) => post<{ message: string }>('/api/analyze', { shortcode: sc }),
   analysisStatus: (sc: string) => get<AnalysisStatus>(`/api/analysis-status/${sc}`),
-  frameImages: (sc: string) => get<Record<number, string>>(`/api/frame-images/${sc}`),
-  extra: (sc: string, opts?: { fresh?: boolean }) => get<ExtraData>(`/api/extra/${sc}${opts?.fresh ? `?_t=${Date.now()}` : ''}`),
+  frameImages: (sc: string) => cachedGet<Record<number, string>>(`/api/frame-images/${sc}`, 120_000),
+  extra: (sc: string, opts?: { fresh?: boolean }) => opts?.fresh
+    ? get<ExtraData>(`/api/extra/${sc}?_t=${Date.now()}`)
+    : cachedGet<ExtraData>(`/api/extra/${sc}`, 45_000),
   updateExtra: (sc: string, data: { script_structure?: any; category?: any; sentences?: any[] }) =>
     patch<any>(`/api/extra/${sc}`, { shortcode: sc, ...data }),
   fetchComments: (sc: string) => post<{ count: number; comments: any[] }>(`/api/comments/${sc}/fetch`, {}),
-  channels: () => get<Channel[]>('/api/channels'),
-  addChannel: (username: string) => post<{ message: string; username: string }>('/api/channels', { username }),
+  channels: () => cachedGet<Channel[]>('/api/channels', 60_000),
+  addChannel: (username: string) => post<{ message: string; username: string }>('/api/channels', { username })
+    .then(r => { clearClientCache('/api/channels'); return r }),
   updateChannel: (username: string, data: { is_active?: boolean }) =>
-    patch<any>(`/api/channels/${username}`, data),
-  deleteChannel: (username: string) => del<{ message?: string; error?: string }>(`/api/channels/${encodeURIComponent(username)}`),
-  deleteChannelById: (id: number) => del<{ message?: string; error?: string; id?: number }>(`/api/channels/by-id/${id}`),
+    patch<any>(`/api/channels/${username}`, data).then(r => { clearClientCache('/api/channels'); return r }),
+  deleteChannel: (username: string) => del<{ message?: string; error?: string }>(`/api/channels/${encodeURIComponent(username)}`)
+    .then(r => { clearClientCache('/api/channels'); return r }),
+  deleteChannelById: (id: number) => del<{ message?: string; error?: string; id?: number }>(`/api/channels/by-id/${id}`)
+    .then(r => { clearClientCache('/api/channels'); return r }),
   userAnalysis: (username: string, limit = 24) =>
-    get<UserAnalysis>(`/api/users/${encodeURIComponent(username)}/analysis?limit=${limit}`),
+    cachedGet<UserAnalysis>(`/api/users/${encodeURIComponent(username)}/analysis?limit=${limit}`, 60_000),
   refineScript: (draft: any, usps: any[], reference_shortcode?: string) =>
     post<any>('/api/script/refine', { draft, usps, reference_shortcode }),
   extractPersonas: (usp: string, reviews: string[], pain_solved = '', product_id?: number, usp_index?: number) =>
@@ -391,6 +439,10 @@ export const api = {
     patch<{ shortcode: string; count: number }>(`/api/script/section-chunks/${sc}`, { chunks }),
   updateUspLayout: (sc: string, usps: any[]) =>
     patch<{ shortcode: string; count: number }>(`/api/script/usp-layout/${sc}`, { usps }),
+  reanalyzeUspLayout: (sc: string) =>
+    post<any>(`/api/script/reanalyze-usp-layout/${sc}`, {}),
+  analyzeSectionChunks: (sc: string) =>
+    post<any>(`/api/script/analyze-section-chunks/${sc}`, {}),
   previewMapping: (sc: string, product_id: number) =>
     post<{
       shortcode: string
@@ -419,12 +471,13 @@ export const api = {
   deleteSecret: (name: string) =>
     del<{ deleted: boolean }>(`/api/admin/secrets/${encodeURIComponent(name)}`),
   // My Products
-  listMyProducts: () => get<MyProduct[]>('/api/my-products'),
+  listMyProducts: () => cachedGet<MyProduct[]>('/api/my-products', 30_000),
   createMyProduct: (data: { name: string; persona?: string; usps?: any[] }) =>
-    post<MyProduct>('/api/my-products', data),
+    post<MyProduct>('/api/my-products', data).then(r => { clearClientCache('/api/my-products'); return r }),
   updateMyProduct: (id: number, data: { name: string; persona?: string; usps?: any[] }) =>
-    patch<MyProduct>(`/api/my-products/${id}`, data),
-  deleteMyProduct: (id: number) => del<{ message: string }>(`/api/my-products/${id}`),
+    patch<MyProduct>(`/api/my-products/${id}`, data).then(r => { clearClientCache('/api/my-products'); return r }),
+  deleteMyProduct: (id: number) => del<{ message: string }>(`/api/my-products/${id}`)
+    .then(r => { clearClientCache('/api/my-products'); return r }),
   // My Products: 공유
   listProductShares: (pid: number) => get<ShareInfo[]>(`/api/my-products/${pid}/shares`),
   shareProduct: (pid: number, userIds: string[], permission: 'view' | 'edit') =>

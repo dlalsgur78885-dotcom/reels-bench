@@ -111,6 +111,7 @@ export default function BenchDetail() {
   const [chunkEditDraft, setChunkEditDraft] = useState<any>(null)
   const [uspEditing, setUspEditing] = useState<number | null>(null)
   const [uspEditDraft, setUspEditDraft] = useState<any>(null)
+  const [reanalyzing, setReanalyzing] = useState<string | null>(null)  // "classify" | "usp_layout" | "section_chunks" | null
   const me = useMe()
 
   const canDelete = !!me && (me.role === 'admin' || me.can_delete_reels)
@@ -272,6 +273,18 @@ export default function BenchDetail() {
       <button className="detail-back" onClick={() => navigate('/bench')}>
         ← 벤치마크
       </button>
+      {reanalyzing && (
+        <div style={{
+          position: 'sticky', top: 0, zIndex: 100, marginBottom: 8,
+          padding: '8px 14px', background: 'var(--accent-light)',
+          border: '1px solid var(--accent)', borderRadius: 'var(--radius-sm)',
+          fontSize: 12, color: 'var(--accent)', fontWeight: 600,
+        }}>
+          {reanalyzing === 'classify' && '분석 갱신 중… (1/3) 문장 섹션 분류'}
+          {reanalyzing === 'usp_layout' && '분석 갱신 중… (2/3) USP layout 재분석'}
+          {reanalyzing === 'section_chunks' && '분석 갱신 중… (3/3) section chunks 재분석'}
+        </div>
+      )}
 
       <div className="detail-header">
         <h1>@{meta?.author_username || shortcode}</h1>
@@ -1386,7 +1399,25 @@ export default function BenchDetail() {
                   await api.updateExtra(shortcode!, payload)
                   const d = await api.extra(shortcode!)
                   if (d && Object.keys(d).length) setExtra(d)
+                  const wasSentenceEdit = editing === 'sentences'
                   setEditing(null)
+                  // 문장 저장 후 자동 재분석 (classify → usp_layout → section_chunks)
+                  if (wasSentenceEdit && confirm('문장이 변경됐습니다. 분석(USP layout, section chunks)도 같이 갱신할까요?\n\n약 60~90초 소요됩니다.')) {
+                    try {
+                      setReanalyzing('classify')
+                      await api.classifySentences(shortcode!)
+                      setReanalyzing('usp_layout')
+                      await api.reanalyzeUspLayout(shortcode!)
+                      setReanalyzing('section_chunks')
+                      await api.analyzeSectionChunks(shortcode!)
+                      const d2 = await api.extra(shortcode!)
+                      if (d2 && Object.keys(d2).length) setExtra(d2)
+                    } catch (e: any) {
+                      alert('재분석 실패: ' + (e?.message || e))
+                    } finally {
+                      setReanalyzing(null)
+                    }
+                  }
                 } catch (e: any) {
                   setEditError(e?.message || '저장 실패. 잠시 후 다시 시도하세요.')
                 } finally {

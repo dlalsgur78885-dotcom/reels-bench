@@ -35,6 +35,34 @@ def reset_cost_meter() -> None:
     _cost_meter.clear()
 
 
+# 진행 상태 추적 (세션·요청별)
+_gen_progress: dict[str, dict] = {}  # session_id → {step, percent, started_at, updated_at, message}
+
+
+def update_progress(session_id: str, step: str, percent: int, message: str = "") -> None:
+    """스크립트 생성 진행률 갱신 (프론트가 polling으로 읽음)."""
+    import time as _t
+    if not session_id:
+        return
+    now = _t.time()
+    cur = _gen_progress.get(session_id) or {}
+    if not cur:
+        cur = {"started_at": now, "step": "init", "percent": 0, "message": ""}
+    cur["step"] = step
+    cur["percent"] = percent
+    cur["message"] = message
+    cur["updated_at"] = now
+    _gen_progress[session_id] = cur
+
+
+def get_progress(session_id: str) -> dict | None:
+    return _gen_progress.get(session_id)
+
+
+def clear_progress(session_id: str) -> None:
+    _gen_progress.pop(session_id, None)
+
+
 def summarize_cost() -> dict:
     """현재까지 집계된 토큰·비용 합산.
 
@@ -4347,7 +4375,7 @@ def _classify_ref_sections(primary: dict) -> list[tuple[str, list[dict]]]:
     ]
 
 
-def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None) -> dict:
+def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None, session_id: str | None = None) -> dict:
     """v4 = B버전: Pre-Planner Flash + Section Planners parallel + Writers parallel."""
     import concurrent.futures as _cf
     import time as _t
@@ -4380,9 +4408,15 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     if expected_total == 0:
         raise RuntimeError("Section classification yielded 0 sentences")
 
+    if session_id:
+        update_progress(session_id, "speech_detect", 10, f"어투 감지 + ref 분석 ({expected_total}문장)")
+
     # ⭐ 어투 감지 — ref 전체 텍스트로 dominant 반말/존댓말 결정 (Writer 강제용)
     speech_level = _detect_speech_level([s.get("text", "") for s in all_ref_sents])
     logger.info("[multistep-B] speech_level=%s", speech_level)
+
+    if session_id:
+        update_progress(session_id, "pre_planner", 15, "Pre-Planner: K-USP 매핑 (Gemini Pro)")
 
     # 1b. PRE-PLANNER — chunk 기반 K-USP 매핑 (ref USP → 우리 USP)
     logger.info("[multistep-B] 1b. pre-planner (chunk-based K-USP mapping)")
@@ -4574,6 +4608,9 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                        chunk_usp_override, [c.get("section") for c in section_chunks])
 
     role_override: dict[int, str] = {}
+
+    if session_id:
+        update_progress(session_id, "section_planners", 30, f"Section Planners {len(section_idx_ranges)}개 병렬 (Flash)")
 
     # 1c. SECTION PLANNERS (Pro × parallel)
     logger.info("[multistep-B] 1c. section planners (Pro parallel × %d)", len(section_idx_ranges))
@@ -4817,6 +4854,13 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     n_batches = (len(write_units) + BATCH_SIZE - 1) // BATCH_SIZE
     for bi in range(0, len(write_units), BATCH_SIZE):
         batch = write_units[bi:bi + BATCH_SIZE]
+        bnum = bi // BATCH_SIZE + 1
+        # 배치 시작 진행률: 40~85% 사이에서 배치별 분할
+        if session_id:
+            pct = 40 + int((bnum - 1) / n_batches * 45)
+            sec_names = ", ".join(u[0] for u in batch)
+            update_progress(session_id, "writers", pct,
+                            f"Writer 배치 {bnum}/{n_batches} (Sonnet) — {sec_names}")
         # 배치 안 병렬 — 모두 같은 prev_chunks_acc 받음 (배치 안 chunks끼리는 서로 못 봄)
         prev_snapshot = list(prev_chunks_acc)
         with _cf.ThreadPoolExecutor(max_workers=len(batch)) as ex:
@@ -4827,7 +4871,7 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
             sec_label = usec.get("_orig_section") or usec.get("name") or name
             prev_chunks_acc.append({"section": sec_label, "sentences": sents})
         logger.info("[writer batch %d/%d] %d units done (cumulative prev=%d)",
-                    bi // BATCH_SIZE + 1, n_batches, len(batch), len(prev_chunks_acc))
+                    bnum, n_batches, len(batch), len(prev_chunks_acc))
     logger.info("[multistep timing] section writers (batch×%d sequential): %.1fs total %.1fs",
                 BATCH_SIZE, _t.time() - _t_writers, _t.time() - _t_total)
 
@@ -4905,13 +4949,16 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     return draft
 
 
-def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None) -> dict:
+def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None, session_id: str | None = None) -> dict:
     """엔드투엔드 — 참고 릴스 fetch → 1차 생성 → (선택) 2차 다듬기 → 최종.
 
     usp_mapping_override: ref_usp_id → user_usp_id 수동 매핑 (ref USP 단위).
     chunk_usp_override: chunk.section → user_usp_id 수동 매핑 (chunk 단위, 더 우선).
     chunk_meta_override: chunk.section → {topic, role} 수동 수정 (분석 결과 보정).
+    session_id: 진행률 추적용 식별자 (프론트가 polling).
     """
+    if session_id:
+        update_progress(session_id, "fetch_ref", 5, "참고 릴스 데이터 로드")
     refs = []
     for sc in reference_shortcodes:
         ref = fetch_reference(sc)
@@ -4920,14 +4967,19 @@ def generate(product_name: str, pain: str, desire: str, usps: list[dict], refere
     if not refs:
         raise RuntimeError("참고 릴스 데이터를 찾을 수 없습니다")
     primary = refs[0]
+    if session_id:
+        update_progress(session_id, "multistep_start", 8, "멀티스텝 생성 시작")
     # 1차 생성 (멀티스텝: 플래너 → 섹션 작성자 → 어셈블 → 비평 → 리파이너)
     draft = _generate_multistep(product_name, pain, desire, usps, primary, target_persona,
                                 usp_mapping_override=usp_mapping_override,
                                 chunk_usp_override=chunk_usp_override,
-                                chunk_meta_override=chunk_meta_override)
+                                chunk_meta_override=chunk_meta_override,
+                                session_id=session_id)
 
     # 2차 다듬기 (선택)
     if refine:
+        if session_id:
+            update_progress(session_id, "refine", 90, "전체 다듬기 (Gemini Pro)")
         try:
             unified = select_unified_scenario(usps)
             # 참고 길이 정보 — refine이 길이 매칭에 활용
@@ -4959,4 +5011,6 @@ def generate(product_name: str, pain: str, desire: str, usps: list[dict], refere
         draft["_target_persona"] = target_persona
     if product_name:
         draft["_product_name"] = product_name
+    if session_id:
+        update_progress(session_id, "done", 100, "완료")
     return draft

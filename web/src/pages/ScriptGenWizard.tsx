@@ -55,6 +55,8 @@ export default function ScriptGenWizard() {
   // 4. 생성
   const [genError, setGenError] = useState('')
   const [genResult, setGenResult] = useState<Record<string, GeneratedScript>>({})
+  // 진행률 polling state — 페르소나별 (sessionId → progress)
+  const [genProgress, setGenProgress] = useState<Record<string, { step?: string; percent?: number; message?: string; label: string }>>({})
 
   useEffect(() => {
     api.listMyProducts().then(setProducts).catch(() => {})
@@ -322,6 +324,35 @@ export default function ScriptGenWizard() {
     const personas: PersonaLike[] = [...productPersonas, ...refPersonas]
     if (personas.length === 0) personas.push(null)
 
+    // 페르소나별 session_id 생성
+    const sessionIds = personas.map((_, idx) => `gen-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`)
+    const initialProgress: Record<string, { step?: string; percent?: number; message?: string; label: string }> = {}
+    personas.forEach((p, idx) => {
+      const baseName = p ? p.name : '기본'
+      const label = personas.length > 1 ? `${baseName} #${idx + 1}` : baseName
+      initialProgress[sessionIds[idx]] = { label, step: 'start', percent: 0, message: '시작' }
+    })
+    setGenProgress(initialProgress)
+
+    // 진행률 polling (3초마다 모든 session 갱신)
+    const pollInterval = setInterval(async () => {
+      try {
+        const updates = await Promise.all(sessionIds.map(sid => api.scriptProgress(sid).catch(() => null)))
+        setGenProgress(prev => {
+          const next = { ...prev }
+          updates.forEach((u, idx) => {
+            if (u?.found && next[sessionIds[idx]]) {
+              next[sessionIds[idx]] = {
+                ...next[sessionIds[idx]],
+                step: u.step, percent: u.percent, message: u.message,
+              }
+            }
+          })
+          return next
+        })
+      } catch { /* noop */ }
+    }, 3000)
+
     try {
       const token = await getAccessToken()
       const calls = personas.map(async (persona, idx): Promise<[string, GeneratedScript]> => {
@@ -334,6 +365,7 @@ export default function ScriptGenWizard() {
             usps: cleanUsps,
             reference_shortcodes: [shortcode],
             refine: false,
+            session_id: sessionIds[idx],
             target_persona: persona ? {
               name: persona.name, scenario: persona.scenario, signals: persona.signals,
               destinations: persona.destinations || [], tone_hint: persona.tone_hint,
@@ -362,6 +394,7 @@ export default function ScriptGenWizard() {
         return [key, await r.json()]
       })
       const settled = await Promise.allSettled(calls)
+      clearInterval(pollInterval)
       console.log('[script/gen] personas count:', personas.length, 'settled:', settled.length)
       const out: Record<string, GeneratedScript> = {}
       const errors: string[] = []
@@ -490,10 +523,49 @@ export default function ScriptGenWizard() {
       )}
 
       {step === 'generating' && (
-        <div style={{ ...cardSt, textAlign: 'center', padding: 40 }}>
-          <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>
-            대본 생성 중… (페르소나 {(selectedPersonaIdx.size + selectedRefDesireIdx.size) || 1}개 동시)
+        <div style={cardSt}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>
+            대본 생성 중… (페르소나 {Object.keys(genProgress).length || 1}개 동시)
           </div>
+          <div style={{ display: 'grid', gap: 14 }}>
+            {Object.entries(genProgress).map(([sid, p]) => {
+              const pct = Math.max(0, Math.min(100, p.percent || 0))
+              const isDone = pct >= 100
+              return (
+                <div key={sid} style={{
+                  padding: 12, background: 'var(--bg-elevated)',
+                  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, gap: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{p.label}</div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: isDone ? 'var(--success)' : 'var(--accent)' }}>
+                      {pct}%
+                    </div>
+                  </div>
+                  <div style={{
+                    height: 6, background: 'var(--bg-base)', borderRadius: 3,
+                    overflow: 'hidden', marginBottom: 6,
+                  }}>
+                    <div style={{
+                      height: '100%', width: `${pct}%`,
+                      background: isDone ? 'var(--success)' : 'var(--accent)',
+                      transition: 'width 300ms ease',
+                    }} />
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    {p.step ? `[${p.step}]` : ''} {p.message || '대기 중…'}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          {genError && (
+            <div style={{
+              marginTop: 12, padding: 10, background: 'rgba(239,68,68,0.1)',
+              border: '1px solid var(--error)', color: 'var(--error)', fontSize: 12,
+              borderRadius: 'var(--radius-sm)',
+            }}>{genError}</div>
+          )}
         </div>
       )}
 

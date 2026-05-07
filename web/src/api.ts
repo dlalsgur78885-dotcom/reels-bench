@@ -460,6 +460,10 @@ export const api = {
     patch<{ shortcode: string; count: number }>(`/api/script/section-chunks/${sc}`, { chunks }),
   updateUspLayout: (sc: string, usps: any[]) =>
     patch<{ shortcode: string; count: number }>(`/api/script/usp-layout/${sc}`, { usps }),
+  scriptProgress: (sessionId: string) =>
+    get<{ session_id: string; found: boolean; step?: string; percent?: number; message?: string; started_at?: number; updated_at?: number }>(
+      `/api/script/progress/${sessionId}`,
+    ),
   reanalyzeUspLayout: (sc: string) =>
     post<any>(`/api/script/reanalyze-usp-layout/${sc}`, {}),
   analyzeSectionChunks: (sc: string) =>

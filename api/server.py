@@ -78,6 +78,17 @@ class ScriptGenRequest(BaseModel):
     usp_mapping_override: dict[str, int] | None = None  # ref_usp_id(str)→user_usp_id (wizard 수동 매핑)
     chunk_usp_override: dict[str, int] | None = None  # chunk.section→user_usp_id (chunk별 수동 매핑)
     chunk_meta_override: dict[str, dict] | None = None  # chunk.section→{topic, role} (분석 metadata 수정)
+    session_id: str | None = None  # 진행률 polling용 식별자
+
+
+@app.get("/api/script/progress/{session_id}")
+def get_script_progress(session_id: str, request: Request):
+    """스크립트 생성 진행률 polling. 세션별 (step, percent, message, started_at, updated_at)."""
+    auth_svc.require_user(request)
+    p = script_gen.get_progress(session_id)
+    if not p:
+        return {"session_id": session_id, "found": False}
+    return {"session_id": session_id, "found": True, **p}
 
 
 @app.post("/api/script/generate")
@@ -116,6 +127,7 @@ def gen_script(req: ScriptGenRequest):
             usp_mapping_override=override,
             chunk_usp_override=chunk_override,
             chunk_meta_override=meta_override,
+            session_id=req.session_id,
         )
         n_sentences = len(result.get("sentences") or [])
         cost = script_gen.summarize_cost()

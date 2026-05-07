@@ -2664,7 +2664,7 @@ def analyze_sp_per_sentence(sentences: list[dict]) -> list[dict]:
 
 JSON만. 설명 X."""
     try:
-        result = call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=2048)
+        result = call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=4096)
         if isinstance(result, list) and result:
             result = result[0]
         out = (result or {}).get("sp_sentences") or []

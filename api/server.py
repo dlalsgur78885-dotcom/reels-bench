@@ -78,8 +78,6 @@ class ScriptGenRequest(BaseModel):
     usp_mapping_override: dict[str, int] | None = None  # ref_usp_id(str)→user_usp_id (wizard 수동 매핑)
     chunk_usp_override: dict[str, int] | None = None  # chunk.section→user_usp_id (chunk별 수동 매핑)
     chunk_meta_override: dict[str, dict] | None = None  # chunk.section→{topic, role} (분석 metadata 수정)
-    social_proof_override: dict[str, int | None] | None = None  # ref_sp_id(str) → user_sp_index (wizard SP 매핑)
-    user_social_proof: list[dict] | None = None  # 우리 제품의 social_proof claim 배열
 
 
 @app.post("/api/script/generate")
@@ -107,38 +105,6 @@ def gen_script(req: ScriptGenRequest):
         if req.chunk_usp_override:
             chunk_override = {k: v for k, v in req.chunk_usp_override.items() if v is not None}
         meta_override = req.chunk_meta_override or None
-        # Social proof 섹션별 매핑 빌드: {section: [{user_label, user_value, ref_evidence}]}
-        sp_section_map: dict[str, list[dict]] = {}
-        if req.social_proof_override and req.user_social_proof and req.reference_shortcodes:
-            try:
-                ref_for_sp = script_gen.fetch_reference(req.reference_shortcodes[0])
-                ref_sps = (((ref_for_sp or {}).get("structure") or {}).get("overall") or {}).get("social_proof") or []
-                user_sps = req.user_social_proof or []
-                for ref_sp_id_str, user_sp_idx in req.social_proof_override.items():
-                    if user_sp_idx is None:
-                        continue
-                    try:
-                        rid = int(ref_sp_id_str)
-                    except (ValueError, TypeError):
-                        continue
-                    ref_sp = next((r for r in ref_sps if r.get("id") == rid), None)
-                    if not ref_sp:
-                        continue
-                    if not (0 <= user_sp_idx < len(user_sps)):
-                        continue
-                    user_sp = user_sps[user_sp_idx]
-                    for sec in (ref_sp.get("appears_in") or []):
-                        sp_section_map.setdefault(sec.lower(), []).append({
-                            "user_label": user_sp.get("label", ""),
-                            "user_value": user_sp.get("value", ""),
-                            "user_type": user_sp.get("type", ""),
-                            "ref_evidence": ref_sp.get("evidence", ""),
-                            "ref_type": ref_sp.get("type", ""),
-                        })
-                logger.info("[script/gen] sp_section_map: %s", {k: len(v) for k, v in sp_section_map.items()})
-            except Exception as e:
-                logger.warning("[script/gen] sp_section_map build failed: %s", e)
-
         result = script_gen.generate(
             product_name=req.product_name,
             pain=req.pain,
@@ -150,8 +116,6 @@ def gen_script(req: ScriptGenRequest):
             usp_mapping_override=override,
             chunk_usp_override=chunk_override,
             chunk_meta_override=meta_override,
-            user_social_proof=req.user_social_proof or [],
-            sp_section_map=sp_section_map or None,
         )
         n_sentences = len(result.get("sentences") or [])
         cost = script_gen.summarize_cost()
@@ -668,19 +632,6 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
     전체 생성을 안 돌리므로 빠름 (Gemini 1회). 매칭/미매칭 USP 분석 + chunk 컨텍스트 같이 반환.
     """
     auth_svc.require_user(request)
-    try:
-        return _preview_mapping_impl(shortcode, body)
-    except HTTPException:
-        raise
-    except Exception as e:
-        import traceback as _tb
-        tb = _tb.format_exc()
-        logger.error("[preview-mapping] sc=%s pid=%s 500: %s\n%s", shortcode, body.product_id, e, tb)
-        # 프런트에서도 원인 보이게 메시지에 stage 박음
-        raise HTTPException(500, f"preview-mapping 실패: {type(e).__name__}: {e}")
-
-
-def _preview_mapping_impl(shortcode: str, body: PreviewMappingRequest):
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
@@ -698,23 +649,22 @@ def _preview_mapping_impl(shortcode: str, body: PreviewMappingRequest):
     if not ref_usps:
         raise HTTPException(400, "usp_layout 없음 — 먼저 reanalyze-usp-layout 실행 필요")
 
-    # 2. product USPs + social_proof 로드
+    # 2. product USPs 로드
     rows = _r.get(
-        f"{SUPA}/rest/v1/my_products?id=eq.{body.product_id}&select=id,name,usps,persona,social_proof",
+        f"{SUPA}/rest/v1/my_products?id=eq.{body.product_id}&select=id,name,usps,persona",
         headers=H, timeout=10,
     ).json()
     if not rows:
         raise HTTPException(404, f"product {body.product_id} 없음")
     product = rows[0]
     user_usps = product.get("usps") or []
-    user_social_proof = product.get("social_proof") or []
     if not user_usps:
         raise HTTPException(400, "product에 USP 없음")
 
-    # 3. pre-planner 호출 (Flash — 매핑은 의미 매칭 task, thinking 불필요)
+    # 3. pre-planner 호출 (truncation 방지 — max_tokens 넉넉히)
     prompt = script_gen._build_pre_planner_prompt(user_usps, ref_usps, section_chunks)
     try:
-        result = script_gen.call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=4096)
+        result = script_gen.call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=4096)
         if isinstance(result, list) and result:
             result = result[0]
     except Exception as e:
@@ -760,43 +710,12 @@ def _preview_mapping_impl(shortcode: str, body: PreviewMappingRequest):
         logger.warning("[preview-mapping] ref_desires 추출 실패: %s", e)
         ref_desires = []
 
-    # 7. social proof 매핑 (heuristic: type 일치 우선, 없으면 첫 user SP)
-    ref_social_proof = overall.get("social_proof") or []
-    sp_mapping = []
-    for sp in ref_social_proof:
-        rid = sp.get("id")
-        rtype = sp.get("type")
-        # 같은 type의 user SP 찾기
-        match_idx = None
-        for i, usp in enumerate(user_social_proof):
-            if usp.get("type") == rtype:
-                match_idx = i
-                break
-        sp_mapping.append({
-            "ref_sp_id": rid,
-            "ref_type": rtype,
-            "ref_label": sp.get("label", ""),
-            "ref_evidence": sp.get("evidence", ""),
-            "ref_appears_in": sp.get("appears_in") or [],
-            "ref_strength": sp.get("strength", ""),
-            "user_sp_index": match_idx,  # null = 매칭 없음
-            "user_sp_label": user_social_proof[match_idx].get("label", "") if match_idx is not None else None,
-            "user_sp_value": user_social_proof[match_idx].get("value", "") if match_idx is not None else None,
-        })
-
     return {
         "shortcode": shortcode,
-        "product": {
-            "id": product["id"],
-            "name": product.get("name", ""),
-            "usps": user_usps,
-            "social_proof": user_social_proof,
-        },
+        "product": {"id": product["id"], "name": product.get("name", ""), "usps": user_usps},
         "ref_usps": ref_usps,
-        "ref_social_proof": ref_social_proof,
         "section_chunks": section_chunks,
         "usp_mapping": mapping_full,
-        "social_proof_mapping": sp_mapping,
         "unused_user_usps": unused_user,
         "unmatched_ref_usps": unmatched_ref,
         "ref_desires": ref_desires,
@@ -1124,7 +1043,6 @@ class MyProductIn(BaseModel):
     name: str
     persona: str | None = None
     usps: list[dict] = []
-    social_proof: list[dict] = []
 
 
 _MY_PRODUCTS_CACHE_TTL = 20
@@ -1225,8 +1143,7 @@ def create_my_product(req: MyProductIn, request: Request):
         f"{SUPA}/rest/v1/my_products",
         headers={"apikey": SK, "Authorization": f"Bearer {SK}",
                  "Content-Type": "application/json", "Prefer": "return=representation"},
-        json={"owner_id": me["id"], "name": req.name, "persona": req.persona,
-              "usps": req.usps, "social_proof": req.social_proof},
+        json={"owner_id": me["id"], "name": req.name, "persona": req.persona, "usps": req.usps},
         timeout=10,
     )
     if r.status_code not in (200, 201):
@@ -1259,8 +1176,7 @@ def update_my_product(pid: int, req: MyProductIn, request: Request):
         f"{SUPA}/rest/v1/my_products?id=eq.{pid}",
         headers={"apikey": SK, "Authorization": f"Bearer {SK}",
                  "Content-Type": "application/json", "Prefer": "return=representation"},
-        json={"name": req.name, "persona": req.persona,
-              "usps": req.usps, "social_proof": req.social_proof},
+        json={"name": req.name, "persona": req.persona, "usps": req.usps},
         timeout=10,
     )
     if r.status_code not in (200, 204):

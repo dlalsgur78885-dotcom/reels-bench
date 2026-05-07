@@ -4396,7 +4396,7 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     if ref_usps_layout:
         try:
             pre_prompt = _build_pre_planner_prompt(usps, ref_usps_layout, section_chunks or [])
-            pre_result = call_gemini(pre_prompt, model="gemini-3.1-pro-preview", max_tokens=2048)
+            pre_result = call_gemini(pre_prompt, model="gemini-3.1-pro-preview", max_tokens=4096)
             if isinstance(pre_result, list) and pre_result:
                 pre_result = pre_result[0]
             ref_by_id = {ru.get("id"): ru for ru in ref_usps_layout if isinstance(ru.get("id"), int)}

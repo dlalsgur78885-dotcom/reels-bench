@@ -20,11 +20,14 @@ MODEL = "gemini-3.1-pro-preview"
 # 비용 추적 — call_gemini가 매 호출마다 토큰 사용량 추가, summarize_cost가 누적·합산
 _cost_meter: list[dict] = []
 
-# 단가 (USD per 1M tokens) — Gemini 3 Pro/Flash Preview
+# 단가 (USD per 1M tokens)
 _PRICING = {
     "gemini-3.1-pro-preview": {"in": 2.0, "out": 12.0},
     "gemini-3-pro-preview": {"in": 2.0, "out": 12.0},
     "gemini-3-flash-preview": {"in": 0.30, "out": 2.50},
+    "anthropic/claude-sonnet-4-6": {"in": 3.0, "out": 15.0},
+    "anthropic/claude-sonnet-4-5": {"in": 3.0, "out": 15.0},
+    "anthropic/claude-opus-4-7": {"in": 15.0, "out": 75.0},
 }
 
 
@@ -2269,6 +2272,122 @@ def call_gemini(prompt: str, min_sentences: int | None = None, model: str | None
         return json.loads(cleaned)
 
 
+def call_anthropic(prompt: str, model: str, max_tokens: int = 8192) -> dict:
+    """Anthropic API 직접 호출 (Sonnet writer용).
+
+    model: "claude-sonnet-4-6" 또는 "anthropic/claude-sonnet-4-6" (prefix 자동 제거)
+    cache_control: <<<CACHE_BOUNDARY>>> 마커 있으면 prefix를 ephemeral cache로 분리.
+    """
+    key = secrets_svc.get_secret("ANTHROPIC_API_KEY", "") or os.getenv("ANTHROPIC_API_KEY", "")
+    if not key:
+        raise RuntimeError("ANTHROPIC_API_KEY 미설정")
+    api_model = model.replace("anthropic/", "").replace(".", "-")
+
+    CACHE_MARKER = "<<<CACHE_BOUNDARY>>>"
+    if CACHE_MARKER in prompt:
+        static_prefix, dynamic_suffix = prompt.split(CACHE_MARKER, 1)
+        content = [
+            {"type": "text", "text": static_prefix.rstrip(),
+             "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": dynamic_suffix.lstrip()},
+        ]
+    else:
+        content = prompt
+
+    body = {
+        "model": api_model,
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": max_tokens,
+        "temperature": 0.85,
+    }
+    r = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+        json=body, timeout=240,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"Anthropic call {r.status_code}: {r.text[:300]}")
+    data = r.json()
+
+    # 비용 추적
+    try:
+        um = data.get("usage") or {}
+        in_tok = int(um.get("input_tokens", 0))
+        out_tok = int(um.get("output_tokens", 0))
+        cached_tok = int(um.get("cache_read_input_tokens") or 0)
+        cache_create = int(um.get("cache_creation_input_tokens") or 0)
+        total_in = in_tok + cached_tok + cache_create
+        meter_model = f"anthropic/{api_model}"
+        _cost_meter.append({
+            "model": meter_model,
+            "in_tokens": total_in,
+            "out_tokens": out_tok,
+            "cached_tokens": cached_tok,
+            "cache_create_tokens": cache_create,
+        })
+        if cached_tok > 0 or cache_create > 0:
+            logger.info("[anthropic-cache] in=%d (cached=%d, create=%d) out=%d",
+                        total_in, cached_tok, cache_create, out_tok)
+    except Exception:
+        pass
+
+    # 응답 텍스트 추출 + JSON 파싱
+    text = ""
+    try:
+        for blk in (data.get("content") or []):
+            if blk.get("type") == "text":
+                text += blk.get("text", "")
+    except Exception:
+        raise RuntimeError(f"Anthropic 응답 파싱 실패: {json.dumps(data)[:300]}")
+
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```", 2)[1] if "```" in cleaned[3:] else cleaned[3:]
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+        cleaned = cleaned.strip().rstrip("`").strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        # truncation salvage — sentences 배열까지 살림
+        stop_reason = data.get("stop_reason", "")
+        if stop_reason == "max_tokens" or len(cleaned) > 14000:
+            try:
+                import re as _re
+                m = _re.search(r'"sentences"\s*:\s*\[', cleaned)
+                if m:
+                    arr_start = m.end()
+                    last_complete = arr_start
+                    depth = 0
+                    for i, ch in enumerate(cleaned[arr_start:], arr_start):
+                        if ch == '{': depth += 1
+                        elif ch == '}':
+                            depth -= 1
+                            if depth == 0: last_complete = i + 1
+                    salvaged = cleaned[:last_complete] + "]}"
+                    parsed = json.loads(salvaged)
+                    logger.warning("salvaged truncated Anthropic with %d sents", len(parsed.get("sentences") or []))
+                    return parsed
+            except Exception as e2:
+                logger.warning("Anthropic salvage failed: %s", e2)
+        raise
+
+
+def call_llm(prompt: str, model: str, min_sentences: int | None = None, max_tokens: int = 8192) -> dict:
+    """모델 prefix로 Anthropic / Gemini 자동 라우팅.
+
+    - "anthropic/" prefix → call_anthropic (cache 가능)
+    - 그 외 → call_gemini
+    """
+    if model.startswith("anthropic/"):
+        return call_anthropic(prompt, model, max_tokens=max_tokens)
+    return call_gemini(prompt, min_sentences=min_sentences, model=model, max_tokens=max_tokens)
+
+
 def detect_awkward_sentences(sentences: list[dict], ref_sents: list[dict] | None = None) -> list[dict]:
     """Flash로 어색한 한국어 문장 감지.
     Returns: [{"idx": i, "text": "...", "reason": "왜 어색한지"}]
@@ -3872,7 +3991,7 @@ Planner가 각 문장에 **skeleton + signature + usp_id**를 줍니다.
 5. 추상 명사구 금지 ("쾌적함/편의성/효율성/만족도" X)
 6. 같은 spec의 usp_id에 해당하는 USP 리뷰만 사용 — 다른 USP 어휘 침입 X
 7. 리뷰가 안 맞으면 Fallback 룰 적용 (의미 가까운 단어 → slot 타입 변환 → 도메인 일반어)
-
+<<<CACHE_BOUNDARY>>>
 ## 제품
 {product_name}
 {persona_str}{usps_block}
@@ -4593,6 +4712,11 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                 violations.append((i, "+".join(reasons)))
         return violations
 
+    # Writer 모델 — env var WRITER_MODEL로 override (예: "anthropic/claude-sonnet-4-6")
+    writer_model = os.getenv("WRITER_MODEL", "").strip() or MODEL
+    if writer_model != MODEL:
+        logger.info("[writer] using model: %s (cache=%s)", writer_model, "Y" if writer_model.startswith("anthropic/") else "N")
+
     def _write_section(sec, prev_chunks=None):
         prompt = _build_section_writer_prompt(
             sec, product_name, target_persona, usps, pain, desire,
@@ -4605,14 +4729,14 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
         n_required = len(spec_list)
         try:
             # min_sentences로 schema minItems 강제 — Pro가 spec 수 만큼 출력
-            r = call_gemini(prompt, model=MODEL, max_tokens=8192, min_sentences=n_required)
+            r = call_llm(prompt, model=writer_model, max_tokens=8192, min_sentences=n_required)
             sentences = r.get("sentences") or []
             # count retry — 부족하면 한 번 더 (강조 prompt)
             if len(sentences) < n_required:
                 logger.warning("[writer] section=%s count short %d<%d — retry", sec.get("name"), len(sentences), n_required)
                 retry_prompt = prompt + f"\n\n## ⚠️ 재시도 — 정확히 {n_required}개 sentence 출력 필수\n이전 시도에서 {len(sentences)}개만 나왔습니다. 모든 spec({n_required}개)에 1:1 대응하는 sentence 객체를 만드세요. 합치기·생략 금지."
                 try:
-                    r2 = call_gemini(retry_prompt, model=MODEL, max_tokens=8192, min_sentences=n_required)
+                    r2 = call_llm(retry_prompt, model=writer_model, max_tokens=8192, min_sentences=n_required)
                     s2 = r2.get("sentences") or []
                     if len(s2) > len(sentences):
                         sentences = s2
@@ -4641,7 +4765,7 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                     )
                 retry_prompt = prompt + f"\n\n## ⚠️ 재시도 — 미러링 위반 검출\n{chr(10).join(bad_lines)}\n\n위 문장들을 다시 쓰세요. 시그니처(끝 어구) 보존 + 음절 수를 참고와 맞추기."
                 try:
-                    r2 = call_gemini(retry_prompt, model=MODEL, max_tokens=4096)
+                    r2 = call_llm(retry_prompt, model=writer_model, max_tokens=4096)
                     s2 = r2.get("sentences") or []
                     if s2 and len(s2) == len(sentences):
                         sentences = s2

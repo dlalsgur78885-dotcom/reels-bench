@@ -3986,11 +3986,14 @@ Planner가 각 문장에 **skeleton + signature + usp_id**를 줍니다.
 """
 
 
-def _build_pre_planner_prompt(usps: list[dict], ref_usps: list[dict], section_chunks: list[dict]) -> str:
+def _build_pre_planner_prompt(usps: list[dict], ref_usps: list[dict], section_chunks: list[dict], locked_mappings: list[dict] | None = None) -> str:
     """K-USP 매핑: ref_usp_id → user_usp_id.
 
     ref USP 각각을 우리 USP 중 의미가 가장 가까운 1개로 매핑 (또는 null).
     Hook/Intro 강제·body 강제·slot 생성 없음 — chunks가 이미 sentence 그룹과 ref USP를 정의.
+
+    locked_mappings: [{ref_usp_id, user_usp_id, source}]  — 사용자가 확정한 매핑 (preview에서 결정)
+        LLM은 이 매핑을 그대로 출력하고, 다른 ref USP 매핑할 때 이 user USP들을 중복 사용 회피.
     """
     usps_str = ""
     for i, u in enumerate(usps, 1):
@@ -4028,6 +4031,30 @@ def _build_pre_planner_prompt(usps: list[dict], ref_usps: list[dict], section_ch
         if summary:
             chunk_lines += f"\n    summary: {summary}"
 
+    # v4-4: 사용자 확정 매핑 (preview에서 결정 → multistep으로 전달된 것)
+    locked_block = ""
+    locked_user_ids: list[int] = []
+    if locked_mappings:
+        locked_lines = []
+        for lm in locked_mappings:
+            rid = lm.get("ref_usp_id")
+            uid = lm.get("user_usp_id")
+            src = lm.get("source", "user")
+            if not isinstance(rid, int) or not isinstance(uid, int):
+                continue
+            ref_label = (next((r for r in ref_usps if r.get("id") == rid), {}) or {}).get("label", "")
+            user_label = usps[uid - 1].get("usp", "") if 1 <= uid <= len(usps) else ""
+            locked_lines.append(f"  - ref USP{rid} ({ref_label}) → user USP{uid} ({user_label}) [{src}]")
+            if uid not in locked_user_ids:
+                locked_user_ids.append(uid)
+        if locked_lines:
+            locked_block = f"""
+
+## 🔒 사용자 확정 매핑 (절대 변경 X — 출력에 그대로 포함)
+{chr(10).join(locked_lines)}
+
+⚠️ 위 매핑은 사용자가 preview/wizard에서 직접 결정한 것. **반드시 출력에 그대로 박고**, **다른 ref USP 매핑할 때 위 user USP({", ".join(f"USP{u}" for u in locked_user_ids)})는 중복 사용 회피** (가능하면 다른 USP 선택, 마땅하면 null)."""
+
     return f"""당신은 광고 카피 플래너입니다. **ref의 각 USP를 우리 USP 중 어느 것에 매핑할지** 판단.
 
 ref USP는 이미 분석되어 있고, 각 chunk가 어느 ref USP를 다루는지도 정해져 있습니다. 당신의 일은 **K-USP 매핑** — ref USP 하나당 우리 USP id 하나(또는 null).
@@ -4040,6 +4067,7 @@ ref USP는 이미 분석되어 있고, 각 chunk가 어느 ref USP를 다루는�
 
 ## ref Section Chunks (각 chunk가 다루는 ref USP — 컨텍스트)
 {chunk_lines or '(없음)'}
+{locked_block}
 
 ## 매핑 룰
 1. **각 ref USP id별로 1개의 user_usp_id 선택** (또는 null = 매칭 불가)
@@ -4390,12 +4418,43 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
         logger.info("[section-rename] applied: %s → ranges: %s",
                     chunk_section_renames, [(n, s, e) for n, s, e in section_idx_ranges])
 
+    # v4-4: 사용자 확정 매핑 빌드 (preview에서 결정한 것)
+    # 1) usp_mapping_override (ref-level)
+    # 2) chunk_usp_override → ref USP 잠금 변환 (chunk.primary_usp_id 통해)
+    locked_mappings: list[dict] = []
+    locked_ref_ids: set[int] = set()
+    if usp_mapping_override:
+        for rid, uid in usp_mapping_override.items():
+            if isinstance(rid, int) and isinstance(uid, int) and 1 <= uid <= len(usps):
+                locked_mappings.append({
+                    "ref_usp_id": rid, "user_usp_id": uid, "source": "user_mapping",
+                })
+                locked_ref_ids.add(rid)
+    if chunk_usp_override and section_chunks:
+        for sec, uid in chunk_usp_override.items():
+            if not isinstance(uid, int) or not (1 <= uid <= len(usps)):
+                continue
+            chunk = next((c for c in section_chunks if (c.get("section") or "").strip() == sec.strip()), None)
+            if not chunk:
+                continue
+            ref_id = chunk.get("primary_usp_id")
+            if not isinstance(ref_id, int):
+                continue
+            if ref_id in locked_ref_ids:
+                continue  # usp_mapping_override 우선
+            locked_mappings.append({
+                "ref_usp_id": ref_id, "user_usp_id": uid, "source": "chunk_override",
+            })
+            locked_ref_ids.add(ref_id)
+    if locked_mappings:
+        logger.info("[multistep-B] locked_mappings: %s", locked_mappings)
+
     # Pre-planner 호출 — ref_usp → user_usp 매핑
     usp_mapping: dict[int, int | None] = {}
     usp_mapping_full: list[dict] = []  # UI 노출용 (ref/user 라벨 + reason)
     if ref_usps_layout:
         try:
-            pre_prompt = _build_pre_planner_prompt(usps, ref_usps_layout, section_chunks or [])
+            pre_prompt = _build_pre_planner_prompt(usps, ref_usps_layout, section_chunks or [], locked_mappings=locked_mappings)
             pre_result = call_gemini(pre_prompt, model="gemini-3.1-pro-preview", max_tokens=4096)
             if isinstance(pre_result, list) and pre_result:
                 pre_result = pre_result[0]

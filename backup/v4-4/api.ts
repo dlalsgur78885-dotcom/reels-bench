@@ -455,6 +455,10 @@ export const api = {
     post<{ shortcode: string; sp_sentences: SpSentence[]; sp_count: number }>(
       `/api/script/reanalyze-sp/${sc}`, {},
     ),
+  updateSpSentences: (sc: string, sp_sentences: SpSentence[]) =>
+    patch<{ shortcode: string; sp_sentences: SpSentence[]; sp_count: number }>(
+      `/api/script/sp-sentences/${sc}`, { sp_sentences },
+    ),
   previewMapping: (sc: string, product_id: number) =>
     post<{
       shortcode: string

@@ -592,6 +592,64 @@ def reanalyze_sp_for_yt(shortcode: str, request: Request):
     return _reanalyze_sp_core(shortcode, source="youtube")
 
 
+class SpSentencesPatch(BaseModel):
+    sp_sentences: list[dict]
+
+
+def _patch_sp_sentences_core(shortcode: str, source: str, sp_sentences: list[dict]) -> dict:
+    """v4-4: 사용자가 직접 편집한 SP sentences를 DB에 저장."""
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    structure_table = script_gen._tables(source)["structure"]
+    rows = _r.get(
+        f"{SUPA}/rest/v1/{structure_table}?shortcode=eq.{shortcode}&select=overall&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    if not rows:
+        raise HTTPException(404, "script_structure 없음")
+    overall = rows[0].get("overall") or {}
+    cleaned: list[dict] = []
+    valid_types = {"sales_volume", "review_volume", "rating", "authority", "scarcity", "award", "personal"}
+    for s in sp_sentences:
+        if not isinstance(s, dict):
+            continue
+        idx = s.get("sentence_idx")
+        sp_type = s.get("sp_type")
+        if not isinstance(idx, int) or sp_type not in valid_types:
+            continue
+        cleaned.append({
+            "sentence_idx": idx,
+            "sp_type": sp_type,
+            "sp_strength": s.get("sp_strength", "weak"),
+            "evidence": (s.get("evidence") or "").strip(),
+            "label": (s.get("label") or "").strip(),
+        })
+    cleaned.sort(key=lambda x: x["sentence_idx"])
+    overall["sp_sentences"] = cleaned
+    _r.patch(
+        f"{SUPA}/rest/v1/{structure_table}?shortcode=eq.{shortcode}",
+        headers={**H, "Prefer": "return=minimal"},
+        json={"overall": overall}, timeout=15,
+    )
+    return {"shortcode": shortcode, "source": source, "sp_sentences": cleaned, "sp_count": len(cleaned)}
+
+
+@app.patch("/api/script/sp-sentences/{shortcode}")
+def patch_sp_sentences_for_reel(shortcode: str, body: SpSentencesPatch, request: Request):
+    """v4-4 — 인스타 릴스 SP 사용자 편집 저장."""
+    auth_svc.require_user(request)
+    return _patch_sp_sentences_core(shortcode, source="reels", sp_sentences=body.sp_sentences)
+
+
+@app.patch("/api/yt/script/sp-sentences/{shortcode}")
+def patch_sp_sentences_for_yt(shortcode: str, body: SpSentencesPatch, request: Request):
+    """v4-4 — 유튜브 SP 사용자 편집 저장."""
+    auth_svc.require_user(request)
+    return _patch_sp_sentences_core(shortcode, source="youtube", sp_sentences=body.sp_sentences)
+
+
 @app.post("/api/script/analyze-section-chunks/{shortcode}")
 def analyze_section_chunks_for_reel(shortcode: str, request: Request):
     """모든 섹션(hook/intro/body_N/cta) chunk별 분석. overall.section_chunks에 저장 (+ body_chunks 호환 alias)."""
@@ -2983,6 +3041,69 @@ def get_youtubers(
     elif sort == "growth":
         rows.sort(key=lambda r: r.get("subscriber_growth_rate") or 0, reverse=True)
     return {"items": rows, "total": len(rows)}
+
+
+class YtIntakeRequest(BaseModel):
+    video_ids: list[str]
+
+
+@app.post("/api/yt/intake")
+def yt_intake(req: YtIntakeRequest, request: Request):
+    """유튜브 쇼츠 video_id 큐 등록 — auto_yt_worker가 polling해서 분석."""
+    auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}",
+         "Content-Type": "application/json",
+         "Prefer": "resolution=merge-duplicates,return=minimal"}
+    _r = supabase.get_session()
+
+    valid_ids = [v.strip() for v in req.video_ids if v and len(v.strip()) >= 6]
+    if not valid_ids:
+        raise HTTPException(400, "video_ids 비어있음")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    payload = [
+        {
+            "shortcode": vid,
+            "url": f"https://www.youtube.com/shorts/{vid}",
+            "source": "youtube_short",
+            "collected_at": now_iso,
+        }
+        for vid in valid_ids
+    ]
+    rr = _r.post(
+        f"{SUPA}/rest/v1/youtube_shorts?on_conflict=shortcode",
+        headers=H, json=payload, timeout=15,
+    )
+    if rr.status_code not in (200, 201, 204):
+        raise HTTPException(rr.status_code, rr.text[:200])
+    return {"queued": len(valid_ids), "video_ids": valid_ids}
+
+
+@app.get("/api/yt/intake/status")
+def yt_intake_status(request: Request):
+    """미분석 (pro_audio 없음) 큐 상태 조회 — 프론트에서 'X개 대기 중' 표시용."""
+    auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+
+    core = _r.get(
+        f"{SUPA}/rest/v1/youtube_shorts?select=shortcode,collected_at&order=collected_at.desc&limit=200",
+        headers=H, timeout=10,
+    ).json()
+    audio = _r.get(
+        f"{SUPA}/rest/v1/youtube_shorts_pro_audio?select=shortcode&limit=2000",
+        headers=H, timeout=10,
+    ).json()
+    analyzed = {row["shortcode"] for row in (audio or []) if row.get("shortcode")}
+    pending = [
+        {"shortcode": r["shortcode"], "collected_at": r.get("collected_at")}
+        for r in (core or []) if r.get("shortcode") and r["shortcode"] not in analyzed
+    ]
+    return {"pending": pending, "pending_count": len(pending), "analyzed_count": len(analyzed)}
 
 
 @app.get("/api/yt/bench")

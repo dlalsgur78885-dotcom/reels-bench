@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api, BASE } from '../api'
-import type { MyProduct, PersonaCandidate, SpDecision, SpAction } from '../api'
+import type { MyProduct, PersonaCandidate } from '../api'
 import { getAccessToken } from '../supabase'
 
 type Step = 'product' | 'mapping' | 'persona' | 'generating' | 'done'
@@ -44,8 +44,6 @@ export default function ScriptGenWizard() {
   const [chunkOverrides, setChunkOverrides] = useState<Record<string, number>>({})
   // chunk metadata 수정 (topic/role/section) — 이번 generation에만 적용
   const [chunkEdits, setChunkEdits] = useState<Record<string, { topic: string; role: string; section?: string }>>({})
-  // v4-4 SP decisions: sentence_idx → SpDecision (default = keep)
-  const [spDecisions, setSpDecisions] = useState<Record<number, SpDecision>>({})
   const [editingChunk, setEditingChunk] = useState<Record<string, boolean>>({})
 
   // 3. 페르소나
@@ -70,41 +68,14 @@ export default function ScriptGenWizard() {
     setMappingError('')
     setOverrides({})
     setChunkOverrides({})
-    setSpDecisions({})
     try {
       const r = await api.previewMapping(shortcode, pid)
       setMapping(r)
-      // v4-4: 모든 ref SP의 default action = "keep" (사용자가 변경 안 한 자리는 ref 그대로 보존)
-      const initSp: Record<number, SpDecision> = {}
-      r.sp_sentences?.forEach(sp => {
-        initSp[sp.sentence_idx] = {
-          sentence_idx: sp.sentence_idx,
-          action: 'keep',
-          sp_type: sp.sp_type,
-          sp_strength: sp.sp_strength,
-          evidence: sp.evidence,
-        }
-      })
-      setSpDecisions(initSp)
     } catch (e: any) {
       setMappingError(e.message || String(e))
     } finally {
       setMappingLoading(false)
     }
-  }
-
-  // v4-4: SP sentences 편집 저장 — DB PATCH + 로컬 mapping 갱신
-  const saveSpSentences = async (
-    next: import('../api').SpSentence[],
-  ): Promise<{ ok: boolean; error?: string }> => {
-    if (!shortcode || !mapping) return { ok: false, error: '매핑 미로드' }
-    try {
-      const r = await api.updateSpSentences(shortcode, next)
-      setMapping({ ...mapping, sp_sentences: r.sp_sentences })
-    } catch (e: any) {
-      return { ok: false, error: e.message || 'DB 저장 실패' }
-    }
-    return { ok: true }
   }
 
   // ref USP 라벨/설명 저장 — DB 저장 + 로컬 mapping 갱신
@@ -382,7 +353,6 @@ export default function ScriptGenWizard() {
             chunk_meta_override: Object.keys(chunkEdits).length
               ? chunkEdits
               : undefined,
-            sp_decisions: Object.values(spDecisions).filter(d => d.action !== 'keep' || d.sp_type),
           }),
         })
         if (!r.ok) throw new Error(`${r.status} ${await r.text()}`)
@@ -477,11 +447,6 @@ export default function ScriptGenWizard() {
           }}
           onCreateUsp={createUspForRef}
           onSaveRefUsp={saveRefUsp}
-          spDecisions={spDecisions}
-          onSpDecision={(idx, decision) => {
-            setSpDecisions(prev => ({ ...prev, [idx]: { ...prev[idx], ...decision } }))
-          }}
-          onSaveSp={saveSpSentences}
           onBack={() => setStep('product')}
           onNext={goToPersona}
         />
@@ -644,7 +609,7 @@ function StepProduct({
 function StepMapping({
   mapping, loading, error, overrides, chunkOverrides, unusedUsps, onChunkOverride,
   getEffectiveChunkUspId, chunkEdits, editingChunk, setChunkEdits, toggleChunkEdit,
-  onCreateUsp, onSaveRefUsp, spDecisions, onSpDecision, onBack, onNext,
+  onCreateUsp, onSaveRefUsp, onBack, onNext,
 }: {
   mapping: MappingPreview | null
   loading: boolean
@@ -660,9 +625,6 @@ function StepMapping({
   toggleChunkEdit: (section: string, currentTopic: string, currentRole: string) => void
   onCreateUsp: (refUspId: number, name: string, description: string, reviews: string[]) => Promise<{ ok: boolean; error?: string }>
   onSaveRefUsp: (refUspId: number, fields: { label?: string; description?: string }) => Promise<{ ok: boolean; error?: string }>
-  spDecisions: Record<number, SpDecision>
-  onSpDecision: (sentence_idx: number, decision: Partial<SpDecision>) => void
-  onSaveSp: (next: import('../api').SpSentence[]) => Promise<{ ok: boolean; error?: string }>
   onBack: () => void
   onNext: () => void
 }) {
@@ -674,10 +636,6 @@ function StepMapping({
   const [createErr, setCreateErr] = useState('')
   const [refUspEditing, setRefUspEditing] = useState<number | null>(null)
   const [refUspDraft, setRefUspDraft] = useState<{ label?: string; description?: string } | null>(null)
-  // v4-4: SP 편집 상태 (sentence_idx별 draft)
-  const [spEditing, setSpEditing] = useState<number | null>(null)
-  const [spDraft, setSpDraft] = useState<Partial<import('../api').SpSentence>>({})
-  const [spSaving, setSpSaving] = useState(false)
 
   const startCreate = (refUspId: number, refDesc: string) => {
     setCreatingFor(refUspId)
@@ -1049,199 +1007,6 @@ function StepMapping({
           })}
         </div>
       </div>
-
-      {mapping?.sp_sentences && mapping.sp_sentences.length > 0 && (
-        <div style={cardSt}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-            <div style={labelSt}>SP 처리 결정 (v4-4)</div>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-              {mapping.sp_sentences.length}개 SP — default = keep (그대로)
-            </span>
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>
-            ref에 박힌 사회적 증명별로 처리 방식 선택. 이건 SP, 저건 SP 아님 식으로 4개 중 1개만 바꿀 수도 있음.
-          </div>
-          <div style={{ display: 'grid', gap: 10 }}>
-            {mapping.sp_sentences.map(sp => {
-              const d = spDecisions[sp.sentence_idx] || {
-                sentence_idx: sp.sentence_idx, action: 'keep' as SpAction,
-                sp_type: sp.sp_type, sp_strength: sp.sp_strength, evidence: sp.evidence,
-              }
-              const action = d.action
-              const setAction = (a: SpAction) => onSpDecision(sp.sentence_idx, { action: a })
-              const actions: { v: SpAction; label: string; hint: string; bg: string }[] = [
-                { v: 'keep', label: 'keep', hint: 'ref 그대로 mirror', bg: '#10b981' },
-                { v: 'replace', label: 'replace', hint: '우리 SP value로 교체', bg: '#3b82f6' },
-                { v: 'rewrite_sp', label: 'rewrite_sp', hint: 'SP-type 유지, generic SP', bg: '#a855f7' },
-                { v: 'drop', label: 'drop', hint: 'SP 빼고 일반 transition', bg: '#6b7280' },
-              ]
-              const isEditing = spEditing === sp.sentence_idx
-              return (
-                <div key={sp.sentence_idx} style={{
-                  padding: 10, background: 'var(--bg-surface)',
-                  border: `1px solid ${isEditing ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 'var(--radius-sm)',
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
-                    <span style={{
-                      fontSize: 10, padding: '2px 6px', background: 'var(--bg-base)',
-                      border: '1px solid var(--border-subtle)', borderRadius: 3, color: 'var(--text-muted)',
-                    }}>idx={sp.sentence_idx}</span>
-                    <span style={{
-                      fontSize: 10, fontWeight: 700, padding: '2px 6px',
-                      borderRadius: 3, background: '#3b82f6', color: '#fff',
-                    }}>{sp.sp_type}</span>
-                    {sp.sp_strength === 'strong' && (
-                      <span style={{ fontSize: 10, color: 'var(--success)', fontWeight: 600 }}>★ strong</span>
-                    )}
-                    <span style={{ fontSize: 13, fontWeight: 600 }}>{sp.label}</span>
-                    <button
-                      onClick={() => {
-                        if (isEditing) { setSpEditing(null); setSpDraft({}) }
-                        else { setSpEditing(sp.sentence_idx); setSpDraft({ ...sp }) }
-                      }}
-                      style={{
-                        marginLeft: 'auto', padding: '2px 8px', fontSize: 10,
-                        background: isEditing ? 'var(--accent)' : 'var(--bg-base)',
-                        color: isEditing ? '#fff' : 'var(--text-body)',
-                        border: '1px solid var(--border)', borderRadius: 3, cursor: 'pointer',
-                      }}>
-                      {isEditing ? '취소' : '✏ 편집'}
-                    </button>
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontStyle: 'italic', marginBottom: 8 }}>
-                    "{sp.evidence}"
-                  </div>
-                  {isEditing && mapping && (
-                    <div style={{
-                      marginBottom: 8, padding: 10, background: 'var(--bg-base)',
-                      border: '1px dashed var(--accent)', borderRadius: 'var(--radius-sm)',
-                      display: 'grid', gap: 6,
-                    }}>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-                        <select
-                          value={spDraft.sp_type || sp.sp_type}
-                          onChange={(e) => setSpDraft({ ...spDraft, sp_type: e.target.value as import('../api').SpType })}
-                          style={{ padding: '6px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 3 }}>
-                          <option value="sales_volume">sales_volume (매출)</option>
-                          <option value="review_volume">review_volume (후기)</option>
-                          <option value="rating">rating (평점)</option>
-                          <option value="authority">authority (권위)</option>
-                          <option value="scarcity">scarcity (희소)</option>
-                          <option value="award">award (수상)</option>
-                          <option value="personal">personal (본인)</option>
-                        </select>
-                        <select
-                          value={spDraft.sp_strength || sp.sp_strength}
-                          onChange={(e) => setSpDraft({ ...spDraft, sp_strength: e.target.value as import('../api').SpStrength })}
-                          style={{ padding: '6px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 3 }}>
-                          <option value="weak">weak</option>
-                          <option value="strong">strong</option>
-                        </select>
-                      </div>
-                      <input
-                        value={spDraft.label ?? sp.label}
-                        onChange={(e) => setSpDraft({ ...spDraft, label: e.target.value })}
-                        placeholder="label (8자 이내)"
-                        style={{ padding: '7px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 3 }}
-                      />
-                      <input
-                        value={spDraft.evidence ?? sp.evidence}
-                        onChange={(e) => setSpDraft({ ...spDraft, evidence: e.target.value })}
-                        placeholder="evidence (ref 인용 그대로)"
-                        style={{ padding: '7px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 3 }}
-                      />
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        <button
-                          disabled={spSaving}
-                          onClick={async () => {
-                            setSpSaving(true)
-                            const next = (mapping.sp_sentences || []).map(s =>
-                              s.sentence_idx === sp.sentence_idx
-                                ? { ...s, ...spDraft, sentence_idx: sp.sentence_idx } as import('../api').SpSentence
-                                : s
-                            )
-                            const r = await onSaveSp(next)
-                            setSpSaving(false)
-                            if (r.ok) { setSpEditing(null); setSpDraft({}) }
-                            else alert('저장 실패: ' + (r.error || ''))
-                          }}
-                          style={{
-                            padding: '6px 14px', fontSize: 12, fontWeight: 600,
-                            background: 'var(--accent)', color: '#fff', border: 'none',
-                            borderRadius: 'var(--radius-sm)', cursor: spSaving ? 'wait' : 'pointer',
-                            opacity: spSaving ? 0.6 : 1,
-                          }}>
-                          {spSaving ? '저장 중…' : '저장 (DB)'}
-                        </button>
-                        <button
-                          disabled={spSaving}
-                          onClick={async () => {
-                            if (!confirm('이 SP를 삭제할까요?')) return
-                            setSpSaving(true)
-                            const next = (mapping.sp_sentences || []).filter(s => s.sentence_idx !== sp.sentence_idx)
-                            const r = await onSaveSp(next)
-                            setSpSaving(false)
-                            if (r.ok) { setSpEditing(null); setSpDraft({}) }
-                            else alert('삭제 실패: ' + (r.error || ''))
-                          }}
-                          style={{
-                            padding: '6px 14px', fontSize: 12,
-                            background: 'var(--bg-surface)', color: 'var(--error)',
-                            border: '1px solid var(--error)', borderRadius: 'var(--radius-sm)',
-                            cursor: spSaving ? 'wait' : 'pointer',
-                          }}>
-                          삭제
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: action === 'replace' ? 8 : 0 }}>
-                    {actions.map(a => (
-                      <button
-                        key={a.v}
-                        onClick={() => setAction(a.v)}
-                        title={a.hint}
-                        style={{
-                          padding: '5px 10px', fontSize: 11, fontWeight: 700,
-                          background: action === a.v ? a.bg : 'var(--bg-base)',
-                          color: action === a.v ? '#fff' : 'var(--text-body)',
-                          border: `1px solid ${action === a.v ? a.bg : 'var(--border)'}`,
-                          borderRadius: 'var(--radius-sm)', cursor: 'pointer',
-                        }}>
-                        {a.label} <span style={{ fontWeight: 400, opacity: 0.85 }}>· {a.hint}</span>
-                      </button>
-                    ))}
-                  </div>
-                  {action === 'replace' && (
-                    <div style={{ display: 'grid', gap: 6, gridTemplateColumns: '2fr 1fr', marginTop: 4 }}>
-                      <input
-                        value={d.user_sp_value || ''}
-                        onChange={(e) => onSpDecision(sp.sentence_idx, { user_sp_value: e.target.value })}
-                        placeholder="우리 SP value (예: 100억, 4.9, 5만개)"
-                        style={{
-                          padding: '7px 10px', fontSize: 12,
-                          border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                          background: 'var(--bg-base)',
-                        }}
-                      />
-                      <input
-                        value={d.user_sp_label || ''}
-                        onChange={(e) => onSpDecision(sp.sentence_idx, { user_sp_label: e.target.value })}
-                        placeholder="라벨 (선택)"
-                        style={{
-                          padding: '7px 10px', fontSize: 12,
-                          border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                          background: 'var(--bg-base)',
-                        }}
-                      />
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
 
       {unusedUsps.length > 0 && (
         <div style={cardSt}>

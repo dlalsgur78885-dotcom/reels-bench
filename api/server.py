@@ -78,7 +78,6 @@ class ScriptGenRequest(BaseModel):
     usp_mapping_override: dict[str, int] | None = None  # ref_usp_id(str)→user_usp_id (wizard 수동 매핑)
     chunk_usp_override: dict[str, int] | None = None  # chunk.section→user_usp_id (chunk별 수동 매핑)
     chunk_meta_override: dict[str, dict] | None = None  # chunk.section→{topic, role} (분석 metadata 수정)
-    sp_decisions: list[dict] | None = None  # v4-4: ref SP별 처리 결정. [{sentence_idx, action, user_sp_value?, user_sp_label?, sp_type?, sp_strength?, evidence?}]
 
 
 @app.post("/api/script/generate")
@@ -117,7 +116,6 @@ def gen_script(req: ScriptGenRequest):
             usp_mapping_override=override,
             chunk_usp_override=chunk_override,
             chunk_meta_override=meta_override,
-            sp_decisions=req.sp_decisions,
         )
         n_sentences = len(result.get("sentences") or [])
         cost = script_gen.summarize_cost()
@@ -537,119 +535,6 @@ def reanalyze_usp_layout_for_yt(shortcode: str, request: Request):
     return _reanalyze_usp_layout_core(shortcode, source="youtube")
 
 
-def _reanalyze_sp_core(shortcode: str, source: str) -> dict:
-    """v4-4: analyze_sp_per_sentence 재실행 + overall.sp_sentences 갱신.
-
-    각 sentence_idx별로 SP 마킹 (sp_type/sp_strength/evidence/label).
-    """
-    ref = script_gen.fetch_reference(shortcode, source=source)
-    if not ref:
-        raise HTTPException(404, "참고 영상 없음")
-    sentences = [s for s in (ref.get("sentences") or []) if s.get("text", "").strip()]
-    if not sentences:
-        raise HTTPException(400, "sentences 없음")
-
-    sp_sentences = script_gen.analyze_sp_per_sentence(sentences)
-
-    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
-    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    _r = supabase.get_session()
-    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
-    structure_table = script_gen._tables(source)["structure"]
-    rows = _r.get(
-        f"{SUPA}/rest/v1/{structure_table}?shortcode=eq.{shortcode}&select=overall&limit=1",
-        headers=H, timeout=10,
-    ).json()
-    if not rows:
-        raise HTTPException(404, "script_structure 없음")
-    overall = rows[0].get("overall") or {}
-    overall["sp_sentences"] = sp_sentences
-
-    _r.patch(
-        f"{SUPA}/rest/v1/{structure_table}?shortcode=eq.{shortcode}",
-        headers={**H, "Prefer": "return=minimal"},
-        json={"overall": overall}, timeout=15,
-    )
-    return {
-        "shortcode": shortcode,
-        "source": source,
-        "sp_sentences": sp_sentences,
-        "sp_count": len(sp_sentences),
-    }
-
-
-@app.post("/api/script/reanalyze-sp/{shortcode}")
-def reanalyze_sp_for_reel(shortcode: str, request: Request):
-    """v4-4 — 인스타 릴스 SP 문장별 재분석."""
-    auth_svc.require_user(request)
-    return _reanalyze_sp_core(shortcode, source="reels")
-
-
-@app.post("/api/yt/script/reanalyze-sp/{shortcode}")
-def reanalyze_sp_for_yt(shortcode: str, request: Request):
-    """v4-4 — 유튜브 SP 문장별 재분석."""
-    auth_svc.require_user(request)
-    return _reanalyze_sp_core(shortcode, source="youtube")
-
-
-class SpSentencesPatch(BaseModel):
-    sp_sentences: list[dict]
-
-
-def _patch_sp_sentences_core(shortcode: str, source: str, sp_sentences: list[dict]) -> dict:
-    """v4-4: 사용자가 직접 편집한 SP sentences를 DB에 저장."""
-    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
-    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    _r = supabase.get_session()
-    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
-    structure_table = script_gen._tables(source)["structure"]
-    rows = _r.get(
-        f"{SUPA}/rest/v1/{structure_table}?shortcode=eq.{shortcode}&select=overall&limit=1",
-        headers=H, timeout=10,
-    ).json()
-    if not rows:
-        raise HTTPException(404, "script_structure 없음")
-    overall = rows[0].get("overall") or {}
-    cleaned: list[dict] = []
-    valid_types = {"sales_volume", "review_volume", "rating", "authority", "scarcity", "award", "personal"}
-    for s in sp_sentences:
-        if not isinstance(s, dict):
-            continue
-        idx = s.get("sentence_idx")
-        sp_type = s.get("sp_type")
-        if not isinstance(idx, int) or sp_type not in valid_types:
-            continue
-        cleaned.append({
-            "sentence_idx": idx,
-            "sp_type": sp_type,
-            "sp_strength": s.get("sp_strength", "weak"),
-            "evidence": (s.get("evidence") or "").strip(),
-            "label": (s.get("label") or "").strip(),
-        })
-    cleaned.sort(key=lambda x: x["sentence_idx"])
-    overall["sp_sentences"] = cleaned
-    _r.patch(
-        f"{SUPA}/rest/v1/{structure_table}?shortcode=eq.{shortcode}",
-        headers={**H, "Prefer": "return=minimal"},
-        json={"overall": overall}, timeout=15,
-    )
-    return {"shortcode": shortcode, "source": source, "sp_sentences": cleaned, "sp_count": len(cleaned)}
-
-
-@app.patch("/api/script/sp-sentences/{shortcode}")
-def patch_sp_sentences_for_reel(shortcode: str, body: SpSentencesPatch, request: Request):
-    """v4-4 — 인스타 릴스 SP 사용자 편집 저장."""
-    auth_svc.require_user(request)
-    return _patch_sp_sentences_core(shortcode, source="reels", sp_sentences=body.sp_sentences)
-
-
-@app.patch("/api/yt/script/sp-sentences/{shortcode}")
-def patch_sp_sentences_for_yt(shortcode: str, body: SpSentencesPatch, request: Request):
-    """v4-4 — 유튜브 SP 사용자 편집 저장."""
-    auth_svc.require_user(request)
-    return _patch_sp_sentences_core(shortcode, source="youtube", sp_sentences=body.sp_sentences)
-
-
 @app.post("/api/script/analyze-section-chunks/{shortcode}")
 def analyze_section_chunks_for_reel(shortcode: str, request: Request):
     """모든 섹션(hook/intro/body_N/cta) chunk별 분석. overall.section_chunks에 저장 (+ body_chunks 호환 alias).
@@ -790,6 +675,8 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
     _r = supabase.get_session()
     H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
 
+    import time as _t
+    t_start = _t.time()
     # 1. ref + section_chunks + usp_layout 로드
     ref = script_gen.fetch_reference(shortcode)
     if not ref:
@@ -797,10 +684,14 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
     overall = ((ref.get("structure") or {}).get("overall") or {})
     ref_usps = overall.get("usp_layout") or []
     section_chunks = overall.get("section_chunks") or []
+    chunks_cached = bool(section_chunks)
     if not section_chunks:
+        t_chunks = _t.time()
         section_chunks = script_gen.analyze_section_chunks(ref) or []
+        logger.info("[preview-mapping] %s analyze_section_chunks (uncached) %.1fs", shortcode, _t.time() - t_chunks)
     if not ref_usps:
         raise HTTPException(400, "usp_layout 없음 — 먼저 reanalyze-usp-layout 실행 필요")
+    logger.info("[preview-mapping] %s stage1_load %.1fs (chunks_cached=%s)", shortcode, _t.time() - t_start, chunks_cached)
 
     # 2. product USPs 로드
     rows = _r.get(
@@ -814,14 +705,32 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
     if not user_usps:
         raise HTTPException(400, "product에 USP 없음")
 
-    # 3. pre-planner 호출 (truncation 방지 — max_tokens 넉넉히)
+    # 3. pre-planner + ref_desire_arc 병렬 호출 (서로 독립 — 둘 다 ref_usps + section_chunks만 필요)
     prompt = script_gen._build_pre_planner_prompt(user_usps, ref_usps, section_chunks)
-    try:
-        result = script_gen.call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=4096)
-        if isinstance(result, list) and result:
-            result = result[0]
-    except Exception as e:
-        raise HTTPException(500, f"pre-planner 실패: {e}")
+
+    def _call_pre_planner():
+        # Flash 사용 — 매핑은 분류 작업이라 Pro 품질 차이 작고 속도 5x
+        r = script_gen.call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=4096)
+        return r[0] if isinstance(r, list) and r else r
+
+    def _call_ref_desires():
+        try:
+            return script_gen.analyze_ref_desire_arc(ref_usps, section_chunks)
+        except Exception as e:
+            logger.warning("[preview-mapping] ref_desires 추출 실패: %s", e)
+            return []
+
+    t_par = _t.time()
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_pp = ex.submit(_call_pre_planner)
+        f_rd = ex.submit(_call_ref_desires)
+        try:
+            result = f_pp.result()
+        except Exception as e:
+            raise HTTPException(500, f"pre-planner 실패: {e}")
+        ref_desires = f_rd.result() or []
+    logger.info("[preview-mapping] %s stage2_parallel(pp+rd) %.1fs total %.1fs",
+                shortcode, _t.time() - t_par, _t.time() - t_start)
 
     # 4. mapping 보강 (ref/user 라벨 + reason + confidence)
     ref_by_id = {ru.get("id"): ru for ru in ref_usps if isinstance(ru.get("id"), int)}
@@ -856,15 +765,7 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
     ]
     unmatched_ref = [m for m in mapping_full if m["user_usp_id"] is None]
 
-    # 6. ref-derived desire/pain 후보 (hook+intro+페르소나성 chunk에서 추출)
-    try:
-        ref_desires = script_gen.analyze_ref_desire_arc(ref_usps, section_chunks)
-    except Exception as e:
-        logger.warning("[preview-mapping] ref_desires 추출 실패: %s", e)
-        ref_desires = []
-
-    # v4-4: sp_sentences (DB 분석 결과 그대로 read-through)
-    sp_sentences = overall.get("sp_sentences") or []
+    # 6. ref_desires는 위에서 병렬로 이미 받음
 
     return {
         "shortcode": shortcode,
@@ -875,7 +776,6 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
         "unused_user_usps": unused_user,
         "unmatched_ref_usps": unmatched_ref,
         "ref_desires": ref_desires,
-        "sp_sentences": sp_sentences,
     }
 
 

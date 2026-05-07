@@ -1370,47 +1370,6 @@ def _classify_ending(text: str) -> dict:
     return {"kind": kind, "ending": pattern_short, "raw_tail": tail}
 
 
-def _build_sentence_intent_map(ref: dict, all_ref_sents: list[dict]) -> list[dict]:
-    """all_ref_sents 각 문장 idx → micro-intent 메타데이터 매핑.
-
-    v4-2: emotion_timeline.reason + tts_script.direction을 시간 매칭해서
-    문장별 intent / direction / emotion / delivery / intensity 추출.
-    """
-    tts = ref.get("tts_script") or []
-    tl = ref.get("emotion_timeline") or []
-    out: list[dict] = []
-    for s in all_ref_sents:
-        st = float(s.get("start", 0) or 0)
-        en = float(s.get("end", st) or st)
-        # tts_script direction (start 일치 0.5초 이내)
-        ti = next(
-            (t for t in tts if abs(_mmss_to_sec(t.get("start", 0)) - st) < 0.5),
-            None,
-        )
-        direction = (ti or {}).get("direction") or ""
-        # emotion_timeline overlap 매칭
-        best = None
-        bo = 0.0
-        for seg in tl:
-            ss = _mmss_to_sec(seg.get("start", 0))
-            se = _mmss_to_sec(seg.get("end", 0))
-            ov = max(0.0, min(en, se) - max(st, ss))
-            if ov > bo:
-                bo, best = ov, seg
-        intent = (best or {}).get("reason") or ""
-        emotion = (best or {}).get("emotion") or ""
-        delivery = (best or {}).get("delivery") or ""
-        intensity = (best or {}).get("intensity") or 0
-        out.append({
-            "intent": intent,
-            "direction": direction,
-            "emotion": emotion,
-            "delivery": delivery,
-            "intensity": intensity,
-        })
-    return out
-
-
 def _extract_slot_sentences(ref: dict, slot: tuple) -> list[dict]:
     """body 분절 시간대에 속하는 참고 문장들의 (시간, 감정, direction, 역할, 끝맺음) 반환."""
     s_start, s_end = slot[0], slot[1]
@@ -2661,88 +2620,6 @@ JSON만. 설명 X."""
     return None
 
 
-def analyze_sp_per_sentence(sentences: list[dict]) -> list[dict]:
-    """ref 문장별 social proof 추출 (v4-4).
-
-    각 sentence_idx별로 SP 여부 + type/strength/evidence 마킹.
-    저장: reels_script_structure.overall.sp_sentences
-
-    sentences = [{start, end, text, ...}] (이미 시간순 정렬)
-    Returns: [{sentence_idx, is_sp, sp_type, sp_strength, evidence, label}]
-        — is_sp=False인 idx는 결과에서 제외 (SP인 것만 반환)
-    """
-    if not sentences:
-        return []
-    sent_lines = []
-    for i, s in enumerate(sentences):
-        sent_lines.append(f'  [{i}] "{s.get("text","")}"')
-    block = "\n".join(sent_lines)
-
-    prompt = f"""당신은 광고 카피 분석가입니다. 각 문장이 **사회적 증명(social proof)**인지 분류.
-
-⚠️ 사회적 증명 = "남들이 이미 검증함"을 보여주는 신뢰 신호. USP/제품 기능과 별개.
-
-## 카테고리
-- **sales_volume** — 매출·판매량 ("32억", "10만 개 팔린", "월 1억원 매출")
-- **review_volume** — 후기 수·재구매 ("후기 1000개", "재구매율 80%", "칭찬 수두룩", "후기도 보지 마세요")
-- **rating** — 평점 ("별점 5점", "리뷰 4.9", "만점")
-- **authority** — 전문가·셀럽·기업 추천 ("의사 추천", "BTS가 입은", "삼성도 쓰는")
-- **scarcity** — 품절·랭킹·인기 ("품절 임박", "베스트 1위", "리오더 5번")
-- **award** — 수상·인증 ("올해의 브랜드", "FDA 승인", "아마존 1위")
-- **personal** — 발화자 본인 사용 (약한 신호: "저도 사랑이에요", "5년째 쓰는데")
-
-## 입력 (sentence_idx 0부터)
-{block}
-
-## 작업
-각 sentence_idx에 대해 **SP 문장만** 결과에 포함:
-1. **sentence_idx** (정수)
-2. **sp_type** (위 7개 중 1개)
-3. **sp_strength** ("strong" | "weak"): 구체 수치 있으면 strong, 모호하면 weak
-4. **evidence** (그 문장 그대로)
-5. **label** (8자 이내 짧은 이름)
-
-⚠️ SP가 아닌 문장(USP·기능·페인·제품 묘사 등)은 결과에서 **제외**.
-
-## 출력 JSON
-{{
-  "sp_sentences": [
-    {{"sentence_idx": 2, "sp_type": "review_volume", "sp_strength": "weak",
-      "evidence": "후기도 보지 마세요", "label": "역설 후기"}},
-    {{"sentence_idx": 22, "sp_type": "sales_volume", "sp_strength": "strong",
-      "evidence": "32억 버터팬스", "label": "32억 매출"}}
-  ]
-}}
-
-JSON만. 설명 X."""
-    try:
-        result = call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=4096)
-        if isinstance(result, list) and result:
-            result = result[0]
-        out = (result or {}).get("sp_sentences") or []
-        # 검증: sentence_idx 범위 + 필수 필드
-        valid: list[dict] = []
-        for s in out:
-            if not isinstance(s, dict):
-                continue
-            idx = s.get("sentence_idx")
-            if not isinstance(idx, int) or not (0 <= idx < len(sentences)):
-                continue
-            if not s.get("sp_type"):
-                continue
-            valid.append({
-                "sentence_idx": idx,
-                "sp_type": s["sp_type"],
-                "sp_strength": s.get("sp_strength", "weak"),
-                "evidence": s.get("evidence", "") or sentences[idx].get("text", ""),
-                "label": s.get("label", ""),
-            })
-        return valid
-    except Exception as e:
-        logger.warning("analyze_sp_per_sentence failed: %s", e)
-        return []
-
-
 def classify_sentence_sections(sentences: list[dict], structure: dict) -> list[dict]:
     """각 sentence에 section(hook/intro/body_N/cta) 라벨 부여.
 
@@ -3437,42 +3314,8 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
                 pattern_str = "-".join(str(p) for p in ref_eojeol_pattern)
                 spec_block += f"    어절 수: {ref_eojeol_n}개 (±1 허용) / 어절별 음절 패턴: {pattern_str} (각 ±2 허용)\n"
             spec_block += f"    참고: \"{s.get('ref_text','')}\"\n"
-            # v4-2: 문장별 micro-intent (emotion_timeline.reason + tts_script.direction 시간 매칭)
-            s_intent = (s.get("sentence_intent") or "").strip()
-            s_direction = (s.get("direction") or "").strip()
-            s_emotion = (s.get("emotion") or "").strip()
-            s_delivery = (s.get("delivery") or "").strip()
-            s_intensity = s.get("intensity") or 0
-            if s_intent:
-                spec_block += f"    ⭐ 문장 의도: {s_intent}\n"
-            if s_direction or s_emotion:
-                acting_parts = []
-                if s_direction:
-                    acting_parts.append(f"\"{s_direction}\"")
-                if s_emotion:
-                    acting_parts.append(f"{s_emotion} {int(s_intensity*100)}%")
-                if s_delivery and s_delivery != "normal":
-                    acting_parts.append(s_delivery)
-                spec_block += f"    연기: {' / '.join(acting_parts)}\n"
-            # v4-4: SP 결정 (이 spec이 SP 문장이고 user가 처리 결정한 경우만)
-            sp_d = s.get("sp_decision")
-            if sp_d:
-                a = sp_d.get("action", "")
-                sp_t = sp_d.get("sp_type", "")
-                sp_str = sp_d.get("sp_strength", "")
-                ev = sp_d.get("evidence", "")
-                if a == "keep":
-                    spec_block += f"    🚨 SP[{sp_t}/{sp_str}] = **keep** — ref \"{ev}\" 그대로 mirror (수치·단어 보존, 우리 도메인만 치환)\n"
-                elif a == "replace":
-                    val = sp_d.get("user_sp_value", "")
-                    lbl = sp_d.get("user_sp_label", "")
-                    spec_block += f"    🚨 SP[{sp_t}] = **replace** value=\"{val}\" ({lbl}) — ref \"{ev}\" 자리에 우리 SP value 박음\n"
-                elif a == "rewrite_sp":
-                    spec_block += f"    🚨 SP[{sp_t}] = **rewrite_sp** — SP-type({sp_t}) 유지하되 우리 도메인 generic SP angle\n"
-                elif a == "drop":
-                    spec_block += f"    🚨 SP[{sp_t}] = **drop** — SP 단어·수치 0개, 일반 transition으로 변환\n"
         # skeleton + signature 모두 표시 X — 자유 transform 모드 (Hook/Intro/Body/CTA 모두)
-        # Writer는 ref_text + chunk_summary + sentence_intent + role + slot_topic + 페르소나 + USP description으로 작성
+        # Writer는 ref_text + chunk_summary + role + slot_topic + 페르소나 + USP description으로 작성
 
     persona_str = ""
     if target_persona:
@@ -3590,72 +3433,27 @@ direction은 **성우가 어떻게 읽을지**만. 마케팅 전략 X.
 {section_role_block}
 {section_guidance}
 
-## ⭐⭐⭐⭐⭐ 의도 우선 룰 (v4-2 — 가장 중요)
+## ⭐⭐⭐⭐ chunk 의도 우선 (v4-2)
 
-각 spec에 표면 정보(ref_text, 어절·음절 패턴, 시그니처)와 **chunk 의도(chunk_role/chunk_topic/chunk_summary)** + **문장 의도(sentence_intent / 연기 톤)**가 동시에 있음.
+각 spec에 ref_text + 어절/음절 패턴 + **chunk 의도(chunk_role/chunk_topic/chunk_summary)**가 동시에 있음.
 
 ### 충돌 시 우선순위
-1. **문장 의도 (sentence_intent — 가장 우선)** — 이 문장 한 개가 chunk 안에서 하는 미시 역할
-2. **chunk 의도 (chunk_summary)** — 묶음 전체의 설득 메커니즘
-3. ref_text 의미 구조 (비교·나열·조건 등)
-4. 어절 수·음절 패턴
-5. 시그니처 어구
-
-### 문장 의도와 chunk 의도가 다른 이유
-같은 chunk 안의 5문장도 각자 미시 역할이 다름:
-- 문장1 "깔별로 다 사게 되니까" — 역설의 이유 (긍정형)
-- 문장2 "후기도 보지 마세요" — 역설 명령 (검증 거부)
-- 문장3 "클나요" — 강조 감탄
-- 문장4 "칭찬만 수두룩하니깐" — 명령의 근거 (보지 말라는 이유)
-- 문장5 "저도 정말 사랑이에요" — 본인 사용 보강
-chunk_summary 하나로 5문장 다 비슷한 톤으로 만들면 ❌. **각 문장의 sentence_intent를 따라 다른 톤·각도로**.
-
-## 🚨 SP(사회적 증명) 처리 룰 (v4-4 — spec_block에 🚨 SP 마커가 있는 경우만)
-
-각 spec에 `🚨 SP[type] = action` 마커가 있으면 그 action을 **반드시** 따름. 4종 action 각각 처리 방식 다름:
-
-### action = **keep** — ref 그대로 mirror
-- ref의 SP 단어·수치를 **그대로 보존** (도메인만 우리 제품으로 치환)
-- ✅ ref "후기도 보지 마세요" → "후기도 보지 마세요" (그대로) 또는 "리뷰도 보지 마세요" (도메인 단어만 변형)
-- ✅ ref "32억 버터팬스" → "32억 [우리제품]" (수치 보존, 제품명 치환)
-- ❌ 수치 변경 / SP 단어 제거 / 일반 카피로 변환 금지
-
-### action = **replace** — user SP value로 교체
-- spec에 박힌 `value="..."`를 **그 자리에 박음**
-- ref 본문 단어는 보존하되, 수치·label만 user 값으로
-- ✅ ref "32억 버터팬스" + value="100억" → "100억 [우리제품]"
-- ✅ ref "후기 1000개" + value="후기 5만개" → "후기 5만개"
-- ❌ 가짜 수치 만들기 / value 안 쓰고 다른 수치 박기
-
-### action = **rewrite_sp** — SP-type 유지하되 우리 도메인 generic SP
-- 같은 sp_type(sales_volume / review_volume / scarcity / ...)으로 **우리 도메인에 맞는 generic SP angle**
-- 구체 수치 없으면 generic 표현 ("리오더 폭주", "베스트", "문의 빗발")
-- ✅ ref sales_volume "32억 버터팬스" → 우리 sales_volume generic: "리오더 폭주한 [제품]"
-- ✅ ref review_volume "칭찬만 수두룩하니깐" → 우리 review_volume generic: "DM 폭주하니깐"
-- ❌ sp_type 변경 / SP가 아닌 일반 카피로 변환
-
-### action = **drop** — SP 톤 0%, 일반 transition으로
-- SP 단어·수치 **하나도 출력 X**
-- ❌ 금지 단어: "후기", "리뷰", "평점", "별점", "재구매", "매출", "베스트", "1위", "수두룩", "칭찬", "팔린", "검증" 등 신뢰 신호
-- ❌ 금지 수치: "X천명", "Y만 매출", "Z% 재구매"
-- 자리 메우기 — 혜택·체감·디자인·기능 같은 비-SP angle로
-
-### ⚠️ 마커 없는 spec
-- `🚨 SP` 마커 없는 spec은 SP 처리 X (이 룰 무시) — 일반 spec으로 작성
-- ref가 SP라도 user 결정 없으면 일반 미러링
+1. **chunk 의도 (chunk_summary — 가장 우선)** — 묶음 전체의 설득 메커니즘
+2. ref_text 의미 구조 (비교·나열·조건 등)
+3. 어절 수·음절 패턴
+4. 시그니처 어구
 
 ### ❌ 의도 무시 케이스 (가장 빈번한 실수)
 - chunk_summary: "**역설적으로 표현** — 너무 좋아서 후기 볼 필요도 없음"
 - ref_text: "후기도 보지 마세요"
-- skeleton 표면만 보고 → "**딴잠옷** 찾지 마세요" (역설 의도 사라짐, 단순 거부 명령으로 변질) ❌
+- skeleton 표면만 보고 → "**딴잠옷** 찾지 마세요" (역설 의도 사라짐) ❌
 
 ### ✅ 의도 보존 케이스
 - chunk_summary: "**역설적 칭찬**으로 기대감 고조"
 - ref_text: "후기도 보지 마세요"
-- → 우리: "**리뷰도** 안 봐도 돼요" / "**별점도** 굳이 보지 마세요" (같은 역설 — 너무 좋아서 검증 불필요)
+- → 우리: "**리뷰도** 안 봐도 돼요" / "**별점도** 굳이 보지 마세요"
 
 ### ⛔ 의도와 충돌하면 어절·시그니처 양보 OK
-- chunk 의도가 "역설적 칭찬"인데 어절 맞추려고 단순 거부로 빠지면 ❌
 - 어절 ±1 한도 안에서 의도 살리는 어휘 우선
 
 ## 🔢 숫자 구체성 (⭐⭐ ref에 숫자 있으면 미러링 권장)
@@ -4358,9 +4156,11 @@ def _classify_ref_sections(primary: dict) -> list[tuple[str, list[dict]]]:
     ]
 
 
-def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None, sp_decisions: list[dict] | None = None) -> dict:
+def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None) -> dict:
     """v4 = B버전: Pre-Planner Flash + Section Planners parallel + Writers parallel."""
     import concurrent.futures as _cf
+    import time as _t
+    _t_total = _t.time()
 
     # destinations 1개 random 선택 — 전체 대본 일관 사용
     if target_persona and target_persona.get("destinations"):
@@ -4388,37 +4188,6 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
 
     if expected_total == 0:
         raise RuntimeError("Section classification yielded 0 sentences")
-
-    # v4-2: 문장별 micro-intent (emotion_timeline.reason + tts_script.direction)
-    sentence_intents = _build_sentence_intent_map(primary, all_ref_sents)
-    n_with_intent = sum(1 for x in sentence_intents if x.get("intent") or x.get("direction"))
-    logger.info("[multistep-B] sentence intents matched: %d/%d", n_with_intent, len(sentence_intents))
-
-    # v4-4: SP decisions per sentence_idx
-    # ref의 어느 문장이 SP인지는 reels_script_structure.overall.sp_sentences에 박혀 있고,
-    # sp_decisions은 그 SP들에 대한 user의 처리 결정
-    # action ∈ {keep, replace, rewrite_sp, drop}
-    sp_decision_by_idx: dict[int, dict] = {}
-    if sp_decisions:
-        for d in sp_decisions:
-            if not isinstance(d, dict):
-                continue
-            idx = d.get("sentence_idx")
-            action = (d.get("action") or "").strip().lower()
-            if not isinstance(idx, int) or action not in {"keep", "replace", "rewrite_sp", "drop"}:
-                continue
-            sp_decision_by_idx[idx] = {
-                "action": action,
-                "user_sp_value": d.get("user_sp_value", ""),
-                "user_sp_label": d.get("user_sp_label", ""),
-                "sp_type": d.get("sp_type", ""),
-                "sp_strength": d.get("sp_strength", ""),
-                "evidence": d.get("evidence", ""),
-            }
-        logger.info("[multistep-B] sp_decisions: %d (actions=%s)",
-                    len(sp_decision_by_idx),
-                    {a: sum(1 for x in sp_decision_by_idx.values() if x["action"] == a)
-                     for a in ["keep", "replace", "rewrite_sp", "drop"]})
 
     # ⭐ 어투 감지 — ref 전체 텍스트로 dominant 반말/존댓말 결정 (Writer 강제용)
     speech_level = _detect_speech_level([s.get("text", "") for s in all_ref_sents])
@@ -4531,8 +4300,11 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     usp_mapping_full: list[dict] = []  # UI 노출용 (ref/user 라벨 + reason)
     if ref_usps_layout:
         try:
+            _t_pp = _t.time()
             pre_prompt = _build_pre_planner_prompt(usps, ref_usps_layout, section_chunks or [], locked_mappings=locked_mappings)
-            pre_result = call_gemini(pre_prompt, model="gemini-3.1-pro-preview", max_tokens=4096)
+            # Flash 사용 — 매핑은 분류 작업이라 Pro 품질 차이 작고 속도 4-5x
+            pre_result = call_gemini(pre_prompt, model="gemini-3-flash-preview", max_tokens=4096)
+            logger.info("[multistep timing] pre-planner Flash: %.1fs", _t.time() - _t_pp)
             if isinstance(pre_result, list) and pre_result:
                 pre_result = pre_result[0]
             ref_by_id = {ru.get("id"): ru for ru in ref_usps_layout if isinstance(ru.get("id"), int)}
@@ -4620,29 +4392,19 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
         ref_subset = []
         for i in range(start, end):
             s = all_ref_sents[i]
-            si = sentence_intents[i] if i < len(sentence_intents) else {}
-            sp_d = sp_decision_by_idx.get(i)
             ref_subset.append({
                 "idx": i,
                 "ref_text": s["text"],
                 "usp_id": usp_map.get(i),
                 "slot_id": slot_map.get(i),
                 "role": role_override.get(i) or s.get("role", "spec"),
-                "sentence_intent": si.get("intent", ""),
-                "direction": si.get("direction", ""),
-                "emotion": si.get("emotion", ""),
-                "delivery": si.get("delivery", ""),
-                "intensity": si.get("intensity", 0),
-                # v4-4: SP 결정 (없으면 None)
-                "sp_decision": sp_d,
             })
         try:
             sp_prompt = _build_section_planner_prompt(sec_name, ref_subset, usps, product_name, target_persona, pain, desire)
-            sp_result = call_gemini(sp_prompt, model=MODEL, max_tokens=16384)
+            # Flash 사용 — 섹션 planner는 spec 분류 작업 (실제 prose는 Writer가 씀). Pro 차이 작음.
+            sp_result = call_gemini(sp_prompt, model="gemini-3-flash-preview", max_tokens=16384)
             sents = sp_result.get("sentences") or []
-            # v4-2: role/slot_topic은 Section Planner가 안 뽑음.
-            # role = ref_subset의 surface 분류 (or override), slot_topic = chunk.topic (DB)
-            # sentence_intent / direction / emotion 등은 emotion_timeline + tts_script에서 매칭된 값
+            # role / slot_topic은 Section Planner가 안 뽑음 — 후처리에서 박음.
             for j, spec in enumerate(sents):
                 if j >= len(ref_subset):
                     continue
@@ -4661,15 +4423,6 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                     spec["role"] = role_override[rs_idx]
                 else:
                     spec["role"] = rs.get("role", "spec")
-                # v4-2: 문장별 micro-intent 박음 (Writer가 spec_block에서 읽음)
-                spec["sentence_intent"] = rs.get("sentence_intent", "")
-                spec["direction"] = rs.get("direction", "")
-                spec["emotion"] = rs.get("emotion", "")
-                spec["delivery"] = rs.get("delivery", "")
-                spec["intensity"] = rs.get("intensity", 0)
-                # v4-4: SP 결정
-                if rs.get("sp_decision") is not None:
-                    spec["sp_decision"] = rs["sp_decision"]
             logger.info("[section-planner %s] expected=%d got=%d", sec_name, len(ref_subset), len(sents))
             return sec_name, sents
         except Exception as e:
@@ -4677,9 +4430,11 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
             return sec_name, []
 
     section_plans: dict[str, list[dict]] = {}
+    _t_planners = _t.time()
     with _cf.ThreadPoolExecutor(max_workers=min(4, len(section_idx_ranges))) as ex:
         for sec_name, sents in ex.map(_plan_section, section_idx_ranges):
             section_plans[sec_name] = sents
+    logger.info("[multistep timing] section planners (parallel): %.1fs", _t.time() - _t_planners)
 
     # 1d. plan 객체 조립 (single Planner 호환 포맷)
     plan = {
@@ -4840,9 +4595,12 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     logger.info("[multistep-B] writer units: %d (after chunking)", len(write_units))
 
     chunk_results: dict[str, list[dict]] = {}
+    _t_writers = _t.time()
     with _cf.ThreadPoolExecutor(max_workers=min(8, len(write_units))) as ex:
         for name, sents in ex.map(lambda u: _write_section(u[1]), write_units):
             chunk_results[name] = sents
+    logger.info("[multistep timing] section writers (parallel × %d): %.1fs total %.1fs",
+                len(write_units), _t.time() - _t_writers, _t.time() - _t_total)
 
     # chunk 결과를 원래 섹션 순서로 재조립
     section_results: dict[str, list[dict]] = {}
@@ -4918,14 +4676,12 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     return draft
 
 
-def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None, sp_decisions: list[dict] | None = None) -> dict:
+def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None) -> dict:
     """엔드투엔드 — 참고 릴스 fetch → 1차 생성 → (선택) 2차 다듬기 → 최종.
 
     usp_mapping_override: ref_usp_id → user_usp_id 수동 매핑 (ref USP 단위).
     chunk_usp_override: chunk.section → user_usp_id 수동 매핑 (chunk 단위, 더 우선).
     chunk_meta_override: chunk.section → {topic, role} 수동 수정 (분석 결과 보정).
-    sp_decisions: v4-4 SP 처리 결정. [{sentence_idx, action, user_sp_value?, user_sp_label?}]
-        action ∈ {keep, replace, rewrite_sp, drop}
     """
     refs = []
     for sc in reference_shortcodes:
@@ -4939,8 +4695,7 @@ def generate(product_name: str, pain: str, desire: str, usps: list[dict], refere
     draft = _generate_multistep(product_name, pain, desire, usps, primary, target_persona,
                                 usp_mapping_override=usp_mapping_override,
                                 chunk_usp_override=chunk_usp_override,
-                                chunk_meta_override=chunk_meta_override,
-                                sp_decisions=sp_decisions)
+                                chunk_meta_override=chunk_meta_override)
 
     # 2차 다듬기 (선택)
     if refine:

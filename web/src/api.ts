@@ -71,13 +71,26 @@ function clearClientCache(prefix: string) {
   } catch {}
 }
 
+async function _errMsg(r: Response, status: number): Promise<string> {
+  try {
+    const data = await r.json()
+    const detail = data?.detail || data?.error || data?.message
+    if (detail) return `API ${status}: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`
+  } catch {}
+  try {
+    const text = await r.text()
+    if (text) return `API ${status}: ${text.slice(0, 300)}`
+  } catch {}
+  return `API ${status}`
+}
+
 async function post<T>(path: string, body: unknown): Promise<T> {
   const r = await authedFetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!r.ok) throw new Error(`API ${r.status}`)
+  if (!r.ok) throw new Error(await _errMsg(r, r.status))
   return r.json()
 }
 
@@ -87,7 +100,7 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!r.ok) throw new Error(`API ${r.status}`)
+  if (!r.ok) throw new Error(await _errMsg(r, r.status))
   return r.json()
 }
 
@@ -451,14 +464,6 @@ export const api = {
     post<any>(`/api/script/reanalyze-usp-layout/${sc}`, {}),
   analyzeSectionChunks: (sc: string) =>
     post<any>(`/api/script/analyze-section-chunks/${sc}`, {}),
-  reanalyzeSP: (sc: string) =>
-    post<{ shortcode: string; sp_sentences: SpSentence[]; sp_count: number }>(
-      `/api/script/reanalyze-sp/${sc}`, {},
-    ),
-  updateSpSentences: (sc: string, sp_sentences: SpSentence[]) =>
-    patch<{ shortcode: string; sp_sentences: SpSentence[]; sp_count: number }>(
-      `/api/script/sp-sentences/${sc}`, { sp_sentences },
-    ),
   previewMapping: (sc: string, product_id: number) =>
     post<{
       shortcode: string
@@ -477,7 +482,6 @@ export const api = {
         job_statement?: string; lf8?: number; lf8_label?: string
         pain_scene?: string; desire_scene?: string; identity?: string
       }>
-      sp_sentences: SpSentence[]
     }>(`/api/script/preview-mapping/${sc}`, { product_id }),
   classifySentences: (sc: string) =>
     post<{ shortcode: string; total_sentences: number; sections: Record<string, number> }>(`/api/script/classify-sentences/${sc}`, {}),
@@ -547,30 +551,6 @@ export interface PersonaCandidate {
   review_count: number
   sample_reviews: string[]
   tone_hint: string
-}
-
-export type SpType = 'sales_volume' | 'review_volume' | 'rating' | 'authority' | 'scarcity' | 'award' | 'personal'
-export type SpStrength = 'strong' | 'weak'
-export type SpAction = 'keep' | 'replace' | 'rewrite_sp' | 'drop'
-
-// v4-4: ref 분석 결과로 저장된 문장별 SP 마킹
-export interface SpSentence {
-  sentence_idx: number
-  sp_type: SpType
-  sp_strength: SpStrength
-  evidence: string
-  label: string
-}
-
-// v4-4: 사용자가 정한 SP 처리 결정 (스크립트 생성 요청에 포함)
-export interface SpDecision {
-  sentence_idx: number
-  action: SpAction
-  user_sp_value?: string
-  user_sp_label?: string
-  sp_type?: SpType
-  sp_strength?: SpStrength
-  evidence?: string
 }
 
 export interface MyProduct {

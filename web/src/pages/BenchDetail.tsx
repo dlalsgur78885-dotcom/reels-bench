@@ -965,6 +965,17 @@ export default function BenchDetail() {
                   </div>
                 )
               })()}
+              {/* v4-4: SP per-sentence 패널 */}
+              <SpPanel
+                shortcode={shortcode!}
+                spSentences={(extra.script_structure?.overall as any)?.sp_sentences || []}
+                onReload={async () => {
+                  try {
+                    const d = await api.extra(shortcode!, { fresh: true })
+                    if (d && Object.keys(d).length) setExtra(d)
+                  } catch (_) { /* noop */ }
+                }}
+              />
             </>
           )}
           {extra?.sentences && extra.sentences.length > 0 && (
@@ -1466,5 +1477,195 @@ export default function BenchDetail() {
         </div>
       )}
     </>
+  )
+}
+
+
+// v4-4: SP 분석 + 편집 패널 (BenchDetail 분석 페이지)
+function SpPanel({
+  shortcode, spSentences, onReload,
+}: {
+  shortcode: string
+  spSentences: import('../api').SpSentence[]
+  onReload: () => Promise<void>
+}) {
+  const [reanalyzing, setReanalyzing] = useState(false)
+  const [editing, setEditing] = useState<number | null>(null)
+  const [draft, setDraft] = useState<Partial<import('../api').SpSentence>>({})
+  const [saving, setSaving] = useState(false)
+  const typeColor: Record<string, string> = {
+    sales_volume: '#10b981', review_volume: '#3b82f6', rating: '#f59e0b',
+    authority: '#a855f7', scarcity: '#ef4444', award: '#ec4899', personal: '#6b7280',
+  }
+  const reanalyze = async () => {
+    if (!confirm('AI가 ref 문장별 SP를 다시 추출합니다. 기존 SP는 덮어쓰여집니다 (사용자 편집 포함).')) return
+    setReanalyzing(true)
+    try {
+      const r = await api.reanalyzeSP(shortcode)
+      await onReload()
+      alert(`SP 분석 완료: ${r.sp_count}개`)
+    } catch (e: any) {
+      alert('SP 분석 실패: ' + (e?.message || ''))
+    } finally {
+      setReanalyzing(false)
+    }
+  }
+  const save = async (next: import('../api').SpSentence[]) => {
+    setSaving(true)
+    try {
+      await api.updateSpSentences(shortcode, next)
+      await onReload()
+      setEditing(null); setDraft({})
+    } catch (e: any) {
+      alert('저장 실패: ' + (e?.message || ''))
+    } finally {
+      setSaving(false)
+    }
+  }
+  return (
+    <div className="section-card section-card--block" style={{ marginBottom: 20, background: 'var(--bg-elevated)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        <div className="eyebrow-label" style={{ marginBottom: 0 }}>
+          🚨 SP per-sentence ({spSentences.length}개)
+        </div>
+        <button
+          onClick={reanalyze}
+          disabled={reanalyzing}
+          style={{
+            padding: '5px 12px', fontSize: 11, fontWeight: 600,
+            background: 'var(--accent)', color: '#fff', border: 'none',
+            borderRadius: 'var(--radius-sm)', cursor: reanalyzing ? 'wait' : 'pointer',
+            opacity: reanalyzing ? 0.6 : 1,
+          }}>
+          {reanalyzing ? '분석 중…' : (spSentences.length === 0 ? 'SP 분석' : 'SP 재분석')}
+        </button>
+      </div>
+      {spSentences.length === 0 && (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: 12, background: 'var(--bg-surface)', borderRadius: 6, textAlign: 'center' }}>
+          아직 SP 분석 안 됨. 위 "SP 분석" 버튼 클릭.
+        </div>
+      )}
+      {spSentences.length > 0 && (
+        <div style={{ display: 'grid', gap: 8 }}>
+          {spSentences.map(sp => {
+            const isEditing = editing === sp.sentence_idx
+            const c = typeColor[sp.sp_type] || '#6b7280'
+            return (
+              <div key={sp.sentence_idx} style={{
+                padding: 10, background: 'var(--bg-surface)',
+                border: `1px solid ${isEditing ? 'var(--accent)' : 'var(--border)'}`,
+                borderRadius: 'var(--radius-sm)',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                  <span style={{
+                    fontSize: 10, padding: '2px 6px', background: 'var(--bg-base)',
+                    border: '1px solid var(--border-subtle)', borderRadius: 3, color: 'var(--text-muted)',
+                  }}>idx={sp.sentence_idx}</span>
+                  <span style={{
+                    fontSize: 10, fontWeight: 700, padding: '2px 6px',
+                    borderRadius: 3, background: c, color: '#fff',
+                  }}>{sp.sp_type}</span>
+                  {sp.sp_strength === 'strong' && (
+                    <span style={{ fontSize: 10, color: 'var(--success)', fontWeight: 600 }}>★ strong</span>
+                  )}
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>{sp.label}</span>
+                  <button
+                    onClick={() => {
+                      if (isEditing) { setEditing(null); setDraft({}) }
+                      else { setEditing(sp.sentence_idx); setDraft({ ...sp }) }
+                    }}
+                    style={{
+                      marginLeft: 'auto', padding: '2px 8px', fontSize: 10,
+                      background: isEditing ? 'var(--accent)' : 'var(--bg-base)',
+                      color: isEditing ? '#fff' : 'var(--text-body)',
+                      border: '1px solid var(--border)', borderRadius: 3, cursor: 'pointer',
+                    }}>
+                    {isEditing ? '취소' : '✏ 편집'}
+                  </button>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                  "{sp.evidence}"
+                </div>
+                {isEditing && (
+                  <div style={{
+                    marginTop: 8, padding: 10, background: 'var(--bg-base)',
+                    border: '1px dashed var(--accent)', borderRadius: 6,
+                    display: 'grid', gap: 6,
+                  }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                      <select
+                        value={draft.sp_type || sp.sp_type}
+                        onChange={(e) => setDraft({ ...draft, sp_type: e.target.value as import('../api').SpType })}
+                        style={{ padding: '6px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 3 }}>
+                        <option value="sales_volume">sales_volume</option>
+                        <option value="review_volume">review_volume</option>
+                        <option value="rating">rating</option>
+                        <option value="authority">authority</option>
+                        <option value="scarcity">scarcity</option>
+                        <option value="award">award</option>
+                        <option value="personal">personal</option>
+                      </select>
+                      <select
+                        value={draft.sp_strength || sp.sp_strength}
+                        onChange={(e) => setDraft({ ...draft, sp_strength: e.target.value as import('../api').SpStrength })}
+                        style={{ padding: '6px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 3 }}>
+                        <option value="weak">weak</option>
+                        <option value="strong">strong</option>
+                      </select>
+                    </div>
+                    <input
+                      value={draft.label ?? sp.label}
+                      onChange={(e) => setDraft({ ...draft, label: e.target.value })}
+                      placeholder="label (8자 이내)"
+                      style={{ padding: '7px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 3 }}
+                    />
+                    <input
+                      value={draft.evidence ?? sp.evidence}
+                      onChange={(e) => setDraft({ ...draft, evidence: e.target.value })}
+                      placeholder="evidence"
+                      style={{ padding: '7px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 3 }}
+                    />
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button
+                        disabled={saving}
+                        onClick={() => {
+                          const next = spSentences.map(s =>
+                            s.sentence_idx === sp.sentence_idx
+                              ? { ...s, ...draft, sentence_idx: sp.sentence_idx } as import('../api').SpSentence
+                              : s
+                          )
+                          save(next)
+                        }}
+                        style={{
+                          padding: '6px 14px', fontSize: 12, fontWeight: 600,
+                          background: 'var(--accent)', color: '#fff', border: 'none',
+                          borderRadius: 'var(--radius-sm)', cursor: saving ? 'wait' : 'pointer',
+                          opacity: saving ? 0.6 : 1,
+                        }}>
+                        {saving ? '저장 중…' : '저장 (DB)'}
+                      </button>
+                      <button
+                        disabled={saving}
+                        onClick={() => {
+                          if (!confirm('이 SP를 삭제할까요?')) return
+                          save(spSentences.filter(s => s.sentence_idx !== sp.sentence_idx))
+                        }}
+                        style={{
+                          padding: '6px 14px', fontSize: 12,
+                          background: 'var(--bg-surface)', color: 'var(--error)',
+                          border: '1px solid var(--error)', borderRadius: 'var(--radius-sm)',
+                          cursor: saving ? 'wait' : 'pointer',
+                        }}>
+                        삭제
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
   )
 }

@@ -628,46 +628,14 @@ export default function BenchDetail() {
               )}
               {/* USP Layout 카드 — ref가 어느 USP를 어느 섹션에 배치했는지 */}
               {(() => {
-                // ref USP Layout UI 제거됨 — Pre-Planner는 DB의 usp_layout 그대로 사용
-                // colorOf만 chunk 패널 USP 배지용으로 유지
+                // colorOf — chunk 패널 USP 배지용
                 const uspColors: Record<number, string> = {
                   1: '#f97316', 2: '#3b82f6', 3: '#10b981', 4: '#a855f7', 5: '#ec4899',
                 }
                 const colorOf = (id: number) => uspColors[id] || '#6b7280'
-                const adFormat = (extra.script_structure?.overall as any)?.ad_format as string | undefined
-                const adScore = (extra.script_structure?.overall as any)?.ad_suitability_score as number | undefined
-                const adReason = (extra.script_structure?.overall as any)?.ad_format_reason as string | undefined
-                const fmtColor: Record<string, string> = {
-                  '광고형': '#10b981', '후기형': '#3b82f6', '정보형': '#a855f7',
-                  '브랜딩형': '#ec4899', '유머형': '#f59e0b', '일상형': '#ef4444',
-                }
-                const scoreColor = (s?: number) => !s ? '#6b7280' : s >= 70 ? '#10b981' : s >= 50 ? '#f59e0b' : '#ef4444'
                 return (
                   <div className="section-card section-card--block" style={{ marginBottom: 20, background: 'var(--bg-elevated)' }}>
-                    {/* 광고 포맷 + 적합성 배지 */}
-                    {(adFormat || adScore != null) && (
-                      <div style={{ marginBottom: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                        {adFormat && (
-                          <span style={{
-                            background: fmtColor[adFormat] || '#6b7280', color: '#fff',
-                            fontSize: 12, fontWeight: 700, padding: '4px 10px', borderRadius: 6,
-                          }}>{adFormat}</span>
-                        )}
-                        {adScore != null && (
-                          <span style={{
-                            border: `1px solid ${scoreColor(adScore)}`, color: scoreColor(adScore),
-                            fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
-                          }}>광고적합성 {adScore}</span>
-                        )}
-                        {adReason && (
-                          <span style={{ fontSize: 11, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-                            {adReason}
-                          </span>
-                        )}
-                      </div>
-                    )}
-
-                    {/* 섹션별 chunk 상세 분석 (overall.section_chunks 우선, 없으면 body_chunks 호환) */}
+                    {/* 섹션별 chunk 상세 분석 */}
                     {(() => {
                       const overall = extra.script_structure?.overall as any
                       const section_chunks = overall?.section_chunks as Array<{

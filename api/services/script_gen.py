@@ -3378,7 +3378,45 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
     section_guidance = _section_specific_guidance(section_name, has_destination=False)
     _sn = section_name.lower()
 
-    # v4-2 — section narrative role (DB section_roles[section_name])
+    # 📋 A) 전체 chunks 흐름 (bird's eye — 자기 자리 파악용)
+    flow_overview_block = ""
+    if section_chunks:
+        flow_overview_block = "\n## 📋 전체 광고 흐름 (참고 — ▶ 표시가 지금 작성 중인 섹션)\n"
+        # 시간순 정렬 (sentences[0].start)
+        def _chunk_start(c):
+            sents = c.get("sentences") or []
+            return float(sents[0].get("start", 0)) if sents else 0.0
+        sorted_chunks = sorted(section_chunks, key=_chunk_start)
+        for c in sorted_chunks:
+            sec = (c.get("section") or "").strip()
+            c_role = c.get("role", "")
+            c_topic = c.get("topic", "")
+            c_summary = c.get("summary", "")
+            mark = "▶ " if sec == section_name else "  "
+            line = f"{mark}[{sec:<8}] {c_role} / {c_topic}"
+            if c_summary:
+                line += f" — {c_summary[:60]}"
+            flow_overview_block += line + "\n"
+        flow_overview_block += "→ 이 흐름의 한 단계로서 자연스럽게 이어지게. 앞 chunk와 중복 X, 다음 chunk로 흐름 advance.\n"
+
+    # 🎬 C) 모든 섹션 내러티브 arc (DB section_roles 전체)
+    section_arc_block = ""
+    if isinstance(section_roles, dict) and section_roles:
+        section_arc_block = "\n## 🎬 모든 섹션의 내러티브 역할 (DB 분석 — 광고 전체 arc)\n"
+        sec_order = ["hook", "intro"] + sorted([k for k in section_roles if k.startswith("body")]) + ["cta"]
+        for sec in sec_order:
+            sd = section_roles.get(sec)
+            if not sd:
+                continue
+            mark = "▶ " if sec == section_name else "  "
+            sd_role = sd.get("role", "")
+            sd_what = sd.get("what_it_does", "")
+            section_arc_block += f"{mark}[{sec:<8}] {sd_role}"
+            if sd_what:
+                section_arc_block += f" — {sd_what[:80]}"
+            section_arc_block += "\n"
+
+    # 🎬 v4-2 — 자기 섹션의 내러티브 역할 상세 (must_not_repeat 강조용)
     section_role_block = ""
     sr = section_roles.get(section_name) if isinstance(section_roles, dict) else None
     if sr:
@@ -3386,7 +3424,7 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
         sr_what = sr.get("what_it_does", "")
         sr_must = sr.get("must_not_repeat", "")
         if sr_role or sr_what or sr_must:
-            section_role_block = "\n## 🎬 이 섹션의 내러티브 역할 (DB 분석 — 반드시 이 흐름을 수행)\n"
+            section_role_block = f"\n## 🎯 ▶ 지금 작성 중: **{section_name}**\n"
             if sr_role:
                 section_role_block += f"- 역할: **{sr_role}**\n"
             if sr_what:
@@ -3430,6 +3468,8 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
 direction은 **성우가 어떻게 읽을지**만. 마케팅 전략 X.
 
 {speech_block}
+{flow_overview_block}
+{section_arc_block}
 {section_role_block}
 {section_guidance}
 

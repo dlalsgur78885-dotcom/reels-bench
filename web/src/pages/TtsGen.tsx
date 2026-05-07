@@ -58,9 +58,11 @@ const primaryBtnSt: React.CSSProperties = {
 export default function TtsGen() {
   const { state } = useLocation() as { state?: { sentences?: InputSentence[]; title?: string } }
   const navigate = useNavigate()
-  const sentences: InputSentence[] = state?.sentences || []
+  const initialSentences: InputSentence[] = state?.sentences || []
   const title = state?.title || ''
 
+  const [sentences, setSentences] = useState<InputSentence[]>(initialSentences)
+  const [savedSentences, setSavedSentences] = useState<InputSentence[] | null>(null)
   const [presets, setPresets] = useState<VoicePreset[]>([])
   const [voice, setVoice] = useState('yuna')
   const [synthLoading, setSynthLoading] = useState(false)
@@ -71,6 +73,11 @@ export default function TtsGen() {
   const [segLoading, setSegLoading] = useState<Record<number, boolean>>({})
   const [audioBust, setAudioBust] = useState(0)
 
+  // 편집 잠금: 저장됐거나 합성 중이면 잠금
+  const editLocked = synthLoading || savedSentences !== null
+  const dirty = savedSentences !== null
+    && JSON.stringify(sentences) !== JSON.stringify(savedSentences)
+
   const totalChars = useMemo(
     () => sentences.reduce((sum, s) => sum + (s.text || '').length, 0),
     [sentences],
@@ -80,6 +87,26 @@ export default function TtsGen() {
     [sentences],
   )
 
+  const updateSentence = (idx: number, patch: Partial<InputSentence>) => {
+    setSentences(prev => prev.map((s, i) => i === idx ? { ...s, ...patch } : s))
+  }
+  const resetEdits = () => {
+    setSentences(initialSentences)
+    setSavedSentences(null)
+    setJob(null)
+    setError('')
+  }
+  const saveEdits = () => {
+    // 스냅샷 저장 → 편집 잠금 + 음성 생성 가능
+    setSavedSentences(JSON.parse(JSON.stringify(sentences)))
+    setError('')
+  }
+  const reopenEdits = () => {
+    // 다시 편집 모드 (저장본은 유지하되 잠금만 해제 → dirty 비교용)
+    setSavedSentences(null)
+    setJob(null)  // 결과도 비움 — 새로 합성해야 일관성
+  }
+
   useEffect(() => {
     ttsAuthedFetch('/api/tts/voices')
       .then(r => r.ok ? r.json() : null)
@@ -88,13 +115,15 @@ export default function TtsGen() {
   }, [])
 
   const synthAll = async () => {
-    if (!sentences.length) { setError('스크립트 데이터 없음'); return }
+    const useSentences = savedSentences || sentences
+    if (!useSentences.length) { setError('스크립트 데이터 없음'); return }
+    if (!savedSentences) { setError('먼저 "저장"을 눌러 편집을 확정하세요'); return }
     setSynthLoading(true); setError(''); setJob(null); setDraftLevels({})
     try {
       const r = await ttsAuthedFetch('/api/tts/synthesize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sentences, voice_name: voice }),
+        body: JSON.stringify({ sentences: useSentences, voice_name: voice }),
       })
       if (!r.ok) {
         const data = await r.json().catch(() => ({}))
@@ -155,9 +184,66 @@ export default function TtsGen() {
       ) : (
         <>
           <div style={cardSt}>
-            <div style={labelSt}>입력</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 8, flexWrap: 'wrap' }}>
+              <div style={labelSt}>
+                입력 스크립트 {savedSentences === null ? '(편집 중)' : (synthLoading ? '' : '(저장됨 — 잠금)')}
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {savedSentences !== null && !synthLoading && (
+                  <button
+                    onClick={reopenEdits}
+                    style={{ fontSize: 11, padding: '4px 10px', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', color: 'var(--text-body)' }}
+                  >✏ 다시 편집</button>
+                )}
+                {savedSentences === null && JSON.stringify(sentences) !== JSON.stringify(initialSentences) && (
+                  <button
+                    onClick={resetEdits}
+                    style={{ fontSize: 10, padding: '3px 8px', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', color: 'var(--text-muted)' }}
+                  >↺ 원본으로</button>
+                )}
+              </div>
+            </div>
             <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
               {sentences.length}문장 • 약 {totalChars}자 • 원본 {totalDuration.toFixed(1)}초
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              {sentences.map((s, i) => (
+                <div key={i} style={{
+                  padding: '10px 0',
+                  borderTop: i > 0 ? '1px solid var(--border-subtle)' : 'none',
+                }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4, fontFamily: 'monospace' }}>
+                    [{s.start.toFixed(1)}–{s.end.toFixed(1)}s]
+                  </div>
+                  <textarea
+                    value={s.text}
+                    onChange={e => updateSentence(i, { text: e.target.value })}
+                    disabled={editLocked}
+                    rows={Math.max(1, Math.ceil(s.text.length / 40))}
+                    style={{
+                      width: '100%', padding: '8px 10px', fontSize: 13, lineHeight: 1.5,
+                      border: '1px solid var(--border)', borderRadius: 6,
+                      background: editLocked ? 'var(--bg-elevated)' : 'var(--bg-base)',
+                      color: 'var(--text-body)', resize: 'vertical', fontFamily: 'inherit',
+                      opacity: editLocked ? 0.7 : 1,
+                    }}
+                  />
+                  <input
+                    type="text"
+                    value={s.direction || ''}
+                    onChange={e => updateSentence(i, { direction: e.target.value })}
+                    disabled={editLocked}
+                    placeholder="감정 지시 (예: 밝게, 차분하게)"
+                    style={{
+                      width: '100%', padding: '6px 10px', fontSize: 11, marginTop: 4,
+                      border: '1px solid var(--border)', borderRadius: 4,
+                      background: editLocked ? 'var(--bg-elevated)' : 'var(--bg-base)',
+                      color: 'var(--text-muted)',
+                      opacity: editLocked ? 0.7 : 1,
+                    }}
+                  />
+                </div>
+              ))}
             </div>
             <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>목소리</label>
             <select value={voice} onChange={e => setVoice(e.target.value)} disabled={synthLoading}
@@ -168,14 +254,39 @@ export default function TtsGen() {
             </select>
           </div>
 
-          <button onClick={synthAll} disabled={synthLoading} style={{
-            ...primaryBtnSt,
-            background: synthLoading ? 'var(--bg-elevated)' : 'var(--accent)',
-            color: synthLoading ? 'var(--text-muted)' : '#fff',
-            cursor: synthLoading ? 'wait' : 'pointer', marginBottom: 14,
-          }}>
-            {synthLoading ? '생성 중… (수십초)' : (job ? '🔄 다시 생성 (전체)' : '🎙 음성 생성')}
-          </button>
+          {/* 1단계: 저장 (편집 확정) */}
+          {savedSentences === null && (
+            <button onClick={saveEdits} disabled={!sentences.length} style={{
+              ...primaryBtnSt,
+              background: 'var(--success, #10b981)',
+              cursor: 'pointer', marginBottom: 14,
+            }}>
+              💾 저장 (편집 확정 → 다음 단계)
+            </button>
+          )}
+
+          {/* 2단계: 음성 생성 (저장된 상태) */}
+          {savedSentences !== null && (
+            <>
+              {dirty && (
+                <div style={{
+                  ...cardSt, background: 'rgba(245,158,11,0.08)',
+                  border: '1px solid #f59e0b', color: '#92400e', fontSize: 12,
+                  padding: '10px 14px',
+                }}>
+                  ⚠ 저장본과 다른 변경이 있어요. "다시 편집" 후 재저장하거나 무시하고 음성 생성.
+                </div>
+              )}
+              <button onClick={synthAll} disabled={synthLoading} style={{
+                ...primaryBtnSt,
+                background: synthLoading ? 'var(--bg-elevated)' : 'var(--accent)',
+                color: synthLoading ? 'var(--text-muted)' : '#fff',
+                cursor: synthLoading ? 'wait' : 'pointer', marginBottom: 14,
+              }}>
+                {synthLoading ? '생성 중… (수십초)' : (job ? '🔄 다시 생성 (전체)' : '🎙 저장본으로 음성 생성')}
+              </button>
+            </>
+          )}
 
           {error && (
             <div style={{ ...cardSt, background: '#fff5f5', border: '1px solid #fcc', color: '#c00', fontSize: 13 }}>{error}</div>

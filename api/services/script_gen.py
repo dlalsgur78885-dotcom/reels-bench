@@ -4090,27 +4090,34 @@ def _build_pre_planner_prompt(usps: list[dict], ref_usps: list[dict], section_ch
         if not (desc_parsed["문제"] or desc_parsed["해결"] or desc_parsed["혜택"]) and desc_parsed["raw"]:
             usps_str += f"  설명: {desc_parsed['raw'][:240]}\n"
 
+    # ref USPs — id/label(MAIN/SUB)/description만. 등장 섹션은 chunks가 정본 (중복 제거).
     ref_usps_str = ""
     for ru in ref_usps or []:
         rid = ru.get("id")
         label = ru.get("label", "")
         desc = ru.get("description", "")
-        appears = ", ".join(ru.get("appears_in") or [])
         ref_usps_str += f"\nref USP{rid} ({label}): {desc}\n"
-        if appears:
-            ref_usps_str += f"  등장 섹션: {appears}\n"
 
+    # ref Chunks — sentences를 inline (= ref 본문 evidence). 시간순.
+    def _chunk_start(c):
+        sents = c.get("sentences") or []
+        return float(sents[0].get("start", 0)) if sents else 0.0
     chunk_lines = ""
-    for c in section_chunks or []:
+    for c in sorted(section_chunks or [], key=_chunk_start):
         sec = c.get("section", "?")
         primary = c.get("primary_usp_id")
         topic = c.get("topic", "")
         role = c.get("role", "")
         summary = c.get("summary", "")
-        ref_tag = f"ref USP{primary}" if primary else "engagement (no USP)"
-        chunk_lines += f"\n  [{sec}] {ref_tag} · role={role} · topic={topic}"
+        sents = c.get("sentences") or []
+        ref_tag = f"→ ref USP{primary}" if primary else "(USP 무관)"
+        chunk_lines += f"\n  [{sec}] {role} / {topic} {ref_tag}"
         if summary:
             chunk_lines += f"\n    summary: {summary}"
+        for s in sents:
+            txt = (s.get("text") or "").strip()
+            if txt:
+                chunk_lines += f"\n    · \"{txt}\""
 
     # v4-4: 사용자 확정 매핑 (preview에서 결정 → multistep으로 전달된 것)
     locked_block = ""
@@ -4143,10 +4150,10 @@ ref USP는 이미 분석되어 있고, 각 chunk가 어느 ref USP를 다루는�
 ## 우리 USPs
 {usps_str}
 
-## ref USPs (분석 완료)
+## ref USPs (의미 정의)
 {ref_usps_str or '(없음)'}
 
-## ref Section Chunks (각 chunk가 다루는 ref USP — 컨텍스트)
+## ref Chunks (시간순 + ref 본문 sentences inline = evidence)
 {chunk_lines or '(없음)'}
 {locked_block}
 

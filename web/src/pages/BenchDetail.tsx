@@ -850,6 +850,38 @@ export default function BenchDetail() {
                           alert('저장 실패: ' + (e.message || e))
                         }
                       }
+                      // chunk 분할: chunkIdx의 chunk를 splitAt 위치에서 둘로 나눔 (splitAt = 새 chunk 시작 sentence idx)
+                      const splitChunk = async (chunkIdx: number, splitAt: number) => {
+                        if (!chunks) return
+                        const orig = chunks[chunkIdx]
+                        if (splitAt <= 0 || splitAt >= orig.sentences.length) return
+                        // 새 section 이름: body_1 → body_1b → body_1c 식
+                        const base = orig.section
+                        let suffix = 'b'
+                        let candidate = `${base}${suffix}`
+                        while (chunks.some(x => x.section === candidate)) {
+                          suffix = String.fromCharCode(suffix.charCodeAt(0) + 1)
+                          candidate = `${base}${suffix}`
+                        }
+                        const firstHalf: SectionChunk = {
+                          ...orig,
+                          sentences: orig.sentences.slice(0, splitAt),
+                        }
+                        const secondHalf: SectionChunk = {
+                          ...orig,
+                          section: candidate,
+                          sentences: orig.sentences.slice(splitAt),
+                          relation_to_prev: '확장',
+                          summary: '(분할됨 — 편집 권장)',
+                        }
+                        const newChunks: SectionChunk[] = [
+                          ...chunks.slice(0, chunkIdx),
+                          firstHalf,
+                          secondHalf,
+                          ...chunks.slice(chunkIdx + 1),
+                        ]
+                        await saveChunks(newChunks)
+                      }
                       if (!chunks || !chunks.length) return null
                       const roleColor: Record<string, string> = {
                         '시연': '#3b82f6', '비교': '#8b5cf6', 'proof': '#10b981',
@@ -970,12 +1002,33 @@ export default function BenchDetail() {
                                   )}
                                   <div style={{ paddingLeft: 10, borderLeft: `2px solid ${primary_usp != null ? colorOf(primary_usp) + '40' : 'var(--border)'}` }}>
                                     {c.sentences.map((s, i) => (
-                                      <div key={i} style={{ fontSize: 11, color: 'var(--text-primary)', lineHeight: 1.5 }}>
-                                        <span style={{ fontFamily: 'monospace', color: 'var(--text-muted)', marginRight: 6 }}>
-                                          {s.start.toFixed(1)}-{s.end.toFixed(1)}s
-                                        </span>
-                                        {s.text}
-                                      </div>
+                                      <Fragment key={i}>
+                                        <div style={{ fontSize: 11, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+                                          <span style={{ fontFamily: 'monospace', color: 'var(--text-muted)', marginRight: 6 }}>
+                                            {s.start.toFixed(1)}-{s.end.toFixed(1)}s
+                                          </span>
+                                          {s.text}
+                                        </div>
+                                        {canDelete && i < c.sentences.length - 1 && (
+                                          <div style={{ marginTop: 2, marginBottom: 2 }}>
+                                            <button
+                                              onClick={async () => {
+                                                if (!confirm(`이 자리에서 chunk를 분할할까요?\n\n[${c.section}] → 위 ${i + 1}문장 + 아래 ${c.sentences.length - i - 1}문장 (${c.section}b)\n\n분석 결과(role/topic/summary)는 두 chunk가 동일하게 시작 — 편집 권장.`)) return
+                                                await splitChunk(idx, i + 1)
+                                              }}
+                                              style={{
+                                                padding: '2px 8px', fontSize: 10, fontWeight: 600,
+                                                background: 'transparent', color: 'var(--text-muted)',
+                                                border: '1px dashed var(--border)', borderRadius: 3,
+                                                cursor: 'pointer', width: '100%',
+                                              }}
+                                              title="이 위치에서 두 chunk로 나누기"
+                                            >
+                                              ✂ 여기서 분할
+                                            </button>
+                                          </div>
+                                        )}
+                                      </Fragment>
                                     ))}
                                   </div>
                                 </div>

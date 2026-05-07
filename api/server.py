@@ -559,6 +559,27 @@ def update_section_chunks(shortcode: str, body: UpdateSectionChunksRequest, requ
     )
     if r.status_code not in (200, 204):
         raise HTTPException(r.status_code, r.text[:200])
+
+    # ⭐ chunks 변경 후 sentences.section 동기화 (chunks 정본화)
+    try:
+        trans_rows = _r.get(
+            f"{SUPA}/rest/v1/reels_transcripts?shortcode=eq.{shortcode}&select=transcript,segments&limit=1",
+            headers=H, timeout=10,
+        ).json()
+        if trans_rows:
+            transcript_text = trans_rows[0].get("transcript") or ""
+            sentences = list(trans_rows[0].get("segments") or [])
+            script_gen.chunks_as_source_of_truth(body.chunks, sentences, None)
+            _r.post(
+                f"{SUPA}/rest/v1/reels_transcripts?on_conflict=shortcode",
+                headers={**H, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"},
+                json={"shortcode": shortcode, "transcript": transcript_text, "language": "ko", "segments": sentences},
+                timeout=15,
+            )
+            logger.info("[update-section-chunks] sentences.section synced (%d sentences)", len(sentences))
+    except Exception as e:
+        logger.warning("[update-section-chunks] sentences sync failed: %s", e)
+
     return {"shortcode": shortcode, "count": len(body.chunks)}
 
 

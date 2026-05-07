@@ -652,12 +652,15 @@ def patch_sp_sentences_for_yt(shortcode: str, body: SpSentencesPatch, request: R
 
 @app.post("/api/script/analyze-section-chunks/{shortcode}")
 def analyze_section_chunks_for_reel(shortcode: str, request: Request):
-    """모든 섹션(hook/intro/body_N/cta) chunk별 분석. overall.section_chunks에 저장 (+ body_chunks 호환 alias)."""
+    """모든 섹션(hook/intro/body_N/cta) chunk별 분석. overall.section_chunks에 저장 (+ body_chunks 호환 alias).
+
+    Plan-A: chunks 결과를 정본으로 sentence.section + usp.appears_in 자동 동기화.
+    """
     auth_svc.require_user(request)
     ref = script_gen.fetch_reference(shortcode)
     if not ref:
         raise HTTPException(404, "참고 릴스 없음")
-    sentences = ref.get("sentences") or []
+    sentences = list(ref.get("sentences") or [])
     if not any(s.get("section") for s in sentences):
         raise HTTPException(400, "section 라벨된 sentences 필요")
     chunks = script_gen.analyze_section_chunks(ref)
@@ -678,11 +681,32 @@ def analyze_section_chunks_for_reel(shortcode: str, request: Request):
     overall["body_chunks"] = [
         {**c, "body_n": c["section"]} for c in chunks if c.get("section", "").startswith("body")
     ]
+
+    # ⭐ Plan-A: chunks를 정본으로 sentence.section + usp.appears_in 자동 동기화
+    usp_layout = overall.get("usp_layout") or []
+    script_gen.chunks_as_source_of_truth(chunks, sentences, usp_layout)
+    overall["usp_layout"] = usp_layout
+
     _r.patch(
         f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
         headers={**H, "Prefer": "return=minimal"},
         json={"overall": overall}, timeout=15,
     )
+    # sentences DB 갱신 (transcripts.segments — section 라벨 동기화)
+    try:
+        trans_rows = _r.get(
+            f"{SUPA}/rest/v1/reels_transcripts?shortcode=eq.{shortcode}&select=transcript&limit=1",
+            headers=H, timeout=10,
+        ).json()
+        transcript_text = (trans_rows[0].get("transcript") or "") if trans_rows else ""
+        _r.post(
+            f"{SUPA}/rest/v1/reels_transcripts?on_conflict=shortcode",
+            headers={**H, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"},
+            json={"shortcode": shortcode, "transcript": transcript_text, "language": "ko", "segments": sentences},
+            timeout=15,
+        )
+    except Exception as e:
+        logger.warning("[analyze-section-chunks] sentences sync failed: %s", e)
     return {"shortcode": shortcode, "chunks": chunks, "count": len(chunks)}
 
 

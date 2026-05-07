@@ -332,6 +332,58 @@ JSON만 출력. 설명 X."""
         return []
 
 
+def chunks_as_source_of_truth(chunks: list[dict], sentences: list[dict], usp_layout: list[dict] | None) -> tuple[list[dict], list[dict]]:
+    """chunks를 정본으로 → sentence.section + usp.appears_in 자동 동기화.
+
+    classify_sentence_sections / analyze_usp_layout이 chunks와 어긋난 라벨을 줘도
+    chunks 결과로 덮어써서 3-way 일관성 강제.
+
+    In-place modify sentences and usp_layout. Returns same lists.
+    """
+    if not chunks:
+        return sentences, usp_layout or []
+
+    # 1) sentence.section ← chunk.section (시간 + 텍스트 매칭)
+    sent_idx_to_section: dict[int, str] = {}
+    for chunk in chunks:
+        sec = chunk.get("section")
+        if not sec:
+            continue
+        for chunk_sent in chunk.get("sentences") or []:
+            cs_start = float(chunk_sent.get("start", -1))
+            cs_text = (chunk_sent.get("text") or "").strip()
+            for i, s in enumerate(sentences):
+                if i in sent_idx_to_section:
+                    continue
+                if (abs(float(s.get("start", -2)) - cs_start) < 0.05
+                        and (s.get("text") or "").strip() == cs_text):
+                    sent_idx_to_section[i] = sec
+                    break
+    for i, sec in sent_idx_to_section.items():
+        sentences[i]["section"] = sec
+
+    # 2) usp.appears_in ← chunks.primary_usp_id 그룹핑 (시간 순서 보존)
+    if usp_layout:
+        usp_id_to_sections: dict[int, list[str]] = {}
+        seen: dict[int, set[str]] = {}
+        for chunk in chunks:
+            uid = chunk.get("primary_usp_id")
+            sec = chunk.get("section")
+            if isinstance(uid, int) and sec:
+                seen.setdefault(uid, set())
+                if sec not in seen[uid]:
+                    seen[uid].add(sec)
+                    usp_id_to_sections.setdefault(uid, []).append(sec)
+        for usp in usp_layout:
+            uid = usp.get("id")
+            if uid in usp_id_to_sections:
+                usp["appears_in"] = usp_id_to_sections[uid]
+            elif uid is not None and not usp.get("appears_in"):
+                # primary_usp_id로 chunk와 매핑된 게 없으면 빈 배열
+                usp["appears_in"] = []
+    return sentences, usp_layout or []
+
+
 def analyze_section_chunks(ref: dict) -> list[dict]:
     """섹션별 chunk 상세 분석 — hook/intro/body_N/cta 전부.
 

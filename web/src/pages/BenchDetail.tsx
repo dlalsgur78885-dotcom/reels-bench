@@ -278,9 +278,8 @@ export default function BenchDetail() {
           border: '1px solid var(--accent)', borderRadius: 'var(--radius-sm)',
           fontSize: 12, color: 'var(--accent)', fontWeight: 600,
         }}>
-          {reanalyzing === 'classify' && '분석 갱신 중… (1/3) 문장 섹션 분류'}
-          {reanalyzing === 'section_chunks' && '분석 갱신 중… (2/3) section chunks 재분석'}
-          {reanalyzing === 'usp_layout' && '분석 갱신 중… (3/3) USP layout 재분석'}
+          {reanalyzing === 'classify' && '분석 갱신 중… (1/2) 문장 섹션 분류'}
+          {reanalyzing === 'section_chunks' && '분석 갱신 중… (2/2) section chunks 재분석'}
         </div>
       )}
 
@@ -299,14 +298,12 @@ export default function BenchDetail() {
           disabled={!hasAnalysis || !!reanalyzing}
           onClick={async () => {
             if (!shortcode) return
-            if (!confirm('전체 분석을 다시 실행할까요?\n\n3단계 chain (약 1~2분):\n1) 문장 섹션 분류\n2) section chunks (chunks/topic/role)\n3) USP layout (광고형/적합성)\n\n기존 분석 결과는 덮어쓰여집니다.')) return
+            if (!confirm('전체 분석을 다시 실행할까요?\n\n2단계 chain (약 1분):\n1) 문장 섹션 분류\n2) section chunks (chunks/topic/role)\n\n기존 분석 결과는 덮어쓰여집니다.')) return
             try {
               setReanalyzing('classify')
               await api.classifySentences(shortcode)
               setReanalyzing('section_chunks')
               await api.analyzeSectionChunks(shortcode)
-              setReanalyzing('usp_layout')
-              await api.reanalyzeUspLayout(shortcode)
               const d = await api.extra(shortcode, { fresh: true })
               if (d && Object.keys(d).length) setExtra(d)
             } catch (e: any) {
@@ -315,7 +312,7 @@ export default function BenchDetail() {
               setReanalyzing(null)
             }
           }}
-          title="모든 분석 단계 재실행 (classify → chunks → usp_layout)"
+          title="모든 분석 단계 재실행 (classify → chunks)"
           style={{ marginRight: 10 }}>
           🔄 전체 재분석
         </button>
@@ -958,50 +955,23 @@ export default function BenchDetail() {
                 >문장 수정</button>
               </div>
               {(() => {
-                // Body 문장을 body_1/body_2/.../body_N으로 분할
-                // tip_count = script_structure.body.key_points 길이 (없으면 ceil(body_count/3))
-                const ssLocal = extra.script_structure
-                const hookEndPre = parseFloat(ssLocal?.hook?.seconds?.split('-')[1] || '3')
-                const introEndPre = parseFloat(ssLocal?.intro?.seconds?.split('-')[1] || '7')
-                const bodyEndPre = parseFloat(ssLocal?.body?.seconds?.split('-')[1] || '40')
-                const bodySents: number[] = []  // sentence indices that are BODY
-                ;(extra.sentences || []).forEach((sx, idx) => {
-                  const ov = (sx as any).section as string | undefined
-                  let isBody = false
-                  if (ov) isBody = ov.toUpperCase() === 'BODY'
-                  else if (ssLocal) isBody = sx.start >= hookEndPre && sx.start >= introEndPre && sx.start < bodyEndPre
-                  if (isBody) bodySents.push(idx)
-                })
-                const keyPts = (ssLocal?.body as any)?.key_points
-                const tipCount = Array.isArray(keyPts) && keyPts.length > 0 ? keyPts.length : Math.max(1, Math.ceil(bodySents.length / 3))
-                const bodyMap = new Map<number, number>()  // sentence idx → body_N (1-based)
-                if (bodySents.length && tipCount > 0) {
-                  // 전환 키워드 우선 탐지
-                  const TRANS = ['마지막으로', '그리고', '또한', '다음으로', '게다가', '하지만', '또']
-                  const boundaries = [0]
-                  for (let k = 1; k < bodySents.length; k++) {
-                    const txt = (extra.sentences[bodySents[k]] || {}).text || ''
-                    if (TRANS.some(t => txt.startsWith(t) || txt.slice(0, 6).includes(' ' + t))) {
-                      boundaries.push(k)
+                // chunks 정본화 — chunk.section을 sentence idx별 section으로 매핑
+                // chunks가 있으면 모든 heuristic·sentence.section override 무시 (chunks가 정본)
+                const chunksData = (extra.script_structure?.overall as any)?.section_chunks as Array<{
+                  section: string; sentences?: { start: number; end: number; text: string }[]
+                }> | undefined
+                const sectionByIdx = new Map<number, string>()
+                if (chunksData?.length && extra.sentences) {
+                  for (const c of chunksData) {
+                    for (const cs of (c.sentences || [])) {
+                      const i = extra.sentences.findIndex(s =>
+                        Math.abs(s.start - cs.start) < 0.05 && (s.text || '').trim() === (cs.text || '').trim()
+                      )
+                      if (i >= 0) sectionByIdx.set(i, c.section)
                     }
                   }
-                  boundaries.push(bodySents.length)
-                  let groups: number[][] = []
-                  if (boundaries.length - 1 === tipCount) {
-                    for (let k = 0; k < tipCount; k++) groups.push(bodySents.slice(boundaries[k], boundaries[k + 1]))
-                  } else {
-                    const base = Math.floor(bodySents.length / tipCount)
-                    const rem = bodySents.length % tipCount
-                    let idx2 = 0
-                    for (let k = 0; k < tipCount; k++) {
-                      const size = base + (k < rem ? 1 : 0)
-                      groups.push(bodySents.slice(idx2, idx2 + size))
-                      idx2 += size
-                    }
-                  }
-                  groups.forEach((grp, gi) => grp.forEach(si => bodyMap.set(si, gi + 1)))
                 }
-                ;(extra as any)._bodyMap = bodyMap
+                ;(extra as any)._sectionByIdx = sectionByIdx
                 return null
               })()}
               {extra.sentences.map((s, i) => {
@@ -1053,28 +1023,27 @@ export default function BenchDetail() {
                     }
                   }
                 }
-                // 1. sentence.section override 우선
-                // 2. 없으면 script_structure 시간 범위로 계산
-                const sOverride = (s as any).section as string | undefined
+                // 우선순위: chunks(정본) > sentence.section override > script_structure 시간 범위
                 let section = ''
-                if (sOverride) {
-                  section = sOverride.toUpperCase()
+                const fromChunk = (extra as any)._sectionByIdx?.get(i) as string | undefined
+                if (fromChunk) {
+                  section = fromChunk.toUpperCase()
                 } else {
-                  const ss = extra.script_structure
-                  if (ss) {
-                    const hookEnd = parseFloat(ss.hook?.seconds?.split('-')[1] || '3')
-                    const introEnd = parseFloat(ss.intro?.seconds?.split('-')[1] || '7')
-                    const bodyEnd = parseFloat(ss.body?.seconds?.split('-')[1] || '40')
-                    if (s.start < hookEnd) section = 'HOOK'
-                    else if (s.start < introEnd) section = 'INTRO'
-                    else if (s.start < bodyEnd) section = 'BODY'
-                    else section = 'CTA'
+                  const sOverride = (s as any).section as string | undefined
+                  if (sOverride) {
+                    section = sOverride.toUpperCase()
+                  } else {
+                    const ss = extra.script_structure
+                    if (ss) {
+                      const hookEnd = parseFloat(ss.hook?.seconds?.split('-')[1] || '3')
+                      const introEnd = parseFloat(ss.intro?.seconds?.split('-')[1] || '7')
+                      const bodyEnd = parseFloat(ss.body?.seconds?.split('-')[1] || '40')
+                      if (s.start < hookEnd) section = 'HOOK'
+                      else if (s.start < introEnd) section = 'INTRO'
+                      else if (s.start < bodyEnd) section = 'BODY'
+                      else section = 'CTA'
+                    }
                   }
-                }
-                // BODY → BODY_N으로 세분화 (위에서 만든 _bodyMap 사용)
-                if (section === 'BODY') {
-                  const bn = (extra as any)._bodyMap?.get(i)
-                  if (bn) section = `BODY_${bn}`
                 }
 
                 const fmtTime = (t: number) => {
@@ -1357,15 +1326,13 @@ export default function BenchDetail() {
                   if (d && Object.keys(d).length) setExtra(d)
                   const wasSentenceEdit = editing === 'sentences'
                   setEditing(null)
-                  // 문장 저장 후 자동 재분석 (classify → chunks → usp_layout)
-                  if (wasSentenceEdit && confirm('문장이 변경됐습니다. 분석(chunks, USP layout)도 같이 갱신할까요?\n\n약 1~2분 소요됩니다.')) {
+                  // 문장 저장 후 자동 재분석 (classify → chunks)
+                  if (wasSentenceEdit && confirm('문장이 변경됐습니다. 분석(chunks)도 같이 갱신할까요?\n\n약 1분 소요됩니다.')) {
                     try {
                       setReanalyzing('classify')
                       await api.classifySentences(shortcode!)
                       setReanalyzing('section_chunks')
                       await api.analyzeSectionChunks(shortcode!)
-                      setReanalyzing('usp_layout')
-                      await api.reanalyzeUspLayout(shortcode!)
                       const d2 = await api.extra(shortcode!)
                       if (d2 && Object.keys(d2).length) setExtra(d2)
                     } catch (e: any) {

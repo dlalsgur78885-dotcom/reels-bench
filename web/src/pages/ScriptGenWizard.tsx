@@ -38,9 +38,7 @@ export default function ScriptGenWizard() {
   const [mapping, setMapping] = useState<MappingPreview | null>(null)
   const [mappingLoading, setMappingLoading] = useState(false)
   const [mappingError, setMappingError] = useState('')
-  // 사용자 수동 override (ref_usp_id → user_usp_id) — null 매칭 자리 채우기
-  const [overrides, setOverrides] = useState<Record<number, number>>({})
-  // chunk별 override (chunk.section → user_usp_id) — body 분석 결과 직접 변경
+  // chunk별 override (chunk.section → user_usp_id) — wizard에서 사용자가 직접 매핑
   const [chunkOverrides, setChunkOverrides] = useState<Record<string, number>>({})
   // chunk metadata 수정 (topic/role/section) — 이번 generation에만 적용
   const [chunkEdits, setChunkEdits] = useState<Record<string, { topic: string; role: string; section?: string }>>({})
@@ -68,7 +66,6 @@ export default function ScriptGenWizard() {
     setStep('mapping')
     setMappingLoading(true)
     setMappingError('')
-    setOverrides({})
     setChunkOverrides({})
     try {
       const r = await api.previewMapping(shortcode, pid)
@@ -80,37 +77,9 @@ export default function ScriptGenWizard() {
     }
   }
 
-  // ref USP 라벨/설명 저장 — DB 저장 + 로컬 mapping 갱신
-  const saveRefUsp = async (
-    refUspId: number,
-    fields: { label?: string; description?: string },
-  ): Promise<{ ok: boolean; error?: string }> => {
-    if (!shortcode || !mapping) return { ok: false, error: '매핑 미로드' }
-    const newRefUsps = mapping.ref_usps.map(ru =>
-      ru.id === refUspId
-        ? { ...ru, label: fields.label ?? ru.label, description: fields.description ?? ru.description }
-        : ru
-    )
-    try {
-      await api.updateUspLayout(shortcode, newRefUsps)
-    } catch (e: any) {
-      return { ok: false, error: e.message || 'DB 저장 실패' }
-    }
-    setMapping({
-      ...mapping,
-      ref_usps: newRefUsps,
-      usp_mapping: mapping.usp_mapping.map(m =>
-        m.ref_usp_id === refUspId
-          ? { ...m, ref_label: fields.label ?? m.ref_label, ref_description: fields.description ?? m.ref_description }
-          : m
-      ),
-    })
-    return { ok: true }
-  }
-
-  // 새 USP를 즉석 생성 + my_products DB에 저장 + 매핑 자동 적용
-  const createUspForRef = async (
-    refUspId: number,
+  // 새 USP를 즉석 생성 + my_products DB에 저장 + chunk 매핑 자동 적용
+  const createUspForChunk = async (
+    chunkSection: string,
     name: string,
     description: string,
     reviews: string[],
@@ -132,21 +101,17 @@ export default function ScriptGenWizard() {
     } catch (e: any) {
       return { ok: false, error: e.message || 'DB 저장 실패' }
     }
-    // 로컬 매핑 갱신 + override 자동 적용
     const newUserUspId = newUsps.length  // 1-based id
     setMapping({ ...mapping, product: { ...mapping.product, usps: newUsps } })
-    setOverrides({ ...overrides, [refUspId]: newUserUspId })
+    setChunkOverrides({ ...chunkOverrides, [chunkSection]: newUserUspId })
     return { ok: true }
   }
 
-  // chunk별 effective user_usp_id (precedence: chunkOverride > refUspOverride > auto)
+  // chunk별 effective user_usp_id (precedence: chunkOverride > LLM 자동 매핑)
   const effectiveChunkUspId = (chunk: MappingPreview['section_chunks'][number]): number | null => {
     const sec = chunk.section || ''
     if (chunkOverrides[sec]) return chunkOverrides[sec]
-    const refId = chunk.primary_usp_id
-    if (!refId) return null
-    if (overrides[refId]) return overrides[refId]
-    const m = mapping?.usp_mapping.find(x => x.ref_usp_id === refId)
+    const m = mapping?.chunk_mapping.find(x => x.chunk_section === sec)
     return m ? m.user_usp_id : null
   }
 
@@ -376,9 +341,6 @@ export default function ScriptGenWizard() {
               desire_scene: persona.desire_scene || '',
               identity: persona.identity || '',
             } : null,
-            usp_mapping_override: Object.keys(overrides).length
-              ? Object.fromEntries(Object.entries(overrides).map(([k, v]) => [k, v]))
-              : undefined,
             chunk_usp_override: Object.keys(chunkOverrides).length
               ? chunkOverrides
               : undefined,
@@ -478,8 +440,7 @@ export default function ScriptGenWizard() {
               return next
             })
           }}
-          onCreateUsp={createUspForRef}
-          onSaveRefUsp={saveRefUsp}
+          onCreateUsp={createUspForChunk}
           onBack={() => setStep('product')}
           onNext={goToPersona}
         />
@@ -681,7 +642,7 @@ function StepProduct({
 function StepMapping({
   mapping, loading, error, overrides, chunkOverrides, unusedUsps, onChunkOverride,
   getEffectiveChunkUspId, chunkEdits, editingChunk, setChunkEdits, toggleChunkEdit,
-  onCreateUsp, onSaveRefUsp, onBack, onNext,
+  onCreateUsp, onBack, onNext,
 }: {
   mapping: MappingPreview | null
   loading: boolean
@@ -695,24 +656,21 @@ function StepMapping({
   editingChunk: Record<string, boolean>
   setChunkEdits: React.Dispatch<React.SetStateAction<Record<string, { topic: string; role: string; section?: string }>>>
   toggleChunkEdit: (section: string, currentTopic: string, currentRole: string) => void
-  onCreateUsp: (refUspId: number, name: string, description: string, reviews: string[]) => Promise<{ ok: boolean; error?: string }>
-  onSaveRefUsp: (refUspId: number, fields: { label?: string; description?: string }) => Promise<{ ok: boolean; error?: string }>
+  onCreateUsp: (chunkSection: string, name: string, description: string, reviews: string[]) => Promise<{ ok: boolean; error?: string }>
   onBack: () => void
   onNext: () => void
 }) {
-  const [creatingFor, setCreatingFor] = useState<number | null>(null)
+  const [creatingFor, setCreatingFor] = useState<string | null>(null)  // chunk.section
   const [newName, setNewName] = useState('')
   const [newDesc, setNewDesc] = useState('')
   const [newReviews, setNewReviews] = useState('')
   const [creating, setCreating] = useState(false)
   const [createErr, setCreateErr] = useState('')
-  const [refUspEditing, setRefUspEditing] = useState<number | null>(null)
-  const [refUspDraft, setRefUspDraft] = useState<{ label?: string; description?: string } | null>(null)
 
-  const startCreate = (refUspId: number, refDesc: string) => {
-    setCreatingFor(refUspId)
+  const startCreate = (chunkSection: string, chunkSummary: string) => {
+    setCreatingFor(chunkSection)
     setNewName('')
-    setNewDesc(refDesc)  // ref USP 설명을 default로 채워서 사용자 시작점 제공
+    setNewDesc(chunkSummary)  // chunk summary를 default로 채워서 사용자 시작점 제공
     setNewReviews('')
     setCreateErr('')
   }
@@ -751,9 +709,9 @@ function StepMapping({
   }
   if (!mapping) return null
 
-  // ref USP id → mapping record (override 반영한 effective)
-  const mappingByRefId = new Map<number, MappingPreview['usp_mapping'][number]>()
-  mapping.usp_mapping.forEach(m => mappingByRefId.set(m.ref_usp_id, m))
+  // chunk.section → mapping record
+  const mappingByChunkSection = new Map<string, MappingPreview['chunk_mapping'][number]>()
+  mapping.chunk_mapping.forEach(m => mappingByChunkSection.set(m.chunk_section, m))
 
   return (
     <>
@@ -765,9 +723,8 @@ function StepMapping({
 
         <div style={{ display: 'grid', gap: 10 }}>
           {mapping.section_chunks.map((chunk, ci) => {
-            const refUspId = chunk.primary_usp_id
-            const mappingRec = refUspId ? mappingByRefId.get(refUspId) : null
-            const isPersonaSlot = !refUspId  // hook/intro/cta 일부 — 특정 USP 없음
+            const mappingRec = mappingByChunkSection.get(chunk.section) || null
+            const isPersonaSlot = !chunk.section.startsWith('body') && !mappingRec?.user_usp_id  // hook/intro/cta — 특정 USP 없음
 
             return (
               <div key={ci} style={{
@@ -906,63 +863,13 @@ function StepMapping({
                     padding: '8px 0',
                   }}>
                     <div>
-                      {refUspEditing === mappingRec.ref_usp_id ? (
-                        <div style={{ display: 'grid', gap: 4 }}>
-                          <input
-                            value={refUspDraft?.label ?? mappingRec.ref_label}
-                            onChange={(e) => setRefUspDraft({ ...refUspDraft, label: e.target.value })}
-                            placeholder="label (MAIN/SUB)"
-                            style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}
-                          />
-                          <textarea
-                            value={refUspDraft?.description ?? mappingRec.ref_description}
-                            onChange={(e) => setRefUspDraft({ ...refUspDraft, description: e.target.value })}
-                            placeholder="description"
-                            rows={2}
-                            style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', resize: 'vertical', fontFamily: 'inherit' }}
-                          />
-                          <div style={{ display: 'flex', gap: 4 }}>
-                            <button
-                              onClick={async () => {
-                                const r = await onSaveRefUsp(mappingRec.ref_usp_id, {
-                                  label: refUspDraft?.label,
-                                  description: refUspDraft?.description,
-                                })
-                                if (r.ok) {
-                                  setRefUspEditing(null); setRefUspDraft(null)
-                                } else {
-                                  alert('저장 실패: ' + (r.error || ''))
-                                }
-                              }}
-                              style={{ padding: '3px 10px', fontSize: 11, fontWeight: 600, background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 3, cursor: 'pointer' }}>
-                              저장 (DB)
-                            </button>
-                            <button
-                              onClick={() => { setRefUspEditing(null); setRefUspDraft(null) }}
-                              style={{ padding: '3px 10px', fontSize: 11, background: 'var(--bg-surface)', color: 'var(--text-body)', border: '1px solid var(--border)', borderRadius: 3, cursor: 'pointer' }}>
-                              취소
-                            </button>
-                          </div>
+                      <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                        chunk [{chunk.section}] · {chunk.topic}
+                      </div>
+                      {chunk.summary && (
+                        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
+                          {chunk.summary}
                         </div>
-                      ) : (
-                        <>
-                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                            <div style={{ fontWeight: 600, color: 'var(--text-primary)', flex: 1 }}>
-                              ref USP{mappingRec.ref_usp_id}{mappingRec.ref_label ? ` · ${mappingRec.ref_label}` : ''}
-                            </div>
-                            <button
-                              onClick={() => {
-                                setRefUspEditing(mappingRec.ref_usp_id)
-                                setRefUspDraft({ label: mappingRec.ref_label, description: mappingRec.ref_description })
-                              }}
-                              style={{ padding: '1px 6px', fontSize: 10, border: '1px solid var(--border)', borderRadius: 3, background: 'var(--bg-surface)', cursor: 'pointer' }}>
-                              ✏
-                            </button>
-                          </div>
-                          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
-                            {mappingRec.ref_description}
-                          </div>
-                        </>
                       )}
                     </div>
                     <div style={{ color: 'var(--text-muted)', paddingTop: 2 }}>→</div>
@@ -975,7 +882,7 @@ function StepMapping({
                         {chunkUserId
                           ? (() => {
                             const u = allUserUsps.find(x => x.user_usp_id === chunkUserId)
-                            const tag = isChunkOverride ? ' (chunk 수동)' : (overrides[mappingRec.ref_usp_id] ? ' (ref 수동)' : '')
+                            const tag = isChunkOverride ? ' (수동 매핑)' : ''
                             return `USP${chunkUserId} · ${u?.user_usp_name || ''}${tag}`
                           })()
                           : '매칭 없음'}
@@ -998,7 +905,7 @@ function StepMapping({
                           </option>
                         ))}
                       </select>
-                      {creatingFor === mappingRec.ref_usp_id ? (
+                      {creatingFor === chunk.section ? (
                         <div style={{
                           marginTop: 8, padding: 10,
                           background: 'var(--bg-base)', border: '1px solid var(--accent)',
@@ -1057,7 +964,7 @@ function StepMapping({
                         </div>
                       ) : (
                         <button
-                          onClick={() => startCreate(mappingRec.ref_usp_id, mappingRec.ref_description)}
+                          onClick={() => startCreate(chunk.section, chunk.summary || chunk.topic)}
                           style={{
                             marginTop: 6, padding: '6px 12px', fontSize: 11, fontWeight: 500,
                             background: 'transparent', color: 'var(--accent)',

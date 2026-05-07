@@ -75,7 +75,6 @@ class ScriptGenRequest(BaseModel):
     reference_shortcodes: list[str]
     refine: bool = True  # False = 1차만 (draft), True = 1차+2차
     target_persona: dict | None = None  # { name, scenario, signals, tone_hint }
-    usp_mapping_override: dict[str, int] | None = None  # ref_usp_id(str)→user_usp_id (wizard 수동 매핑)
     chunk_usp_override: dict[str, int] | None = None  # chunk.section→user_usp_id (chunk별 수동 매핑)
     chunk_meta_override: dict[str, dict] | None = None  # chunk.section→{topic, role} (분석 metadata 수정)
     session_id: str | None = None  # 진행률 polling용 식별자
@@ -108,10 +107,6 @@ def gen_script(req: ScriptGenRequest):
     )
     try:
         script_gen.reset_cost_meter()
-        # str→int 변환 (JSON dict key는 string)
-        override = None
-        if req.usp_mapping_override:
-            override = {int(k): v for k, v in req.usp_mapping_override.items() if v is not None}
         chunk_override = None
         if req.chunk_usp_override:
             chunk_override = {k: v for k, v in req.chunk_usp_override.items() if v is not None}
@@ -124,7 +119,6 @@ def gen_script(req: ScriptGenRequest):
             reference_shortcodes=req.reference_shortcodes,
             refine=req.refine,
             target_persona=req.target_persona,
-            usp_mapping_override=override,
             chunk_usp_override=chunk_override,
             chunk_meta_override=meta_override,
             session_id=req.session_id,
@@ -441,9 +435,8 @@ def reanalyze_structure_for_reel(shortcode: str, request: Request):
     ).json()
     cur_overall = (cur_rows[0].get("overall") if cur_rows else {}) or {}
     new_overall = structure.get("overall") or {}
-    # 보존: 누적된 분석 필드들
-    for k in ("usp_layout", "ad_format", "ad_suitability_score", "ad_format_reason",
-              "section_roles", "body_chunks"):
+    # 보존: 누적된 분석 필드들 (usp_layout 등은 제거됨)
+    for k in ("section_roles", "body_chunks", "section_chunks", "sp_sentences"):
         if cur_overall.get(k) is not None and not new_overall.get(k):
             new_overall[k] = cur_overall[k]
 
@@ -471,80 +464,6 @@ def reanalyze_structure_for_reel(shortcode: str, request: Request):
         "cta_text": (structure.get("cta") or {}).get("text", ""),
         "next_step": "classify-sentences + reanalyze-usp-layout 호출 권장 (선택)",
     }
-
-
-def _reanalyze_usp_layout_core(shortcode: str, source: str) -> dict:
-    """analyze_usp_layout 재실행 + overall.usp_layout 갱신 — reels/youtube 공용.
-    body_chunks도 함께 재분석해 정합성 유지.
-    """
-    ref = script_gen.fetch_reference(shortcode, source=source)
-    if not ref:
-        raise HTTPException(404, "참고 영상 없음")
-    sentences = ref.get("sentences") or []
-    if not sentences or not any(s.get("section") for s in sentences):
-        raise HTTPException(400, "section 라벨된 sentences 필요")
-
-    layout = script_gen.analyze_usp_layout(sentences)
-    if not layout:
-        raise HTTPException(500, "usp_layout 재분석 실패")
-
-    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
-    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    _r = supabase.get_session()
-    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
-    structure_table = script_gen._tables(source)["structure"]
-    rows = _r.get(
-        f"{SUPA}/rest/v1/{structure_table}?shortcode=eq.{shortcode}&select=overall&limit=1",
-        headers=H, timeout=10,
-    ).json()
-    if not rows:
-        raise HTTPException(404, "script_structure 없음")
-    overall = rows[0].get("overall") or {}
-    overall["usp_layout"] = layout["ref_usps"]
-    if layout.get("ad_format"):
-        overall["ad_format"] = layout["ad_format"]
-    if layout.get("ad_suitability_score") is not None:
-        overall["ad_suitability_score"] = layout["ad_suitability_score"]
-    if layout.get("ad_format_reason"):
-        overall["ad_format_reason"] = layout["ad_format_reason"]
-
-    # body_chunks도 재분석 (새 layout에 맞춰 매핑 갱신)
-    ref_updated = dict(ref)
-    ref_updated["structure"] = dict(ref.get("structure") or {})
-    ref_updated["structure"]["overall"] = overall
-    chunks = script_gen.analyze_section_chunks(ref_updated)
-    if chunks:
-        overall["section_chunks"] = chunks
-        overall["body_chunks"] = [
-            {**c, "body_n": c["section"]} for c in chunks if c.get("section", "").startswith("body")
-        ]
-
-    _r.patch(
-        f"{SUPA}/rest/v1/{structure_table}?shortcode=eq.{shortcode}",
-        headers={**H, "Prefer": "return=minimal"},
-        json={"overall": overall}, timeout=15,
-    )
-    return {
-        "shortcode": shortcode,
-        "source": source,
-        "usp_layout": layout["ref_usps"],
-        "usp_count": len(layout["ref_usps"]),
-        "body_chunks": chunks if chunks else [],
-    }
-
-
-@app.post("/api/script/reanalyze-usp-layout/{shortcode}")
-def reanalyze_usp_layout_for_reel(shortcode: str, request: Request):
-    """인스타 릴스용 — overall.usp_layout 갱신."""
-    auth_svc.require_user(request)
-    return _reanalyze_usp_layout_core(shortcode, source="reels")
-
-
-@app.post("/api/yt/script/reanalyze-usp-layout/{shortcode}")
-def reanalyze_usp_layout_for_yt(shortcode: str, request: Request):
-    """유튜브 Shorts용 — overall.usp_layout 갱신."""
-    auth_svc.require_user(request)
-    return _reanalyze_usp_layout_core(shortcode, source="youtube")
 
 
 @app.post("/api/script/analyze-section-chunks/{shortcode}")
@@ -579,10 +498,8 @@ def analyze_section_chunks_for_reel(shortcode: str, request: Request):
         {**c, "body_n": c["section"]} for c in chunks if c.get("section", "").startswith("body")
     ]
 
-    # ⭐ Plan-A: chunks를 정본으로 sentence.section + usp.appears_in 자동 동기화
-    usp_layout = overall.get("usp_layout") or []
-    script_gen.chunks_as_source_of_truth(chunks, sentences, usp_layout)
-    overall["usp_layout"] = usp_layout
+    # ⭐ chunks를 정본으로 sentence.section 자동 동기화 (usp_layout 제거됨)
+    script_gen.chunks_as_source_of_truth(chunks, sentences, None)
 
     _r.patch(
         f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
@@ -613,36 +530,6 @@ class PreviewMappingRequest(BaseModel):
 
 class UpdateSectionChunksRequest(BaseModel):
     chunks: list[dict]
-
-
-class UpdateUspLayoutRequest(BaseModel):
-    usps: list[dict]
-
-
-@app.patch("/api/script/usp-layout/{shortcode}")
-def update_usp_layout(shortcode: str, body: UpdateUspLayoutRequest, request: Request):
-    """ref의 usp_layout 수동 수정 — 분석이 잘못된 경우 보정용."""
-    auth_svc.require_user(request)
-    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
-    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    _r = supabase.get_session()
-    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
-    rows = _r.get(
-        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=overall&limit=1",
-        headers=H, timeout=10,
-    ).json()
-    if not rows:
-        raise HTTPException(404, "script_structure 없음")
-    overall = rows[0].get("overall") or {}
-    overall["usp_layout"] = body.usps
-    r = _r.patch(
-        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
-        headers={**H, "Prefer": "return=minimal"},
-        json={"overall": overall}, timeout=15,
-    )
-    if r.status_code not in (200, 204):
-        raise HTTPException(r.status_code, r.text[:200])
-    return {"shortcode": shortcode, "count": len(body.usps)}
 
 
 @app.patch("/api/script/section-chunks/{shortcode}")
@@ -677,9 +564,9 @@ def update_section_chunks(shortcode: str, body: UpdateSectionChunksRequest, requ
 
 @app.post("/api/script/preview-mapping/{shortcode}")
 def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Request):
-    """대본 생성 wizard용 — pre-planner만 돌려서 ref USP ↔ user USP 매핑 미리보기.
+    """대본 생성 wizard용 — chunk-level USP 매핑 미리보기.
 
-    전체 생성을 안 돌리므로 빠름 (Gemini 1회). 매칭/미매칭 USP 분석 + chunk 컨텍스트 같이 반환.
+    각 chunk 단위로 우리 USP를 매칭. usp_layout은 더 이상 사용 안 함 (chunks가 정본).
     """
     auth_svc.require_user(request)
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
@@ -689,20 +576,19 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
 
     import time as _t
     t_start = _t.time()
-    # 1. ref + section_chunks + usp_layout 로드
+    # 1. ref + section_chunks 로드
     ref = script_gen.fetch_reference(shortcode)
     if not ref:
         raise HTTPException(404, "참고 릴스 없음")
     overall = ((ref.get("structure") or {}).get("overall") or {})
-    ref_usps = overall.get("usp_layout") or []
     section_chunks = overall.get("section_chunks") or []
     chunks_cached = bool(section_chunks)
     if not section_chunks:
         t_chunks = _t.time()
         section_chunks = script_gen.analyze_section_chunks(ref) or []
         logger.info("[preview-mapping] %s analyze_section_chunks (uncached) %.1fs", shortcode, _t.time() - t_chunks)
-    if not ref_usps:
-        raise HTTPException(400, "usp_layout 없음 — 먼저 reanalyze-usp-layout 실행 필요")
+    if not section_chunks:
+        raise HTTPException(400, "section_chunks 없음 — 먼저 분석 필요")
     logger.info("[preview-mapping] %s stage1_load %.1fs (chunks_cached=%s)", shortcode, _t.time() - t_start, chunks_cached)
 
     # 2. product USPs 로드
@@ -717,17 +603,16 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
     if not user_usps:
         raise HTTPException(400, "product에 USP 없음")
 
-    # 3. pre-planner + ref_desire_arc 병렬 호출 (서로 독립 — 둘 다 ref_usps + section_chunks만 필요)
-    prompt = script_gen._build_pre_planner_prompt(user_usps, ref_usps, section_chunks)
+    # 3. pre-planner + ref_desire_arc 병렬 호출
+    prompt = script_gen._build_pre_planner_prompt(user_usps, section_chunks)
 
     def _call_pre_planner():
-        # Flash 사용 — 매핑은 분류 작업이라 Pro 품질 차이 작고 속도 5x
         r = script_gen.call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=4096)
         return r[0] if isinstance(r, list) and r else r
 
     def _call_ref_desires():
         try:
-            return script_gen.analyze_ref_desire_arc(ref_usps, section_chunks)
+            return script_gen.analyze_ref_desire_arc([], section_chunks)
         except Exception as e:
             logger.warning("[preview-mapping] ref_desires 추출 실패: %s", e)
             return []
@@ -739,30 +624,31 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
         try:
             result = f_pp.result()
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()[-500:]
+            logger.error("[preview-mapping] pre-planner 실패: %s\n%s", e, tb)
             raise HTTPException(500, f"pre-planner 실패: {e}")
         ref_desires = f_rd.result() or []
     logger.info("[preview-mapping] %s stage2_parallel(pp+rd) %.1fs total %.1fs",
                 shortcode, _t.time() - t_par, _t.time() - t_start)
 
-    # 4. mapping 보강 (ref/user 라벨 + reason + confidence)
-    ref_by_id = {ru.get("id"): ru for ru in ref_usps if isinstance(ru.get("id"), int)}
-    raw_map = result.get("usp_mapping") or []
+    # 4. chunk-level mapping 보강
+    if not isinstance(result, dict):
+        logger.warning("[preview-mapping] pre-planner result 비정상 타입: %s — 빈 매핑으로 진행", type(result).__name__)
+        result = {}
+    raw_map = result.get("chunk_mapping") or []
     mapping_full: list[dict] = []
     for m in raw_map:
-        rid = m.get("ref_usp_id")
+        sec = m.get("chunk_section")
         uid = m.get("user_usp_id")
-        if not isinstance(rid, int):
+        if not isinstance(sec, str):
             continue
         resolved_uid = uid if isinstance(uid, int) and 1 <= uid <= len(user_usps) else None
-        ref_meta = ref_by_id.get(rid) or {}
         confidence = (m.get("confidence") or "").strip().lower()
         if confidence not in ("strong", "loose", "none"):
             confidence = "none" if resolved_uid is None else "strong"
         mapping_full.append({
-            "ref_usp_id": rid,
-            "ref_label": ref_meta.get("label", ""),
-            "ref_description": ref_meta.get("description", ""),
-            "ref_appears_in": ref_meta.get("appears_in") or [],
+            "chunk_section": sec,
             "user_usp_id": resolved_uid,
             "user_usp_name": user_usps[resolved_uid - 1].get("usp", "") if resolved_uid else None,
             "confidence": confidence,
@@ -775,19 +661,20 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
         {"user_usp_id": i + 1, "user_usp_name": u.get("usp", "")}
         for i, u in enumerate(user_usps) if (i + 1) not in matched_user_ids
     ]
-    unmatched_ref = [m for m in mapping_full if m["user_usp_id"] is None]
+    unmatched_chunks = [m for m in mapping_full if m["user_usp_id"] is None]
 
-    # 6. ref_desires는 위에서 병렬로 이미 받음
+    # 6. sp_sentences (DB 분석 결과 그대로 read-through)
+    sp_sentences = overall.get("sp_sentences") or []
 
     return {
         "shortcode": shortcode,
         "product": {"id": product["id"], "name": product.get("name", ""), "usps": user_usps},
-        "ref_usps": ref_usps,
         "section_chunks": section_chunks,
-        "usp_mapping": mapping_full,
+        "chunk_mapping": mapping_full,
         "unused_user_usps": unused_user,
-        "unmatched_ref_usps": unmatched_ref,
+        "unmatched_chunks": unmatched_chunks,
         "ref_desires": ref_desires,
+        "sp_sentences": sp_sentences,
     }
 
 
@@ -982,8 +869,7 @@ def classify_sentences_for_yt(
 def reference_info(shortcode: str):
     """참고 릴스의 구조 정보 (분류·문장 수·body 슬롯 수) — UI 가이드용.
 
-    recommended_usps는 분석 단계에서 결정된 usp_layout(구조화된 USP 분류)을 정본으로 사용.
-    이게 분석 페이지(BenchDetail)에 표시되는 USP 개수와 일치한다.
+    recommended_usps는 chunks의 USP 그룹 수 (primary_usp_id가 있는 chunks).
     """
     try:
         ref = script_gen.fetch_reference(shortcode)
@@ -992,11 +878,16 @@ def reference_info(shortcode: str):
         props = script_gen.analyze_reference_proportions(ref)
         body_class = script_gen.classify_body_structure(ref)
         body_slot_count = len(props.get("body_slots") or [])
-        # 정본: usp_layout 길이 (분석 결과). 없으면 body_class 기반 fallback
+        # chunks 기반 USP 개수 (engagement 제외 — primary_usp_id 있는 chunks 그룹)
         overall = ((ref.get("structure") or {}).get("overall") or {})
-        usp_layout = overall.get("usp_layout") or []
-        if usp_layout:
-            recommended = len(usp_layout)
+        chunks = overall.get("section_chunks") or []
+        usp_ids_in_chunks = set()
+        for c in chunks:
+            uid = c.get("primary_usp_id")
+            if isinstance(uid, int):
+                usp_ids_in_chunks.add(uid)
+        if usp_ids_in_chunks:
+            recommended = len(usp_ids_in_chunks)
         elif body_class.get("type") in ("단일USP_카테고리분할", "단일진행"):
             recommended = 1
         else:
@@ -1008,7 +899,6 @@ def reference_info(shortcode: str):
             "body_slot_count": body_slot_count,
             "body_class": body_class,
             "recommended_usps": recommended,
-            "usp_layout_count": len(usp_layout) if usp_layout else None,
         }
     except HTTPException:
         raise

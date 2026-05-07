@@ -4067,14 +4067,13 @@ Planner가 각 문장에 **skeleton + signature + usp_id**를 줍니다.
 """
 
 
-def _build_pre_planner_prompt(usps: list[dict], ref_usps: list[dict], section_chunks: list[dict], locked_mappings: list[dict] | None = None) -> str:
-    """K-USP 매핑: ref_usp_id → user_usp_id.
+def _build_pre_planner_prompt(usps: list[dict], section_chunks: list[dict], locked_mappings: list[dict] | None = None) -> str:
+    """Chunk-level 매핑: chunk.section → user_usp_id.
 
-    ref USP 각각을 우리 USP 중 의미가 가장 가까운 1개로 매핑 (또는 null).
-    Hook/Intro 강제·body 강제·slot 생성 없음 — chunks가 이미 sentence 그룹과 ref USP를 정의.
+    각 chunk(USP를 다루는 chunk)에 우리 USP 중 의미 가장 가까운 1개 매핑 (또는 null).
+    chunks가 USP 단위 — chunk.topic/summary/sentences로 의미 파악.
 
-    locked_mappings: [{ref_usp_id, user_usp_id, source}]  — 사용자가 확정한 매핑 (preview에서 결정)
-        LLM은 이 매핑을 그대로 출력하고, 다른 ref USP 매핑할 때 이 user USP들을 중복 사용 회피.
+    locked_mappings: [{chunk_section, user_usp_id, source}] — 사용자가 확정한 매핑.
     """
     usps_str = ""
     for i, u in enumerate(usps, 1):
@@ -4090,28 +4089,23 @@ def _build_pre_planner_prompt(usps: list[dict], ref_usps: list[dict], section_ch
         if not (desc_parsed["문제"] or desc_parsed["해결"] or desc_parsed["혜택"]) and desc_parsed["raw"]:
             usps_str += f"  설명: {desc_parsed['raw'][:240]}\n"
 
-    # ref USPs — id/label(MAIN/SUB)/description만. 등장 섹션은 chunks가 정본 (중복 제거).
-    ref_usps_str = ""
-    for ru in ref_usps or []:
-        rid = ru.get("id")
-        label = ru.get("label", "")
-        desc = ru.get("description", "")
-        ref_usps_str += f"\nref USP{rid} ({label}): {desc}\n"
-
-    # ref Chunks — sentences를 inline (= ref 본문 evidence). 시간순.
+    # ref Chunks — sentences inline (ref 본문 = evidence). 매핑 단위.
     def _chunk_start(c):
         sents = c.get("sentences") or []
         return float(sents[0].get("start", 0)) if sents else 0.0
+    sorted_chunks = sorted(section_chunks or [], key=_chunk_start)
+    # USP 매핑 대상 chunks (engagement 제외 — primary_usp_id 있거나 body류)
+    mappable_chunks = [c for c in sorted_chunks if (c.get("section") or "").startswith("body") or c.get("primary_usp_id") is not None]
     chunk_lines = ""
-    for c in sorted(section_chunks or [], key=_chunk_start):
+    for c in sorted_chunks:
         sec = c.get("section", "?")
-        primary = c.get("primary_usp_id")
         topic = c.get("topic", "")
         role = c.get("role", "")
         summary = c.get("summary", "")
         sents = c.get("sentences") or []
-        ref_tag = f"→ ref USP{primary}" if primary else "(USP 무관)"
-        chunk_lines += f"\n  [{sec}] {role} / {topic} {ref_tag}"
+        is_mappable = c in mappable_chunks
+        tag = "🎯 매핑 대상" if is_mappable else "(engagement)"
+        chunk_lines += f"\n  [{sec}] {tag} · role={role} / topic={topic}"
         if summary:
             chunk_lines += f"\n    summary: {summary}"
         for s in sents:
@@ -4119,20 +4113,19 @@ def _build_pre_planner_prompt(usps: list[dict], ref_usps: list[dict], section_ch
             if txt:
                 chunk_lines += f"\n    · \"{txt}\""
 
-    # v4-4: 사용자 확정 매핑 (preview에서 결정 → multistep으로 전달된 것)
+    # 사용자 확정 매핑 (preview에서 결정한 chunk_section → user_usp_id)
     locked_block = ""
     locked_user_ids: list[int] = []
     if locked_mappings:
         locked_lines = []
         for lm in locked_mappings:
-            rid = lm.get("ref_usp_id")
+            sec = lm.get("chunk_section")
             uid = lm.get("user_usp_id")
             src = lm.get("source", "user")
-            if not isinstance(rid, int) or not isinstance(uid, int):
+            if not isinstance(sec, str) or not isinstance(uid, int):
                 continue
-            ref_label = (next((r for r in ref_usps if r.get("id") == rid), {}) or {}).get("label", "")
             user_label = usps[uid - 1].get("usp", "") if 1 <= uid <= len(usps) else ""
-            locked_lines.append(f"  - ref USP{rid} ({ref_label}) → user USP{uid} ({user_label}) [{src}]")
+            locked_lines.append(f"  - chunk [{sec}] → user USP{uid} ({user_label}) [{src}]")
             if uid not in locked_user_ids:
                 locked_user_ids.append(uid)
         if locked_lines:
@@ -4141,50 +4134,45 @@ def _build_pre_planner_prompt(usps: list[dict], ref_usps: list[dict], section_ch
 ## 🔒 사용자 확정 매핑 (절대 변경 X — 출력에 그대로 포함)
 {chr(10).join(locked_lines)}
 
-⚠️ 위 매핑은 사용자가 preview/wizard에서 직접 결정한 것. **반드시 출력에 그대로 박고**, **다른 ref USP 매핑할 때 위 user USP({", ".join(f"USP{u}" for u in locked_user_ids)})는 중복 사용 회피** (가능하면 다른 USP 선택, 마땅하면 null)."""
+⚠️ 위 매핑은 사용자가 직접 결정. 출력에 그대로 박고, 다른 chunk 매핑할 때 위 user USP({", ".join(f"USP{u}" for u in locked_user_ids)})는 중복 회피."""
 
-    return f"""당신은 광고 카피 플래너입니다. **ref의 각 USP를 우리 USP 중 어느 것에 매핑할지** 판단.
+    n_mappable = len(mappable_chunks)
+    return f"""당신은 광고 카피 플래너입니다. **ref의 각 chunk를 우리 USP 중 어느 것에 매핑할지** 판단.
 
-ref USP는 이미 분석되어 있고, 각 chunk가 어느 ref USP를 다루는지도 정해져 있습니다. 당신의 일은 **K-USP 매핑** — ref USP 하나당 우리 USP id 하나(또는 null).
+각 chunk는 ref가 다루는 하나의 USP/메시지 단위. 당신의 일은 **chunk-level USP 매핑** — 매핑 대상 chunk별로 우리 USP id 1개 (또는 null).
 
 ## 우리 USPs
 {usps_str}
 
-## ref USPs (의미 정의)
-{ref_usps_str or '(없음)'}
-
-## ref Chunks (시간순 + ref 본문 sentences inline = evidence)
+## ref Chunks (시간순 + ref 본문 sentences inline)
 {chunk_lines or '(없음)'}
 {locked_block}
 
 ## 매핑 룰
-1. **각 ref USP id별로 1개의 user_usp_id 선택** (또는 null = 매칭 불가)
-2. 의미·기능이 가까운 USP를 매칭. 표면 키워드보다 **mechanism/혜택의 일치**.
-3. ref MAIN이라고 무조건 우리 USP1로 가지 말 것 — 우리 USP 중 의미가 가장 가까운 것이 sub여도 OK.
-4. **⭐ Strong 매칭만 매핑, 약하면 차라리 null** (가장 중요)
-   - 같은 mechanism/혜택이 **확실히 일치**할 때만 user USP 매핑 (confidence: strong)
-   - 같은 user USP를 **다른 ref USP에 중복** 매핑하지 말 것 — 1순위가 이미 다른 ref USP에 쓰였으면 **null 선택**, 약한 매칭으로 끼워 맞추지 X
-   - 비슷한 angle인데 mechanism/도메인 차이 있는 경우 (loose) → **null이 더 나음** (사용자가 wizard에서 수동으로 다른 USP 골라 채움)
-   - **구멍이 나는 게 잘못된 매칭보다 나음** — null인 자리는 사용자가 매핑 리뷰에서 채움
-5. **null 의미** — "이 ref USP는 우리 USP에 자연스럽게 매칭 안 됨". chunk 자리는 사용자가 수동 매핑·새 USP 생성·페르소나로 풀기로 처리.
+1. **🎯 매핑 대상으로 표시된 chunk만** user_usp_id 결정 (engagement chunk는 매핑 X — null)
+2. chunk의 topic/summary/sentences로 의미 파악 → user USP 중 mechanism/혜택 가장 가까운 것 선택
+3. **⭐ Strong 매칭만, 약하면 차라리 null** (가장 중요)
+   - 같은 mechanism/혜택이 **확실히 일치**할 때만 매핑 (confidence: strong)
+   - 같은 user USP를 다른 chunk에 중복 매핑 X — 1순위가 이미 쓰였으면 null 선택
+   - 비슷한 angle인데 도메인 차이 (loose) → null이 더 나음
+   - **구멍 나는 게 잘못된 매칭보다 나음**
+4. **null 의미** — "이 chunk가 우리 USP에 자연스럽게 안 맞음". 사용자가 wizard에서 수동 매핑·페르소나로 풀기
 
 ## ⭐ confidence (매칭 강도 — 필수)
-각 매핑마다 **얼마나 잘 맞는지** 솔직하게 평가:
-- **strong** — mechanism + 효과 + 도메인 모두 일치. ex) ref "노출 방지 브이넥" → 우리 "노브라 잠옷"
-- **loose** — angle/효과는 비슷하나 **도메인·메커니즘 차이가 있음**. writer가 풀기 어려울 수 있음. ex) ref "결항 정보 수시 업데이트" → 우리 "숙소 가격 알람" (둘 다 알림이지만 도메인 다름)
-- **none** — user_usp_id가 null인 경우
-
-⚠️ user에게 약한 매칭을 알려야 함 — loose는 솔직히 loose로 표시.
+- **strong** — mechanism + 효과 + 도메인 모두 일치
+- **loose** — angle 비슷하나 도메인·메커니즘 차이
+- **none** — user_usp_id가 null
 
 ## 출력 JSON
 {{
-  "usp_mapping": [
-    {{"ref_usp_id": 1, "user_usp_id": 1, "confidence": "strong", "reason": "..."}},
+  "chunk_mapping": [
+    {{"chunk_section": "body_1", "user_usp_id": 1, "confidence": "strong", "reason": "..."}},
+    {{"chunk_section": "body_2", "user_usp_id": null, "confidence": "none", "reason": "도메인 mismatch"}},
     ...
   ]
 }}
 
-⚠️ reason은 **40자 이내** 한 줄. confidence는 strong/loose/none 중 하나. 모든 ref_usp_id 포함 (총 {len(ref_usps or [])}개). JSON만, 설명 X."""
+⚠️ reason 40자 이내. 매핑 대상 chunk **{n_mappable}개 모두** 포함. JSON만, 설명 X."""
 
 
 def _build_section_planner_prompt(section_name: str, ref_subset: list[dict], usps: list[dict], product_name: str, target_persona: dict | None, pain: str, desire: str) -> str:
@@ -4369,7 +4357,7 @@ def _classify_ref_sections(primary: dict) -> list[tuple[str, list[dict]]]:
     ]
 
 
-def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None, session_id: str | None = None) -> dict:
+def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None, session_id: str | None = None) -> dict:
     """v4 = B버전: Pre-Planner Flash + Section Planners parallel + Writers parallel."""
     import concurrent.futures as _cf
     import time as _t
@@ -4415,9 +4403,8 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     # 1b. PRE-PLANNER — chunk 기반 K-USP 매핑 (ref USP → 우리 USP)
     logger.info("[multistep-B] 1b. pre-planner (chunk-based K-USP mapping)")
 
-    # ref_usps + section_chunks 가져오기 (없으면 즉석 분석)
+    # section_chunks 가져오기 (없으면 즉석 분석) — usp_layout 제거됨
     _overall = ((primary.get("structure") or {}).get("overall") or {})
-    ref_usps_layout = _overall.get("usp_layout") if isinstance(_overall, dict) else None
     section_chunks = _overall.get("section_chunks") if isinstance(_overall, dict) else None
     # v4-2 — section_roles (DB 분석 결과: section별 role/what_it_does/must_not_repeat)
     section_roles_db = _overall.get("section_roles") if isinstance(_overall, dict) else None
@@ -4444,8 +4431,7 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                     chunk_section_renames[ci] = (sec, new_sec)
                 logger.info("[chunk-meta-override] %s → topic=%s role=%s section=%s",
                             sec, m.get("topic"), m.get("role"), new_sec or '(unchanged)')
-    logger.info("[multistep-B] ref USPs: %d, chunks: %d",
-                len(ref_usps_layout or []), len(section_chunks or []))
+    logger.info("[multistep-B] chunks: %d", len(section_chunks or []))
 
     # idx → chunk_index 매핑 (start/end/text 기준)
     chunk_for_idx: dict[int, int] = {}
@@ -4485,99 +4471,79 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
 
     # v4-4: 사용자 확정 매핑 빌드 (preview에서 결정한 것)
     # 1) usp_mapping_override (ref-level)
-    # 2) chunk_usp_override → ref USP 잠금 변환 (chunk.primary_usp_id 통해)
+    # locked_mappings: chunk_section → user_usp_id (사용자 확정 매핑)
     locked_mappings: list[dict] = []
-    locked_ref_ids: set[int] = set()
-    if usp_mapping_override:
-        for rid, uid in usp_mapping_override.items():
-            if isinstance(rid, int) and isinstance(uid, int) and 1 <= uid <= len(usps):
-                locked_mappings.append({
-                    "ref_usp_id": rid, "user_usp_id": uid, "source": "user_mapping",
-                })
-                locked_ref_ids.add(rid)
-    if chunk_usp_override and section_chunks:
+    if chunk_usp_override:
         for sec, uid in chunk_usp_override.items():
-            if not isinstance(uid, int) or not (1 <= uid <= len(usps)):
-                continue
-            chunk = next((c for c in section_chunks if (c.get("section") or "").strip() == sec.strip()), None)
-            if not chunk:
-                continue
-            ref_id = chunk.get("primary_usp_id")
-            if not isinstance(ref_id, int):
-                continue
-            if ref_id in locked_ref_ids:
-                continue  # usp_mapping_override 우선
-            locked_mappings.append({
-                "ref_usp_id": ref_id, "user_usp_id": uid, "source": "chunk_override",
-            })
-            locked_ref_ids.add(ref_id)
+            if isinstance(sec, str) and isinstance(uid, int) and 1 <= uid <= len(usps):
+                locked_mappings.append({
+                    "chunk_section": sec.strip(), "user_usp_id": uid, "source": "user_mapping",
+                })
     if locked_mappings:
         logger.info("[multistep-B] locked_mappings: %s", locked_mappings)
 
-    # Pre-planner 호출 — ref_usp → user_usp 매핑
-    usp_mapping: dict[int, int | None] = {}
-    usp_mapping_full: list[dict] = []  # UI 노출용 (ref/user 라벨 + reason)
-    if ref_usps_layout:
+    # Pre-planner 호출 — chunk-level 매핑 (chunk_section → user_usp_id)
+    chunk_to_user_usp: dict[str, int | None] = {}  # chunk.section → user_usp_id
+    chunk_mapping_full: list[dict] = []  # UI 노출용
+    if section_chunks:
         try:
             _t_pp = _t.time()
-            pre_prompt = _build_pre_planner_prompt(usps, ref_usps_layout, section_chunks or [], locked_mappings=locked_mappings)
-            # Flash 사용 — 매핑은 분류 작업이라 Pro 품질 차이 작고 속도 4-5x
+            pre_prompt = _build_pre_planner_prompt(usps, section_chunks, locked_mappings=locked_mappings)
             pre_result = call_gemini(pre_prompt, model="gemini-3-flash-preview", max_tokens=4096)
             logger.info("[multistep timing] pre-planner Flash: %.1fs", _t.time() - _t_pp)
             if isinstance(pre_result, list) and pre_result:
                 pre_result = pre_result[0]
-            ref_by_id = {ru.get("id"): ru for ru in ref_usps_layout if isinstance(ru.get("id"), int)}
-            for m in (pre_result.get("usp_mapping") or []):
-                rid = m.get("ref_usp_id")
+            for m in ((pre_result or {}).get("chunk_mapping") or []):
+                sec = m.get("chunk_section")
                 uid = m.get("user_usp_id")
                 reason = m.get("reason", "")
-                if not isinstance(rid, int):
+                if not isinstance(sec, str):
                     continue
                 resolved_uid = uid if isinstance(uid, int) and 1 <= uid <= len(usps) else None
-                usp_mapping[rid] = resolved_uid
-                ref_meta = ref_by_id.get(rid) or {}
+                chunk_to_user_usp[sec] = resolved_uid
                 user_name = usps[resolved_uid - 1].get("usp", "") if resolved_uid else None
-                usp_mapping_full.append({
-                    "ref_usp_id": rid,
-                    "ref_label": ref_meta.get("label", ""),
-                    "ref_description": ref_meta.get("description", ""),
-                    "ref_appears_in": ref_meta.get("appears_in") or [],
+                chunk_mapping_full.append({
+                    "chunk_section": sec,
                     "user_usp_id": resolved_uid,
                     "user_usp_name": user_name,
+                    "confidence": m.get("confidence", "none"),
                     "reason": reason,
                 })
-            logger.info("[pre-planner] %d USP mappings: %s", len(usp_mapping), usp_mapping)
+            logger.info("[pre-planner] %d chunk mappings", len(chunk_to_user_usp))
         except Exception as e:
-            logger.warning("[pre-planner] failed: %s — usp_mapping empty", e)
+            logger.warning("[pre-planner] failed: %s — chunk_mapping empty", e)
     else:
-        logger.info("[pre-planner] skipped — no ref_usps_layout")
+        logger.info("[pre-planner] skipped — no chunks")
 
-    # ⭐ wizard 수동 override 적용 (사용자가 null 자리에 user USP 직접 매핑)
-    if usp_mapping_override:
-        for rid, uid in usp_mapping_override.items():
-            if not isinstance(rid, int) or not isinstance(uid, int):
+    # wizard 수동 override 적용
+    if chunk_usp_override:
+        for sec, uid in chunk_usp_override.items():
+            if not isinstance(sec, str) or not isinstance(uid, int):
                 continue
             if not (1 <= uid <= len(usps)):
                 continue
-            prev = usp_mapping.get(rid)
-            usp_mapping[rid] = uid
-            # full record도 동기화
-            for rec in usp_mapping_full:
-                if rec["ref_usp_id"] == rid:
+            prev = chunk_to_user_usp.get(sec)
+            chunk_to_user_usp[sec] = uid
+            # full record 동기화
+            found = False
+            for rec in chunk_mapping_full:
+                if rec["chunk_section"] == sec:
                     rec["user_usp_id"] = uid
                     rec["user_usp_name"] = usps[uid - 1].get("usp", "")
-                    rec["reason"] = (rec.get("reason", "") + " · 사용자 수동 매핑").strip(" ·")
+                    rec["reason"] = (rec.get("reason", "") + " · 사용자 수동").strip(" ·")
+                    found = True
                     break
-            logger.info("[override] ref USP%d: %s → user USP%d", rid, prev, uid)
+            if not found:
+                chunk_mapping_full.append({
+                    "chunk_section": sec, "user_usp_id": uid,
+                    "user_usp_name": usps[uid - 1].get("usp", ""),
+                    "confidence": "strong", "reason": "사용자 수동",
+                })
+            logger.info("[override] chunk %s: %s → user USP%d", sec, prev, uid)
 
-    # idx별 usp_id/slot_id 도출 — precedence: chunk_usp_override > usp_mapping_override > usp_mapping
+    # idx별 usp_id/slot_id 도출 — chunk → user_usp 매핑 직접 사용
     usp_map: dict[int, int | None] = {}
     slot_map: dict[int, int] = {}
-    chunk_override_norm = {}  # normalize keys (strip whitespace)
-    if chunk_usp_override:
-        chunk_override_norm = {(k or "").strip(): v for k, v in chunk_usp_override.items()}
-        logger.info("[chunk-override] received: %s", chunk_override_norm)
-    chunk_override_applied: dict[str, int] = {}  # debug trace
     for i in range(len(all_ref_sents)):
         ci = chunk_for_idx.get(i)
         if ci is None:
@@ -4585,14 +4551,7 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
             continue
         chunk = section_chunks[ci]
         chunk_section = (chunk.get("section") or "").strip()
-        # 1) chunk-level override 최우선
-        if chunk_section in chunk_override_norm:
-            usp_map[i] = chunk_override_norm[chunk_section]
-            chunk_override_applied[chunk_section] = chunk_override_norm[chunk_section]
-        else:
-            # 2) ref USP override (usp_mapping에 이미 적용됨) → auto mapping
-            chunk_ref_usp = chunk.get("primary_usp_id")
-            usp_map[i] = usp_mapping.get(chunk_ref_usp) if isinstance(chunk_ref_usp, int) else None
+        usp_map[i] = chunk_to_user_usp.get(chunk_section)
         slot_map[i] = ci  # chunk index = slot
 
     if chunk_override_applied:
@@ -4943,11 +4902,10 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     return draft
 
 
-def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None, usp_mapping_override: dict[int, int] | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None, session_id: str | None = None) -> dict:
+def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None, session_id: str | None = None) -> dict:
     """엔드투엔드 — 참고 릴스 fetch → 1차 생성 → (선택) 2차 다듬기 → 최종.
 
-    usp_mapping_override: ref_usp_id → user_usp_id 수동 매핑 (ref USP 단위).
-    chunk_usp_override: chunk.section → user_usp_id 수동 매핑 (chunk 단위, 더 우선).
+    chunk_usp_override: chunk.section → user_usp_id 수동 매핑 (chunk 단위).
     chunk_meta_override: chunk.section → {topic, role} 수동 수정 (분석 결과 보정).
     session_id: 진행률 추적용 식별자 (프론트가 polling).
     """
@@ -4965,7 +4923,6 @@ def generate(product_name: str, pain: str, desire: str, usps: list[dict], refere
         update_progress(session_id, "multistep_start", 8, "멀티스텝 생성 시작")
     # 1차 생성 (멀티스텝: 플래너 → 섹션 작성자 → 어셈블 → 비평 → 리파이너)
     draft = _generate_multistep(product_name, pain, desire, usps, primary, target_persona,
-                                usp_mapping_override=usp_mapping_override,
                                 chunk_usp_override=chunk_usp_override,
                                 chunk_meta_override=chunk_meta_override,
                                 session_id=session_id)

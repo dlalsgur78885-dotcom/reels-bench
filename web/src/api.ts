@@ -458,29 +458,24 @@ export const api = {
     get<ReferenceInfo>(`/api/script/reference-info/${sc}`),
   updateSectionChunks: (sc: string, chunks: any[]) =>
     patch<{ shortcode: string; count: number }>(`/api/script/section-chunks/${sc}`, { chunks }),
-  updateUspLayout: (sc: string, usps: any[]) =>
-    patch<{ shortcode: string; count: number }>(`/api/script/usp-layout/${sc}`, { usps }),
   scriptProgress: (sessionId: string) =>
     get<{ session_id: string; found: boolean; step?: string; percent?: number; message?: string; started_at?: number; updated_at?: number }>(
       `/api/script/progress/${sessionId}`,
     ),
-  reanalyzeUspLayout: (sc: string) =>
-    post<any>(`/api/script/reanalyze-usp-layout/${sc}`, {}),
   analyzeSectionChunks: (sc: string) =>
     post<any>(`/api/script/analyze-section-chunks/${sc}`, {}),
   previewMapping: (sc: string, product_id: number) =>
     post<{
       shortcode: string
       product: { id: number; name: string; usps: any[] }
-      ref_usps: Array<{ id: number; label: string; description: string; appears_in: string[] }>
       section_chunks: Array<{ section: string; topic: string; role: string; primary_usp_id: number | null; summary: string; sentences?: { start: number; end: number; text: string }[] }>
-      usp_mapping: Array<{
-        ref_usp_id: number; ref_label: string; ref_description: string; ref_appears_in: string[]
+      chunk_mapping: Array<{
+        chunk_section: string
         user_usp_id: number | null; user_usp_name: string | null; reason: string
         confidence?: 'strong' | 'loose' | 'none'
       }>
       unused_user_usps: Array<{ user_usp_id: number; user_usp_name: string }>
-      unmatched_ref_usps: Array<{ ref_usp_id: number; ref_label: string; ref_description: string; reason: string }>
+      unmatched_chunks: Array<{ chunk_section: string; reason: string }>
       ref_desires: Array<{
         name: string; pain: string; desire: string; scenario: string
         job_statement?: string; lf8?: number; lf8_label?: string

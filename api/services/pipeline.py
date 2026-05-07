@@ -423,85 +423,68 @@ def run(shortcode: str, skip_pro_audio: bool = False):
                                                 len(canonical_tts))
                         except Exception as e:
                             logger.warning("tts_script sync failed: %s", e)
-                        # ⭐ USP layout + 광고 포맷 + section chunks 분석
+                        # section chunks 분석 (USP layout은 제거됨 — chunks가 자체적으로 USP 식별)
                         try:
-                            usp_layout = _sg.analyze_usp_layout(sentences)
-                            if usp_layout:
-                                ss_rows = supabase.sb_get(
-                                    "reels_script_structure",
-                                    f"shortcode=eq.{shortcode}&select=overall&limit=1",
-                                )
-                                if ss_rows:
-                                    overall = ss_rows[0].get("overall") or {}
-                                    overall["usp_layout"] = usp_layout["ref_usps"]
-                                    if usp_layout.get("ad_format"):
-                                        overall["ad_format"] = usp_layout["ad_format"]
-                                    if usp_layout.get("ad_suitability_score") is not None:
-                                        overall["ad_suitability_score"] = usp_layout["ad_suitability_score"]
-                                    if usp_layout.get("ad_format_reason"):
-                                        overall["ad_format_reason"] = usp_layout["ad_format_reason"]
-
-                                    # section_chunks (섹션별 chunk 상세 — body_chunks alias 포함)
-                                    try:
-                                        chunks = _sg.analyze_section_chunks({
-                                            "sentences": sentences,
-                                            "structure": {"overall": overall},
-                                        }) or []
-                                        if chunks:
-                                            overall["section_chunks"] = chunks
-                                            overall["body_chunks"] = [
-                                                {**c, "body_n": c.get("section")}
-                                                for c in chunks
-                                                if (c.get("section") or "").startswith("body")
-                                            ]
-                                            # ⭐ Plan-A: chunks를 정본으로 sentence.section + usp.appears_in 자동 동기화
-                                            _sg.chunks_as_source_of_truth(
-                                                chunks, sentences, overall.get("usp_layout") or [],
+                            ss_rows = supabase.sb_get(
+                                "reels_script_structure",
+                                f"shortcode=eq.{shortcode}&select=overall&limit=1",
+                            )
+                            if ss_rows:
+                                overall = ss_rows[0].get("overall") or {}
+                                # section_chunks (섹션별 chunk 상세)
+                                chunks = []
+                                try:
+                                    chunks = _sg.analyze_section_chunks({
+                                        "sentences": sentences,
+                                        "structure": {"overall": overall},
+                                    }) or []
+                                    if chunks:
+                                        overall["section_chunks"] = chunks
+                                        overall["body_chunks"] = [
+                                            {**c, "body_n": c.get("section")}
+                                            for c in chunks
+                                            if (c.get("section") or "").startswith("body")
+                                        ]
+                                        # ⭐ chunks 정본화: sentence.section 동기화
+                                        _sg.chunks_as_source_of_truth(chunks, sentences, None)
+                                        # sentences DB 갱신 (transcripts.segments)
+                                        try:
+                                            _r.post(
+                                                f"{supabase.SUPABASE_URL}/rest/v1/reels_transcripts?on_conflict=shortcode",
+                                                headers={
+                                                    **supabase.SUPABASE_HEADERS,
+                                                    "Prefer": "resolution=merge-duplicates,return=minimal",
+                                                },
+                                                json={
+                                                    "shortcode": shortcode,
+                                                    "transcript": transcript_text,
+                                                    "language": "ko",
+                                                    "segments": sentences,
+                                                }, timeout=15,
                                             )
-                                            # sentences DB 갱신 (transcripts.segments)
-                                            try:
-                                                _r.post(
-                                                    f"{supabase.SUPABASE_URL}/rest/v1/reels_transcripts?on_conflict=shortcode",
-                                                    headers={
-                                                        **supabase.SUPABASE_HEADERS,
-                                                        "Prefer": "resolution=merge-duplicates,return=minimal",
-                                                    },
-                                                    json={
-                                                        "shortcode": shortcode,
-                                                        "transcript": transcript_text,
-                                                        "language": "ko",
-                                                        "segments": sentences,
-                                                    }, timeout=15,
-                                                )
-                                                logger.info("[pipeline] chunks-as-truth: sentence.section + usp.appears_in 동기화")
-                                            except Exception as e:
-                                                logger.warning("[pipeline] sentences DB 재저장 실패: %s", e)
-                                    except Exception as e:
-                                        logger.warning("section_chunks failed: %s", e)
-                                        chunks = []
+                                            logger.info("[pipeline] chunks-as-truth: sentence.section 동기화")
+                                        except Exception as e:
+                                            logger.warning("[pipeline] sentences DB 재저장 실패: %s", e)
+                                except Exception as e:
+                                    logger.warning("section_chunks failed: %s", e)
 
-                                    # sp_sentences (사회적 증명 문장별 마킹)
-                                    try:
-                                        sp_sents = _sg.analyze_sp_per_sentence(sentences) or []
-                                        overall["sp_sentences"] = sp_sents
-                                    except Exception as e:
-                                        logger.warning("sp_per_sentence failed: %s", e)
-                                        sp_sents = []
+                                # sp_sentences (사회적 증명 문장별 마킹)
+                                sp_sents = []
+                                try:
+                                    sp_sents = _sg.analyze_sp_per_sentence(sentences) or []
+                                    overall["sp_sentences"] = sp_sents
+                                except Exception as e:
+                                    logger.warning("sp_per_sentence failed: %s", e)
 
-                                    _r.patch(
-                                        f"{supabase.SUPABASE_URL}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
-                                        headers={**supabase.SUPABASE_HEADERS, "Prefer": "return=minimal"},
-                                        json={"overall": overall},
-                                        timeout=15,
-                                    )
-                                    logger.info("[pipeline] usp_layout saved: %d USPs, %d chunks, %d SP, format=%s, score=%s",
-                                                len(usp_layout["ref_usps"]),
-                                                len(chunks),
-                                                len(sp_sents),
-                                                usp_layout.get("ad_format"),
-                                                usp_layout.get("ad_suitability_score"))
+                                _r.patch(
+                                    f"{supabase.SUPABASE_URL}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
+                                    headers={**supabase.SUPABASE_HEADERS, "Prefer": "return=minimal"},
+                                    json={"overall": overall},
+                                    timeout=15,
+                                )
+                                logger.info("[pipeline] saved: %d chunks, %d SP", len(chunks), len(sp_sents))
                         except Exception as e:
-                            logger.warning("USP layout analysis failed: %s", e)
+                            logger.warning("section_chunks/sp analysis failed: %s", e)
                 except Exception as e:
                     logger.warning("Sentence section classification failed: %s", e)
 

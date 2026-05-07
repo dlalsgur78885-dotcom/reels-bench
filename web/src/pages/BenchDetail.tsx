@@ -109,8 +109,6 @@ export default function BenchDetail() {
   const [deleting, setDeleting] = useState(false)
   const [chunkEditing, setChunkEditing] = useState<string | null>(null)
   const [chunkEditDraft, setChunkEditDraft] = useState<any>(null)
-  const [uspEditing, setUspEditing] = useState<number | null>(null)
-  const [uspEditDraft, setUspEditDraft] = useState<any>(null)
   const [reanalyzing, setReanalyzing] = useState<string | null>(null)  // "classify" | "usp_layout" | "section_chunks" | null
   const me = useMe()
 
@@ -633,20 +631,8 @@ export default function BenchDetail() {
               )}
               {/* USP Layout 카드 — ref가 어느 USP를 어느 섹션에 배치했는지 */}
               {(() => {
-                const layout = (extra.script_structure?.overall as any)?.usp_layout as Array<{ id: number; label: string; description: string; appears_in: string[]; evidence?: string }> | undefined
-                if (!layout || !layout.length) return null
-                // section → uspIds 매핑 (한 섹션에 여러 USP 가능)
-                const secOrder = ['hook', 'intro', 'body_1', 'body_2', 'body_3', 'body_4', 'body_5', 'body_6', 'body', 'cta']
-                const secToUsps: Record<string, number[]> = {}
-                layout.forEach(u => {
-                  (u.appears_in || []).forEach(sec => {
-                    const k = sec.toLowerCase()
-                    if (!secToUsps[k]) secToUsps[k] = []
-                    if (!secToUsps[k].includes(u.id)) secToUsps[k].push(u.id)
-                  })
-                })
-                const usedSecs = secOrder.filter(s => secToUsps[s])
-                // USP 색상 매핑
+                // ref USP Layout UI 제거됨 — Pre-Planner는 DB의 usp_layout 그대로 사용
+                // colorOf만 chunk 패널 USP 배지용으로 유지
                 const uspColors: Record<number, string> = {
                   1: '#f97316', 2: '#3b82f6', 3: '#10b981', 4: '#a855f7', 5: '#ec4899',
                 }
@@ -683,118 +669,6 @@ export default function BenchDetail() {
                         )}
                       </div>
                     )}
-                    <div className="eyebrow-label" style={{ marginBottom: 10 }}>
-                      🗺 ref USP Layout — 총 <b style={{ color: '#1e40af' }}>{layout.length}개 USP</b>가 {usedSecs.length}개 섹션에 배치됨
-                    </div>
-                    {/* 타임라인 — 섹션 순서대로 USP ID 표시 */}
-                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 12, padding: 8, background: 'var(--bg-surface)', borderRadius: 6 }}>
-                      {usedSecs.map((sec, i) => (
-                        <Fragment key={sec}>
-                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-                            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.04, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
-                              {sec.replace('_', ' ').toUpperCase()}
-                            </div>
-                            <div style={{ display: 'flex', gap: 2 }}>
-                              {secToUsps[sec].map(uid => (
-                                <span key={uid} style={{
-                                  background: colorOf(uid), color: '#fff',
-                                  fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
-                                }}>USP{uid}</span>
-                              ))}
-                            </div>
-                          </div>
-                          {i < usedSecs.length - 1 && (
-                            <div style={{ alignSelf: 'flex-end', paddingBottom: 4, color: 'var(--text-muted)', fontSize: 12 }}>→</div>
-                          )}
-                        </Fragment>
-                      ))}
-                    </div>
-                    {/* USP 상세 (compact) — 편집 가능 */}
-                    {layout.map(u => {
-                      const isEditing = uspEditing === u.id
-                      const saveUspLayout = async (modified: any[]) => {
-                        if (!shortcode) return
-                        try {
-                          await api.updateUspLayout(shortcode, modified)
-                          setExtra((prev: any) => {
-                            if (!prev) return prev
-                            const next = { ...prev }
-                            const ss = { ...(next.script_structure || {}) }
-                            const ov = { ...(ss.overall || {}) }
-                            ov.usp_layout = modified
-                            ss.overall = ov
-                            next.script_structure = ss
-                            return next
-                          })
-                        } catch (e: any) {
-                          alert('USP 저장 실패: ' + (e.message || e))
-                        }
-                      }
-                      return (
-                      <div key={u.id} style={{ marginBottom: 6, paddingBottom: 5, borderBottom: '1px solid var(--border-subtle)', fontSize: 12 }}>
-                        <div style={{ marginBottom: 2, display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
-                          <span style={{
-                            background: colorOf(u.id), color: '#fff',
-                            fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
-                          }}>USP{u.id}</span>
-                          <span className={u.label === 'MAIN' ? 'tag-pill tag-pill--strong' : 'tag-pill'} style={{ fontSize: 10 }}>
-                            {u.label}
-                          </span>
-                          <span style={{ fontWeight: 600 }}>{u.description}</span>
-                          {canDelete && (
-                            <button
-                              onClick={() => {
-                                if (isEditing) {
-                                  setUspEditing(null); setUspEditDraft(null)
-                                } else {
-                                  setUspEditing(u.id); setUspEditDraft({ ...u, appears_in: [...(u.appears_in || [])] })
-                                }
-                              }}
-                              style={{
-                                marginLeft: 'auto', padding: '2px 8px', fontSize: 10,
-                                border: '1px solid var(--border)', borderRadius: 3,
-                                background: 'var(--bg-surface)', cursor: 'pointer',
-                              }}>
-                              {isEditing ? '취소' : '✏ 편집'}
-                            </button>
-                          )}
-                        </div>
-                        {isEditing && uspEditDraft && (
-                          <div style={{ padding: 10, marginTop: 4, background: 'var(--bg-base)', borderRadius: 4, display: 'grid', gap: 6 }}>
-                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                              <input value={uspEditDraft.label || ''}
-                                onChange={e => setUspEditDraft({ ...uspEditDraft, label: e.target.value })}
-                                placeholder="label (MAIN/SUB)" style={{ flex: '0 0 120px', padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 3 }} />
-                              <input value={(uspEditDraft.appears_in || []).join(', ')}
-                                onChange={e => setUspEditDraft({ ...uspEditDraft, appears_in: e.target.value.split(',').map((x:string) => x.trim()).filter(Boolean) })}
-                                placeholder="appears_in (쉼표 구분: hook, intro, body_1)" style={{ flex: '1 0 200px', padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 3 }} />
-                            </div>
-                            <textarea value={uspEditDraft.description || ''}
-                              onChange={e => setUspEditDraft({ ...uspEditDraft, description: e.target.value })}
-                              placeholder="description (mechanism + 효과 한 줄)"
-                              rows={2}
-                              style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 3, fontFamily: 'inherit', resize: 'vertical' }} />
-                            <div style={{ display: 'flex', gap: 6 }}>
-                              <button
-                                onClick={async () => {
-                                  const next = layout.map(x => x.id === u.id ? uspEditDraft : x)
-                                  await saveUspLayout(next)
-                                  setUspEditing(null); setUspEditDraft(null)
-                                }}
-                                style={{ padding: '4px 12px', fontSize: 11, fontWeight: 600, background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 3, cursor: 'pointer' }}>
-                                저장 (DB)
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                        {!isEditing && (
-                          <div style={{ fontSize: 10, color: 'var(--text-secondary)' }}>
-                            📍 {(u.appears_in || []).map(s => s.replace('_', ' ').toUpperCase()).join(' · ')}
-                          </div>
-                        )}
-                      </div>
-                      )
-                    })}
 
                     {/* 섹션별 chunk 상세 분석 (overall.section_chunks 우선, 없으면 body_chunks 호환) */}
                     {(() => {

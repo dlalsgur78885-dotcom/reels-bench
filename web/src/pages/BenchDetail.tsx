@@ -280,9 +280,10 @@ export default function BenchDetail() {
           border: '1px solid var(--accent)', borderRadius: 'var(--radius-sm)',
           fontSize: 12, color: 'var(--accent)', fontWeight: 600,
         }}>
-          {reanalyzing === 'classify' && '분석 갱신 중… (1/3) 문장 섹션 분류'}
-          {reanalyzing === 'usp_layout' && '분석 갱신 중… (2/3) USP layout 재분석'}
-          {reanalyzing === 'section_chunks' && '분석 갱신 중… (3/3) section chunks 재분석'}
+          {reanalyzing === 'classify' && '분석 갱신 중… (1/4) 문장 섹션 분류'}
+          {reanalyzing === 'section_chunks' && '분석 갱신 중… (2/4) section chunks 재분석'}
+          {reanalyzing === 'usp_layout' && '분석 갱신 중… (3/4) USP layout 재분석'}
+          {reanalyzing === 'sp' && '분석 갱신 중… (4/4) SP per-sentence 재분석'}
         </div>
       )}
 
@@ -295,6 +296,33 @@ export default function BenchDetail() {
           title={hasAnalysis ? '이 릴스를 참고로 새 광고 대본 만들기' : '분석이 완료되어야 사용 가능'}
           style={{ marginRight: 10 }}>
           이 릴스로 대본 만들기
+        </button>
+        <button
+          className="btn-ghost btn-ghost--inline"
+          disabled={!hasAnalysis || !!reanalyzing}
+          onClick={async () => {
+            if (!shortcode) return
+            if (!confirm('전체 분석을 다시 실행할까요?\n\n4단계 chain (약 2~3분):\n1) 문장 섹션 분류\n2) section chunks (chunks/topic/role)\n3) USP layout (광고형/적합성)\n4) SP per-sentence\n\n기존 분석 결과는 덮어쓰여집니다.')) return
+            try {
+              setReanalyzing('classify')
+              await api.classifySentences(shortcode)
+              setReanalyzing('section_chunks')
+              await api.analyzeSectionChunks(shortcode)
+              setReanalyzing('usp_layout')
+              await api.reanalyzeUspLayout(shortcode)
+              setReanalyzing('sp')
+              await api.reanalyzeSP(shortcode)
+              const d = await api.extra(shortcode, { fresh: true })
+              if (d && Object.keys(d).length) setExtra(d)
+            } catch (e: any) {
+              alert('재분석 실패: ' + (e?.message || e))
+            } finally {
+              setReanalyzing(null)
+            }
+          }}
+          title="모든 분석 단계 재실행 (classify → chunks → usp_layout → sp)"
+          style={{ marginRight: 10 }}>
+          🔄 전체 재분석
         </button>
         <a
           href={`https://www.instagram.com/reel/${shortcode}/`}
@@ -1417,14 +1445,16 @@ export default function BenchDetail() {
                   const wasSentenceEdit = editing === 'sentences'
                   setEditing(null)
                   // 문장 저장 후 자동 재분석 (classify → usp_layout → section_chunks)
-                  if (wasSentenceEdit && confirm('문장이 변경됐습니다. 분석(USP layout, section chunks)도 같이 갱신할까요?\n\n약 60~90초 소요됩니다.')) {
+                  if (wasSentenceEdit && confirm('문장이 변경됐습니다. 분석(chunks, USP layout, SP)도 같이 갱신할까요?\n\n약 2~3분 소요됩니다.')) {
                     try {
                       setReanalyzing('classify')
                       await api.classifySentences(shortcode!)
-                      setReanalyzing('usp_layout')
-                      await api.reanalyzeUspLayout(shortcode!)
                       setReanalyzing('section_chunks')
                       await api.analyzeSectionChunks(shortcode!)
+                      setReanalyzing('usp_layout')
+                      await api.reanalyzeUspLayout(shortcode!)
+                      setReanalyzing('sp')
+                      await api.reanalyzeSP(shortcode!)
                       const d2 = await api.extra(shortcode!)
                       if (d2 && Object.keys(d2).length) setExtra(d2)
                     } catch (e: any) {

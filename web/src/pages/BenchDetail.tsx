@@ -668,32 +668,33 @@ export default function BenchDetail() {
                           sentences: c.sentences,
                         }))
                       const saveChunks = async (modifiedChunks: SectionChunk[]) => {
-                        if (!shortcode) return
+                        if (!shortcode) {
+                          alert('shortcode 없음 — 저장 불가')
+                          return
+                        }
                         try {
-                          await api.updateSectionChunks(shortcode, modifiedChunks)
-                          // 로컬 state 갱신
-                          setExtra((prev: any) => {
-                            if (!prev) return prev
-                            const next = { ...prev }
-                            const ss = { ...(next.script_structure || {}) }
-                            const ov = { ...(ss.overall || {}) }
-                            ov.section_chunks = modifiedChunks
-                            ov.body_chunks = modifiedChunks
-                              .filter(c => (c.section || '').startsWith('body'))
-                              .map(c => ({ ...c, body_n: c.section }))
-                            ss.overall = ov
-                            next.script_structure = ss
-                            return next
-                          })
+                          const r = await api.updateSectionChunks(shortcode, modifiedChunks)
+                          console.log('[saveChunks] saved', r)
+                          // DB에서 최신 데이터 다시 fetch (sentence sync도 반영됨)
+                          const d = await api.extra(shortcode, { fresh: true })
+                          if (d && Object.keys(d).length) setExtra(d)
                         } catch (e: any) {
-                          alert('저장 실패: ' + (e.message || e))
+                          console.error('[saveChunks] failed', e)
+                          alert('저장 실패: ' + (e?.message || e))
                         }
                       }
                       // chunk 분할: chunkIdx의 chunk를 splitAt 위치에서 둘로 나눔 (splitAt = 새 chunk 시작 sentence idx)
                       const splitChunk = async (chunkIdx: number, splitAt: number) => {
-                        if (!chunks) return
+                        if (!chunks) {
+                          alert('chunks 데이터 없음 — 분할 불가')
+                          return
+                        }
                         const orig = chunks[chunkIdx]
-                        if (splitAt <= 0 || splitAt >= orig.sentences.length) return
+                        if (splitAt <= 0 || splitAt >= orig.sentences.length) {
+                          alert(`분할 위치 잘못됨 (splitAt=${splitAt}, total=${orig.sentences.length})`)
+                          return
+                        }
+                        console.log('[splitChunk]', { chunkIdx, splitAt, orig: orig.section })
                         // 새 section 이름: body_1 → body_1b → body_1c 식
                         const base = orig.section
                         let suffix = 'b'

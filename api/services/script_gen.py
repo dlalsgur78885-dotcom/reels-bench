@@ -3395,10 +3395,17 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
             prev_chunks_block += line + "\n"
         prev_chunks_block += "→ 위는 이미 발화된 텍스트. 같은 ref·페르소나·톤. 어휘·연결어 일관성 유지.\n"
 
-    # 📋 A) 전체 chunks 흐름 (bird's eye — 자기 자리 파악용)
+    # 📋 A) 전체 chunks 흐름 (bird's eye — 자기 자리 파악용 + USP 배치)
     flow_overview_block = ""
     if section_chunks:
-        flow_overview_block = "\n## 📋 전체 광고 흐름 (참고 — ▶ 표시가 지금 작성 중인 섹션)\n"
+        # USP id → label/desc 매핑 (usps 입력 = 우리 USP 목록 — id는 1-based)
+        usp_label_by_id: dict[int, str] = {}
+        for i, u in enumerate(usps, 1):
+            tag = "MAIN" if i == 1 else "SUB"
+            short_desc = (u.get("usp", "") or "")[:30]
+            usp_label_by_id[i] = f"USP{i}({tag}) {short_desc}"
+
+        flow_overview_block = "\n## 📋 전체 광고 흐름 (참고 — ▶ 표시가 지금 작성 중인 섹션, USP 배치 포함)\n"
         # 시간순 정렬 (sentences[0].start)
         def _chunk_start(c):
             sents = c.get("sentences") or []
@@ -3409,12 +3416,19 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
             c_role = c.get("role", "")
             c_topic = c.get("topic", "")
             c_summary = c.get("summary", "")
+            primary_uid = c.get("primary_usp_id")
             mark = "▶ " if sec == section_name else "  "
-            line = f"{mark}[{sec:<8}] {c_role} / {c_topic}"
+            usp_str = ""
+            if isinstance(primary_uid, int) and primary_uid in usp_label_by_id:
+                usp_str = f" → {usp_label_by_id[primary_uid]}"
+            elif primary_uid is None:
+                usp_str = " → engagement (USP 무관)"
+            line = f"{mark}[{sec:<8}] {c_role} / {c_topic}{usp_str}"
             if c_summary:
                 line += f" — {c_summary[:60]}"
             flow_overview_block += line + "\n"
         flow_overview_block += "→ 이 흐름의 한 단계로서 자연스럽게 이어지게. 앞 chunk와 중복 X, 다음 chunk로 흐름 advance.\n"
+        flow_overview_block += "→ 같은 USP가 여러 chunk에 등장하면 어휘 일관성 (예: '차르르 핏'을 한 곳선 '찰랑'이라 하지 X).\n"
 
     # 🎬 C) 모든 섹션 내러티브 arc (DB section_roles 전체)
     section_arc_block = ""

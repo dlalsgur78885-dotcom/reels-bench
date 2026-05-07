@@ -3206,17 +3206,21 @@ def _detect_speech_level(texts: list[str]) -> str:
     return "혼합"
 
 
-def _build_section_writer_prompt(section: dict, product_name: str, target_persona: dict | None, usps: list[dict], pain: str, desire: str, speech_level: str = "혼합", section_chunks: list[dict] | None = None, section_roles: dict | None = None) -> str:
+def _build_section_writer_prompt(section: dict, product_name: str, target_persona: dict | None, usps: list[dict], pain: str, desire: str, speech_level: str = "혼합", section_chunks: list[dict] | None = None, section_roles: dict | None = None, prev_chunks: list[dict] | None = None) -> str:
     """섹션별 작성자 prompt — outline 받아 문장 N개 작성. 섹션 타입별 가이드 추가.
 
     v4-2: chunk 의도(role/topic/summary/relation_to_prev) + section_roles 주입.
     표면 미러링과 의도 충돌 시 의도 우선.
+
+    prev_chunks: 직전 배치들이 이미 생성한 chunk들 [{section, sentences: [{text}, ...]}].
+        Writer에게 직전 흐름 텍스트로 전달 (자연 연결).
     """
     section_name = section.get("name", "")
     sentences_spec = section.get("sentences") or []
     main_usp_id = section.get("main_usp_id")
     section_chunks = section_chunks or []
     section_roles = section_roles or {}
+    prev_chunks = prev_chunks or []
 
     # 어떤 USP가 사용되는지 — 해당 USP 정보만 컴팩트하게
     usp_ids_in_section = set()
@@ -3378,6 +3382,19 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
     section_guidance = _section_specific_guidance(section_name, has_destination=False)
     _sn = section_name.lower()
 
+    # 📜 직전 배치들이 이미 생성한 chunks (자연 연결용 — 톤/어휘 이어가기)
+    prev_chunks_block = ""
+    if prev_chunks:
+        prev_chunks_block = "\n## 📜 이미 생성된 직전 chunks (이 톤·어휘에 자연스럽게 이어가기)\n"
+        for pc in prev_chunks:
+            pc_section = (pc.get("section") or "").strip()
+            pc_sents = pc.get("sentences") or []
+            if not pc_sents:
+                continue
+            line = f"[{pc_section}] " + " / ".join(s.get("text", "").strip() for s in pc_sents if s.get("text"))
+            prev_chunks_block += line + "\n"
+        prev_chunks_block += "→ 위는 이미 발화된 텍스트. 같은 ref·페르소나·톤. 어휘·연결어 일관성 유지.\n"
+
     # 📋 A) 전체 chunks 흐름 (bird's eye — 자기 자리 파악용)
     flow_overview_block = ""
     if section_chunks:
@@ -3471,6 +3488,7 @@ direction은 **성우가 어떻게 읽을지**만. 마케팅 전략 X.
 {flow_overview_block}
 {section_arc_block}
 {section_role_block}
+{prev_chunks_block}
 {section_guidance}
 
 ## ⭐⭐⭐⭐ chunk 의도 우선 (v4-2)
@@ -4561,12 +4579,13 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                 violations.append((i, "+".join(reasons)))
         return violations
 
-    def _write_section(sec):
+    def _write_section(sec, prev_chunks=None):
         prompt = _build_section_writer_prompt(
             sec, product_name, target_persona, usps, pain, desire,
             speech_level=speech_level,
             section_chunks=section_chunks or [],
             section_roles=section_roles_db or {},
+            prev_chunks=prev_chunks or [],
         )
         spec_list = sec.get("sentences") or []
         n_required = len(spec_list)
@@ -4634,13 +4653,45 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                 write_units.append((chunk_id, chunk_sec))
     logger.info("[multistep-B] writer units: %d (after chunking)", len(write_units))
 
+    # write_units 시간순 정렬 (hook → intro → body_1 → ... → cta)
+    def _unit_order_key(u: tuple[str, dict]) -> tuple[int, int, int]:
+        sec_name = (u[1].get("_orig_section") or u[1].get("name") or "").lower()
+        # name이 "body_2#3" 형태면 base + chunk index
+        chunk_idx = 0
+        if "#" in (u[1].get("name") or ""):
+            try: chunk_idx = int(u[1]["name"].split("#")[1])
+            except Exception: chunk_idx = 0
+        if sec_name == "hook": return (0, 0, chunk_idx)
+        if sec_name == "intro": return (1, 0, chunk_idx)
+        if sec_name == "cta": return (3, 0, chunk_idx)
+        if sec_name.startswith("body_"):
+            try: return (2, int(sec_name.split("_", 1)[1]), chunk_idx)
+            except Exception: return (2, 99, chunk_idx)
+        if sec_name == "body": return (2, 0, chunk_idx)
+        return (4, 0, chunk_idx)
+    write_units.sort(key=_unit_order_key)
+
+    # 배치 3 순차: 배치 안 병렬, 배치 간 순차. 각 배치는 직전 배치들의 출력을 prev_chunks로 받음
+    BATCH_SIZE = 3
     chunk_results: dict[str, list[dict]] = {}
+    prev_chunks_acc: list[dict] = []  # 직전 배치들의 누적 출력
     _t_writers = _t.time()
-    with _cf.ThreadPoolExecutor(max_workers=min(8, len(write_units))) as ex:
-        for name, sents in ex.map(lambda u: _write_section(u[1]), write_units):
+    n_batches = (len(write_units) + BATCH_SIZE - 1) // BATCH_SIZE
+    for bi in range(0, len(write_units), BATCH_SIZE):
+        batch = write_units[bi:bi + BATCH_SIZE]
+        # 배치 안 병렬 — 모두 같은 prev_chunks_acc 받음 (배치 안 chunks끼리는 서로 못 봄)
+        prev_snapshot = list(prev_chunks_acc)
+        with _cf.ThreadPoolExecutor(max_workers=len(batch)) as ex:
+            results = list(ex.map(lambda u: _write_section(u[1], prev_chunks=prev_snapshot), batch))
+        # 결과 누적 (시간순 유지)
+        for (name, sents), (uname, usec) in zip(results, batch):
             chunk_results[name] = sents
-    logger.info("[multistep timing] section writers (parallel × %d): %.1fs total %.1fs",
-                len(write_units), _t.time() - _t_writers, _t.time() - _t_total)
+            sec_label = usec.get("_orig_section") or usec.get("name") or name
+            prev_chunks_acc.append({"section": sec_label, "sentences": sents})
+        logger.info("[writer batch %d/%d] %d units done (cumulative prev=%d)",
+                    bi // BATCH_SIZE + 1, n_batches, len(batch), len(prev_chunks_acc))
+    logger.info("[multistep timing] section writers (batch×%d sequential): %.1fs total %.1fs",
+                BATCH_SIZE, _t.time() - _t_writers, _t.time() - _t_total)
 
     # chunk 결과를 원래 섹션 순서로 재조립
     section_results: dict[str, list[dict]] = {}

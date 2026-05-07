@@ -3058,12 +3058,37 @@ def _section_specific_guidance(section_name: str, has_destination: bool = False)
     """섹션 타입별 미러링 가이드 — 톤·종결 prescription 없음, 참고 그대로."""
     name = (section_name or "").lower()
     if name == "hook":
-        return """## 🎣 HOOK 자유 Transform — 어절·음절·플랫폼어 보존
-- **어절 수 ±1, 어절별 음절 ±2** 허용 범위
-- **종결 형태** ref 그대로 (질문/명령/평서)
-- **플랫폼 맥락어** (릴스/피드/화면/영상/스크롤) ref 그대로 — product 도메인으로 치환 X
-- 비유가 우리 도메인과 충돌하면 비유 빼고 직접 묘사
-- (톤·desire는 위 페르소나 block의 LF8/scene 룰 적용)
+        return """## 🎣 HOOK — **페르소나 우선 / ref는 형식 참조만**
+
+⚠️ Hook은 페르소나마다 **다른 결과가 나와야 정상**. ref Hook을 그대로 미러링하면 ❌.
+
+### 우선순위 (Hook 한정)
+1. **페르소나 LF8 + pain_scene/desire_scene 트리거** ⭐⭐⭐⭐⭐
+2. ref Hook의 **유형(질문/명령/평서/충격/공감/조건)** 참조 — type만 같게
+3. 어절·음절 패턴은 **자유** (Hook은 미러링 검증 skip — 페르소나 어휘 우선)
+4. 플랫폼 맥락어(릴스/피드/스크롤)만 ref와 일관성
+
+### 페르소나마다 다르게 — 강제
+- 페르소나 A (LF8 #4 매력) → 매력 angle Hook
+- 페르소나 B (LF8 #5 편안) → 편안 angle Hook
+- 페르소나 C (LF8 #6 우월) → 우월 angle Hook
+- 같은 ref여도 **페르소나마다 Hook 어휘·구조 다르게**. 비슷하면 ❌
+
+### ref Hook 활용법 (참조 모드)
+- ref가 "공감형" Hook ("X는 Y잖아요") → 우리도 공감형이되 페르소나 맥락
+- ref가 "충격형" ("이 X 사지 마세요") → 우리도 충격형이되 페르소나 도메인
+- ref가 "조건형" ("X 가기 전에 Y 떴다면") → 우리도 조건형이되 페르소나 시점
+- **type만 같게, 어휘·구조는 자유롭게**
+
+### 예 (ref="잘 때는 편한 게 최고잖아요" — 공감형 LF8 #5)
+- 페르소나 A (LF8 #4 매력 / desire="남친 영상통화에서 더 이쁘다"):
+  - Hook: "남친이 영상통화 켜면 더 이쁘다 하잖아요" (공감형 type 유지, LF8 #4로 변경)
+- 페르소나 B (LF8 #5 편안 / desire="출근 직전 5분 더 자기"):
+  - Hook: "잘 때는 편한 게 최고잖아요" (페르소나가 #5라 ref 그대로 OK)
+- 페르소나 C (LF8 #6 우월 / desire="친구한테 자랑할 수준"):
+  - Hook: "친구가 잠옷 어디 거냐고 묻잖아요" (공감형 type, LF8 #6)
+
+→ 같은 ref라도 페르소나 LF8에 따라 Hook이 **완전 다르게** 나와야 함.
 """
     if name == "intro":
         return """## 🚪 INTRO 자유 Transform — 어절·음절 보존 + 비유 처리
@@ -4656,8 +4681,11 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     def _validate_sentences(spec_list: list[dict], generated: list[dict], section_name: str = "") -> list[tuple[int, str]]:
         """미러링 위반 인덱스 + 위반 사유 반환.
         사유: 'eojeol_count' | 'eojeol_pattern' | 'length'
-        모든 섹션 — 어절 수 강제, 어절별 음절 패턴 ±2.
+        Hook 섹션은 페르소나 자유 생성 모드 — 어절·음절 검증 skip.
         """
+        # Hook은 페르소나마다 다르게 자유 생성하는 게 정상 — 미러링 검증 skip
+        if (section_name or "").lower() == "hook":
+            return []
         violations = []
         for i, spec in enumerate(spec_list):
             ref = spec.get("ref_text", "")

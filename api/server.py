@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
 import time, threading, logging, os, re
+import requests
 from datetime import datetime, timezone
 
 logger = logging.getLogger("uvicorn.error")
@@ -75,8 +76,13 @@ class ScriptGenRequest(BaseModel):
     reference_shortcodes: list[str]
     refine: bool = True  # False = 1차만 (draft), True = 1차+2차
     target_persona: dict | None = None  # { name, scenario, signals, tone_hint }
-    chunk_usp_override: dict[str, int] | None = None  # chunk.section→user_usp_id (chunk별 수동 매핑)
+    # chunk.section→user_usp_id (단일) 또는 user_usp_ids[] (multi). 둘 다 지원.
+    chunk_usp_override: dict[str, list[int] | int] | None = None
     chunk_meta_override: dict[str, dict] | None = None  # chunk.section→{topic, role} (분석 metadata 수정)
+    skip_chunk_sections: list[str] | None = None  # 이번 생성에서 제외할 chunk.section 목록
+    skip_sentence_starts: list[float] | None = None  # 이번 생성에서 제외할 sentence start time 목록 (DB 안 건드림)
+    section_overrides: dict[str, dict] | None = None  # {hook|intro|cta: {shortcode, chunk}} 다른 ref로 교체
+    cta_override: dict | None = None  # backward compat: section_overrides.cta와 동일
     session_id: str | None = None  # 진행률 polling용 식별자
 
 
@@ -121,6 +127,10 @@ def gen_script(req: ScriptGenRequest):
             target_persona=req.target_persona,
             chunk_usp_override=chunk_override,
             chunk_meta_override=meta_override,
+            skip_chunk_sections=req.skip_chunk_sections or None,
+            skip_sentence_starts=req.skip_sentence_starts or None,
+            section_overrides=req.section_overrides,
+            cta_override=req.cta_override,
             session_id=req.session_id,
         )
         n_sentences = len(result.get("sentences") or [])
@@ -133,7 +143,9 @@ def gen_script(req: ScriptGenRequest):
         )
         return result
     except Exception as e:
-        logger.error("[script/gen] FAILED: %s", e)
+        import traceback
+        tb = traceback.format_exc()
+        logger.error("[script/gen] FAILED: %s\n%s", e, tb[-2000:])
         raise HTTPException(500, f"스크립트 생성 실패: {e}")
 
 
@@ -506,13 +518,10 @@ def analyze_section_chunks_for_reel(shortcode: str, request: Request):
         headers={**H, "Prefer": "return=minimal"},
         json={"overall": overall}, timeout=15,
     )
-    # sentences DB 갱신 (transcripts.segments — section 라벨 동기화)
+    # sentences DB 갱신 (transcripts.segments — section 라벨 + text 동기화)
     try:
-        trans_rows = _r.get(
-            f"{SUPA}/rest/v1/reels_transcripts?shortcode=eq.{shortcode}&select=transcript&limit=1",
-            headers=H, timeout=10,
-        ).json()
-        transcript_text = (trans_rows[0].get("transcript") or "") if trans_rows else ""
+        # text가 변경됐을 수 있으니 transcript 문자열도 segments에서 재생성
+        transcript_text = " ".join((s.get("text") or "").strip() for s in sentences if (s.get("text") or "").strip())
         _r.post(
             f"{SUPA}/rest/v1/reels_transcripts?on_conflict=shortcode",
             headers={**H, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"},
@@ -567,16 +576,17 @@ def update_section_chunks(shortcode: str, body: UpdateSectionChunksRequest, requ
             headers=H, timeout=10,
         ).json()
         if trans_rows:
-            transcript_text = trans_rows[0].get("transcript") or ""
             sentences = list(trans_rows[0].get("segments") or [])
             script_gen.chunks_as_source_of_truth(body.chunks, sentences, None)
+            # text가 변경됐을 수 있으니 transcript 문자열도 segments에서 재생성
+            transcript_text = " ".join((s.get("text") or "").strip() for s in sentences if (s.get("text") or "").strip())
             _r.post(
                 f"{SUPA}/rest/v1/reels_transcripts?on_conflict=shortcode",
                 headers={**H, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"},
                 json={"shortcode": shortcode, "transcript": transcript_text, "language": "ko", "segments": sentences},
                 timeout=15,
             )
-            logger.info("[update-section-chunks] sentences.section synced (%d sentences)", len(sentences))
+            logger.info("[update-section-chunks] sentences synced (section+text, %d sentences)", len(sentences))
     except Exception as e:
         logger.warning("[update-section-chunks] sentences sync failed: %s", e)
 
@@ -628,12 +638,21 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
     prompt = script_gen._build_pre_planner_prompt(user_usps, section_chunks)
 
     def _call_pre_planner():
-        r = script_gen.call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=4096)
+        # max_tokens=8192 + responseSchema 강제 → user_usp_ids[] 형식 보장
+        r = script_gen.call_gemini(
+            prompt, model="gemini-3-flash-preview", max_tokens=8192,
+            response_schema=script_gen.PRE_PLANNER_SCHEMA,
+        )
         return r[0] if isinstance(r, list) and r else r
 
     def _call_ref_desires():
         try:
-            return script_gen.analyze_ref_desire_arc([], section_chunks)
+            # ⭐ product 도메인 anchor 전달 — ref의 emotional frame을 product 도메인 사용자로 transform
+            return script_gen.analyze_ref_desire_arc(
+                [], section_chunks,
+                product_name=product.get("name", ""),
+                product_usps=user_usps,
+            )
         except Exception as e:
             logger.warning("[preview-mapping] ref_desires 추출 실패: %s", e)
             return []
@@ -647,8 +666,9 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
         except Exception as e:
             import traceback
             tb = traceback.format_exc()[-500:]
-            logger.error("[preview-mapping] pre-planner 실패: %s\n%s", e, tb)
-            raise HTTPException(500, f"pre-planner 실패: {e}")
+            # JSON 파싱 실패/truncation → 빈 매핑으로 graceful fallback (wizard에서 사용자가 수동 매핑 가능)
+            logger.warning("[preview-mapping] pre-planner 실패 — 빈 매핑으로 진행: %s\n%s", e, tb)
+            result = {}
         ref_desires = f_rd.result() or []
     logger.info("[preview-mapping] %s stage2_parallel(pp+rd) %.1fs total %.1fs",
                 shortcode, _t.time() - t_par, _t.time() - t_start)
@@ -658,31 +678,51 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
         logger.warning("[preview-mapping] pre-planner result 비정상 타입: %s — 빈 매핑으로 진행", type(result).__name__)
         result = {}
     raw_map = result.get("chunk_mapping") or []
+    # chunk.section → chunk meta (role, usp_ids 추가 노출용)
+    chunk_meta_by_sec = {c.get("section", ""): c for c in section_chunks}
     mapping_full: list[dict] = []
     for m in raw_map:
         sec = m.get("chunk_section")
-        uid = m.get("user_usp_id")
         if not isinstance(sec, str):
             continue
-        resolved_uid = uid if isinstance(uid, int) and 1 <= uid <= len(user_usps) else None
+        # multi: user_usp_ids[] 우선, 없으면 single user_usp_id를 list로 승격 (backward compat)
+        ids_raw = m.get("user_usp_ids")
+        if not isinstance(ids_raw, list):
+            single = m.get("user_usp_id")
+            ids_raw = [single] if isinstance(single, int) else []
+        resolved_ids: list[int] = []
+        for u in ids_raw:
+            if isinstance(u, int) and 1 <= u <= len(user_usps) and u not in resolved_ids:
+                resolved_ids.append(u)
         confidence = (m.get("confidence") or "").strip().lower()
         if confidence not in ("strong", "loose", "none"):
-            confidence = "none" if resolved_uid is None else "strong"
+            confidence = "none" if not resolved_ids else "strong"
+        primary = resolved_ids[0] if resolved_ids else None
+        chunk_meta = chunk_meta_by_sec.get(sec, {})
         mapping_full.append({
             "chunk_section": sec,
-            "user_usp_id": resolved_uid,
-            "user_usp_name": user_usps[resolved_uid - 1].get("usp", "") if resolved_uid else None,
+            "user_usp_ids": resolved_ids,
+            "user_usp_names": [user_usps[i - 1].get("usp", "") for i in resolved_ids],
+            "user_usp_id": primary,  # backward compat (primary)
+            "user_usp_name": user_usps[primary - 1].get("usp", "") if primary else None,
+            "chunk_role": chunk_meta.get("role", ""),
+            "chunk_topic": chunk_meta.get("topic", ""),
+            "chunk_summary": chunk_meta.get("summary", ""),
+            "chunk_ref_usp_ids": chunk_meta.get("usp_ids") or [],  # ref USPs (참고용)
             "confidence": confidence,
             "reason": m.get("reason", ""),
         })
 
-    # 5. gap 분석
-    matched_user_ids = {m["user_usp_id"] for m in mapping_full if m["user_usp_id"]}
+    # 5. gap 분석 (multi 기준)
+    matched_user_ids: set[int] = set()
+    for m in mapping_full:
+        for u in (m.get("user_usp_ids") or []):
+            matched_user_ids.add(u)
     unused_user = [
         {"user_usp_id": i + 1, "user_usp_name": u.get("usp", "")}
         for i, u in enumerate(user_usps) if (i + 1) not in matched_user_ids
     ]
-    unmatched_chunks = [m for m in mapping_full if m["user_usp_id"] is None]
+    unmatched_chunks = [m for m in mapping_full if not m.get("user_usp_ids")]
 
     # 6. sp_sentences (DB 분석 결과 그대로 read-through)
     sp_sentences = overall.get("sp_sentences") or []
@@ -886,6 +926,83 @@ def classify_sentences_for_yt(
     return _classify_sentences_core(shortcode, source="youtube", resegment=resegment)
 
 
+@app.get("/api/script/section-pool")
+@app.get("/api/script/cta-pool")  # backward compat
+def section_pool(section: str = Query("cta", description="hook|intro|cta"), exclude: str = Query("", description="제외할 shortcode"), shortcode: str = Query("", description="특정 shortcode 1개 조회"), limit: int = Query(50, ge=1, le=500)):
+    """분석된 릴스에서 특정 섹션 chunks를 모아 반환 — wizard에서 다른 ref의 hook/intro/cta로 swap용."""
+    section = (section or "cta").lower().strip()
+    if section not in ("hook", "intro", "cta"):
+        section = "cta"
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+
+    # script_structure에 overall.section_chunks가 있는 것만 (CTA chunk 포함 가능성)
+    if shortcode:
+        rows = _r.get(
+            f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=shortcode,hook,intro,cta,overall&limit=1",
+            headers=H, timeout=15,
+        ).json() or []
+    else:
+        rows = _r.get(
+            f"{SUPA}/rest/v1/reels_script_structure?select=shortcode,hook,intro,cta,overall&limit=500",
+            headers=H, timeout=15,
+        ).json() or []
+
+    # 메타에서 author 가져오기 (배치)
+    sc_list = [r["shortcode"] for r in rows if r.get("shortcode")]
+    authors: dict[str, str] = {}
+    if sc_list:
+        sc_q = ",".join(f'"{s}"' for s in sc_list)
+        meta_rows = _r.get(
+            f"{SUPA}/rest/v1/reels_metadata?shortcode=in.({sc_q})&select=shortcode,author_username&limit={len(sc_list)}",
+            headers=H, timeout=15,
+        ).json() or []
+        authors = {m["shortcode"]: (m.get("author_username") or "") for m in meta_rows if m.get("shortcode")}
+
+    out: list[dict] = []
+    for r in rows:
+        sc = r.get("shortcode")
+        if not sc or sc == exclude:
+            continue
+        overall = r.get("overall") or {}
+        chunks = overall.get("section_chunks") or []
+        target_chunk = next((c for c in chunks if (c.get("section") or "").lower() == section), None)
+        target_text = ""
+        if target_chunk:
+            target_text = " ".join((s.get("text") or "").strip() for s in (target_chunk.get("sentences") or [])).strip()
+        if not target_text:
+            # fallback: structure.<section>.text — chunk 없을 때 즉석 합성
+            sec_obj = r.get(section) if isinstance(r.get(section), dict) else {}
+            target_text = (sec_obj.get("text") or "").strip()
+            if target_text and not target_chunk:
+                target_chunk = {
+                    "section": section,
+                    "topic": sec_obj.get("type", ""),
+                    "role": section,
+                    "summary": sec_obj.get("analysis", ""),
+                    "sentences": [{"start": 0.0, "end": 3.0, "text": target_text, "section": section}],
+                }
+        if not target_text:
+            continue
+        out.append({
+            "shortcode": sc,
+            "author": authors.get(sc, ""),
+            "section": section,
+            "section_text": target_text,
+            "section_chunk": target_chunk,
+            # backward compat (cta-pool 별칭 사용처용)
+            "cta_text": target_text,
+            "cta_chunk": target_chunk,
+            "topic": (target_chunk or {}).get("topic", "") if target_chunk else "",
+        })
+    # shortcode 쿼리는 limit 무시, 그 외는 적용
+    if not shortcode:
+        out = out[:limit]
+    return {"items": out, "total": len(out)}
+
+
 @app.get("/api/script/reference-info/{shortcode}")
 def reference_info(shortcode: str):
     """참고 릴스의 구조 정보 (분류·문장 수·body 슬롯 수) — UI 가이드용.
@@ -1029,6 +1146,9 @@ def refine_script(req: ScriptRefineRequest):
 
 # ── Admin Secrets (Vault) ──
 
+_secret_list_cache: tuple[float, list] | None = None
+_SECRET_LIST_CACHE_TTL = 60
+
 class SecretUpsertRequest(BaseModel):
     name: str
     value: str
@@ -1039,8 +1159,12 @@ class SecretUpsertRequest(BaseModel):
 def list_secrets(request: Request):
     """admin: 등록된 시크릿 메타정보 (값 X)."""
     auth_svc.require_admin(request)
+    global _secret_list_cache
+    if _secret_list_cache and time.time() - _secret_list_cache[0] < _SECRET_LIST_CACHE_TTL:
+        return _secret_list_cache[1]
     try:
         items = secrets_svc.list_secrets()
+        _secret_list_cache = (time.time(), items)
         return items
     except Exception as e:
         raise HTTPException(500, f"시크릿 조회 실패: {e}")
@@ -1054,6 +1178,8 @@ def upsert_secret(req: SecretUpsertRequest, request: Request):
         raise HTTPException(400, "name·value 필수")
     try:
         sid = secrets_svc.upsert_secret(req.name.strip(), req.value, req.description)
+        global _secret_list_cache
+        _secret_list_cache = None
         return {"id": sid, "name": req.name, "message": "갱신 완료"}
     except Exception as e:
         raise HTTPException(500, f"시크릿 저장 실패: {e}")
@@ -1065,6 +1191,8 @@ def delete_secret(name: str, request: Request):
     auth_svc.require_admin(request)
     try:
         ok = secrets_svc.delete_secret(name)
+        global _secret_list_cache
+        _secret_list_cache = None
         return {"deleted": ok}
     except Exception as e:
         raise HTTPException(500, f"시크릿 삭제 실패: {e}")
@@ -1081,6 +1209,8 @@ class MyProductIn(BaseModel):
 _MY_PRODUCTS_CACHE_TTL = 20
 _my_products_cache: dict[str, tuple[float, list]] = {}
 _shareable_users_cache: dict[str, tuple[float, list]] = {}
+_users_cache: dict[str, tuple[float, list]] = {}
+_USERS_CACHE_TTL = 60
 
 
 def _cache_get(cache: dict, key: str, ttl: int):
@@ -1381,6 +1511,9 @@ def get_me(request: Request, background_tasks: BackgroundTasks):
 def list_users(request: Request):
     """admin: 전체 직원 목록."""
     auth_svc.require_admin(request)
+    cached = _cache_get(_users_cache, "all", _USERS_CACHE_TTL)
+    if cached is not None:
+        return cached
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     KEY = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or "").strip()
     _r = supabase.get_session()
@@ -1389,7 +1522,7 @@ def list_users(request: Request):
         headers={"apikey": KEY, "Authorization": f"Bearer {KEY}"},
         timeout=15,
     )
-    return r.json() if r.status_code == 200 else []
+    return _cache_set(_users_cache, "all", r.json() if r.status_code == 200 else [])
 
 
 class UserInviteRequest(BaseModel):
@@ -1440,6 +1573,7 @@ def invite_user(req: UserInviteRequest, request: Request):
         timeout=10,
     )
     profile = patch.json()[0] if patch.status_code in (200, 201) and patch.json() else None
+    _users_cache.clear()
     return {
         "message": f"{req.email} 초대 완료. 임시 비밀번호: {pw}",
         "profile": profile,
@@ -1482,6 +1616,7 @@ def update_user(user_id: str, req: UserUpdateRequest, request: Request):
     )
     if r.status_code not in (200, 204):
         raise HTTPException(r.status_code, r.text[:200])
+    _users_cache.clear()
     return r.json()[0] if r.json() else {}
 
 
@@ -2460,6 +2595,90 @@ def add_reel(req: ReelAddRequest, background_tasks: BackgroundTasks):
     }
 
 
+# ── FB Ad Single Import ──
+
+class FbAdImportRequest(BaseModel):
+    url: str
+    analyze: bool = True
+
+
+def _parse_fb_ad_id(url_or_id: str) -> str:
+    """FB Ads Library URL 또는 ad_id 문자열에서 ad_id 추출."""
+    s = (url_or_id or "").strip()
+    if not s:
+        return ""
+    if s.isdigit():
+        return s
+    import re as _re
+    m = _re.search(r"[?&]id=(\d+)", s)
+    if m:
+        return m.group(1)
+    return ""
+
+
+@app.post("/api/fb-ad/import")
+def import_fb_ad(req: FbAdImportRequest, background_tasks: BackgroundTasks, request: Request):
+    """단일 FB Ads Library URL → reels DB로 import + (선택) 분석 파이프라인 실행."""
+    auth_svc.require_user(request)
+    ad_id = _parse_fb_ad_id(req.url)
+    if not ad_id:
+        raise HTTPException(400, "URL에서 ad_id 추출 실패 (예: facebook.com/ads/library/?id=1234567890)")
+    shortcode = f"fb_{ad_id}"
+
+    # 이미 import된 경우 — 분석만 다시
+    existing = supabase.sb_get("reels", f"shortcode=eq.{shortcode}&select=shortcode&limit=1")
+    if existing:
+        if req.analyze and pipeline.analysis_status.get(shortcode, {}).get("status") != "running":
+            background_tasks.add_task(pipeline.run, shortcode)
+            pipeline.analysis_status[shortcode] = {"status": "running", "step": "시작", "progress": 0}
+        return {"shortcode": shortcode, "imported": False, "message": "이미 import됨 — 분석 재실행"}
+
+    # Playwright로 ad fetch
+    try:
+        from api.services.fb_ads_scraper import AdLibraryScraper
+        scraper = AdLibraryScraper(headless=True)
+        import asyncio as _asyncio
+        ad_data = _asyncio.run(scraper.scrape_single_by_id(ad_id))
+    except Exception as e:
+        logger.exception("[fb-ad-import] scrape failed")
+        raise HTTPException(500, f"FB ad fetch 실패: {e}")
+    if not ad_data:
+        raise HTTPException(404, f"ad_id {ad_id}에서 광고 찾을 수 없음")
+    video_url = ad_data.get("video_url") or ""
+    if not video_url:
+        raise HTTPException(400, f"광고에 video URL 없음 (이미지 광고이거나 영상 추출 실패). page_name={ad_data.get('page_name','')}")
+
+    # reels + reels_metadata 저장
+    page_name = (ad_data.get("page_name") or "").strip() or "FB광고"
+    caption = (ad_data.get("caption") or "")[:1000]
+    supabase.sb_post("reels", {
+        "shortcode": shortcode,
+        "url": req.url,
+        "source": "fb_ad",
+        "collected_at": datetime.now(timezone.utc).isoformat(),
+    })
+    supabase.sb_post("reels_metadata", {
+        "shortcode": shortcode,
+        "author_username": page_name,
+        "video_url": video_url,
+        "caption_text": caption,
+    })
+
+    # 분석 트리거
+    if req.analyze:
+        background_tasks.add_task(pipeline.run, shortcode)
+        pipeline.analysis_status[shortcode] = {"status": "running", "step": "시작", "progress": 0}
+
+    return {
+        "shortcode": shortcode,
+        "imported": True,
+        "ad_id": ad_id,
+        "page_name": page_name,
+        "video_url": video_url,
+        "analysis_started": bool(req.analyze),
+    }
+
+
 # ── Text Analysis (for Claude Code to submit results) ──
 
 class TextAnalysisResult(BaseModel):
@@ -2554,6 +2773,45 @@ def update_extra(shortcode: str, req: ExtraUpdateRequest):
             )
         except Exception as e:
             logger.warning("transcripts upsert failed: %s", e)
+        # ⭐ chunks DB도 sentences edit 반영 — chunks_as_source_of_truth가 다음 gen에 revert 못 하도록 sync
+        # chunks의 sentences[i].text를 새 sentences의 same start time + (가능하면) text 매칭으로 갱신
+        try:
+            SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+            SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+            _r2 = supabase.get_session()
+            H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+            ss_rows = _r2.get(
+                f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=overall&limit=1",
+                headers=H, timeout=10,
+            ).json()
+            if ss_rows:
+                overall = ss_rows[0].get("overall") or {}
+                chunks = overall.get("section_chunks") or []
+                if chunks:
+                    # start time 기준 새 text 매칭 lookup
+                    new_by_start = {round(float(s.get("start", 0) or 0), 2): (s.get("text") or "").strip() for s in req.sentences}
+                    changed = 0
+                    for c in chunks:
+                        for cs in (c.get("sentences") or []):
+                            cs_start = round(float(cs.get("start", 0) or 0), 2)
+                            new_text = new_by_start.get(cs_start)
+                            if new_text and new_text != (cs.get("text") or "").strip():
+                                cs["text"] = new_text
+                                changed += 1
+                    if changed > 0:
+                        overall["section_chunks"] = chunks
+                        # body_chunks도 동기화
+                        overall["body_chunks"] = [
+                            {**c, "body_n": c.get("section")} for c in chunks if (c.get("section") or "").startswith("body")
+                        ]
+                        _r2.patch(
+                            f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
+                            headers={**H, "Prefer": "return=minimal"},
+                            json={"overall": overall}, timeout=15,
+                        )
+                        logger.info("[update-extra] chunks.sentences.text synced — %d sentences", changed)
+        except Exception as e:
+            logger.warning("[update-extra] chunks sync failed: %s", e)
     pipeline.extra_cache[shortcode] = data
     return {"message": "수정 완료", "shortcode": shortcode}
 
@@ -2577,8 +2835,11 @@ def fetch_and_save_comments(shortcode: str):
 
 _channels_cache: dict[str, tuple[float, list]] = {}
 _user_analysis_cache: dict[str, tuple[float, dict]] = {}
+_fb_advertisers_cache: dict[str, tuple[float, dict]] = {}
+_fb_search_ads_cache: dict[str, tuple[float, dict]] = {}
 _CHANNELS_CACHE_TTL = 60
 _USER_ANALYSIS_CACHE_TTL = 60
+_FB_CACHE_TTL = 60
 
 
 def _normalize_instagram_username(value: str) -> str:
@@ -2609,6 +2870,10 @@ def get_fb_advertisers(
     sort: str = Query("ad_count"),
     q: str = Query(""),
 ):
+    cache_key = f"{sort}:{q}"
+    cached = _cache_get(_fb_advertisers_cache, cache_key, _FB_CACHE_TTL)
+    if cached is not None:
+        return cached
     """페북 라이브러리 광고주 — fb_advertisers 테이블 + 광고 카운트 조인."""
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
@@ -2675,7 +2940,7 @@ def get_fb_advertisers(
         items.sort(key=lambda i: i["ad_count"], reverse=True)
     elif sort == "name":
         items.sort(key=lambda i: i["page_name"].lower())
-    return {"items": items, "total": len(items)}
+    return _cache_set(_fb_advertisers_cache, cache_key, {"items": items, "total": len(items)})
 
 
 class FbAdvertiserAddRequest(BaseModel):
@@ -2808,27 +3073,55 @@ def fb_search_advertisers(q: str = Query(""), limit: int = Query(50, ge=1, le=20
 
 
 @app.get("/api/fb/search/ads")
-def fb_search_ads(q: str = Query(""), limit: int = Query(50, ge=1, le=200)):
-    """캐시된 fb_* reels에서 키워드 매칭 광고."""
+def fb_search_ads(
+    q: str = Query(""),
+    days: int = Query(0, description="광고 시작일 N일 이내만 (0=전체)"),
+    duration_max: int = Query(0, description="영상 길이 최대 초 (0=전체)"),
+    duration_min: int = Query(0, description="영상 길이 최소 초"),
+    sort: str = Query("recent", description="recent|started|duration_short|duration_long"),
+    limit: int = Query(50, ge=1, le=200),
+):
+    cache_key = f"{q}:{days}:{duration_min}:{duration_max}:{sort}:{limit}"
+    cached = _cache_get(_fb_search_ads_cache, cache_key, _FB_CACHE_TTL)
+    if cached is not None:
+        return cached
+    """캐시된 fb_* reels에서 키워드 + 필터 매칭 광고."""
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
     _r = supabase.get_session()
     rows = _r.get(
         f"{SUPA}/rest/v1/reels_metadata?shortcode=like.fb_*"
-        f"&select=shortcode,author_username,caption_text,thumbnail_url,video_duration,video_url"
+        f"&select=shortcode,author_username,caption_text,thumbnail_url,video_duration,video_url,taken_at"
         f"&limit=2000",
         headers=H, timeout=15,
     ).json() or []
-    # 영상 광고만
     rows = [m for m in rows if m.get("video_url")]
     if q:
         ql = q.lower()
         rows = [m for m in rows if
                 ql in (m.get("caption_text") or "").lower() or
                 ql in (m.get("author_username") or "").lower()]
-    rows.sort(key=lambda r: r.get("shortcode") or "", reverse=True)
-    return {"items": rows[:limit], "total": len(rows), "query": q}
+    # 광고 시작일 필터
+    if days and days > 0:
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        rows = [m for m in rows if (m.get("taken_at") or "") >= cutoff]
+    # 영상 길이 필터
+    if duration_min and duration_min > 0:
+        rows = [m for m in rows if (m.get("video_duration") or 0) >= duration_min]
+    if duration_max and duration_max > 0:
+        rows = [m for m in rows if 0 < (m.get("video_duration") or 0) <= duration_max]
+    # 정렬
+    if sort == "started":
+        rows.sort(key=lambda r: (r.get("taken_at") or ""), reverse=True)
+    elif sort == "duration_short":
+        rows.sort(key=lambda r: r.get("video_duration") or 99999)
+    elif sort == "duration_long":
+        rows.sort(key=lambda r: r.get("video_duration") or 0, reverse=True)
+    else:  # recent (기본 — 수집 순서 = shortcode 역순)
+        rows.sort(key=lambda r: r.get("shortcode") or "", reverse=True)
+    return _cache_set(_fb_search_ads_cache, cache_key, {"items": rows[:limit], "total": len(rows), "query": q})
 
 
 @app.post("/api/fb/scrape")
@@ -3557,7 +3850,13 @@ _PUBLIC_DIR = Path(__file__).parent.parent / "web" / "dist"
 
 @app.get("/{full_path:path}")
 def spa_fallback(full_path: str):
-    """정적 자원이 있으면 그걸, 없으면 SPA index.html (React Router 호환)."""
+    """정적 자원이 있으면 그걸, 없으면 SPA index.html (React Router 호환).
+
+    Cache 정책:
+      - assets/* (Vite content-hashed) → 1년 immutable (해시 바뀌면 자동 새 URL)
+      - index.html → no-cache (must-revalidate) — 새 배포 즉시 반영, hash mismatch로 인한 흰화면 방지
+      - 기타 (favicon 등) → 1시간 short cache
+    """
     from fastapi.responses import FileResponse
     if not _PUBLIC_DIR.is_dir():
         raise HTTPException(503, "frontend not deployed")
@@ -3565,9 +3864,19 @@ def spa_fallback(full_path: str):
     if full_path:
         file = _PUBLIC_DIR / full_path
         if file.is_file() and _PUBLIC_DIR in file.resolve().parents:
-            return FileResponse(str(file))
+            if full_path.startswith("assets/"):
+                # content-hash가 박혀 있어서 영구 캐시 안전
+                cc = "public, max-age=31536000, immutable"
+            else:
+                cc = "public, max-age=3600"
+            return FileResponse(str(file), headers={"Cache-Control": cc})
     # SPA fallback — React Router가 client-side routing
+    # index.html은 무조건 revalidate (옛 asset 참조로 인한 흰화면 방지)
     index = _PUBLIC_DIR / "index.html"
     if index.is_file():
-        return FileResponse(str(index), media_type="text/html")
+        return FileResponse(
+            str(index),
+            media_type="text/html",
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
     raise HTTPException(404, "Not found")

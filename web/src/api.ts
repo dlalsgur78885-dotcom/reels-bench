@@ -423,6 +423,10 @@ export const api = {
   dashboard: () => get<DashboardData>('/api/dashboard'),
   reels: () => get<Reel[]>('/api/reels'),
   addReel: (url: string, analyze = false) => post<ReelAddResult>('/api/reels', { url, analyze }),
+  importFbAd: (url: string, analyze = true) =>
+    post<{ shortcode: string; imported: boolean; ad_id?: string; page_name?: string; video_url?: string; message?: string }>(
+      '/api/fb-ad/import', { url, analyze },
+    ),
   metadata: (sc: string) => get<Metadata>(`/api/metadata/${sc}`),
   detail: (sc: string) => cachedGet<DetailData>(`/api/detail/${sc}`, 45_000),
   transcript: (sc: string) => get<Transcript>(`/api/transcripts/${sc}`),
@@ -431,9 +435,15 @@ export const api = {
   startAnalysis: (sc: string) => post<{ message: string }>('/api/analyze', { shortcode: sc }),
   analysisStatus: (sc: string) => get<AnalysisStatus>(`/api/analysis-status/${sc}`),
   frameImages: (sc: string) => cachedGet<Record<number, string>>(`/api/frame-images/${sc}`, 120_000),
-  extra: (sc: string, opts?: { fresh?: boolean }) => opts?.fresh
-    ? get<ExtraData>(`/api/extra/${sc}?_t=${Date.now()}`)
-    : cachedGet<ExtraData>(`/api/extra/${sc}`, 45_000),
+  extra: async (sc: string, opts?: { fresh?: boolean }) => {
+    if (opts?.fresh) {
+      // fresh fetch → 가져온 결과를 캐시에 덮어쓰기 (재분석 후 옛 캐시 반환 방지)
+      const d = await get<ExtraData>(`/api/extra/${sc}?_t=${Date.now()}`)
+      writeClientCache(`/api/extra/${sc}`, d)
+      return d
+    }
+    return cachedGet<ExtraData>(`/api/extra/${sc}`, 45_000)
+  },
   updateExtra: (sc: string, data: { script_structure?: any; category?: any; sentences?: any[] }) =>
     patch<any>(`/api/extra/${sc}`, { shortcode: sc, ...data }),
   fetchComments: (sc: string) => post<{ count: number; comments: any[] }>(`/api/comments/${sc}/fetch`, {}),
@@ -457,13 +467,25 @@ export const api = {
   referenceInfo: (sc: string) =>
     get<ReferenceInfo>(`/api/script/reference-info/${sc}`),
   updateSectionChunks: (sc: string, chunks: any[]) =>
-    patch<{ shortcode: string; count: number }>(`/api/script/section-chunks/${sc}`, { chunks }),
+    patch<{ shortcode: string; count: number }>(`/api/script/section-chunks/${sc}`, { chunks })
+      .then(r => { clearClientCache(`/api/extra/${sc}`); return r }),
+  updateHookArchetype: (sc: string, archetype: string, opts?: { pattern?: string; core_word?: string }) =>
+    patch<{ shortcode: string; archetype: { archetype: string; pattern: string; core_word: string; reasoning: string } }>(
+      `/api/script/hook-archetype/${sc}`,
+      { archetype, ...(opts || {}) },
+    ).then(r => { clearClientCache(`/api/extra/${sc}`); return r }),
+  suggestUspDescription: (input: { product_name: string; usp_name: string; reviews?: string[] }) =>
+    post<{ description: string; parts: { 문제: string; 해결: string; 혜택: string; 핵심_명사: string } }>(
+      '/api/usp/suggest-description',
+      input,
+    ),
   scriptProgress: (sessionId: string) =>
     get<{ session_id: string; found: boolean; step?: string; percent?: number; message?: string; started_at?: number; updated_at?: number }>(
       `/api/script/progress/${sessionId}`,
     ),
   analyzeSectionChunks: (sc: string) =>
-    post<any>(`/api/script/analyze-section-chunks/${sc}`, {}),
+    post<any>(`/api/script/analyze-section-chunks/${sc}`, {})
+      .then(r => { clearClientCache(`/api/extra/${sc}`); return r }),
   previewMapping: (sc: string, product_id: number) =>
     post<{
       shortcode: string
@@ -471,7 +493,15 @@ export const api = {
       section_chunks: Array<{ section: string; topic: string; role: string; primary_usp_id: number | null; summary: string; sentences?: { start: number; end: number; text: string }[] }>
       chunk_mapping: Array<{
         chunk_section: string
-        user_usp_id: number | null; user_usp_name: string | null; reason: string
+        user_usp_ids: number[]
+        user_usp_names: string[]
+        user_usp_id: number | null   // primary (backward compat — user_usp_ids[0])
+        user_usp_name: string | null
+        chunk_role: string
+        chunk_topic: string
+        chunk_summary: string
+        chunk_ref_usp_ids: number[]  // ref USPs (참고용)
+        reason: string
         confidence?: 'strong' | 'loose' | 'none'
       }>
       unused_user_usps: Array<{ user_usp_id: number; user_usp_name: string }>
@@ -481,9 +511,14 @@ export const api = {
         job_statement?: string; lf8?: number; lf8_label?: string
         pain_scene?: string; desire_scene?: string; identity?: string
       }>
+      hook_archetype?: {
+        archetype: string; pattern?: string; core_word?: string; reasoning?: string
+        candidates?: Array<{ archetype: string; pattern?: string; core_word?: string; score: number }>
+      } | null
     }>(`/api/script/preview-mapping/${sc}`, { product_id }),
   classifySentences: (sc: string) =>
-    post<{ shortcode: string; total_sentences: number; sections: Record<string, number> }>(`/api/script/classify-sentences/${sc}`, {}),
+    post<{ shortcode: string; total_sentences: number; sections: Record<string, number> }>(`/api/script/classify-sentences/${sc}`, {})
+      .then(r => { clearClientCache(`/api/extra/${sc}`); return r }),
   // Admin Secrets
   listSecrets: () => get<{ id: string; name: string; description: string; updated_at: string }[]>('/api/admin/secrets'),
   upsertSecret: (name: string, value: string, description = '') =>

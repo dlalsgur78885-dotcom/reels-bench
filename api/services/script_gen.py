@@ -12,6 +12,12 @@ import requests
 
 from . import supabase
 from . import secrets as secrets_svc
+from .section_writer_blocks import (
+    get_section_guidance,
+    build_hook_prev_chunks_block,
+    build_intro_prev_chunks_block,
+    build_generic_prev_chunks_block,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +31,11 @@ _PRICING = {
     "gemini-3.1-pro-preview": {"in": 2.0, "out": 12.0},
     "gemini-3-pro-preview": {"in": 2.0, "out": 12.0},
     "gemini-3-flash-preview": {"in": 0.30, "out": 2.50},
+    "gemini-3.1-flash-lite-preview": {"in": 0.25, "out": 1.50},
+    "gemini-3.1-flash-lite": {"in": 0.25, "out": 1.50},
     "anthropic/claude-sonnet-4-6": {"in": 3.0, "out": 15.0},
     "anthropic/claude-sonnet-4-5": {"in": 3.0, "out": 15.0},
-    "anthropic/claude-opus-4-7": {"in": 15.0, "out": 75.0},
+    "anthropic/claude-opus-4-7": {"in": 5.0, "out": 25.0},
 }
 
 
@@ -129,22 +137,119 @@ _INTERJECTION_TOKENS = {
     "응", "아니", "어", "ㅇㅇ",
 }
 
+def _has_year_marker(text: str) -> bool:
+    """'3년째', '2년 전', '1985년' 같은 시간 anchor 감지."""
+    import re as _re_y
+    return bool(_re_y.search(r'\d+\s*(년|개월|일|달)(째|\s|전|동안|만에)?', text))
+
+
+def _detect_hook_ending_type(text: str) -> str:
+    """Hook ref 종결 타입 감지 — Writer가 우리 Hook을 같은 타입으로 끝맺도록.
+
+    카테고리 (우선순위 적용 순서):
+    - 의문형 — ? 끝
+    - 명령형 — ~해/~봐/~세요/~줘 등
+    - 자기선언형 — [1인칭/3인칭] + [시간 anchor] + [강한 동사] + ~다/~습니다 (브랜딩형 광고 60% 패턴)
+    - 종결어미형 — ~다/~요/~네/~지/~잖아/~거든/~예요/~이라
+    - 연결어미형 — ~는데/~면/~다가/~서/~고 등 (다음 문장으로 흐름)
+    - modifier+명사형 — modifier(~하는/~할/~된) 뒤에 명사 (예: "쓰는 앱", "꿈꾸던 그 여행")
+    - 명사형 (pure) — 단독 명사로 끝 (앞에 modifier 없음, 예: "혼수 필수템", "여행 앱")
+    """
+    if not text:
+        return "명사형"
+    import re as _re_h
+    cleaned = _re_h.sub(r'[\U0001F000-\U0001FFFF\u2600-\u27BF\s~]+$', '', text).rstrip()
+    if not cleaned:
+        return "명사형"
+    if cleaned.endswith("?"):
+        return "의문형"
+    s = cleaned.rstrip(".!")
+    words = s.split()
+    last_word = words[-1] if words else s
+
+    # 1. 명령형 (마지막 어절 어미)
+    for suf in ("세요", "보세요", "주세요", "해", "봐", "자", "줘", "해라", "보자", "마"):
+        if last_word.endswith(suf):
+            return "명령형"
+    # 2. 자기선언형 — 브랜딩형 광고 60% 패턴 (시간 anchor + 강한 동사 + ~다/~습니다)
+    # 시그널: 첫 어절이 1인칭 또는 시간어 + 끝이 ~다/~습니다 + 짧음 (≤6 어절)
+    first_word = words[0] if words else ""
+    selfdecl_subj = ("저는", "저희는", "나는", "우리는", "내가")
+    time_anchors = ("오늘", "어제", "지금", "방금", "어느", "이번", "올해", "작년", "최근")
+    has_subj = first_word in selfdecl_subj
+    has_time = any(t in s for t in time_anchors) or _has_year_marker(s)
+    ends_decl = last_word.endswith(("습니다", "됩니다", "합니다", "였습니다", "됐습니다", "했습니다",
+                                     "다", "됐다", "었다", "았다", "하다"))
+    if (has_subj or has_time) and ends_decl and len(words) <= 8:
+        return "자기선언형"
+
+    # 3. 종결어미 (감탄/공감/평서)
+    for suf in ("잖아요", "잖아", "거든요", "거든", "네요", "예요", "이에요", "이라", "이지", "이지롱",
+                "어요", "아요", "이야", "다요", "요", "네", "지", "야"):
+        if last_word.endswith(suf):
+            return "종결어미형"
+    if last_word.endswith("다") and not last_word.endswith(("이다", "한다", "된다", "있다", "없다")):
+        # "어쨌다" 같은 약한 형태도 종결어미로 본다
+        return "종결어미형"
+    if last_word.endswith(("이다", "한다", "된다", "있다", "없다")):
+        return "종결어미형"
+    # 3. 연결어미 (다음 문장으로 흐름)
+    for suf in ("는데", "면", "면서", "다가", "서", "고", "지만", "라서", "이라서", "니까", "거나"):
+        if last_word.endswith(suf):
+            return "연결어미형"
+    # 4. modifier (~는/~한/~할/~된/~인/~던) — 단독으로 끝나면
+    modifier_suffixes = ("하는", "되는", "있는", "없는", "쓰는", "보는", "사는", "가는",
+                         "받는", "찾는", "꾸미는", "는",
+                         "할", "갈", "올", "쓸", "볼",
+                         "한", "된", "인", "본", "산", "받은", "찾은",
+                         "하던", "되던", "있던", "쓰던", "찾던", "꿈꾸던", "포기했던", "였던")
+    last_is_modifier = any(last_word.endswith(suf) for suf in modifier_suffixes)
+    if last_is_modifier:
+        # 단독 modifier로 끝 (실제로 드물지만, 있음) → 연결어미형 fallback
+        return "연결어미형"
+    # 5. modifier + 명사 — 마지막은 명사인데 직전 어절이 modifier
+    if len(words) >= 2:
+        prev_word = words[-2]
+        prev_is_modifier = any(prev_word.endswith(suf) for suf in modifier_suffixes)
+        if prev_is_modifier:
+            return "modifier+명사형"
+    # 6. 그 외는 pure 명사형
+    return "명사형"
+
+
 def _detect_ending(text: str) -> str:
     """문장 끝 형태 판정 — 'terminator' (종결) 또는 'connector' (연결).
 
-    종결: 마침표/물음표/느낌표로 끝남 → 다음 문장과 분리
-    연결: 마침표 없이 끝남 (또는 쉼표/연결어미) → 다음 문장과 한 호흡
+    종결: 마침표/물음표/느낌표로 끝남 OR 한국어 종결어미 (~게요/~잖아요/~예요/~거든/~네요/~다 등)
+    연결: 마침표·종결어미 없이 끝남 (~면/~서/~고/~다가/~테니 등)
     """
     if not text:
         return "connector"
     import re as _re_end
-    # 끝의 이모지·공백·~·.뒤 따라오는 추가 부호 제거
     cleaned = _re_end.sub(
         r'[\U0001F000-\U0001FFFF\u2600-\u27BF\s~]+$', '', text,
     ).rstrip()
     if not cleaned:
         return "connector"
+    # 1. 명시적 punctuation
     if cleaned[-1] in ".?!":
+        return "terminator"
+    # 2. 한국어 종결어미 감지 (마지막 어절 어미)
+    last_word = cleaned.split()[-1] if cleaned.split() else cleaned
+    # 종결 어미들 (긴 것부터 매칭 — overlap 방지)
+    terminator_suffixes = (
+        "보내드릴게요", "드릴게요", "쏴드릴게요", "할게요", "갈게요", "줄게요",
+        "잖아요", "거든요", "더라고요", "네요", "예요", "이에요", "어요", "아요", "해요",
+        "잖아", "거든", "이라", "이지", "이지롱", "이야",
+        "주세요", "보세요", "하세요", "받으세요", "켜세요",
+        "습니다", "됩니다", "합니다", "ㅂ니다", "있어요", "없어요",
+        "다요", "야",
+    )
+    for suf in terminator_suffixes:
+        if last_word.endswith(suf):
+            return "terminator"
+    # 종결의 ~다 (단, 본 ~다, 한 ~다 같은 modifier는 제외)
+    if last_word.endswith("다") and not last_word.endswith(("했다가", "되다가", "한다고", "된다고")):
         return "terminator"
     return "connector"
 
@@ -252,11 +357,14 @@ JSON만 출력. 빈 섹션은 제외.
         return {}
 
 
-def analyze_ref_desire_arc(ref_usps: list[dict], section_chunks: list[dict]) -> list[dict]:
+def analyze_ref_desire_arc(ref_usps: list[dict], section_chunks: list[dict], product_name: str = "", product_usps: list[dict] | None = None) -> list[dict]:
     """ref 대본의 emotional desire/pain arc를 추출.
 
     Hook의 트리거 욕구 + Intro promise의 톤 + 페르소나성 chunk(primary=null in body)의 desire 흐름을 보고
     1-3개의 ref-derived desire 후보를 반환.
+
+    product_name + product_usps가 제공되면 → ref의 emotional frame을 우리 product 도메인으로 transform한 페르소나
+    (identity/desire_scene/pain_scene이 product 사용자 어휘로 나옴)
 
     각 candidate = {name, pain, desire, scenario}
     """
@@ -283,9 +391,27 @@ def analyze_ref_desire_arc(ref_usps: list[dict], section_chunks: list[dict]) -> 
     )
     text_block = "\n".join(relevant_lines)
 
+    # ⭐ product 도메인 anchor — ref의 emotional frame을 product 도메인으로 transform
+    product_block = ""
+    if product_name or product_usps:
+        product_block = f"\n## ⭐⭐ 우리 product (페르소나는 이 도메인 사용자여야 함)\nproduct_name: {product_name or '(미지정)'}\n"
+        if product_usps:
+            for i, u in enumerate(product_usps, 1):
+                desc_raw = (u.get("description") or "")[:200]
+                product_block += f"- USP{i}: {u.get('usp', '')} — {desc_raw}\n"
+        product_block += """
+⚠️ **추출 룰**:
+- ref의 emotional thrust (LF8/desire 프레임)는 보존 — 어떤 욕구를 건드렸는지
+- 그러나 **identity / pain_scene / desire_scene의 명사·동사·시나리오는 우리 product 도메인 사용자**의 어휘로 transform
+- ref가 "여행객" 도메인이면, 우리 product가 다른 도메인일 때 페르소나 identity는 우리 product 사용자로 (예: "C멤버십 알뜰 사용자", 절대 "자유여행객" 박지 말 것)
+- ref domain 단어 (호텔/숙소/예약/꿀팁 등 product 무관)는 페르소나 어휘에 박지 말 것
+"""
+
     prompt = f"""당신은 광고 카피의 emotional 분석가입니다 (Eugene Schwartz / Drew Whitman 프레임워크 사용).
 참고 릴스의 hook/intro/페르소나성 chunk가 **시청자의 어떤 desire/pain을 건드리는지** 1~3개 후보로 추출.
 
+⚠️ ref의 emotional frame(LF8/desire)만 가져오고, **identity·pain_scene·desire_scene 어휘는 우리 product 도메인으로 transform**.
+{product_block}
 ## ref USPs (참고)
 {usps_brief or '(없음)'}
 
@@ -374,24 +500,29 @@ def chunks_as_source_of_truth(chunks: list[dict], sentences: list[dict], usp_lay
     if not chunks:
         return sentences, usp_layout or []
 
-    # 1) sentence.section ← chunk.section (시간 + 텍스트 매칭)
-    sent_idx_to_section: dict[int, str] = {}
+    # 1) sentence.section + sentence.text ← chunks (시간 매칭, text는 chunks 정본)
+    # 텍스트가 바뀐 경우(오타 수정)도 sentences에 반영. 매칭은 start time만 (±0.05초).
+    # ⚠️ orphan(매칭 안 된 sentences)은 보존 — 데이터 손실 방지. 라벨이 없으면 그대로 두고 나중에 재분류 가능.
+    matched_sent_indices: set[int] = set()
     for chunk in chunks:
         sec = chunk.get("section")
-        if not sec:
-            continue
         for chunk_sent in chunk.get("sentences") or []:
             cs_start = float(chunk_sent.get("start", -1))
             cs_text = (chunk_sent.get("text") or "").strip()
             for i, s in enumerate(sentences):
-                if i in sent_idx_to_section:
+                if i in matched_sent_indices:
                     continue
-                if (abs(float(s.get("start", -2)) - cs_start) < 0.05
-                        and (s.get("text") or "").strip() == cs_text):
-                    sent_idx_to_section[i] = sec
+                if abs(float(s.get("start", -2)) - cs_start) < 0.05:
+                    matched_sent_indices.add(i)
+                    if sec:
+                        sentences[i]["section"] = sec
+                    if cs_text:
+                        sentences[i]["text"] = cs_text  # ⭐ chunks의 text를 정본으로 (오타 수정 반영)
                     break
-    for i, sec in sent_idx_to_section.items():
-        sentences[i]["section"] = sec
+    # orphan 보존 — 분석 결과가 일부 sentences를 누락해도 원본 데이터는 그대로 유지
+    if matched_sent_indices and len(matched_sent_indices) < len(sentences):
+        n_orphan = len(sentences) - len(matched_sent_indices)
+        logger.info("[chunks-as-truth] %d orphan sentences kept (chunks didn't cover them)", n_orphan)
 
     # 2) usp.appears_in ← chunks.primary_usp_id 그룹핑 (시간 순서 보존)
     if usp_layout:
@@ -576,16 +707,19 @@ JSON만:
         chunks_raw = []
 
     # 결과 처리: sentence_idxs로 chunk 구성 (split된 sub-chunk도 sentence 기반)
+    # ⭐ 한 sentence는 하나의 chunk에만 속해야 함 — Gemini가 idx 중복 할당해도 first-come-wins
+    used_idxs: set[int] = set()
     out = []
     for c in chunks_raw:
         sec = (c.get("section") or c.get("body_n") or "").lower()
         idxs = c.get("sentence_idxs") or []
         # 정수 캐스트
         idxs = [int(i) for i in idxs if isinstance(i, (int, float)) or (isinstance(i, str) and str(i).isdigit())]
-        # 유효 범위
-        idxs = [i for i in idxs if 0 <= i < len(enumerated_sents)]
+        # 유효 범위 + cross-chunk dedup (이미 다른 chunk에 들어간 idx는 제외)
+        idxs = [i for i in idxs if 0 <= i < len(enumerated_sents) and i not in used_idxs]
         if not idxs:
             continue
+        used_idxs.update(idxs)
         chunk_sents = [enumerated_sents[i][1] for i in idxs]
 
         usp_ids = c.get("usp_ids") or []
@@ -633,6 +767,18 @@ JSON만:
     # 첫 chunk relation_to_prev → start
     if out and not out[0]["relation_to_prev"]:
         out[0]["relation_to_prev"] = "start"
+
+    # ⭐ Hook chunk에 archetype 분류 attach (writer가 매 generation에 활용)
+    try:
+        hook_chunk = next((c for c in out if (c.get("section") or "").lower() == "hook"), None)
+        if hook_chunk:
+            hook_text = " ".join((s.get("text") or "").strip() for s in hook_chunk.get("sentences") or [])
+            body_chunks = [c for c in out if (c.get("section") or "").lower().startswith("body")]
+            body_summary = " / ".join(c.get("summary") or c.get("topic") or "" for c in body_chunks if c.get("summary") or c.get("topic"))
+            hook_chunk["archetype"] = classify_hook_archetype(hook_text, body_summary)
+    except Exception as e:
+        logger.warning("[analyze_section_chunks] hook archetype classify failed: %s", e)
+
     return out
 
 
@@ -1049,6 +1195,147 @@ def classify_hook_type(text: str) -> dict:
     if t.endswith(("하세요", "해보세요", "마세요")):
         return {"type": "명령형", "pattern": "X 하세요"}
     return {"type": "기타_진술형", "pattern": t[:30]}
+
+
+HOOK_ARCHETYPES = {
+    "curiosity_teaser": "[X]의 이유 / 비결 / 차이 / 방법 — '이유가 뭔데?' 호기심 유발",
+    "list_teaser": "N가지 [X] / N개의 [X] — 카운트가 호기심 trigger",
+    "confession": "저는 [X]합니다 / 나는 [X]했다 — 자기선언으로 신뢰·호기심",
+    "shock": "[X]가 망했다 / 죽었다 / 끝났다 — 충격 사실로 stop scroll",
+    "empathy": "~잖아요 / ~죠? / 다들 그렇잖아 — 공감으로 끌어당김",
+    "condition": "~한다면 / ~떴다면 / ~켜면 — 조건 시나리오로 상상 유도",
+    "command": "~하세요 / ~사지 마 / 지금 [X]하세요 — 직접 행동 명령",
+    "noun_label": "[수식어] [명사] — 정체성 라벨링 (예: '본전 뽑는 여행자가 쓰는 앱')",
+}
+
+HOOK_ARCHETYPE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "archetype": {
+            "type": "string",
+            "enum": list(HOOK_ARCHETYPES.keys()),
+        },
+        "pattern": {"type": "string", "description": "추출된 구조 (예: '[X]의 이유')"},
+        "core_word": {"type": "string", "description": "보존해야 할 핵심 명사 (예: '이유') — 없으면 빈 문자열"},
+        "reasoning": {"type": "string", "description": "왜 이 archetype인지 1~2문장"},
+        "candidates": {
+            "type": "array",
+            "description": "top-2 archetype 후보 (primary 포함). 사용자가 매핑 단계에서 선택 가능.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "archetype": {"type": "string", "enum": list(HOOK_ARCHETYPES.keys())},
+                    "pattern": {"type": "string"},
+                    "core_word": {"type": "string"},
+                    "score": {"type": "number", "description": "0~1 (primary는 가장 높음)"},
+                },
+                "required": ["archetype", "pattern", "core_word", "score"],
+            },
+        },
+    },
+    "required": ["archetype", "pattern", "core_word", "reasoning", "candidates"],
+}
+
+
+def classify_hook_archetype(hook_text: str, body_summary: str = "") -> dict:
+    """Hook의 의도/archetype 분류 — 시청자를 끌어들이는 메커니즘 8 카테고리.
+
+    classify_hook_type()의 surface 기반 분류와 달리, 본문 컨텍스트 + intent까지 봄.
+    분석 단계에서 1회 호출 → DB 저장 → writer가 매 generation에 활용.
+
+    Returns:
+        {archetype, pattern, core_word, reasoning}
+    """
+    if not hook_text or not hook_text.strip():
+        return {"archetype": "noun_label", "pattern": "", "core_word": "", "reasoning": "hook_text 비어있음"}
+
+    archetype_lines = "\n".join(f"- **{k}**: {v}" for k, v in HOOK_ARCHETYPES.items())
+    body_block = f"\n## 본문 요약 (참고용)\n{body_summary[:400]}\n" if body_summary else ""
+    prompt = f"""당신은 광고 카피 분석가입니다. 인스타 릴스 광고 Hook을 분석해 archetype을 분류하세요.
+
+Hook archetype = 시청자를 끌어들이는 **의도·메커니즘**. 표면 형태가 아니라 **왜 이 hook이 작동하는지** 봐야 함.
+
+## 8 archetype
+{archetype_lines}
+{body_block}
+## Hook 텍스트
+"{hook_text}"
+
+## 작업
+1. **archetype**: 위 8개 중 1개 선택 (가장 dominant한 메커니즘 = primary)
+2. **pattern**: 이 hook의 구조 추출 (변수는 [X], [Y]로 placeholder. 예: "[X]의 이유" / "[수식어] [명사]")
+3. **core_word**: 패턴 핵심 명사 (예: archetype="curiosity_teaser"이면 "이유"/"비결"/"방법"/"차이" 같은 핵심어. archetype="noun_label"이면 빈 문자열)
+4. **reasoning**: 왜 이 archetype인지 1~2문장
+5. **candidates** ⭐: **2개의 후보** archetype을 점수와 함께 (primary 1개 + secondary 1개)
+   - primary는 1번에서 고른 archetype, score=1.0
+   - secondary는 두 번째로 가까운 archetype (다른 메커니즘 가능성 — 예: "여행 가기 전 알아야 할 이유는?"은 condition도 curiosity_teaser도 가능)
+   - secondary는 명확한 후보가 없으면 score=0.3 정도로 노이즈 후보 (사용자가 매핑 단계에서 무시)
+   - 각 candidate에는 archetype, pattern, core_word, score 모두 포함
+
+## 중요
+- 표면 형태(?, ~잖아요)에만 의존 X — 본문과 의도 함께 고려
+- "잠옷을 입는 이유" → curiosity_teaser (core_word="이유")
+- "본전 뽑는 여행자가 쓰는 앱" → noun_label (core_word="" — 단순 라벨)
+- "여행 한 번 가면" → condition (core_word="" — 조건절)
+- "저는 오늘 토스를 퇴사합니다" → confession (core_word="")
+- candidates 예시: hook="여행 가기 전 알아야 할 이유는?" → [{{archetype:"curiosity_teaser", core_word:"이유", score:0.7}}, {{archetype:"condition", core_word:"", score:0.5}}]
+
+JSON으로만 답변.
+"""
+    try:
+        result = call_gemini(prompt, model="gemini-3-flash-preview", max_tokens=1024, response_schema=HOOK_ARCHETYPE_SCHEMA)
+        if isinstance(result, dict) and result.get("archetype") in HOOK_ARCHETYPES:
+            cands = result.get("candidates") or []
+            # candidates 검증·정리 (top-2만)
+            valid_cands = []
+            for c in cands:
+                if isinstance(c, dict) and c.get("archetype") in HOOK_ARCHETYPES:
+                    valid_cands.append({
+                        "archetype": c["archetype"],
+                        "pattern": c.get("pattern", ""),
+                        "core_word": c.get("core_word", ""),
+                        "score": float(c.get("score", 0)),
+                    })
+            valid_cands.sort(key=lambda x: -x["score"])
+            valid_cands = valid_cands[:2]
+            # primary가 candidates에 없으면 추가
+            if not any(c["archetype"] == result["archetype"] for c in valid_cands):
+                valid_cands.insert(0, {
+                    "archetype": result["archetype"],
+                    "pattern": result.get("pattern", ""),
+                    "core_word": result.get("core_word", ""),
+                    "score": 1.0,
+                })
+                valid_cands = valid_cands[:2]
+            return {
+                "archetype": result["archetype"],
+                "pattern": result.get("pattern", ""),
+                "core_word": result.get("core_word", ""),
+                "reasoning": result.get("reasoning", ""),
+                "candidates": valid_cands,
+            }
+    except Exception as e:
+        logger.warning("[classify_hook_archetype] failed: %s — fallback to surface classify", e)
+
+    # Fallback — surface 기반 추정
+    surface = classify_hook_type(hook_text)
+    surface_to_arch = {
+        "질문형": "condition",
+        "충격_질문형": "shock",
+        "충격형": "shock",
+        "공감_명령형": "empathy",
+        "통계_충격형": "shock",
+        "명령형": "command",
+        "기타_진술형": "noun_label",
+    }
+    primary_arch = surface_to_arch.get(surface.get("type", ""), "noun_label")
+    return {
+        "archetype": primary_arch,
+        "pattern": surface.get("pattern", ""),
+        "core_word": "",
+        "reasoning": "surface fallback (LLM 실패)",
+        "candidates": [{"archetype": primary_arch, "pattern": surface.get("pattern", ""), "core_word": "", "score": 1.0}],
+    }
 
 
 def classify_body_structure(ref: dict) -> dict:
@@ -2186,11 +2473,12 @@ Desire 키워드는 다음 위치 중 **자연스럽게 어울리는 곳에만**
     return "\n".join(parts)
 
 
-def call_gemini(prompt: str, min_sentences: int | None = None, model: str | None = None, max_tokens: int = 32768) -> dict:
+def call_gemini(prompt: str, min_sentences: int | None = None, model: str | None = None, max_tokens: int = 32768, response_schema: dict | None = None) -> dict:
     """Gemini 호출 → JSON 응답 파싱.
 
     model: 미지정 시 기본 MODEL (script_gen용 Pro). 페르소나 추출 등 가벼운 분류엔 Flash 권장.
     min_sentences가 주어지면 responseSchema로 sentences 배열 minItems 강제.
+    response_schema: 명시적 schema 주입 (min_sentences보다 우선).
     """
     key = _gemini_key()
     if not key:
@@ -2202,7 +2490,9 @@ def call_gemini(prompt: str, min_sentences: int | None = None, model: str | None
         "responseMimeType": "application/json",
         "maxOutputTokens": max_tokens,
     }
-    if min_sentences is not None:
+    if response_schema is not None:
+        gen_config["responseSchema"] = response_schema
+    elif min_sentences is not None:
         gen_config["responseSchema"] = {
             "type": "object",
             "properties": {
@@ -2326,8 +2616,10 @@ def call_anthropic(prompt: str, model: str, max_tokens: int = 8192) -> dict:
         "model": api_model,
         "messages": [{"role": "user", "content": content}],
         "max_tokens": max_tokens,
-        "temperature": 0.85,
     }
+    # Opus 4.7+은 temperature 미지원. 그 외 모델은 default temperature 사용.
+    if "opus-4-7" not in api_model:
+        body["temperature"] = 0.85
     r = requests.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -3130,151 +3422,14 @@ JSON만. 설명 금지.
 """
 
 
-def _section_specific_guidance(section_name: str, has_destination: bool = False) -> str:
-    """섹션 타입별 미러링 가이드 — 톤·종결 prescription 없음, 참고 그대로."""
-    name = (section_name or "").lower()
-    if name == "hook":
-        return """## 🎣 HOOK — **페르소나 우선 / ref는 형식 참조만**
+def _section_specific_guidance(section_name: str, has_destination: bool = False, hook_archetype: str | None = None) -> str:
+    """섹션 타입별 미러링 가이드 — section_writer_blocks 모듈로 위임.
 
-⚠️ Hook은 페르소나마다 **다른 결과가 나와야 정상**. ref Hook을 그대로 미러링하면 ❌.
+    hook_archetype: hook section 한정. 분석 단계에서 분류된 archetype 키 (8 카테고리).
+    """
+    return get_section_guidance(section_name, hook_archetype=hook_archetype)
 
-### 우선순위 (Hook 한정)
-1. **페르소나 LF8 + pain_scene/desire_scene 트리거** ⭐⭐⭐⭐⭐
-2. ref Hook의 **유형(질문/명령/평서/충격/공감/조건)** 참조 — type만 같게
-3. 어절·음절 패턴은 **자유** (Hook은 미러링 검증 skip — 페르소나 어휘 우선)
-4. 플랫폼 맥락어(릴스/피드/스크롤)만 ref와 일관성
 
-### 페르소나마다 다르게 — 강제
-- 페르소나 A (LF8 #4 매력) → 매력 angle Hook
-- 페르소나 B (LF8 #5 편안) → 편안 angle Hook
-- 페르소나 C (LF8 #6 우월) → 우월 angle Hook
-- 같은 ref여도 **페르소나마다 Hook 어휘·구조 다르게**. 비슷하면 ❌
-
-### ref Hook 활용법 (참조 모드)
-- ref가 "공감형" Hook ("X는 Y잖아요") → 우리도 공감형이되 페르소나 맥락
-- ref가 "충격형" ("이 X 사지 마세요") → 우리도 충격형이되 페르소나 도메인
-- ref가 "조건형" ("X 가기 전에 Y 떴다면") → 우리도 조건형이되 페르소나 시점
-- **type만 같게, 어휘·구조는 자유롭게**
-
-### 예 (ref="잘 때는 편한 게 최고잖아요" — 공감형 LF8 #5)
-- 페르소나 A (LF8 #4 매력 / desire="남친 영상통화에서 더 이쁘다"):
-  - Hook: "남친이 영상통화 켜면 더 이쁘다 하잖아요" (공감형 type 유지, LF8 #4로 변경)
-- 페르소나 B (LF8 #5 편안 / desire="출근 직전 5분 더 자기"):
-  - Hook: "잘 때는 편한 게 최고잖아요" (페르소나가 #5라 ref 그대로 OK)
-- 페르소나 C (LF8 #6 우월 / desire="친구한테 자랑할 수준"):
-  - Hook: "친구가 잠옷 어디 거냐고 묻잖아요" (공감형 type, LF8 #6)
-
-→ 같은 ref라도 페르소나 LF8에 따라 Hook이 **완전 다르게** 나와야 함.
-"""
-    if name == "intro":
-        return """## 🚪 INTRO 자유 Transform — 어절·음절 보존 + 비유 처리
-- **어절 수 ±1, 어절별 음절 ±2** 허용 범위
-- **종결 형태** ref 그대로
-- **비유·메타포 처리**: ref의 물리·감각 비유 ("모찌 같은")가 우리 도메인과 안 맞으면 비유 빼고 제품 기능 직접 묘사 (단어만 바꿔 미러 X)
-- (톤·desire는 위 페르소나 block의 LF8/scene 룰 적용)
-"""
-    if name.startswith("body"):
-        return """## 💪 BODY 자유 Transform 모드 (USP 분절) ⭐
-
-⚠️ Body도 **skeleton 강제 X — USP 의미를 자연스러운 한국어로 풀기**. 단, 시그니처·문장 수·길이는 보존.
-
-### ⚠️⚠️⚠️ 명사 어휘 화이트리스트 — 가장 빈번한 실수 차단
-**Body의 모든 핵심 명사는 반드시 다음 source 중 하나에서만 가져옴:**
-1. spec_block의 **해당 spec의 usp_id에 매핑된 USP description** (문제/해결/혜택)
-2. **그 USP의 사용자 리뷰 텍스트**
-3. **타깃 페르소나 signals + 여행지명**
-4. spec_block의 **slot_topic** (Section Planner가 추출)
-
-⚠️ **위 source에 없는 명사는 절대 출력하지 말 것** — ref 원문에 있는 단어라도 우리 USP source에 없으면 금지.
-
-### ⭐ 플랫폼 맥락어는 ref 그대로 유지 (예외)
-릴스/피드/화면/스크롤/영상/이미지/저장/공유/팔로우/댓글/DM/링크 같은 **Instagram(시청자가 지금 스크롤 중인 플랫폼) 맥락어**는 product 도메인 치환 금지. 그대로 유지.
-- ✅ ref "당신의 피드에 이 **릴스**가 떴다면" → 우리 "당신의 피드에 이 **릴스**가 떴다면" (릴스 그대로)
-- ❌ ref "당신의 피드" → 우리 "**여행앱 피드**" (피드는 Instagram 맥락 → 치환 금지)
-- ❌ ref "이 릴스" → 우리 "이 그래프" (릴스도 platform 맥락 → 그대로 유지하고, 그래프는 다른 자리에)
-- 룰 정리: 시청자가 "지금 이 화면(인스타)을 보고 있다"는 맥락어는 ref 그대로
-
-### ❌ 자주 나오는 실패 케이스
-- ref가 **음식/맛집/식당/카페/마사지/쇼핑/면세** 어휘를 쓸 때 우리 광고가 다른 도메인이면:
-  - ❌ 잘못: ref "맛집 할인 쿠폰" → 우리 "맛집 제휴 / 식당 할인" (맛집·식당이 우리 USP에 없으면 금지)
-  - ❌ 잘못: ref "이 사이트 들어가면 클룩 쿠폰" → 우리 "앱 들어가면 맛집 제휴" (맛집은 우리 USP 무관)
-  - ✅ 정답: USP가 "숙소 가격 추적"이면 → "앱 들어가면 호텔 가격 그래프" / "앱 들어가면 30일 변동 차트"
-  - ✅ 정답: USP가 "가격 알람"이면 → "앱 들어가면 목표가 알람 설정"
-
-### 룰
-- spec의 `usp_id`에 매핑된 USP의 description·리뷰만 명사 source
-- ref의 도메인 명사 (맛집/식당/쇼핑몰/카페/제휴/쿠폰 등)는 우리 USP source에 명시 없으면 **무조건 USP source 명사로 치환**
-- USP 도메인 단어가 부족하면 → 추상 명사 (혜택/기능/포인트) 사용 가능
-- 절대 ref 원문 도메인 명사 차용 X (slot_topic 명시 케이스 외)
-
-### 보존 (필수)
-- **참고 분절 문장 수와 동일** (N문장이면 우리도 N문장)
-- **어절 수 ±1, 어절별 음절 ±2** 허용 범위 (의미 호응 우선)
-- **분절 간 전환** 참고 패턴 따라 (참고가 "그리고"로 시작하면 우리도 그렇게)
-- **각 spec의 usp_id에 맞는 USP 어휘만** — 다른 USP 어휘 침입 금지
-- **⭐ 평가형 어구 보존** — ref의 "중요한/핵심/제일 좋은/마지막" 같은 추상명사 앞 평가어는 **그대로 유지**
-
-### 종결어미 (강제 X)
-- ref 종결어미는 참고용. **자연스러운 종결로 자유롭게 결정**
-
-### 자유롭게
-- skeleton의 [SLOT] 골격 안 따라도 OK
-- 동사·구문 자유 변형 (ref 구문 못 따라도 의미만 같으면 OK)
-- USP 리뷰의 vivid 표현·일화를 직접 사용
-- 예: ref "안쪽은 모달까지 넣어 / 완전니 부드럽잖아" → "겉면은 실크 / 진짜 매끈하잖아" (자유, 의미 + "잖아" 시그니처 보존)
-
-### 추상명사+형용사 매칭 룰 (⚠️ 핵심)
-- **추상명사**(포인트/순간/이유/장점/매력/팁) 앞에는 **평가형 형용사**(중요한/좋은/핵심/대단한/특별한)
-- ❌ 잘못: "제일 시원한 포인트" (시원한=물리감각, 포인트=추상명사 — mismatch)
-- ✅ 정답: "제일 중요한 포인트" (ref 그대로 유지)
-- ❌ 잘못: "찰랑한 매력" / "쿨링 이유"
-- ✅ 정답: "은은한 매력" / "확실한 이유"
-
-### 절대 금지
-- 시그니처 변형
-- 다른 분절 USP 어휘 침입
-- 가짜 인과 어미로 두 USP 묶기
-- 단어 → 명사구 확장 (예: "편한" → "편안한 활동성" ❌)
-- 잠옷 광고에 "야외/등산" 같은 도메인 부정합
-- 추상명사 앞 형용사를 USP 키워드로 치환 (위 룰 참조)
-"""
-    if name == "cta":
-        return """## 📢 CTA 자유 Transform 모드 ⭐ — 도메인 적합 단어로 자유 재작성
-
-⚠️ CTA도 **skeleton fixed text를 우리 도메인에 안 맞으면 변형 OK**.
-
-### ⭐ usp_id가 null인 spec — 페르소나 + ref 톤 미러링
-spec_block의 usp_id가 비어있는(null) CTA 문장은:
-- **특정 USP에 묶지 말 것** — usp_block에 없으면 USP 어휘 도입 X
-- **페르소나의 signals + scenario + tone_hint를 명사·동작 source로 사용**
-- **ref 문장의 톤·구조·종결을 그대로 미러링** ("이 모든 ~ / 한 번에 / 받고 싶다면" 같은 통합 호소 패턴은 그대로)
-- ref가 generic 행동 (팔로우/저장/댓글/DM/링크)을 쓰면 우리도 그대로 — 플랫폼 맥락어니까 도메인 치환 X
-- 예: ref "이 모든 정보를 한 번에 받고 싶다면 / 팔로우하고 댓글에 일본 쿠폰 남겨줘 / DM으로 쏴줄게"
-  → 우리(페르소나=임산부 잠옷): "이 모든 정보를 한 번에 받고 싶다면 / 팔로우하고 댓글에 임산부 잠옷 남겨줘 / DM으로 쏴줄게"
-  (구조·종결·플랫폼 어휘 보존 + 페르소나 signal "임산부"만 치환)
-
-### 보존 (필수)
-- **어절 수 + 어절별 음절 패턴 강제** (각 ±2 자 허용)
-- **CTA 패턴 구조** (행동 유도·마무리 흐름)
-- 종결어미 강제 X — 자연스러운 종결로 자유 결정
-
-### 도메인 mismatch 단어 변형 (⚠️ 핵심)
-ref의 [SLOT] 외 fixed text 중 우리 제품 도메인과 안 맞는 단어는 **자유 변형**:
-- ❌ ref "잘 때 [부위]도 안 불편" → 앱 광고에 "잘 때 눈도 안 불편" (앱은 "잘 때" 무관)
-  - ✅ "사용할 때 [어디서]도 안 불편" / "비교할 때 헷갈림 없이"
-- ❌ ref "노브라 [제품] 최고예요" → 앱에 "땡처리 잠옷 최고예요" ("잠옷" 그대로 박힘)
-  - ✅ "정말 편한 가성비 멤버십 최고예요" (잠옷·노브라 도메인어 제거)
-
-### 자유롭게
-- skeleton fixed text 통째로 변경 가능
-- 같은 emotion/intensity·CTA 흐름만 유지
-
-### 절대 금지
-- ref 도메인 특정 단어 그대로 박기 ("잠옷", "잘 때", "꿀잠" 같이 우리 도메인과 안 맞는 단어)
-- 새 CTA 패턴 (예약·구독·다운로드 등 ref에 없는 패턴 금지)
-- usp_id가 null인 spec에 USP 어휘를 억지로 끼워넣기
-"""
-    return ""
 
 
 def _eojeol_syllable_pattern(text: str) -> list[int]:
@@ -3286,24 +3441,66 @@ def _eojeol_syllable_pattern(text: str) -> list[int]:
     return [_count_kor_syllables(w) for w in text.split() if w.strip()]
 
 
+# 핵심 conjunction (보존 필수) — writer가 드롭하면 ref 구조 깨짐
+_KEY_CONJUNCTION_PATTERNS = [
+    ("~가 아니라", ["가 아니라", "이 아니라"]),  # 대조
+    ("~지만", ["지만"]),  # 양보
+    ("~인데", ["인데"]),  # 전환
+    ("~는데", ["는데"]),  # 전환
+    ("~한데", ["한데"]),  # 전환
+    ("~해서", ["해서", "어서", "아서"]),  # 인과
+    ("~으면/~면", ["으면", "이면"]),  # 조건
+    ("~려고", ["려고"]),  # 의도
+    ("~다가", ["다가"]),  # 전환
+    ("~거나", ["거나"]),  # 선택
+    ("~조차", ["조차"]),  # 강조
+    ("~까지", ["까지"]),  # 강조
+    ("~에도", ["에도"]),  # 양보
+    ("~보다", ["보다"]),  # 비교
+    ("~처럼", ["처럼"]),  # 비유
+    ("~만큼", ["만큼"]),  # 비교
+    ("~밖에", ["밖에"]),  # 한정
+    ("~조차도", ["조차도"]),
+]
+
+
+def _extract_key_conjunctions(text: str) -> list[str]:
+    """ref text에서 보존 필수 conjunction 추출.
+    예: "그냥 X가 아니라 Y한 잠옷을 입으면" → ["~가 아니라", "~으면/~면"]
+    """
+    if not text:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for label, patterns in _KEY_CONJUNCTION_PATTERNS:
+        for pat in patterns:
+            if pat in text and label not in seen:
+                out.append(label)
+                seen.add(label)
+                break
+    return out
+
+
 def _parse_usp_description(desc: str) -> dict[str, str]:
-    """USP description을 문제/해결/혜택 3단으로 파싱.
-    "문제: X\n해결: Y\n혜택: Z" 패턴 인식. 패턴 없으면 raw에 통째로.
+    """USP description을 문제/해결/혜택/핵심 명사 4단으로 파싱.
+    "문제: X\n해결: Y\n혜택: Z\n핵심 명사: A,B,C" 패턴 인식. 패턴 없으면 raw에 통째로.
     """
     if not desc or not desc.strip():
-        return {"raw": "", "문제": "", "해결": "", "혜택": ""}
+        return {"raw": "", "문제": "", "해결": "", "혜택": "", "핵심_명사": ""}
     import re as _re
-    out = {"raw": desc.strip(), "문제": "", "해결": "", "혜택": ""}
-    # 라인 단위 또는 마커 단위 파싱
-    pattern = _re.compile(r"(문제|해결|혜택|기능|효과)\s*[:：]\s*(.+?)(?=\n\s*(?:문제|해결|혜택|기능|효과)\s*[:：]|\Z)", _re.S)
+    out = {"raw": desc.strip(), "문제": "", "해결": "", "혜택": "", "핵심_명사": ""}
+    # 라인 단위 또는 마커 단위 파싱 (핵심 명사 / 핵심명사 둘 다 인식)
+    pattern = _re.compile(r"(문제|해결|혜택|기능|효과|핵심\s*명사)\s*[:：]\s*(.+?)(?=\n\s*(?:문제|해결|혜택|기능|효과|핵심\s*명사)\s*[:：]|\Z)", _re.S)
     for m in pattern.finditer(desc):
-        key = m.group(1).strip()
+        key = _re.sub(r"\s+", "", m.group(1)).strip()
         val = m.group(2).strip()
         # alias 매핑
         if key == "기능":
             out["해결"] = val
         elif key == "효과":
             out["혜택"] = val
+        elif key == "핵심명사":
+            out["핵심_명사"] = val
         else:
             out[key] = val
     return out
@@ -3353,7 +3550,7 @@ def _detect_speech_level(texts: list[str]) -> str:
     return "혼합"
 
 
-def _build_section_writer_prompt(section: dict, product_name: str, target_persona: dict | None, usps: list[dict], pain: str, desire: str, speech_level: str = "혼합", section_chunks: list[dict] | None = None, section_roles: dict | None = None, prev_chunks: list[dict] | None = None) -> str:
+def _build_section_writer_prompt(section: dict, product_name: str, target_persona: dict | None, usps: list[dict], pain: str, desire: str, speech_level: str = "혼합", section_chunks: list[dict] | None = None, section_roles: dict | None = None, prev_chunks: list[dict] | None = None, chunk_to_user_usps: dict[str, list[int]] | None = None, chunk_to_reason: dict[str, str] | None = None) -> str:
     """섹션별 작성자 prompt — outline 받아 문장 N개 작성. 섹션 타입별 가이드 추가.
 
     v4-2: chunk 의도(role/topic/summary/relation_to_prev) + section_roles 주입.
@@ -3361,6 +3558,8 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
 
     prev_chunks: 직전 배치들이 이미 생성한 chunk들 [{section, sentences: [{text}, ...]}].
         Writer에게 직전 흐름 텍스트로 전달 (자연 연결).
+    chunk_to_user_usps: chunk.section → user_usp_ids[] (multi). Writer가 multi-USP 통합 호소 인지.
+    chunk_to_reason: chunk.section → 매핑 reason (Pre-Planner가 작성한 컨텍스트). Writer 의도 가이드.
     """
     section_name = section.get("name", "")
     sentences_spec = section.get("sentences") or []
@@ -3368,6 +3567,8 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
     section_chunks = section_chunks or []
     section_roles = section_roles or {}
     prev_chunks = prev_chunks or []
+    chunk_to_user_usps = chunk_to_user_usps or {}
+    chunk_to_reason = chunk_to_reason or {}
 
     # 어떤 USP가 사용되는지 — 해당 USP 정보만 컴팩트하게
     usp_ids_in_section = set()
@@ -3376,6 +3577,12 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
             usp_ids_in_section.add(s["usp_id"])
     if main_usp_id:
         usp_ids_in_section.add(main_usp_id)
+    # ⭐ multi-USP chunk: chunk_to_user_usps에서 모든 USP 수집 (이 섹션 chunk들)
+    section_chunk_secs = {(c.get("section") or "") for c in section_chunks}
+    for sec, ids in chunk_to_user_usps.items():
+        if sec in section_chunk_secs:
+            for uid in ids:
+                usp_ids_in_section.add(uid)
     relevant_usps = []
     for uid in sorted(usp_ids_in_section):
         if 1 <= uid <= len(usps):
@@ -3400,6 +3607,16 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
             usps_block += "  사용 가능 리뷰 (vivid 표현·proof 영감):\n"
             for r in revs[:8]:
                 usps_block += f"    · {r[:120]}\n"
+
+    # ⭐ relevant_usps가 비었어도 product 도메인 anchor — writer가 ref 도메인 따라가지 않도록 모든 USP 노출
+    if not relevant_usps and usps:
+        usps_block = "\n## 🔍 product 도메인 anchor (이 섹션은 USP 매핑 없음 — 도메인 어휘 source)\n"
+        for i, u in enumerate(usps, 1):
+            usps_block += f"\nUSP{i}: {u.get('usp','')}\n"
+            desc_parsed = _parse_usp_description(u.get("description") or "")
+            if desc_parsed["raw"]:
+                usps_block += f"  설명: {desc_parsed['raw'][:200]}\n"
+        usps_block += "\n→ 이 섹션은 위 product 도메인 어휘로만 작성. ref 도메인 어휘 (호텔/여행/쇼핑/잠옷 등 product 무관) 절대 박지 말 것.\n"
 
     # slot 그룹핑 — slot-mate specs를 시각적으로 묶음
     from itertools import groupby as _gby
@@ -3437,16 +3654,49 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
             c_topic = chunk_meta.get("topic", "")
             c_summary = chunk_meta.get("summary", "")
             c_rel = chunk_meta.get("relation_to_prev", "")
-            if c_role or c_topic or c_summary:
+            c_sec = (chunk_meta.get("section") or "").strip()
+            c_user_ids = chunk_to_user_usps.get(c_sec) or []
+            c_reason = (chunk_to_reason.get(c_sec) or "").strip()
+            is_unmapped = not c_user_ids and (c_sec in chunk_to_user_usps)  # 명시적 "매핑 없음" (key 존재, ids 빈 배열)
+            if c_role or c_topic or c_summary or c_user_ids or c_reason:
                 spec_block += "\n  ⭐ 이 묶음의 ref 의도 (DB 분석 결과 — 표면 미러링보다 우선)\n"
                 if c_role:
                     spec_block += f"    chunk_role: {c_role}\n"
-                if c_topic:
-                    spec_block += f"    chunk_topic: {c_topic}\n"
-                if c_summary:
-                    spec_block += f"    chunk_summary: {c_summary}\n"
+                # 매핑 없는 chunk는 chunk_topic/chunk_summary가 ref 도메인 그대로 박혀있음 → 추상화 표시
+                if is_unmapped:
+                    spec_block += "    chunk_topic/summary: ⛔ 표시 안 함 — ref 도메인어를 writer가 따라가지 않도록.\n"
+                else:
+                    if c_topic:
+                        spec_block += f"    chunk_topic: {c_topic}\n"
+                    if c_summary:
+                        spec_block += f"    chunk_summary: {c_summary}\n"
                 if c_rel:
                     spec_block += f"    relation_to_prev: {c_rel}\n"
+                if c_user_ids:
+                    usps_label = ", ".join(f"USP{i}({usps[i-1].get('usp','')})" for i in c_user_ids if 1 <= i <= len(usps))
+                    multi_tag = " ⭐ 통합 호소 (다중 USP)" if len(c_user_ids) >= 2 else ""
+                    spec_block += f"    이 chunk가 다루는 user USPs: {usps_label}{multi_tag}\n"
+                    # ⚠️ chunk 안 모든 spec이 같은 USP issue로 일관 작성 강제 (problem-solution chain 보존)
+                    if len(c_user_ids) == 1:
+                        single_usp_name = usps[c_user_ids[0]-1].get('usp','')
+                        spec_block += f"    🔒 **chunk 일관성 강제**: 이 chunk의 모든 문장은 USP \"{single_usp_name}\" 의 같은 issue 다룸. ref가 다른 issue 다뤄도 무시. problem 문장도 USP issue로, solution 문장도 USP issue 해결로.\n"
+                else:
+                    # 사용자가 wizard에서 "매핑 없음" 명시 — USP 어휘 도입 X, 페르소나 + 추상 ref 톤만
+                    spec_block += """    ⭐⭐⭐ 이 chunk는 USP 매핑 없음 — **반드시 페르소나 vocab로 재작성** (ref 그대로 출력 X)
+       1. 위 페르소나 block의 desire_scene / pain_scene / identity 어휘를 **직접 차용**
+       2. ref 도메인 명사·동사 (스도쿠/패킹/잠옷/돈키호테 등 product 무관) → 우리 product 도메인 어휘로 완전 교체
+       3. ref 톤·구조(질문/평서/감탄)만 보존 + 어휘는 100% 페르소나·product 도메인
+       ❌ ref 그대로 미러링 = 무효. Writer는 무조건 변형해야 함.
+       예: ref "혼자 사는 사람의 필수템" + 페르소나=여행객 → "본전 뽑는 여행자가 매번 쓰는 앱" (구조: ~의 필수템 → ~가 쓰는 앱, 어휘: 혼자/사는/필수템 → 본전/뽑는/여행자/앱)
+"""
+                if c_reason and not is_unmapped:
+                    spec_block += f"    매핑 컨텍스트: {c_reason}\n"
+        is_hook_section = (section_name or "").lower() == "hook"
+        # 이 group의 chunk가 "매핑 없음"인지 판단 — ref content를 어휘 anchor로 쓰지 말고 템포만
+        group_is_unmapped = bool(
+            chunk_meta and (chunk_meta.get("section") or "").strip() in chunk_to_user_usps
+            and not (chunk_to_user_usps.get((chunk_meta.get("section") or "").strip()) or [])
+        )
         for s in group:
             usp_tag = f" [USP{s.get('usp_id')}]" if s.get("usp_id") else ""
             slot_tag = f" slot={slot_id}" if slot_id is not None else ""
@@ -3459,14 +3709,50 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
             spec_block += f"\n  문장 {s['position']}{usp_tag}{slot_tag}\n"
             spec_block += f"    역할: {s.get('role','')}\n"
             spec_block += f"    토픽: {s.get('topic','')}\n"
+            # ⭐ 종결 형태 + 실제 ref 끝 어절 명시 (writer가 그대로 박을 수 있게)
+            ref_last_word = ref_text.split()[-1] if ref_text.split() else ""
             spec_block += f"    종결 형태: {ending_marker}\n"
+            if ref_last_word:
+                spec_block += f"    🎯 **ref 끝 어절: \"{ref_last_word}\"** — 우리 출력 마지막 어절도 같은 어미·형태 (~대요면 ~대요, ~어요면 ~어요, 명사면 명사)\n"
             spec_block += f"    음절 합계: {ref_syl}\n"
             if ref_eojeol_pattern:
                 pattern_str = "-".join(str(p) for p in ref_eojeol_pattern)
                 spec_block += f"    어절 수: {ref_eojeol_n}개 (±1 허용) / 어절별 음절 패턴: {pattern_str} (각 ±2 허용)\n"
-            spec_block += f"    참고: \"{s.get('ref_text','')}\"\n"
-        # skeleton + signature 모두 표시 X — 자유 transform 모드 (Hook/Intro/Body/CTA 모두)
-        # Writer는 ref_text + chunk_summary + role + slot_topic + 페르소나 + USP description으로 작성
+            # Hook은 종결 타입 명시
+            if is_hook_section:
+                end_type = _detect_hook_ending_type(ref_text)
+                spec_block += f"    [Hook 종결 타입: {end_type}]\n"
+            # 매핑된 USP description 인라인 (proximity로 ref 도메인어 누수 차단)
+            spec_usp_id = s.get("usp_id")
+            if spec_usp_id and 1 <= spec_usp_id <= len(usps):
+                u_match = usps[spec_usp_id - 1]
+                desc_parsed_inline = _parse_usp_description(u_match.get("description") or "")
+                u_name = u_match.get("usp", "")
+                problem = desc_parsed_inline.get("문제", "")[:200]
+                solution = desc_parsed_inline.get("해결", "")[:200]
+                benefit = desc_parsed_inline.get("혜택", "")[:200]
+                core_nouns = desc_parsed_inline.get("핵심_명사", "")[:300]
+                # 구조적 description 있으면 4 부분 노출, 없으면 raw fallback
+                if problem or solution or benefit or core_nouns:
+                    spec_block += f"    ⭐⭐ 매핑된 USP{spec_usp_id} ({u_name}) — **이 USP 어휘로만 작성**\n"
+                    if problem:
+                        spec_block += f"       문제: {problem}\n"
+                    if solution:
+                        spec_block += f"       해결: {solution}\n"
+                    if benefit:
+                        spec_block += f"       혜택: {benefit}\n"
+                    if core_nouns:
+                        spec_block += f"       🔑 **핵심 명사 (이 단어들로 ref noun 대체)**: {core_nouns}\n"
+                    spec_block += f"    ⛔ **ref noun 출력 금지** — 아래 ref text의 명사·동사·connector 패턴 (다른 X랑 같이 / 세탁해봤는데 같은 ref 도메인어 + 동작 흐름)을 그대로 박지 말 것. 위 핵심 명사로 USP 시나리오 새로 짜기.\n"
+                    # ⭐ 짧은 spec (≤4 어절) — USP 핵심 명사 1개 강제
+                    if ref_eojeol_n <= 4:
+                        spec_block += f"    ⚠️ **짧은 spec ({ref_eojeol_n}어절)** — generic 표현 (예: '또 신기한 건') 절대 X. 위 🔑 핵심 명사 중 1개를 반드시 박을 것 (예: '{u_name}' issue를 명사 1개로)\n"
+                else:
+                    raw_desc = (desc_parsed_inline.get("raw") or "")[:400]
+                    if raw_desc:
+                        spec_block += f"    ⭐ 매핑된 USP{spec_usp_id} ({u_name}) 어휘 source:\n"
+                        spec_block += f"       \"{raw_desc}\"\n"
+            spec_block += f"    참고 ref text (구조·어절·종결만 측정 / 명사·동사 차용 X): \"{ref_text}\"\n"
 
     persona_str = ""
     if target_persona:
@@ -3526,21 +3812,83 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
 - ref 도메인 단어 그대로 박힘 ("일본 우버" 같은 단어가 잠옷 광고에 등장)
 """
 
-    section_guidance = _section_specific_guidance(section_name, has_destination=False)
     _sn = section_name.lower()
+    is_hook = (section_name or "").lower() == "hook"
+    is_intro_sec = (section_name or "").lower() == "intro"
+
+    # Hook archetype 추출 (분석 단계 분류 결과) — section_guidance 결정에 사용
+    _hook_archetype_dict = None
+    _hook_archetype_key: str | None = None
+    if is_hook and section_chunks:
+        for c in section_chunks:
+            if (c.get("section") or "").lower() == "hook":
+                _ha = c.get("archetype")
+                if isinstance(_ha, dict):
+                    _hook_archetype_dict = _ha
+                    _hook_archetype_key = _ha.get("archetype")
+                break
+
+    section_guidance = _section_specific_guidance(section_name, has_destination=False, hook_archetype=_hook_archetype_key)
 
     # 📜 직전 배치들이 이미 생성한 chunks (자연 연결용 — 톤/어휘 이어가기)
     prev_chunks_block = ""
-    if prev_chunks:
-        prev_chunks_block = "\n## 📜 이미 생성된 직전 chunks (이 톤·어휘에 자연스럽게 이어가기)\n"
-        for pc in prev_chunks:
-            pc_section = (pc.get("section") or "").strip()
-            pc_sents = pc.get("sentences") or []
-            if not pc_sents:
-                continue
-            line = f"[{pc_section}] " + " / ".join(s.get("text", "").strip() for s in pc_sents if s.get("text"))
-            prev_chunks_block += line + "\n"
-        prev_chunks_block += "→ 위는 이미 발화된 텍스트. 같은 ref·페르소나·톤. 어휘·연결어 일관성 유지.\n"
+
+    # ⭐ Hook/Intro: 자기 chunk에 매핑된 USP가 있으면 그 USP를 직접 사용 (매핑 단계 구조 따르기)
+    # 매핑 없을 때만 body USP 공통 욕망/pain으로 fallback
+    my_section_usps: list[dict] = []
+    my_chunk_section_label: str | None = None
+    body_usps_for_common: list[dict] = []
+    if (is_hook or is_intro_sec) and section_chunks:
+        target_label = "hook" if is_hook else "intro"
+        # 자기 매핑 USP 추출
+        for c in section_chunks:
+            c_sec = (c.get("section") or "").strip()
+            if c_sec.lower() == target_label:
+                my_chunk_section_label = c_sec
+                for uid in (chunk_to_user_usps.get(c_sec) or []):
+                    if 1 <= uid <= len(usps):
+                        u = usps[uid - 1]
+                        desc = _parse_usp_description(u.get("description") or "")
+                        my_section_usps.append({
+                            "id": uid,
+                            "name": u.get("usp", ""),
+                            "benefit": (desc.get("혜택") or "")[:200],
+                            "pain": (desc.get("문제") or "")[:200],
+                            "solution": (desc.get("해결") or "")[:200],
+                        })
+                break
+        # body USP common — fallback only (매핑 없을 때 공통 desire/pain로 풀기)
+        if not my_section_usps:
+            seen_uids: set[int] = set()
+            for c in section_chunks:
+                c_sec = (c.get("section") or "").strip()
+                if not c_sec.lower().startswith("body"):
+                    continue
+                for uid in (chunk_to_user_usps.get(c_sec) or []):
+                    if uid in seen_uids or not (1 <= uid <= len(usps)):
+                        continue
+                    seen_uids.add(uid)
+                    u = usps[uid - 1]
+                    desc = _parse_usp_description(u.get("description") or "")
+                    body_usps_for_common.append({
+                        "id": uid,
+                        "name": u.get("usp", ""),
+                        "benefit": (desc.get("혜택") or "")[:140],
+                        "pain": (desc.get("문제") or "")[:140],
+                        "solution": (desc.get("해결") or "")[:140],
+                    })
+    # prev_chunks_block — 섹션별로 section_writer_blocks 모듈에 위임
+    if is_hook:
+        prev_chunks_block = build_hook_prev_chunks_block(
+            prev_chunks or [], my_section_usps, body_usps_for_common,
+            hook_archetype=_hook_archetype_dict,
+        )
+    elif is_intro_sec:
+        prev_chunks_block = build_intro_prev_chunks_block(
+            prev_chunks or [], my_section_usps, body_usps_for_common,
+        )
+    else:
+        prev_chunks_block = build_generic_prev_chunks_block(prev_chunks or [])
 
     # 📋 A) 전체 chunks 흐름 (bird's eye — 자기 자리 파악용)
     flow_overview_block = ""
@@ -3551,7 +3899,13 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
             sents = c.get("sentences") or []
             return float(sents[0].get("start", 0)) if sents else 0.0
         sorted_chunks = sorted(section_chunks, key=_chunk_start)
-        for c in sorted_chunks:
+        cur_idx = -1
+        for i, c in enumerate(sorted_chunks):
+            sec = (c.get("section") or "").strip()
+            if sec == section_name:
+                cur_idx = i
+                break
+        for i, c in enumerate(sorted_chunks):
             sec = (c.get("section") or "").strip()
             c_role = c.get("role", "")
             c_topic = c.get("topic", "")
@@ -3561,6 +3915,15 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
             if c_summary:
                 line += f" — {c_summary[:60]}"
             flow_overview_block += line + "\n"
+        # 다음 chunk의 ref_text 미리보기 — 자연스러운 transition 준비
+        if cur_idx >= 0 and cur_idx + 1 < len(sorted_chunks):
+            next_c = sorted_chunks[cur_idx + 1]
+            next_sec = (next_c.get("section") or "").strip()
+            next_sents = next_c.get("sentences") or []
+            next_first = (next_sents[0].get("text") or "").strip() if next_sents else ""
+            if next_first:
+                flow_overview_block += f"\n## 🔜 다음 chunk [{next_sec}] 첫 문장 (ref): \"{next_first}\"\n"
+                flow_overview_block += "→ 이 chunk 끝이 다음 chunk 첫 문장으로 자연 연결되도록 마지막 어절 선택 (호흡 안 끊김)\n"
         flow_overview_block += "→ 이 흐름의 한 단계로서 자연스럽게 이어지게. 앞 chunk와 중복 X, 다음 chunk로 흐름 advance.\n"
         flow_overview_block += "→ 자기 spec의 USP는 spec_block의 [USP{id}] 태그로 정확히 전달됨. 같은 USP가 여러 자리에 분산되면 어휘 일관성 유지.\n"
 
@@ -3624,7 +3987,17 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
 - ref가 "~잖아"면 우리도 반말 종결, ref가 "~잖아요"면 존댓말
 """
 
-    return f"""당신은 한국어 광고 카피라이터입니다. 아래 outline에 따라 **{section_name} 섹션의 문장 {len(sentences_spec)}개**만 작성.
+    # 전체 product USPs를 cache 가능한 static block으로 (relevant_usps와 별개)
+    all_usps_dict = ""
+    if usps:
+        all_usps_dict = "\n## 우리 제품의 모든 USPs (전체 dictionary — Writer 어휘 source)\n"
+        for i, u in enumerate(usps, 1):
+            all_usps_dict += f"\nUSP{i}: {u.get('usp','')}\n"
+            desc_parsed_all = _parse_usp_description(u.get("description") or "")
+            if desc_parsed_all["raw"]:
+                all_usps_dict += f"  설명: {desc_parsed_all['raw'][:300]}\n"
+
+    return f"""당신은 한국어 광고 카피라이터입니다. 아래 outline에 따라 광고 카피를 작성.
 
 ⚠️⚠️ **direction 필드는 TTS 연기 cue 한 줄 (6자 이내)** ⚠️⚠️
 - ✅ 허용: "자연스럽게", "친근하게 묻듯", "확신에 차서", "공감하듯", "장난스럽게", "단호하게", "속삭이듯"
@@ -3633,11 +4006,8 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
 direction은 **성우가 어떻게 읽을지**만. 마케팅 전략 X.
 
 {speech_block}
-{flow_overview_block}
 {section_arc_block}
-{section_role_block}
-{prev_chunks_block}
-{section_guidance}
+{persona_str}{all_usps_dict}
 
 ## ⭐⭐⭐⭐ chunk 의도 우선 (v4-2)
 
@@ -3890,6 +4260,30 @@ ref slot 2: "캡내장인데 캡이 박음질돼 있어서 / 세탁하고 캡이
 - "있어서" → "있어요" / "있더라고요"
 - "없었고" → "없었어요" / "없더라고요"
 
+### ⭐⭐⭐ 어미 다양성 강제 (가장 빈번한 지루함 원인)
+같은 어미 (~예요/~잖아요/~거든요/~네요)를 **연속 3문장 이상 동일 사용 X**.
+
+**❌ 지루함 케이스 (절대 금지)**:
+- 문장1: "~예요" / 문장2: "~예요" / 문장3: "~예요" → 같은 어미 3연속
+- 문장1: "~잖아요" / 문장2: "~잖아요" / 문장3: "~잖아요" → 같은 어미 3연속
+
+**✅ 다양성 변주 (권장 풀)**:
+- 평서: ~예요 / ~네요 / ~이야 / ~이지 / ~다고
+- 공감: ~잖아요 / ~잖아 / ~죠?
+- 강조/수긍: ~거든요 / ~거든 / ~더라고요 / ~던데요
+- 약속: ~게요 / ~ㄹ게요 / ~드릴게요
+- 의문: ~까요? / ~지? / ~인가요?
+- 반말 종결: ~다 / ~네 / ~지 / ~야
+
+**룰**:
+- 한 섹션 안 종결문장이 3개 이상이면 적어도 2가지 다른 어미 사용
+- 같은 어미 연속 2회는 OK (그 이상부터 지루함)
+- 어미 종류 = ref가 다양하면 우리도 다양하게, ref가 같은 어미 반복하면 우리는 의식적으로 다른 어미로 바꿈
+
+**예시 (3문장 섹션)**:
+- ❌ "본전 뽑은 사람들 다 쓰는 앱이에요. 검색부터 비교까지 한 번에 끝이에요. 한 곳에 다 모아둔 게 핵심이에요." (이에요 3연속)
+- ✅ "본전 뽑은 사람들 다 쓰는 앱이에요. 검색부터 비교까지 한 번에 끝나거든요. 한 곳에 다 모은 게 진짜 편하더라고요." (이에요 / 거든요 / 더라고요)
+
 ## 🎯 구체 시나리오 강제 (가장 중요 ⭐⭐⭐)
 
 ⚠️ 추상적 표현 금지 — **구체 상황/숫자/고유명사 vivid 묘사** 필수.
@@ -4007,33 +4401,46 @@ Planner가 각 문장에 **skeleton + signature + usp_id**를 줍니다.
 6. 같은 spec의 usp_id에 해당하는 USP 리뷰만 사용 — 다른 USP 어휘 침입 X
 7. 리뷰가 안 맞으면 Fallback 룰 적용 (의미 가까운 단어 → slot 타입 변환 → 도메인 일반어)
 <<<CACHE_BOUNDARY>>>
+
+## ▶ 현재 작성 중: **{section_name}** 섹션의 문장 {len(sentences_spec)}개
+
 ## 제품
 {product_name}
-{persona_str}{usps_block}
+{section_guidance}
+{section_role_block}
+{flow_overview_block}
+{prev_chunks_block}
+
+## 이 섹션 USP 컨텍스트 (relevant 우선 — 위 전체 dict의 subset)
+{usps_block}
 
 ## 이 섹션의 문장 outline (각 spec)
 {spec_block}
 
-## 절대 규칙
+## 핵심 규칙 — **음절/어절만 매칭, 조사·동사는 자유**
 
-### 1. Skeleton 고정 부분 = 한 글자도 바꾸지 말 것
-- skeleton의 [SLOT] 외 모든 부분 (조사·연결어·시그니처)은 그대로
-- signature 변경 절대 금지
+### 1. 미러링 강도 = 어절 수 ±1 / 어절별 음절 ±2 만 강제
+- ref와 우리 문장의 **어절 수**만 ±1 허용 (ref 5어절 → 우리 4~6어절)
+- **어절별 음절 수**도 ±2 허용 (ref 어절 [3,2,1,4] → 우리 [3,2,2,3] OK)
+- 그 외 모든 것 (조사·동사·연결어·종결어미)은 **자연스러운 한국어 우선**, ref 박제 금지
 
-### 2. Slot fill = USP 리뷰에서 단어 추출
+### 2. 조사·동사·어미는 자유 변형
+- ref "셔링이라 / 셔링으로 / 셔링이지" 같은 조사 차이는 우리 도메인 흐름에 맞게 자유 선택
+- ref 동사 그대로 복사 X — 우리 USP 시연에 맞는 동사 사용
+- ref 종결어미 그대로 박을 필요 X (자연 종결로 결정)
+
+### 3. 시그니처 어구는 보존 (잖아요/거든요/보여줄게/예요 같은 punchy 끝 어구만)
+- ref "~잖아요" → 우리도 "~잖아요" (punch tone 유지)
+- 하지만 그 외 일반 종결 ("~다", "~해요", "~네요")은 자유
+
+### 4. Slot fill = USP 리뷰에서 단어 추출
 - 리뷰 verbatim 금지, 단어/개념만
 - slot 타입에 맞게 grammatical 변환
 
-### 3. 자연 한국어 변형 = 조사·어미 활용 정도만
-- "시원한 게" vs "시원해야" — 게 생략 가능 (자연스러우면)
-- "시원하고" — 형용사1+고 결합
-- 단, 의미·시그니처 변경 X
-
-### 4. 추상 명사구 / 격식 종결 금지
+### 5. 추상 명사구 / 격식 종결 금지
 - "활동성/편의성/효율성/쾌적함/만족도/신축성/최상의/탁월한/프리미엄" 등 단어 사용 X
-- 참고 동사·명사·고유어 그대로 복사 X
 
-### 5. 토픽 점프 / 가짜 인과 X
+### 6. 토픽 점프 / 가짜 인과 X
 - 다른 USP 어휘 침입 X
 - 무관한 두 USP를 "라서/하면"으로 묶기 X
 
@@ -4067,6 +4474,30 @@ Planner가 각 문장에 **skeleton + signature + usp_id**를 줍니다.
 """
 
 
+PRE_PLANNER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "chunk_mapping": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "chunk_section": {"type": "string"},
+                    "user_usp_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                    },
+                    "confidence": {"type": "string", "enum": ["strong", "loose", "none"]},
+                    "reason": {"type": "string"},
+                },
+                "required": ["chunk_section", "user_usp_ids", "confidence", "reason"],
+            },
+        },
+    },
+    "required": ["chunk_mapping"],
+}
+
+
 def _build_pre_planner_prompt(usps: list[dict], section_chunks: list[dict], locked_mappings: list[dict] | None = None) -> str:
     """Chunk-level 매핑: chunk.section → user_usp_id.
 
@@ -4094,8 +4525,12 @@ def _build_pre_planner_prompt(usps: list[dict], section_chunks: list[dict], lock
         sents = c.get("sentences") or []
         return float(sents[0].get("start", 0)) if sents else 0.0
     sorted_chunks = sorted(section_chunks or [], key=_chunk_start)
-    # USP 매핑 대상 chunks (engagement 제외 — primary_usp_id 있거나 body류)
-    mappable_chunks = [c for c in sorted_chunks if (c.get("section") or "").startswith("body") or c.get("primary_usp_id") is not None]
+    # USP 매핑 대상 chunks — body + intro (둘 다 USP 호소 가능). hook/cta는 engagement.
+    mappable_chunks = [
+        c for c in sorted_chunks
+        if (c.get("section") or "").lower().startswith(("body", "intro"))
+        or c.get("primary_usp_id") is not None
+    ]
     chunk_lines = ""
     for c in sorted_chunks:
         sec = c.get("section", "?")
@@ -4137,9 +4572,10 @@ def _build_pre_planner_prompt(usps: list[dict], section_chunks: list[dict], lock
 ⚠️ 위 매핑은 사용자가 직접 결정. 출력에 그대로 박고, 다른 chunk 매핑할 때 위 user USP({", ".join(f"USP{u}" for u in locked_user_ids)})는 중복 회피."""
 
     n_mappable = len(mappable_chunks)
-    return f"""당신은 광고 카피 플래너입니다. **ref의 각 chunk를 우리 USP 중 어느 것에 매핑할지** 판단.
+    return f"""당신은 광고 카피 플래너입니다. **ref의 각 chunk를 우리 USP 중 어느 것(들)에 매핑할지** 판단.
 
-각 chunk는 ref가 다루는 하나의 USP/메시지 단위. 당신의 일은 **chunk-level USP 매핑** — 매핑 대상 chunk별로 우리 USP id 1개 (또는 null).
+각 chunk는 ref가 다루는 메시지 단위 — 1개 USP만 다룰 수도, 여러 USP 통합 호소일 수도 있음.
+당신의 일은 **chunk-level USP 매핑** — 매핑 대상 chunk별로 우리 USP id 배열 (1개 이상, 또는 빈 배열).
 
 ## 우리 USPs
 {usps_str}
@@ -4149,54 +4585,129 @@ def _build_pre_planner_prompt(usps: list[dict], section_chunks: list[dict], lock
 {locked_block}
 
 ## 매핑 룰
-1. **🎯 매핑 대상으로 표시된 chunk만** user_usp_id 결정 (engagement chunk는 매핑 X — null)
-2. chunk의 topic/summary/sentences로 의미 파악 → user USP 중 mechanism/혜택 가장 가까운 것 선택
-3. **⭐ Strong 매칭만, 약하면 차라리 null** (가장 중요)
+1. **🎯 매핑 대상으로 표시된 chunk만** user_usp_ids 결정 (engagement chunk는 매핑 X — 빈 배열)
+2. chunk의 role/topic/summary/sentences로 의미 파악 → 우리 USP 중 mechanism/혜택 일치하는 것(들) 선택
+3. **⭐ Strong 매칭만, 약하면 차라리 빈 배열** (가장 중요)
    - 같은 mechanism/혜택이 **확실히 일치**할 때만 매핑 (confidence: strong)
-   - 같은 user USP를 다른 chunk에 중복 매핑 X — 1순위가 이미 쓰였으면 null 선택
-   - 비슷한 angle인데 도메인 차이 (loose) → null이 더 나음
+   - 비슷한 angle인데 도메인 차이 (loose) → 빈 배열이 더 나음
    - **구멍 나는 게 잘못된 매칭보다 나음**
-4. **null 의미** — "이 chunk가 우리 USP에 자연스럽게 안 맞음". 사용자가 wizard에서 수동 매핑·페르소나로 풀기
+4. **Multi-USP 매핑 룰** ⭐ ref chunk가 여러 USP 통합 호소 (role=문제제기 / pain제기 / 통합 / 요약)일 때:
+   - chunk 의도가 진짜 여러 USP를 한꺼번에 다룸 → user_usp_ids = 해당 USP 모두
+   - 예: ref가 "비싼 우버 + 호텔 변동가 + 음식점 줄"을 한 chunk에서 묶어 호소 → user_usp_ids=[1,2,3]
+5. **빈 배열 의미** — "이 chunk가 우리 USP에 자연스럽게 안 맞음". 사용자가 wizard에서 수동 매핑·페르소나로 풀기
 
 ## ⭐ confidence (매칭 강도 — 필수)
 - **strong** — mechanism + 효과 + 도메인 모두 일치
 - **loose** — angle 비슷하나 도메인·메커니즘 차이
-- **none** — user_usp_id가 null
+- **none** — user_usp_ids가 빈 배열
+
+## ⭐ reason (필수, 80~200자) — Writer가 이 chunk를 쓸 때 참고하는 컨텍스트
+다음 3가지 반드시 포함:
+1. ref chunk가 **무슨 역할**인지 (예: "공통고민 통합 문제제기", "USP1 mechanism 시연", "callback")
+2. **어느 user USP(들)에 어떻게 매핑**되는지 (예: "우리 USP1=가격, USP2=시간 모두 같은 pain frame으로 해결")
+3. Writer가 이 chunk를 쓸 때 **반영해야 할 의도** (예: "3개 USP 통합 호소 어조 유지, 한 USP만 깊이 X")
 
 ## 출력 JSON
 {{
   "chunk_mapping": [
-    {{"chunk_section": "body_1", "user_usp_id": 1, "confidence": "strong", "reason": "..."}},
-    {{"chunk_section": "body_2", "user_usp_id": null, "confidence": "none", "reason": "도메인 mismatch"}},
-    ...
+    {{"chunk_section": "intro", "user_usp_ids": [1,2,3], "confidence": "strong", "reason": "ref intro가 여행객 3가지 pain(비싼 우버/호텔변동/음식점줄)을 통합 문제제기. 우리 USP1=우버할인, USP2=가격알람, USP3=예약대행 모두 같은 '여행 효율' frame으로 해결. Writer는 3개 USP 통합 어조로 작성, 단일 USP 깊이 X."}},
+    {{"chunk_section": "body_1", "user_usp_ids": [1], "confidence": "strong", "reason": "ref body_1은 우버 결제 mechanism 시연. user USP1=우버할인의 mechanism과 1:1 매칭. Writer는 USP1 코드 사용 시 절약 효과를 구체 숫자로 시연."}},
+    {{"chunk_section": "body_2", "user_usp_ids": [], "confidence": "none", "reason": "ref body_2는 일본 현지 식당 정보 (도메인 mismatch). 우리 USP에 자연 매핑 없음 — 사용자가 수동 결정 필요."}}
   ]
 }}
 
-⚠️ reason 40자 이내. 매핑 대상 chunk **{n_mappable}개 모두** 포함. JSON만, 설명 X."""
+⚠️ reason 80~200자. 매핑 대상 chunk **{n_mappable}개 모두** 포함. JSON만, 설명 X."""
 
 
-def _build_section_planner_prompt(section_name: str, ref_subset: list[dict], usps: list[dict], product_name: str, target_persona: dict | None, pain: str, desire: str) -> str:
+def _build_section_planner_prompt(section_name: str, ref_subset: list[dict], usps: list[dict], product_name: str, target_persona: dict | None, pain: str, desire: str, hook_archetype: dict | None = None) -> str:
     """Pro: 한 섹션의 ref 문장들 → skeleton + signature 추출.
 
     v4-2: role / slot_topic 추출 제거 — DB chunk(role/topic)에 이미 있어서 중복.
     Section Planner는 **skeleton + signature**만 책임.
+    각 ref 문장에 매핑된 user USP info도 inline 표시 → planner가 USP 도메인 인지하고 skeleton 짬.
+
+    hook_archetype: hook 섹션 한정. 분석 단계에서 분류된 dict ({archetype, pattern, core_word}).
+        Planner가 core_word는 [SLOT] 추상화 안 하도록 명시.
     """
-    ref_lines = "\n".join(
-        f"  [pos {i+1}] slot={s.get('slot_id')} \"{s['ref_text']}\""
-        for i, s in enumerate(ref_subset)
-    )
+    # ref_subset 각 문장에 매핑된 USP 정보 인라인 표시
+    def _ref_line(i: int, s: dict) -> str:
+        usp_id = s.get("usp_id")
+        usp_tag = ""
+        if isinstance(usp_id, int) and 1 <= usp_id <= len(usps):
+            u_match = usps[usp_id - 1]
+            desc_parsed_p = _parse_usp_description(u_match.get("description") or "")
+            desc_brief = (desc_parsed_p.get("raw") or "")[:120]
+            usp_tag = f" → 매핑된 USP{usp_id} ({u_match.get('usp', '')}): \"{desc_brief}\""
+        return f"  [pos {i+1}] slot={s.get('slot_id')} \"{s['ref_text']}\"{usp_tag}"
+
+    ref_lines = "\n".join(_ref_line(i, s) for i, s in enumerate(ref_subset))
+
+    # 섹션 안에서 사용되는 USP 목록 (간단 요약)
+    used_usp_ids = sorted({s.get("usp_id") for s in ref_subset if isinstance(s.get("usp_id"), int)})
+    usp_summary = ""
+    if used_usp_ids:
+        usp_summary = "\n## 이 섹션에서 사용할 user USPs (Writer가 어휘 source로 씀)\n"
+        for uid in used_usp_ids:
+            if 1 <= uid <= len(usps):
+                u = usps[uid - 1]
+                desc_parsed_p = _parse_usp_description(u.get("description") or "")
+                desc_brief = (desc_parsed_p.get("raw") or "")[:200]
+                usp_summary += f"- USP{uid}: {u.get('usp','')} — {desc_brief}\n"
 
     expected_n = len(ref_subset)
+
+    # Hook archetype 한정 — core_word/pattern 보존 강제
+    archetype_block = ""
+    if (section_name or "").lower() == "hook" and hook_archetype:
+        arch = hook_archetype.get("archetype") or ""
+        pattern = hook_archetype.get("pattern") or ""
+        core_word = hook_archetype.get("core_word") or ""
+        if arch:
+            archetype_block = f"\n## ⭐⭐⭐ Hook archetype 보존 룰 (분석 단계 분류 결과)\n"
+            archetype_block += f"- **archetype**: `{arch}`\n"
+            if pattern:
+                archetype_block += f"- **pattern**: `{pattern}`\n"
+            if core_word:
+                archetype_block += f"- **core_word (핵심 명사)**: \"{core_word}\"\n"
+            archetype_block += "\n**Planner 룰 (이 섹션 한정)**:\n"
+            if core_word:
+                archetype_block += f"1. core_word \"{core_word}\"는 **절대 [SLOT]으로 추상화 X** — skeleton에 그대로 박음\n"
+                archetype_block += f"   - ❌ 잘못: \"[X]을 [V]하는 [추상명사]\" (이유→[추상명사] 추상화)\n"
+                archetype_block += f"   - ✅ 정답: \"[X]을 [V]하는 {core_word}\" (이유 그대로)\n"
+            archetype_block += f"2. archetype `{arch}` 패턴 자체가 hook의 핵심 메커니즘 — Writer가 패턴 안 [SLOT]만 채워서 우리 도메인 어휘로 만들 수 있도록 skeleton 구성\n"
+            if arch == "curiosity_teaser":
+                archetype_block += "3. curiosity_teaser는 \"~의 이유 / 비결 / 차이 / 방법\" 종결 — skeleton 끝의 core_word 보존 필수\n"
+            elif arch == "list_teaser":
+                archetype_block += "3. list_teaser는 카운트(N가지/N개) 보존 — 숫자 자리도 [SLOT]으로 만들지 말 것 (Writer가 의미 있는 숫자 채움)\n"
+            elif arch == "confession":
+                archetype_block += "3. confession은 1인칭/시간anchor + 강한 동사 보존 — 주어 [SLOT]은 OK (저는/나는), 시간·동사는 [SLOT]\n"
+            elif arch == "condition":
+                archetype_block += "3. condition은 조건절 어미 (~한다면/~떴다면/~켜면) 보존 — 조건어 [SLOT] X\n"
+            elif arch == "empathy":
+                archetype_block += "3. empathy는 종결어미 (~잖아요/~죠?/~잖아) 보존 — Signature로 분리\n"
+            elif arch == "command":
+                archetype_block += "3. command는 명령형 어미 (~하세요/~사지 마) 보존 — Signature로 분리\n"
+            elif arch == "shock":
+                archetype_block += "3. shock은 강한 부정 동사 (망했다/죽었다/끝났다) 보존 가능 (USP 도메인 충돌 시만 [SLOT])\n"
+            elif arch == "noun_label":
+                archetype_block += "3. noun_label은 modifier+명사 형태 — 끝 명사는 [SLOT] OK (Writer가 USP 도메인 명사로 채움)\n"
 
     return f"""당신은 광고 카피 구문 분석가입니다. **{section_name} 섹션의 ref 문장 {expected_n}개**를 각각 skeleton + signature로 분해.
 
 ⚠️ 정확히 {expected_n}개 spec 출력. 합치기·생략 절대 금지.
 
+## product
+{product_name}
+{usp_summary}{archetype_block}
 ## 작업
 참고 문장에서:
 1. **고정부 식별**: 시그니처(끝 punchy 어구)·연결어·조사는 그대로 → skeleton에 박음
 2. **Slot 표시**: 도메인·USP에 따라 바뀔 자리만 [SLOT_NAME] (의미적: 형용사/의태어/비유/부위/디자인특징/동작)
 3. **Signature**: skeleton 끝의 punchy 어구 (잖아요/거든요/보여줄게/예요/이라 등)
+
+⭐ **각 ref 문장마다 매핑된 USP 표시됨** — skeleton 만들 때 ref의 도메인 명사·동사가 매핑된 USP와 도메인 mismatch면 그 자리를 [SLOT]으로 변환 (writer가 USP 어휘로 채움).
+- 예: ref "일본 가면 돈키호테 싹 쓸어와야 되잖아" → 매핑 USP=땡처리항공권모음 (도메인 mismatch)
+  → skeleton: "[목적지] 가면 [동작_명사] [동작_동사] 되잖아" (도메인어 [목적지]/[명사]/[동사]로 추상화)
 
 ⚠️ slot 단어는 **출력하지 말 것** — Writer가 USP 리뷰에서 채움. Planner는 빈 [SLOT]만.
 
@@ -4357,8 +4868,11 @@ def _classify_ref_sections(primary: dict) -> list[tuple[str, list[dict]]]:
     ]
 
 
-def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None, session_id: str | None = None) -> dict:
-    """v4 = B버전: Pre-Planner Flash + Section Planners parallel + Writers parallel."""
+def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, chunk_usp_override: dict[str, list[int] | int] | None = None, chunk_meta_override: dict[str, dict] | None = None, skip_chunk_sections: list[str] | None = None, skip_sentence_starts: list[float] | None = None, hook_archetype_override: dict | None = None, session_id: str | None = None) -> dict:
+    """v4 = B버전: Pre-Planner Flash + Section Planners parallel + Writers parallel.
+
+    skip_chunk_sections: 이번 생성에서 제외할 chunk.section 목록 (사용자가 wizard에서 ✕ 삭제).
+    """
     import concurrent.futures as _cf
     import time as _t
     _t_total = _t.time()
@@ -4374,6 +4888,52 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
 
     # 1a. Section 분류 (deterministic)
     classified = _classify_ref_sections(primary)
+
+    # ⭐ defensive dedup — 같은 (start time + text) sentence가 여러 section에 중복되면 first-come-wins
+    # (옛날 chunks DB에 sentence_idx 중복 할당으로 transcripts.segments에 duplicate가 남아있을 수 있음)
+    seen_keys: set[tuple[float, str]] = set()
+    deduped_classified: list[tuple[str, list[dict]]] = []
+    dup_removed = 0
+    for name, sents in classified:
+        kept_sents = []
+        for s in sents:
+            key = (round(float(s.get("start", 0) or 0), 2), (s.get("text") or "").strip())
+            if key in seen_keys:
+                dup_removed += 1
+                continue
+            seen_keys.add(key)
+            kept_sents.append(s)
+        if kept_sents:
+            deduped_classified.append((name, kept_sents))
+    if dup_removed > 0:
+        logger.warning("[dedup] %d duplicate sentences removed (start+text 매칭)", dup_removed)
+    classified = deduped_classified
+
+    # ⭐ skip_chunk_sections 적용 — wizard에서 ✕ 삭제된 섹션은 이 단계에서 제외
+    # (Section Planner/Writer가 받는 all_ref_sents + section_idx_ranges에서 빼야 결과에 안 남음)
+    if skip_chunk_sections:
+        skip_set = {(s or "").strip().lower() for s in skip_chunk_sections if isinstance(s, str)}
+        before = len(classified)
+        classified = [(name, sents) for name, sents in classified if name.lower() not in skip_set]
+        logger.info("[skip-chunks/classified] %d → %d (skipped: %s)", before, len(classified), sorted(skip_set))
+
+    # ⭐ skip_sentence_starts 적용 — wizard에서 🗑 삭제한 sentence는 이번 generation에서 제외 (DB 안 건드림)
+    if skip_sentence_starts:
+        skip_starts = [round(float(t), 2) for t in skip_sentence_starts if isinstance(t, (int, float))]
+        if skip_starts:
+            def _kept(s: dict) -> bool:
+                st = round(float(s.get("start", 0) or 0), 2)
+                return all(abs(st - sk) > 0.05 for sk in skip_starts)
+            new_classified: list[tuple[str, list[dict]]] = []
+            removed_n = 0
+            for name, sents in classified:
+                kept = [s for s in sents if _kept(s)]
+                removed_n += len(sents) - len(kept)
+                if kept:
+                    new_classified.append((name, kept))
+            classified = new_classified
+            logger.info("[skip-sentences] %d sentences skipped (starts=%s)", removed_n, skip_starts)
+
     all_ref_sents: list[dict] = []
     section_idx_ranges: list[tuple[str, int, int]] = []  # (section_name, start_idx, end_idx)
     for sec_name, sents in classified:
@@ -4406,6 +4966,25 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     # section_chunks 가져오기 (없으면 즉석 분석) — usp_layout 제거됨
     _overall = ((primary.get("structure") or {}).get("overall") or {})
     section_chunks = _overall.get("section_chunks") if isinstance(_overall, dict) else None
+    # ⭐ defensive cross-chunk dedup — 옛 분석에서 같은 sentence가 여러 chunk에 들어간 케이스 정리
+    if section_chunks:
+        seen_chunk_keys: set[tuple[float, str]] = set()
+        deduped_chunks = []
+        cdup = 0
+        for c in section_chunks:
+            kept = []
+            for cs in (c.get("sentences") or []):
+                key = (round(float(cs.get("start", 0) or 0), 2), (cs.get("text") or "").strip())
+                if key in seen_chunk_keys:
+                    cdup += 1
+                    continue
+                seen_chunk_keys.add(key)
+                kept.append(cs)
+            if kept:
+                deduped_chunks.append({**c, "sentences": kept})
+        if cdup > 0:
+            logger.warning("[dedup-chunks] %d duplicate sentences across chunks removed", cdup)
+        section_chunks = deduped_chunks
     # v4-2 — section_roles (DB 분석 결과: section별 role/what_it_does/must_not_repeat)
     section_roles_db = _overall.get("section_roles") if isinstance(_overall, dict) else None
     section_roles_db = section_roles_db if isinstance(section_roles_db, dict) else {}
@@ -4416,6 +4995,43 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
         except Exception as e:
             logger.warning("[multistep-B] analyze_section_chunks 실패: %s", e)
             section_chunks = []
+    # skip_sentence_starts 적용 — sentence-level skip을 chunks에도 반영 (chunk_for_idx 매칭 정확성)
+    if skip_sentence_starts and section_chunks:
+        skip_starts2 = [round(float(t), 2) for t in skip_sentence_starts if isinstance(t, (int, float))]
+        new_chunks = []
+        for c in section_chunks:
+            sents_kept = [
+                cs for cs in (c.get("sentences") or [])
+                if all(abs(round(float(cs.get("start", 0) or 0), 2) - sk) > 0.05 for sk in skip_starts2)
+            ]
+            if sents_kept:
+                new_chunks.append({**c, "sentences": sents_kept})
+        section_chunks = new_chunks
+
+    # skip_chunk_sections 적용 — wizard에서 사용자가 ✕ 삭제한 chunk 제외
+    if skip_chunk_sections and section_chunks:
+        skip_set = {s.strip() for s in skip_chunk_sections if isinstance(s, str)}
+        before = len(section_chunks)
+        section_chunks = [c for c in section_chunks if (c.get("section") or "") not in skip_set]
+        logger.info("[skip-chunks] %d → %d (skipped: %s)", before, len(section_chunks), sorted(skip_set))
+
+    # hook_archetype_override — wizard에서 primary 변경 시 hook chunk의 archetype 덮어쓰기 (메모리 한정)
+    if hook_archetype_override and isinstance(hook_archetype_override, dict) and section_chunks:
+        new_arch = hook_archetype_override.get("archetype")
+        if new_arch in HOOK_ARCHETYPES:
+            for i, c in enumerate(section_chunks):
+                if (c.get("section") or "").lower() == "hook":
+                    prev = c.get("archetype") or {}
+                    section_chunks[i] = {**c, "archetype": {
+                        "archetype": new_arch,
+                        "pattern": hook_archetype_override.get("pattern") or prev.get("pattern", ""),
+                        "core_word": hook_archetype_override.get("core_word") or prev.get("core_word", ""),
+                        "reasoning": "wizard primary 선택",
+                        "candidates": prev.get("candidates") or [],
+                    }}
+                    logger.info("[hook-archetype-override] hook archetype %s → %s", prev.get("archetype"), new_arch)
+                    break
+
     # chunk_meta_override 적용 (사용자 수정 topic/role/section)
     # section 변경은 chunk_for_idx 빌드 후에 적용 (sub-chunk 라벨 기준 매칭)
     chunk_section_renames: dict[int, tuple[str, str]] = {}  # chunk_index → (old, new)
@@ -4470,78 +5086,103 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                     chunk_section_renames, [(n, s, e) for n, s, e in section_idx_ranges])
 
     # v4-4: 사용자 확정 매핑 빌드 (preview에서 결정한 것)
-    # 1) usp_mapping_override (ref-level)
-    # locked_mappings: chunk_section → user_usp_id (사용자 확정 매핑)
+    # locked_mappings: chunk_section → user_usp_id 풀어서 flat list (multi-USP 지원)
     locked_mappings: list[dict] = []
     if chunk_usp_override:
-        for sec, uid in chunk_usp_override.items():
-            if isinstance(sec, str) and isinstance(uid, int) and 1 <= uid <= len(usps):
-                locked_mappings.append({
-                    "chunk_section": sec.strip(), "user_usp_id": uid, "source": "user_mapping",
-                })
+        for sec, val in chunk_usp_override.items():
+            if not isinstance(sec, str):
+                continue
+            ids = [val] if isinstance(val, int) else (val if isinstance(val, list) else [])
+            for uid in ids:
+                if isinstance(uid, int) and 1 <= uid <= len(usps):
+                    locked_mappings.append({
+                        "chunk_section": sec.strip(), "user_usp_id": uid, "source": "user_mapping",
+                    })
     if locked_mappings:
         logger.info("[multistep-B] locked_mappings: %s", locked_mappings)
 
-    # Pre-planner 호출 — chunk-level 매핑 (chunk_section → user_usp_id)
-    chunk_to_user_usp: dict[str, int | None] = {}  # chunk.section → user_usp_id
+    # Pre-planner 호출 — chunk-level 매핑 (chunk_section → user_usp_ids[] multi)
+    chunk_to_user_usps: dict[str, list[int]] = {}  # chunk.section → user_usp_ids (multi)
+    chunk_to_reason: dict[str, str] = {}  # chunk.section → reason (writer가 사용)
     chunk_mapping_full: list[dict] = []  # UI 노출용
     if section_chunks:
         try:
             _t_pp = _t.time()
             pre_prompt = _build_pre_planner_prompt(usps, section_chunks, locked_mappings=locked_mappings)
-            pre_result = call_gemini(pre_prompt, model="gemini-3-flash-preview", max_tokens=4096)
+            pre_result = call_gemini(pre_prompt, model="gemini-3-flash-preview", max_tokens=8192, response_schema=PRE_PLANNER_SCHEMA)
             logger.info("[multistep timing] pre-planner Flash: %.1fs", _t.time() - _t_pp)
             if isinstance(pre_result, list) and pre_result:
                 pre_result = pre_result[0]
             for m in ((pre_result or {}).get("chunk_mapping") or []):
                 sec = m.get("chunk_section")
-                uid = m.get("user_usp_id")
                 reason = m.get("reason", "")
                 if not isinstance(sec, str):
                     continue
-                resolved_uid = uid if isinstance(uid, int) and 1 <= uid <= len(usps) else None
-                chunk_to_user_usp[sec] = resolved_uid
-                user_name = usps[resolved_uid - 1].get("usp", "") if resolved_uid else None
+                # multi: user_usp_ids[] 우선, 없으면 single user_usp_id를 list 승격
+                ids_raw = m.get("user_usp_ids")
+                if not isinstance(ids_raw, list):
+                    single = m.get("user_usp_id")
+                    ids_raw = [single] if isinstance(single, int) else []
+                resolved: list[int] = []
+                for u in ids_raw:
+                    if isinstance(u, int) and 1 <= u <= len(usps) and u not in resolved:
+                        resolved.append(u)
+                chunk_to_user_usps[sec] = resolved
+                chunk_to_reason[sec] = reason
+                primary_uid = resolved[0] if resolved else None  # 'primary' 파라미터(=ref dict)와 충돌 방지
                 chunk_mapping_full.append({
                     "chunk_section": sec,
-                    "user_usp_id": resolved_uid,
-                    "user_usp_name": user_name,
+                    "user_usp_ids": resolved,
+                    "user_usp_names": [usps[i - 1].get("usp", "") for i in resolved],
+                    "user_usp_id": primary_uid,
+                    "user_usp_name": usps[primary_uid - 1].get("usp", "") if primary_uid else None,
                     "confidence": m.get("confidence", "none"),
                     "reason": reason,
                 })
-            logger.info("[pre-planner] %d chunk mappings", len(chunk_to_user_usp))
+            logger.info("[pre-planner] %d chunk mappings (multi)", len(chunk_to_user_usps))
         except Exception as e:
             logger.warning("[pre-planner] failed: %s — chunk_mapping empty", e)
     else:
         logger.info("[pre-planner] skipped — no chunks")
 
-    # wizard 수동 override 적용
+    # wizard 수동 override 적용 (multi list)
     if chunk_usp_override:
-        for sec, uid in chunk_usp_override.items():
-            if not isinstance(sec, str) or not isinstance(uid, int):
+        for sec, val in chunk_usp_override.items():
+            if not isinstance(sec, str):
                 continue
-            if not (1 <= uid <= len(usps)):
+            # val: int | list[int] 둘 다 지원 (frontend multi-select 대비)
+            if isinstance(val, int):
+                ids = [val] if 1 <= val <= len(usps) else []
+            elif isinstance(val, list):
+                ids = [u for u in val if isinstance(u, int) and 1 <= u <= len(usps)]
+            else:
                 continue
-            prev = chunk_to_user_usp.get(sec)
-            chunk_to_user_usp[sec] = uid
-            # full record 동기화
+            prev = chunk_to_user_usps.get(sec)
+            chunk_to_user_usps[sec] = ids
+            chunk_to_reason[sec] = (chunk_to_reason.get(sec, "") + " · 사용자 수동").strip(" ·")
             found = False
             for rec in chunk_mapping_full:
                 if rec["chunk_section"] == sec:
-                    rec["user_usp_id"] = uid
-                    rec["user_usp_name"] = usps[uid - 1].get("usp", "")
-                    rec["reason"] = (rec.get("reason", "") + " · 사용자 수동").strip(" ·")
+                    rec["user_usp_ids"] = ids
+                    rec["user_usp_names"] = [usps[i - 1].get("usp", "") for i in ids]
+                    rec["user_usp_id"] = ids[0] if ids else None
+                    rec["user_usp_name"] = usps[ids[0] - 1].get("usp", "") if ids else None
+                    rec["reason"] = chunk_to_reason[sec]
                     found = True
                     break
             if not found:
                 chunk_mapping_full.append({
-                    "chunk_section": sec, "user_usp_id": uid,
-                    "user_usp_name": usps[uid - 1].get("usp", ""),
-                    "confidence": "strong", "reason": "사용자 수동",
+                    "chunk_section": sec,
+                    "user_usp_ids": ids,
+                    "user_usp_names": [usps[i - 1].get("usp", "") for i in ids],
+                    "user_usp_id": ids[0] if ids else None,
+                    "user_usp_name": usps[ids[0] - 1].get("usp", "") if ids else None,
+                    "confidence": "strong" if ids else "none",
+                    "reason": "사용자 수동",
                 })
-            logger.info("[override] chunk %s: %s → user USP%d", sec, prev, uid)
+            logger.info("[override] chunk %s: %s → user USPs %s", sec, prev, ids)
 
-    # idx별 usp_id/slot_id 도출 — chunk → user_usp 매핑 직접 사용
+    # idx별 usp_id/slot_id 도출 — chunk → primary user_usp (sentence-level 단일 사용)
     usp_map: dict[int, int | None] = {}
     slot_map: dict[int, int] = {}
     for i in range(len(all_ref_sents)):
@@ -4551,14 +5192,17 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
             continue
         chunk = section_chunks[ci]
         chunk_section = (chunk.get("section") or "").strip()
-        usp_map[i] = chunk_to_user_usp.get(chunk_section)
-        slot_map[i] = ci  # chunk index = slot
+        ids = chunk_to_user_usps.get(chunk_section) or []
+        usp_map[i] = ids[0] if ids else None
+        slot_map[i] = ci
 
-    if chunk_override_applied:
-        logger.info("[chunk-override] applied: %s", chunk_override_applied)
-    elif chunk_usp_override:
-        logger.warning("[chunk-override] received %s but NO chunk matched (chunk sections: %s)",
-                       chunk_usp_override, [c.get("section") for c in section_chunks])
+    if chunk_usp_override:
+        applied_secs = [s for s in chunk_usp_override.keys() if s in chunk_to_user_usps]
+        if applied_secs:
+            logger.info("[chunk-override] applied sections: %s", applied_secs)
+        else:
+            logger.warning("[chunk-override] received %s but NO chunk matched (chunk sections: %s)",
+                           chunk_usp_override, [c.get("section") for c in section_chunks])
 
     role_override: dict[int, str] = {}
 
@@ -4580,11 +5224,42 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                 "slot_id": slot_map.get(i),
                 "role": role_override.get(i) or s.get("role", "spec"),
             })
+        # Hook 섹션이면 archetype 추출 (분석 단계 분류 결과)
+        sp_hook_archetype = None
+        if (sec_name or "").lower() == "hook":
+            for c in section_chunks or []:
+                if (c.get("section") or "").lower() == "hook":
+                    ha = c.get("archetype")
+                    if isinstance(ha, dict):
+                        sp_hook_archetype = ha
+                    break
         try:
-            sp_prompt = _build_section_planner_prompt(sec_name, ref_subset, usps, product_name, target_persona, pain, desire)
-            # Flash 사용 — 섹션 planner는 spec 분류 작업 (실제 prose는 Writer가 씀). Pro 차이 작음.
+            sp_prompt = _build_section_planner_prompt(sec_name, ref_subset, usps, product_name, target_persona, pain, desire, hook_archetype=sp_hook_archetype)
+            expected_n = len(ref_subset)
+            # Flash 사용 — Section Planner는 sentences 스키마(start/end/text)와 다른 형태(position/ref_text/skeleton)라 schema 강제 X
             sp_result = call_gemini(sp_prompt, model="gemini-3-flash-preview", max_tokens=16384)
             sents = sp_result.get("sentences") or []
+            # 1:1 안전망: Planner가 specs 누락하면 ref_text 기준으로 보충 (Gemini가 합쳐도 보존됨)
+            if len(sents) < expected_n:
+                logger.warning("[section-planner %s] short %d<%d — padding from ref_subset", sec_name, len(sents), expected_n)
+                got_refs = {(s.get("ref_text") or "").strip() for s in sents if (s.get("ref_text") or "").strip()}
+                padded = list(sents)
+                for rs in ref_subset:
+                    rt = (rs.get("ref_text") or "").strip()
+                    if rt and rt not in got_refs:
+                        padded.append({
+                            "position": len(padded) + 1,
+                            "ref_text": rt,
+                            "skeleton": rt,  # fallback: skeleton = ref_text (Writer가 자유 transform)
+                            "signature": "",
+                        })
+                # 시간순 보존: ref_subset 순서로 재정렬
+                ref_order = {(rs.get("ref_text") or "").strip(): k for k, rs in enumerate(ref_subset)}
+                padded.sort(key=lambda s: ref_order.get((s.get("ref_text") or "").strip(), 999))
+                sents = padded[:expected_n]
+                # position 재할당
+                for k, s in enumerate(sents):
+                    s["position"] = k + 1
             # role / slot_topic은 Section Planner가 안 뽑음 — 후처리에서 박음.
             for j, spec in enumerate(sents):
                 if j >= len(ref_subset):
@@ -4685,14 +5360,16 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
             reasons = []
             ref_pat = _eojeol_syllable_pattern(ref)
             gen_pat = _eojeol_syllable_pattern(gen_text)
-            # 어절 수 검증
-            if ref_pat and len(gen_pat) != len(ref_pat):
-                reasons.append(f"eojeol_count(ref={len(ref_pat)},gen={len(gen_pat)})")
-            elif ref_pat:
-                # 어절별 음절 ±2 검증
-                bad = [j for j in range(len(ref_pat)) if abs(ref_pat[j] - gen_pat[j]) > 2]
-                if bad:
-                    reasons.append(f"eojeol_pattern(diff at {bad})")
+            # 어절 수 검증 — ±1 허용, ±2부터 위반
+            if ref_pat:
+                eojeol_diff = abs(len(gen_pat) - len(ref_pat))
+                if eojeol_diff > 1:
+                    reasons.append(f"eojeol_count(ref={len(ref_pat)},gen={len(gen_pat)},diff={eojeol_diff})")
+                # 어절별 음절 ±2 검증 (어절 수가 같을 때만 의미 있음)
+                if len(gen_pat) == len(ref_pat):
+                    bad = [j for j in range(len(ref_pat)) if abs(ref_pat[j] - gen_pat[j]) > 2]
+                    if bad:
+                        reasons.append(f"eojeol_pattern(diff at {bad})")
             # 음절 합계 검증 — 너무 짧으면 표시 (보조)
             ref_syl = sum(ref_pat)
             gen_syl = sum(gen_pat)
@@ -4714,6 +5391,8 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
             section_chunks=section_chunks or [],
             section_roles=section_roles_db or {},
             prev_chunks=prev_chunks or [],
+            chunk_to_user_usps=chunk_to_user_usps,
+            chunk_to_reason=chunk_to_reason,
         )
         spec_list = sec.get("sentences") or []
         n_required = len(spec_list)
@@ -4721,6 +5400,9 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
             # min_sentences로 schema minItems 강제 — Pro가 spec 수 만큼 출력
             r = call_llm(prompt, model=writer_model, max_tokens=8192, min_sentences=n_required)
             sentences = r.get("sentences") or []
+            # ⭐ Writer가 sentences 배열을 spec 순서랑 다르게 줄 수 있음 — position 필드로 재정렬
+            if sentences and any(s.get("position") for s in sentences):
+                sentences = sorted(sentences, key=lambda s: int(s.get("position") or 0))
             # count retry — 부족하면 한 번 더 (강조 prompt)
             if len(sentences) < n_required:
                 logger.warning("[writer] section=%s count short %d<%d — retry", sec.get("name"), len(sentences), n_required)
@@ -4732,10 +5414,17 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                         sentences = s2
                 except Exception as e2:
                     logger.warning("[writer] count retry failed: %s", e2)
-            # 미러링 검증 (시그니처 + 길이)
-            violations = _validate_sentences(spec_list, sentences, sec.get("name", ""))
-            if violations:
-                logger.warning("[writer] section=%s violations: %s", sec.get("name"), violations)
+            # 미러링 검증 — 최대 1회 retry + smart skip (위반 < 3개면 retry skip)
+            for retry_round in range(1):
+                violations = _validate_sentences(spec_list, sentences, sec.get("name", ""))
+                if not violations:
+                    break
+                # 위반 3개 미만이면 retry 안 함 (cost vs quality trade-off)
+                if len(violations) < 3:
+                    logger.info("[writer] section=%s round=%d violations=%d < 3 → skip retry",
+                                sec.get("name"), retry_round + 1, len(violations))
+                    break
+                logger.warning("[writer] section=%s round=%d violations: %s", sec.get("name"), retry_round + 1, violations)
                 bad_lines = []
                 for i, reason in violations:
                     spec_i = spec_list[i] if i < len(spec_list) else {}
@@ -4745,18 +5434,28 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                     ref_syl = _count_kor_syllables(ref_text)
                     gen_syl = _count_kor_syllables(gen_text)
                     issue_parts = []
+                    ref_eojeol_n = len(_eojeol_syllable_pattern(ref_text))
+                    gen_eojeol_n = len(_eojeol_syllable_pattern(gen_text))
+                    if "eojeol_count" in reason:
+                        diff = abs(gen_eojeol_n - ref_eojeol_n)
+                        action = "줄여" if gen_eojeol_n > ref_eojeol_n else "늘려"
+                        issue_parts.append(f"⛔ 어절 수 위반 (차이 {diff}): 참고 {ref_eojeol_n}어절 → 우리 {gen_eojeol_n}어절. 정확히 {ref_eojeol_n}±1 어절({ref_eojeol_n-1}~{ref_eojeol_n+1}개)로 {action} 다시 쓰기. 여러 정보 한 문장에 욱여넣지 말 것 — 핵심 1개만 남기고 나머지 잘라내기")
+                    if "eojeol_pattern" in reason:
+                        issue_parts.append(f"⚠️ 어절별 음절 차이 ±2 초과 — 각 어절별 음절 수를 참고에 맞추세요")
                     if "signature" in reason and sig:
                         issue_parts.append(f"시그니처 \"{sig}\" 누락 — 반드시 \"{sig}\"로 끝나야 함")
                     if "length" in reason:
                         issue_parts.append(f"음절 {gen_syl} (참고 {ref_syl}) — {ref_syl}±2 음절로 압축")
                     bad_lines.append(
-                        f"  문장 {i+1}: 참고 \"{ref_text}\" → 우리 \"{gen_text}\" "
+                        f"  문장 {i+1}: 참고 \"{ref_text}\" ({ref_eojeol_n}어절) → 우리 \"{gen_text}\" ({gen_eojeol_n}어절) "
                         f"({'; '.join(issue_parts)})"
                     )
-                retry_prompt = prompt + f"\n\n## ⚠️ 재시도 — 미러링 위반 검출\n{chr(10).join(bad_lines)}\n\n위 문장들을 다시 쓰세요. 시그니처(끝 어구) 보존 + 음절 수를 참고와 맞추기."
+                retry_prompt = prompt + f"\n\n## ⚠️ 재시도 (round {retry_round + 1}/3) — 미러링 위반 검출\n{chr(10).join(bad_lines)}\n\n위 문장들 **반드시** 다시 쓰세요.\n- ⛔ 어절 수: 참고 ±1 절대 강제 — 위반 시 무효 처리되어 다시 retry됨\n- 여러 USP/카테고리 한 문장에 욱여넣지 말 것 — ref가 짧으면 우리도 짧게\n- 시그니처(끝 어구) 보존\n- 음절 수: 참고 ±2 안에서"
                 try:
-                    r2 = call_llm(retry_prompt, model=writer_model, max_tokens=4096)
+                    r2 = call_llm(retry_prompt, model=writer_model, max_tokens=4096, min_sentences=len(sentences))
                     s2 = r2.get("sentences") or []
+                    if s2 and any(s.get("position") for s in s2):
+                        s2 = sorted(s2, key=lambda s: int(s.get("position") or 0))
                     if s2 and len(s2) == len(sentences):
                         sentences = s2
                 except Exception as e:
@@ -4781,26 +5480,26 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                 write_units.append((chunk_id, chunk_sec))
     logger.info("[multistep-B] writer units: %d (after chunking)", len(write_units))
 
-    # write_units 시간순 정렬 (hook → intro → body_1 → ... → cta)
+    # write_units 작성 순서 — body → cta → hook → intro
+    # Hook은 본문/CTA 보고 페르소나 desire trigger / Intro는 Hook + body_1 보고 자연 bridge
     def _unit_order_key(u: tuple[str, dict]) -> tuple[int, int, int]:
         sec_name = (u[1].get("_orig_section") or u[1].get("name") or "").lower()
-        # name이 "body_2#3" 형태면 base + chunk index
         chunk_idx = 0
         if "#" in (u[1].get("name") or ""):
             try: chunk_idx = int(u[1]["name"].split("#")[1])
             except Exception: chunk_idx = 0
-        if sec_name == "hook": return (0, 0, chunk_idx)
-        if sec_name == "intro": return (1, 0, chunk_idx)
-        if sec_name == "cta": return (3, 0, chunk_idx)
         if sec_name.startswith("body_"):
-            try: return (2, int(sec_name.split("_", 1)[1]), chunk_idx)
-            except Exception: return (2, 99, chunk_idx)
-        if sec_name == "body": return (2, 0, chunk_idx)
+            try: return (0, int(sec_name.split("_", 1)[1]), chunk_idx)
+            except Exception: return (0, 99, chunk_idx)
+        if sec_name == "body": return (0, 0, chunk_idx)
+        if sec_name == "cta": return (1, 0, chunk_idx)
+        if sec_name == "hook": return (2, 0, chunk_idx)   # ⭐ 본문/CTA 보고 메인 desire trigger
+        if sec_name == "intro": return (2, 1, chunk_idx)  # ⭐ Hook + body_1 보고 자연 bridge (마지막)
         return (4, 0, chunk_idx)
     write_units.sort(key=_unit_order_key)
 
-    # 배치 3 순차: 배치 안 병렬, 배치 간 순차. 각 배치는 직전 배치들의 출력을 prev_chunks로 받음
-    BATCH_SIZE = 3
+    # 완전 순차: BATCH_SIZE=1. 각 chunk가 단독 batch → 직전 모든 chunk 출력을 prev_chunks로 받음
+    BATCH_SIZE = 1
     chunk_results: dict[str, list[dict]] = {}
     prev_chunks_acc: list[dict] = []  # 직전 배치들의 누적 출력
     _t_writers = _t.time()
@@ -4842,25 +5541,25 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                 merged.extend(chunk_results.get(chunk_id) or [])
             section_results[sec_name] = merged
 
-    # 3. ASSEMBLE — sentences 합치고 ref timing 그대로 사용
-    logger.info("[multistep] 3. assemble (using ref timing per position)")
-    # ref의 모든 sentence를 순서대로 (start 시간 기준 정렬)
-    ref_sentences_all = sorted(
-        [s for s in (primary.get("sentences") or []) if s.get("text", "").strip()],
-        key=lambda x: float(x.get("start", 0))
-    )
+    # 3. ASSEMBLE — section_idx_ranges로 직접 매핑 (각 section 안 gen[j] → all_ref_sents[start+j] timing)
+    # 이전 버그: ref_sentences_all (시간 정렬) vs section iteration (classified type 정렬) 불일치 → timing 섞임
+    logger.info("[multistep] 3. assemble (per-section direct mapping)")
+    # section_name → (start_idx, end_idx) — all_ref_sents 인덱스 기준
+    sec_range_map = {sec_name: (start, end) for sec_name, start, end in section_idx_ranges}
     final_sents: list[dict] = []
-    flat_idx = 0  # ref sentence 위치 인덱스
     for sec in sections:
-        sents = section_results.get(sec["name"]) or []
-        for s in sents:
-            # ref timing 그대로 사용
-            ref_s = ref_sentences_all[flat_idx] if flat_idx < len(ref_sentences_all) else None
+        sec_name = sec["name"]
+        sents = section_results.get(sec_name) or []
+        sstart, send = sec_range_map.get(sec_name, (0, 0))
+        for j, s in enumerate(sents):
+            # 해당 section의 j번째 ref sentence timing 사용 (1:1)
+            ref_idx = sstart + j
+            ref_s = all_ref_sents[ref_idx] if 0 <= ref_idx < send else None
             if ref_s:
                 start = round(float(ref_s.get("start", 0)), 1)
                 end = round(float(ref_s.get("end", start + 1)), 1)
             else:
-                # fallback: 음절 기반 시간 추정
+                # fallback: 이전 끝 + 음절 기반 추정
                 syllables = s.get("syllables") or 10
                 start = final_sents[-1]["end"] if final_sents else 0.0
                 end = round(start + max(0.5, syllables / _KOR_SYL_PER_SEC), 1)
@@ -4873,14 +5572,16 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                 "intensity": s.get("intensity", 0.7),
                 "delivery": s.get("delivery", "normal"),
             })
-            flat_idx += 1
+
+    # ⭐ 시간순 강제 정렬 — 결과는 항상 start 오름차순 (body_7 → cta 등 정상 순서 보장)
+    final_sents.sort(key=lambda s: float(s.get("start", 0)))
 
     total_duration = final_sents[-1]["end"] if final_sents else 0
     draft = {
         "duration_target_sec": round(total_duration, 1),
         "sentences": final_sents,
         "_plan": plan,
-        "_usp_mapping": usp_mapping_full,
+        "_usp_mapping": chunk_mapping_full,
     }
 
     # 4. CRITIC + 5. REFINER — 제거됨 (별도 /api/script/refine 2차 단계가 동일 역할)
@@ -4902,11 +5603,13 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     return draft
 
 
-def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None, chunk_usp_override: dict[str, int] | None = None, chunk_meta_override: dict[str, dict] | None = None, session_id: str | None = None) -> dict:
+def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None, chunk_usp_override: dict[str, list[int] | int] | None = None, chunk_meta_override: dict[str, dict] | None = None, skip_chunk_sections: list[str] | None = None, skip_sentence_starts: list[float] | None = None, section_overrides: dict[str, dict] | None = None, cta_override: dict | None = None, hook_archetype_override: dict | None = None, session_id: str | None = None) -> dict:
     """엔드투엔드 — 참고 릴스 fetch → 1차 생성 → (선택) 2차 다듬기 → 최종.
 
     chunk_usp_override: chunk.section → user_usp_id 수동 매핑 (chunk 단위).
     chunk_meta_override: chunk.section → {topic, role} 수동 수정 (분석 결과 보정).
+    section_overrides: {hook|intro|cta: {shortcode, section_chunk}} — 다른 ref의 해당 섹션 chunk로 교체.
+    cta_override: backward compat — section_overrides.cta와 동일 효과.
     session_id: 진행률 추적용 식별자 (프론트가 polling).
     """
     if session_id:
@@ -4919,12 +5622,94 @@ def generate(product_name: str, pain: str, desire: str, usps: list[dict], refere
     if not refs:
         raise RuntimeError("참고 릴스 데이터를 찾을 수 없습니다")
     primary = refs[0]
+
+    # section override 통합 — section_overrides + cta_override (compat)
+    overrides_by_sec: dict[str, dict] = {}
+    if isinstance(section_overrides, dict):
+        for k, v in section_overrides.items():
+            if isinstance(v, dict) and isinstance(k, str):
+                overrides_by_sec[k.lower()] = v
+    if cta_override and isinstance(cta_override, dict) and "cta" not in overrides_by_sec:
+        # legacy field uses cta_chunk key
+        ck = cta_override.get("cta_chunk") or cta_override.get("section_chunk")
+        if ck:
+            overrides_by_sec["cta"] = {"shortcode": cta_override.get("shortcode", ""), "section_chunk": ck}
+
+    if overrides_by_sec:
+        primary = dict(primary)
+        primary_sents = list(primary.get("sentences") or [])
+        structure = dict(primary.get("structure") or {})
+        overall = dict(structure.get("overall") or {})
+        section_chunks = list(overall.get("section_chunks") or [])
+
+        for sec_name, ov in overrides_by_sec.items():
+            if sec_name not in ("hook", "intro", "cta"):
+                continue
+            new_chunk_raw = ov.get("section_chunk") or ov.get("cta_chunk") or {}
+            new_sents = (new_chunk_raw.get("sentences") or []) if isinstance(new_chunk_raw, dict) else []
+            if not new_sents:
+                continue
+            # 기존 섹션 timing 윈도우 추출 (section 매칭) → 새 sentences를 그 안에 분배
+            old_in_sec = [s for s in primary_sents if (s.get("section") or "").lower() == sec_name]
+            if old_in_sec:
+                win_start = min(float(s.get("start", 0) or 0) for s in old_in_sec)
+                win_end = max(float(s.get("end", 0) or 0) for s in old_in_sec)
+            else:
+                # default windows by section
+                if sec_name == "hook":
+                    win_start, win_end = 0.0, 3.0
+                elif sec_name == "intro":
+                    win_start, win_end = 3.0, 7.0
+                else:  # cta
+                    last_end = max((float(s.get("end", 0) or 0) for s in primary_sents), default=0)
+                    win_start = last_end + 0.1
+                    win_end = win_start + max(2.0, sum(max(0.5, float(s.get("end", 0) or 0) - float(s.get("start", 0) or 0)) for s in new_sents))
+            # 균등 분배 (new_sents 원본 비율 유지)
+            durs = [max(0.5, float(s.get("end", 0) or 0) - float(s.get("start", 0) or 0)) for s in new_sents]
+            total_dur = sum(durs) or 1.0
+            avail = max(0.5, win_end - win_start)
+            scale = avail / total_dur
+            new_sents_with_meta: list[dict] = []
+            cur = win_start
+            for ns, d in zip(new_sents, durs):
+                seg = round(d * scale, 2)
+                new_sents_with_meta.append({
+                    "start": round(cur, 2),
+                    "end": round(cur + seg, 2),
+                    "text": ns.get("text", ""),
+                    "section": sec_name,
+                })
+                cur += seg
+            # primary.sentences 교체
+            primary_sents = [s for s in primary_sents if (s.get("section") or "").lower() != sec_name] + new_sents_with_meta
+            primary_sents.sort(key=lambda x: float(x.get("start", 0) or 0))
+            # section_chunks 교체
+            section_chunks = [c for c in section_chunks if (c.get("section") or "").lower() != sec_name]
+            new_chunk = dict(new_chunk_raw)
+            new_chunk["section"] = sec_name
+            new_chunk["sentences"] = new_sents_with_meta
+            new_chunk["_borrowed_from"] = ov.get("shortcode", "")
+            section_chunks.append(new_chunk)
+            logger.info("[section-override] %s replaced from %s — %d sentences (window %.1f-%.1fs)",
+                        sec_name, ov.get("shortcode", "?"), len(new_sents_with_meta), win_start, win_end)
+
+        # primary 갱신
+        section_chunks.sort(key=lambda c: (
+            min((float(s.get("start", 0) or 0) for s in (c.get("sentences") or [])), default=0)
+        ))
+        overall["section_chunks"] = section_chunks
+        structure["overall"] = overall
+        primary["structure"] = structure
+        primary["sentences"] = primary_sents
     if session_id:
         update_progress(session_id, "multistep_start", 8, "멀티스텝 생성 시작")
     # 1차 생성 (멀티스텝: 플래너 → 섹션 작성자 → 어셈블 → 비평 → 리파이너)
     draft = _generate_multistep(product_name, pain, desire, usps, primary, target_persona,
                                 chunk_usp_override=chunk_usp_override,
                                 chunk_meta_override=chunk_meta_override,
+                                skip_chunk_sections=skip_chunk_sections,
+                                skip_sentence_starts=skip_sentence_starts,
+                                hook_archetype_override=hook_archetype_override,
                                 session_id=session_id)
 
     # 2차 다듬기 (선택)

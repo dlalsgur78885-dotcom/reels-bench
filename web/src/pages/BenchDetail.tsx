@@ -113,6 +113,8 @@ export default function BenchDetail() {
   const me = useMe()
 
   const canDelete = !!me && (me.role === 'admin' || me.can_delete_reels)
+  // chunk 분할·편집은 분석 메타 수정 — 삭제가 아니라서 로그인한 모든 사용자 가능
+  const canEditChunks = !!me
   const onDelete = async () => {
     if (!shortcode || !canDelete || deleting) return
     if (!confirm(`@${meta?.author_username || shortcode} 릴스를 DB에서 완전히 삭제할까요?\n분석·댓글·메타데이터·자막 모두 사라집니다.`)) return
@@ -268,8 +270,16 @@ export default function BenchDetail() {
 
   return (
     <>
-      <button className="detail-back" onClick={() => navigate('/bench')}>
-        ← 벤치마크
+      <button className="detail-back" onClick={() => {
+        // 브라우저 history 기반 — <a href>로 진입한 경우(idx 리셋)도 정상 동작.
+        // history가 있으면 back, 없으면 /bench로 fallback.
+        if (window.history.length > 1) {
+          window.history.back()
+        } else {
+          navigate('/bench')
+        }
+      }}>
+        ← 뒤로
       </button>
       {reanalyzing && (
         <div style={{
@@ -638,11 +648,13 @@ export default function BenchDetail() {
                     {/* 섹션별 chunk 상세 분석 */}
                     {(() => {
                       const overall = extra.script_structure?.overall as any
+                      type HookArchetype = { archetype: string; pattern?: string; core_word?: string; reasoning?: string }
                       const section_chunks = overall?.section_chunks as Array<{
                         section: string; topic: string; primary_usp_id: number | null;
                         usp_ids?: number[];
                         role: string; relation_to_prev: string; summary: string;
                         sentences: { start: number; end: number; text: string }[]
+                        archetype?: HookArchetype;
                       }> | undefined
                       const body_chunks_compat = overall?.body_chunks as Array<{
                         body_n: string; topic: string; primary_usp_id: number | null;
@@ -655,6 +667,7 @@ export default function BenchDetail() {
                         usp_ids?: number[];
                         role: string; relation_to_prev: string; summary: string;
                         sentences: { start: number; end: number; text: string }[]
+                        archetype?: HookArchetype;
                       }
                       const chunks: SectionChunk[] | undefined = section_chunks
                         || body_chunks_compat?.map((c): SectionChunk => ({
@@ -672,16 +685,40 @@ export default function BenchDetail() {
                           alert('shortcode 없음 — 저장 불가')
                           return
                         }
-                        try {
-                          const r = await api.updateSectionChunks(shortcode, modifiedChunks)
-                          console.log('[saveChunks] saved', r)
-                          // DB에서 최신 데이터 다시 fetch (sentence sync도 반영됨)
-                          const d = await api.extra(shortcode, { fresh: true })
-                          if (d && Object.keys(d).length) setExtra(d)
-                        } catch (e: any) {
-                          console.error('[saveChunks] failed', e)
-                          alert('저장 실패: ' + (e?.message || e))
-                        }
+                        // 1) 로컬 state 즉시 업데이트 (optimistic) — sentences도 chunks 기준으로 재구성
+                        setExtra((prev: any) => {
+                          if (!prev) return prev
+                          const next = { ...prev }
+                          const ss = { ...(next.script_structure || {}) }
+                          const ov = { ...(ss.overall || {}) }
+                          ov.section_chunks = modifiedChunks
+                          ov.body_chunks = modifiedChunks
+                            .filter((c: SectionChunk) => (c.section || '').startsWith('body'))
+                            .map((c: SectionChunk) => ({ ...c, body_n: c.section }))
+                          ss.overall = ov
+                          next.script_structure = ss
+                          // sentences.section을 chunks 기준으로 동기화 (start match)
+                          const sentBySectStart: Record<string, string> = {}
+                          modifiedChunks.forEach((c: SectionChunk) =>
+                            (c.sentences || []).forEach((s: any) => {
+                              if (typeof s.start === 'number') sentBySectStart[String(s.start)] = c.section
+                            })
+                          )
+                          if (Array.isArray(next.sentences)) {
+                            next.sentences = next.sentences.map((s: any) => {
+                              const sec = sentBySectStart[String(s.start)]
+                              return sec ? { ...s, section: sec } : s
+                            })
+                          }
+                          return next
+                        })
+                        // 2) DB 저장은 background (await 없이) — 실패 시에만 alert
+                        api.updateSectionChunks(shortcode, modifiedChunks)
+                          .then(r => console.log('[saveChunks] saved', r))
+                          .catch(e => {
+                            console.error('[saveChunks] failed', e)
+                            alert('저장 실패 (UI는 업데이트 됐지만 DB 반영 X): ' + (e?.message || e))
+                          })
                       }
                       // chunk 분할: chunkIdx의 chunk를 splitAt 위치에서 둘로 나눔 (splitAt = 새 chunk 시작 sentence idx)
                       const splitChunk = async (chunkIdx: number, splitAt: number) => {
@@ -775,7 +812,7 @@ export default function BenchDetail() {
                                       </span>
                                     )}
                                     <span style={{ fontWeight: 600 }}>{c.topic}</span>
-                                    {canDelete && (
+                                    {canEditChunks && (
                                       <button
                                         onClick={() => {
                                           if (isEditing) {
@@ -835,6 +872,28 @@ export default function BenchDetail() {
                                       </div>
                                     </div>
                                   )}
+                                  {/* Hook 전용 archetype 표시·편집 */}
+                                  {c.section === 'hook' && !isEditing && (
+                                    <HookArchetypeEditor
+                                      shortcode={shortcode!}
+                                      archetype={c.archetype}
+                                      canEdit={canEditChunks}
+                                      onSaved={(newArch) => {
+                                        const next = chunks.map((x, i) => i === idx ? { ...x, archetype: newArch } : x)
+                                        // 즉시 state 갱신 (DB는 endpoint가 처리)
+                                        setExtra((prev: any) => {
+                                          if (!prev) return prev
+                                          const np = { ...prev }
+                                          const ss = { ...(np.script_structure || {}) }
+                                          const ov = { ...(ss.overall || {}) }
+                                          ov.section_chunks = next
+                                          ss.overall = ov
+                                          np.script_structure = ss
+                                          return np
+                                        })
+                                      }}
+                                    />
+                                  )}
                                   {c.summary && !isEditing && (
                                     <div style={{ fontSize: 11, color: 'var(--text-secondary)', fontStyle: 'italic', marginBottom: 4 }}>
                                       {c.summary}
@@ -843,13 +902,29 @@ export default function BenchDetail() {
                                   <div style={{ paddingLeft: 10, borderLeft: `2px solid ${primary_usp != null ? colorOf(primary_usp) + '40' : 'var(--border)'}` }}>
                                     {c.sentences.map((s, i) => (
                                       <Fragment key={i}>
-                                        <div style={{ fontSize: 11, color: 'var(--text-primary)', lineHeight: 1.5 }}>
-                                          <span style={{ fontFamily: 'monospace', color: 'var(--text-muted)', marginRight: 6 }}>
+                                        <div style={{ fontSize: 11, color: 'var(--text-primary)', lineHeight: 1.5, display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                                          <span style={{ fontFamily: 'monospace', color: 'var(--text-muted)', flexShrink: 0 }}>
                                             {s.start.toFixed(1)}-{s.end.toFixed(1)}s
                                           </span>
-                                          {s.text}
+                                          <span style={{ flex: 1 }}>{s.text}</span>
+                                          {canEditChunks && (
+                                            <button
+                                              onClick={async () => {
+                                                if (!confirm(`이 문장을 분석에서 삭제할까요?\n\n[${s.start.toFixed(1)}-${s.end.toFixed(1)}s] "${s.text}"\n\n(분석 DB에서 영구 제거)`)) return
+                                                const newSents = c.sentences.filter((_, j) => j !== i)
+                                                const next = chunks.map((x, k) => k === idx ? { ...x, sentences: newSents } : x)
+                                                await saveChunks(next)
+                                              }}
+                                              title="이 문장만 삭제"
+                                              style={{
+                                                padding: '0 5px', fontSize: 10, fontWeight: 600,
+                                                background: 'transparent', color: 'var(--error)',
+                                                border: '1px solid var(--error)', borderRadius: 2,
+                                                cursor: 'pointer', flexShrink: 0,
+                                              }}>🗑</button>
+                                          )}
                                         </div>
-                                        {canDelete && i < c.sentences.length - 1 && (
+                                        {canEditChunks && i < c.sentences.length - 1 && (
                                           <div style={{ marginTop: 2, marginBottom: 2 }}>
                                             <button
                                               onClick={async () => {
@@ -924,26 +999,17 @@ export default function BenchDetail() {
                 >문장 수정</button>
               </div>
               {(() => {
-                // chunks 정본화 — chunk.section을 sentence idx별 section으로 매핑
-                // chunks가 있으면 모든 heuristic·sentence.section override 무시 (chunks가 정본)
+                // chunks가 정본 — chunks.sentences flatten해서 표시 (chunk 수정 → 문장 타임라인 자동 동기화)
                 const chunksData = (extra.script_structure?.overall as any)?.section_chunks as Array<{
                   section: string; sentences?: { start: number; end: number; text: string }[]
                 }> | undefined
-                const sectionByIdx = new Map<number, string>()
-                if (chunksData?.length && extra.sentences) {
-                  for (const c of chunksData) {
-                    for (const cs of (c.sentences || [])) {
-                      const i = extra.sentences.findIndex(s =>
-                        Math.abs(s.start - cs.start) < 0.05 && (s.text || '').trim() === (cs.text || '').trim()
-                      )
-                      if (i >= 0) sectionByIdx.set(i, c.section)
-                    }
-                  }
-                }
-                ;(extra as any)._sectionByIdx = sectionByIdx
-                return null
-              })()}
-              {extra.sentences.map((s, i) => {
+                type EffSent = { start: number; end: number; text: string; section?: string }
+                const effectiveSentences: EffSent[] = chunksData?.length
+                  ? chunksData.flatMap(c =>
+                      (c.sentences || []).map(cs => ({ ...cs, section: c.section }))
+                    ).sort((a, b) => a.start - b.start)
+                  : ((extra.sentences || []) as EffSent[])
+                return effectiveSentences.map((s, i) => {
                 // TTS direction 매칭 (pro_audio.tts_script)
                 const ttsScript = (extra as any)?.pro_audio?.tts_script as Array<{start: string|number; end: string|number; direction: string; text: string}> | undefined
                 const ttsItem = ttsScript?.find(t => Math.abs(parseFloat(String(t.start)) - s.start) < 0.5)
@@ -992,26 +1058,18 @@ export default function BenchDetail() {
                     }
                   }
                 }
-                // 우선순위: chunks(정본) > sentence.section override > script_structure 시간 범위
-                let section = ''
-                const fromChunk = (extra as any)._sectionByIdx?.get(i) as string | undefined
-                if (fromChunk) {
-                  section = fromChunk.toUpperCase()
-                } else {
-                  const sOverride = (s as any).section as string | undefined
-                  if (sOverride) {
-                    section = sOverride.toUpperCase()
-                  } else {
-                    const ss = extra.script_structure
-                    if (ss) {
-                      const hookEnd = parseFloat(ss.hook?.seconds?.split('-')[1] || '3')
-                      const introEnd = parseFloat(ss.intro?.seconds?.split('-')[1] || '7')
-                      const bodyEnd = parseFloat(ss.body?.seconds?.split('-')[1] || '40')
-                      if (s.start < hookEnd) section = 'HOOK'
-                      else if (s.start < introEnd) section = 'INTRO'
-                      else if (s.start < bodyEnd) section = 'BODY'
-                      else section = 'CTA'
-                    }
+                // section: chunks(정본)에서 inherit. chunks 없으면 script_structure 시간 범위로 폴백
+                let section = (s.section || '').toUpperCase()
+                if (!section) {
+                  const ss = extra.script_structure
+                  if (ss) {
+                    const hookEnd = parseFloat(ss.hook?.seconds?.split('-')[1] || '3')
+                    const introEnd = parseFloat(ss.intro?.seconds?.split('-')[1] || '7')
+                    const bodyEnd = parseFloat(ss.body?.seconds?.split('-')[1] || '40')
+                    if (s.start < hookEnd) section = 'HOOK'
+                    else if (s.start < introEnd) section = 'INTRO'
+                    else if (s.start < bodyEnd) section = 'BODY'
+                    else section = 'CTA'
                   }
                 }
 
@@ -1038,7 +1096,8 @@ export default function BenchDetail() {
                     </span>
                   </div>
                 )
-              })}
+              })
+              })()}
             </div>
           )}
           {transcript ? (
@@ -1291,7 +1350,7 @@ export default function BenchDetail() {
                     payload = { category: editForm }
                   }
                   await api.updateExtra(shortcode!, payload)
-                  const d = await api.extra(shortcode!)
+                  const d = await api.extra(shortcode!, { fresh: true })
                   if (d && Object.keys(d).length) setExtra(d)
                   const wasSentenceEdit = editing === 'sentences'
                   setEditing(null)
@@ -1302,7 +1361,7 @@ export default function BenchDetail() {
                       await api.classifySentences(shortcode!)
                       setReanalyzing('section_chunks')
                       await api.analyzeSectionChunks(shortcode!)
-                      const d2 = await api.extra(shortcode!)
+                      const d2 = await api.extra(shortcode!, { fresh: true })
                       if (d2 && Object.keys(d2).length) setExtra(d2)
                     } catch (e: any) {
                       alert('재분석 실패: ' + (e?.message || e))
@@ -1357,3 +1416,121 @@ export default function BenchDetail() {
   )
 }
 
+const HOOK_ARCHETYPE_OPTIONS: { key: string; label: string; desc: string }[] = [
+  { key: 'curiosity_teaser', label: 'curiosity_teaser', desc: '[X]의 이유 / 비결 / 차이 / 방법' },
+  { key: 'list_teaser', label: 'list_teaser', desc: 'N가지 [X] / N개의 [X]' },
+  { key: 'confession', label: 'confession', desc: '저는 [X]합니다 / 자기선언' },
+  { key: 'shock', label: 'shock', desc: '[X]가 망했다 / 충격 사실' },
+  { key: 'empathy', label: 'empathy', desc: '~잖아요 / ~죠? / 공감' },
+  { key: 'condition', label: 'condition', desc: '~한다면 / ~떴다면 / 조건' },
+  { key: 'command', label: 'command', desc: '~하세요 / ~사지 마 / 명령' },
+  { key: 'noun_label', label: 'noun_label', desc: '[수식어] [명사] / 정체성 라벨' },
+]
+
+function HookArchetypeEditor({
+  shortcode, archetype, canEdit, onSaved,
+}: {
+  shortcode: string
+  archetype?: { archetype: string; pattern?: string; core_word?: string; reasoning?: string }
+  canEdit: boolean
+  onSaved: (a: { archetype: string; pattern: string; core_word: string; reasoning: string }) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState({
+    archetype: archetype?.archetype || '',
+    pattern: archetype?.pattern || '',
+    core_word: archetype?.core_word || '',
+  })
+  const [saving, setSaving] = useState(false)
+  const cur = archetype?.archetype || '(미분류)'
+  const meta = HOOK_ARCHETYPE_OPTIONS.find(o => o.key === archetype?.archetype)
+
+  if (!editing) {
+    return (
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+        marginBottom: 6, padding: '6px 10px',
+        background: 'rgba(99,102,241,0.06)', borderRadius: 4,
+        border: '1px dashed var(--accent)',
+      }}>
+        <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)' }}>🎯 archetype</span>
+        <span style={{ fontSize: 11, fontWeight: 600 }}>{cur}</span>
+        {meta && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>— {meta.desc}</span>}
+        {archetype?.pattern && (
+          <span style={{ fontSize: 10, color: 'var(--text-secondary)' }}>· pattern: <code>{archetype.pattern}</code></span>
+        )}
+        {archetype?.core_word && (
+          <span style={{ fontSize: 10, color: 'var(--text-secondary)' }}>· core_word: <b>{archetype.core_word}</b></span>
+        )}
+        {canEdit && (
+          <button onClick={() => setEditing(true)} style={{
+            marginLeft: 'auto', padding: '2px 8px', fontSize: 10,
+            border: '1px solid var(--border)', borderRadius: 3,
+            background: 'var(--bg-surface)', cursor: 'pointer',
+          }}>✏ archetype 수정</button>
+        )}
+      </div>
+    )
+  }
+  return (
+    <div style={{
+      marginBottom: 6, padding: 10,
+      background: 'var(--bg-elevated)', borderRadius: 4,
+      display: 'grid', gap: 6,
+    }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)' }}>🎯 archetype 수정 (DB 영구 반영)</div>
+      <select
+        value={draft.archetype}
+        onChange={(e) => setDraft({ ...draft, archetype: e.target.value })}
+        style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 3 }}
+      >
+        <option value="">(선택)</option>
+        {HOOK_ARCHETYPE_OPTIONS.map(o => (
+          <option key={o.key} value={o.key}>{o.label} — {o.desc}</option>
+        ))}
+      </select>
+      <input
+        value={draft.pattern}
+        onChange={(e) => setDraft({ ...draft, pattern: e.target.value })}
+        placeholder="pattern (예: [X]의 이유)"
+        style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 3 }}
+      />
+      <input
+        value={draft.core_word}
+        onChange={(e) => setDraft({ ...draft, core_word: e.target.value })}
+        placeholder="core_word (예: 이유)"
+        style={{ padding: '4px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 3 }}
+      />
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button
+          disabled={saving || !draft.archetype}
+          onClick={async () => {
+            setSaving(true)
+            try {
+              const r = await api.updateHookArchetype(shortcode, draft.archetype, {
+                pattern: draft.pattern,
+                core_word: draft.core_word,
+              })
+              onSaved(r.archetype)
+              setEditing(false)
+            } catch (e: any) {
+              alert('저장 실패: ' + (e?.message || e))
+            } finally {
+              setSaving(false)
+            }
+          }}
+          style={{
+            padding: '4px 12px', fontSize: 11, fontWeight: 600,
+            background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 3,
+            cursor: saving ? 'wait' : 'pointer', opacity: saving || !draft.archetype ? 0.5 : 1,
+          }}>
+          {saving ? '저장 중…' : '저장'}
+        </button>
+        <button onClick={() => { setEditing(false); setDraft({ archetype: archetype?.archetype || '', pattern: archetype?.pattern || '', core_word: archetype?.core_word || '' }) }}
+          style={{ padding: '4px 12px', fontSize: 11, background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 3, cursor: 'pointer' }}>
+          취소
+        </button>
+      </div>
+    </div>
+  )
+}

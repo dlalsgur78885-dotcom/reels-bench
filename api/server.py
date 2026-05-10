@@ -83,6 +83,7 @@ class ScriptGenRequest(BaseModel):
     skip_sentence_starts: list[float] | None = None  # 이번 생성에서 제외할 sentence start time 목록 (DB 안 건드림)
     section_overrides: dict[str, dict] | None = None  # {hook|intro|cta: {shortcode, chunk}} 다른 ref로 교체
     cta_override: dict | None = None  # backward compat: section_overrides.cta와 동일
+    hook_archetype_override: dict | None = None  # wizard에서 primary 변경 시 {archetype, pattern, core_word}
     session_id: str | None = None  # 진행률 polling용 식별자
 
 
@@ -111,6 +112,15 @@ def gen_script(req: ScriptGenRequest):
         [len((u or {}).get("reviews") or []) for u in (req.usps or [])],
         len(req.pain or ""), len(req.desire or ""),
     )
+    # === wizard 매핑 전달 디버그 ===
+    logger.info(
+        "[script/gen DEBUG] chunk_usp_override=%r skip_chunks=%r skip_sentences=%r section_overrides_keys=%s hook_archetype_override=%r",
+        req.chunk_usp_override,
+        req.skip_chunk_sections,
+        req.skip_sentence_starts,
+        list((req.section_overrides or {}).keys()),
+        req.hook_archetype_override,
+    )
     try:
         script_gen.reset_cost_meter()
         chunk_override = None
@@ -131,6 +141,7 @@ def gen_script(req: ScriptGenRequest):
             skip_sentence_starts=req.skip_sentence_starts or None,
             section_overrides=req.section_overrides,
             cta_override=req.cta_override,
+            hook_archetype_override=req.hook_archetype_override,
             session_id=req.session_id,
         )
         n_sentences = len(result.get("sentences") or [])
@@ -593,6 +604,160 @@ def update_section_chunks(shortcode: str, body: UpdateSectionChunksRequest, requ
     return {"shortcode": shortcode, "count": len(body.chunks)}
 
 
+@app.patch("/api/script/hook-archetype/{shortcode}")
+def update_hook_archetype(shortcode: str, body: dict, request: Request):
+    """Hook chunk의 archetype 메타데이터 수정 (분석이 잘못 분류한 경우).
+
+    body: {"archetype": "curiosity_teaser" | ..., "pattern": "...", "core_word": "...", "reasoning": "..."}
+    archetype만 보내면 pattern/core_word는 보존.
+    """
+    auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+
+    new_arch = (body or {}).get("archetype")
+    valid_keys = set(script_gen.HOOK_ARCHETYPES.keys())
+    if not new_arch or new_arch not in valid_keys:
+        raise HTTPException(400, f"archetype은 다음 중 하나: {sorted(valid_keys)}")
+
+    rows = _r.get(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=overall&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    if not rows:
+        raise HTTPException(404, "script_structure 없음")
+    overall = rows[0].get("overall") or {}
+    chunks = list(overall.get("section_chunks") or [])
+    hook_idx = next((i for i, c in enumerate(chunks) if (c.get("section") or "").lower() == "hook"), -1)
+    if hook_idx < 0:
+        raise HTTPException(404, "hook chunk 없음")
+    prev = chunks[hook_idx].get("archetype") or {}
+    new_dict = {
+        "archetype": new_arch,
+        "pattern": (body.get("pattern") if "pattern" in body else prev.get("pattern")) or "",
+        "core_word": (body.get("core_word") if "core_word" in body else prev.get("core_word")) or "",
+        "reasoning": (body.get("reasoning") if "reasoning" in body else prev.get("reasoning")) or "사용자 수동 수정",
+    }
+    chunks[hook_idx] = {**chunks[hook_idx], "archetype": new_dict}
+    overall["section_chunks"] = chunks
+
+    r = _r.patch(
+        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
+        headers={**H, "Prefer": "return=minimal"},
+        json={"overall": overall}, timeout=15,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:200])
+    return {"shortcode": shortcode, "archetype": new_dict}
+
+
+@app.post("/api/usp/suggest-description")
+def suggest_usp_description(body: dict, request: Request):
+    """USP 이름 + (선택) 리뷰 → LLM이 description 자동 생성.
+
+    body: {product_name: str, usp_name: str, reviews?: [str]}
+    Returns: {description: str}
+
+    description 형식: "문제: ...\n해결: ...\n혜택: ...\n핵심 명사: ..."
+    writer가 명사 화이트리스트로 활용 가능하도록 구체 명사 풍부하게.
+    """
+    auth_svc.require_user(request)
+    product_name = (body.get("product_name") or "").strip()
+    usp_name = (body.get("usp_name") or "").strip()
+    reviews = body.get("reviews") or []
+    if not usp_name:
+        raise HTTPException(400, "usp_name 필수")
+    reviews_block = ""
+    if isinstance(reviews, list) and reviews:
+        joined = "\n".join(f"- {r}" for r in reviews[:8] if isinstance(r, str) and r.strip())
+        if joined:
+            reviews_block = f"\n## 사용자 리뷰 (어휘 source 참고)\n{joined}\n"
+    prompt = f"""당신은 소비자 인사이트 분석가입니다. USP 정보로 광고 작가가 활용할 **소비자 언어 description**을 생성하세요.
+
+## 입력
+- product: {product_name or '(미명시)'}
+- USP: {usp_name}
+{reviews_block}
+
+## 핵심 원칙 — 소비자 언어 (판매자 언어 X)
+- ✅ **소비자**: "잘 때 답답해서 자꾸 깸", "벗고 자면 신경 쓰여", "편해서 푹 자요", "어깨 안 눌려"
+- ❌ **판매자**: "고급 패드 내장", "프리미엄 소재", "전문 디자인", "특허 기술", "혁신적 솔루션"
+- 1인칭 시점 ("나는/저는") + 구체 행동 ("자다가/누우면/만져봤더니") + 감정 어휘 ("답답/편안/든든")
+- spec/기능명 X — 사용자가 평소에 쓰는 일상 단어만
+
+## 작업 (4가지)
+
+1. **문제**: 소비자가 일상에서 겪는 불편 (1~2문장, 80자 이내)
+   - 시점·상황: "잘 때", "퇴근하면", "외출 전에"
+   - 행동: "뒤척이다", "벗어버린다", "맨날 신경 쓴다"
+   - 감정: "짜증나", "답답해", "신경 쓰여"
+
+2. **해결**: 이 제품을 쓰면 소비자가 어떻게 달라지는지 (1~2문장, 80자 이내)
+   - 기능 이름 X — **사용자가 느끼는 변화**만 ("그냥 입었더니 안 답답해", "굴러봐도 안 흘러내려")
+   - 행동 결과 중심: "이건 안 풀려요", "잘 때도 신경 안 써져요"
+
+3. **혜택**: 사용 후 일상의 변화·감정 (1~2문장, 80자 이내)
+   - 결과 scene: "푹 자고 일어나는 게 달라요", "외출 직전 꺼내 입어도 OK"
+   - 감정: "편하다", "신경 안 쓴다", "든든하다"
+
+4. **핵심 명사**: 광고에 쓸 5~10개 소비자 어휘 (콤마 구분)
+   - 일상 단어: 답답, 처짐, 뒤척, 신경, 깨다, 굴러, 받침, 편안
+   - 판매자 단어 X: 패드/와이어/내장 같은 spec명은 1~2개만 (꼭 필요할 때)
+
+## 예 (USP="노브라잠옷")
+문제: 잘 때 브라 자국 신경 쓰이고, 벗고 자면 가슴 처지는 거 느껴서 맨날 어쩌지 싶어
+해결: 그냥 입고 자도 안 답답하고, 누워서 굴러봐도 안 흘러내려요
+혜택: 자다가 깨도 신경 안 써지고, 푹 자고 아침 일어나는 게 달라요
+핵심 명사: 답답, 자국, 처짐, 뒤척, 깨다, 굴러, 신경, 안 흘러, 푹 자다, 아침
+
+## 출력 JSON
+{{
+  "문제": "...",
+  "해결": "...",
+  "혜택": "...",
+  "핵심_명사": "..."
+}}
+
+JSON만. 설명 X.
+"""
+    schema = {
+        "type": "object",
+        "properties": {
+            "문제": {"type": "string"},
+            "해결": {"type": "string"},
+            "혜택": {"type": "string"},
+            "핵심_명사": {"type": "string"},
+        },
+        "required": ["문제", "해결", "혜택", "핵심_명사"],
+    }
+    try:
+        result = script_gen.call_gemini(prompt, model="gemini-3.1-flash-lite-preview", max_tokens=4096, response_schema=schema)
+        if isinstance(result, list) and result:
+            result = result[0]
+        if not isinstance(result, dict):
+            raise RuntimeError("LLM 응답 형식 오류")
+        problem = (result.get("문제") or "").strip()
+        solution = (result.get("해결") or "").strip()
+        benefit = (result.get("혜택") or "").strip()
+        core_nouns = (result.get("핵심_명사") or "").strip()
+        description_lines = []
+        if problem:
+            description_lines.append(f"문제: {problem}")
+        if solution:
+            description_lines.append(f"해결: {solution}")
+        if benefit:
+            description_lines.append(f"혜택: {benefit}")
+        if core_nouns:
+            description_lines.append(f"핵심 명사: {core_nouns}")
+        description = "\n".join(description_lines)
+        return {"description": description, "parts": result}
+    except Exception as e:
+        logger.warning("[suggest_usp_description] failed: %s", e)
+        raise HTTPException(500, f"description 생성 실패: {e}")
+
+
 @app.post("/api/script/preview-mapping/{shortcode}")
 def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Request):
     """대본 생성 wizard용 — chunk-level USP 매핑 미리보기.
@@ -727,6 +892,15 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
     # 6. sp_sentences (DB 분석 결과 그대로 read-through)
     sp_sentences = overall.get("sp_sentences") or []
 
+    # 7. hook archetype 노출 (wizard에서 primary/secondary 선택용)
+    hook_archetype = None
+    for c in section_chunks:
+        if (c.get("section") or "").lower() == "hook":
+            ha = c.get("archetype")
+            if isinstance(ha, dict):
+                hook_archetype = ha
+            break
+
     return {
         "shortcode": shortcode,
         "product": {"id": product["id"], "name": product.get("name", ""), "usps": user_usps},
@@ -736,6 +910,7 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
         "unmatched_chunks": unmatched_chunks,
         "ref_desires": ref_desires,
         "sp_sentences": sp_sentences,
+        "hook_archetype": hook_archetype,
     }
 
 
@@ -1785,7 +1960,11 @@ def get_extra(shortcode: str, request: Request):
     data = {} if fresh else (pipeline.extra_cache.get(shortcode, {}) or {})
     # 캐시에 없는 항목들을 병렬 DB 조회 (5개 → ~0.5s)
     need_category = not data.get("category")
-    need_script = not data.get("script_structure")
+    # script_structure가 있어도 overall.section_chunks 누락이면 re-fetch (구 캐시 파일 보정)
+    _ss = data.get("script_structure") or {}
+    _ov = (_ss.get("overall") if isinstance(_ss, dict) else None) or {}
+    _has_chunks_in_cache = bool(_ov.get("section_chunks"))
+    need_script = not data.get("script_structure") or not _has_chunks_in_cache
     need_comments = not data.get("comment_triggers")
     need_audio = not data.get("pro_audio") and not data.get("audio_emotions")
     need_sentences = not data.get("sentences")

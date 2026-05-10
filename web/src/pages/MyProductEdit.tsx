@@ -266,10 +266,40 @@ export default function MyProductEdit() {
                   <button type="button" onClick={() => setUsps(usps.filter((_, idx) => idx !== i))} style={{ padding: '4px 10px', fontSize: 11, border: '1px solid var(--error)', borderRadius: 4, background: 'transparent', color: 'var(--error)', cursor: 'pointer' }}>USP 삭제</button>
                 )}
               </div>
+              <div style={{ display: 'flex', gap: 6, marginBottom: 4, alignItems: 'center' }}>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1 }}>USP 설명 (writer가 어휘 source로 사용)</span>
+                <button
+                  type="button"
+                  disabled={!u.usp.trim()}
+                  title={u.usp.trim() ? 'LLM이 USP 이름 + 리뷰로 description 자동 생성' : 'USP 이름 먼저 입력'}
+                  onClick={async () => {
+                    if (!u.usp.trim()) return
+                    const idx = i
+                    try {
+                      const r = await api.suggestUspDescription({
+                        product_name: name,
+                        usp_name: u.usp,
+                        reviews: u.reviews.filter(rv => rv.trim()),
+                      })
+                      setUsps(prev => prev.map((x, ix) => ix === idx ? { ...x, description: r.description } : x))
+                    } catch (err: any) {
+                      alert('LLM 추천 실패: ' + (err?.message || err))
+                    }
+                  }}
+                  style={{
+                    padding: '3px 10px', fontSize: 11, fontWeight: 600,
+                    border: '1px solid var(--accent)', borderRadius: 4,
+                    background: u.usp.trim() ? 'var(--accent-light)' : 'var(--bg-elevated)',
+                    color: u.usp.trim() ? 'var(--accent)' : 'var(--text-muted)',
+                    cursor: u.usp.trim() ? 'pointer' : 'not-allowed',
+                  }}>
+                  🪄 LLM 추천
+                </button>
+              </div>
               <textarea style={{ ...textareaSt, marginBottom: 8, minHeight: 60, fontSize: 12 }}
                 value={u.description || ''}
                 onChange={e => setUsps(usps.map((x, idx) => idx === i ? { ...x, description: e.target.value } : x))}
-                placeholder="기능 설명 + 어디서 좋은지 (선택, 앱·서비스 추천) — 예: '사용자가 설정한 가격대로 떨어지면 푸시로 즉시 알려줘서, 평소 가격 모니터링 안 해도 자동 절약 가능'" />
+                placeholder="기능 설명 + 어디서 좋은지 (선택, 앱·서비스 추천) — 예: '사용자가 설정한 가격대로 떨어지면 푸시로 즉시 알려줘서, 평소 가격 모니터링 안 해도 자동 절약 가능'\n\n또는 위 🪄 LLM 추천 클릭" />
               <div style={{ paddingLeft: 10, borderLeft: '2px solid var(--border)' }}>
                 {u.reviews.map((r, j) => (
                   <div key={j} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>

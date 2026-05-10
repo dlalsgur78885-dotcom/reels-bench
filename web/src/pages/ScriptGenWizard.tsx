@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { api, BASE } from '../api'
+import { api, authedFetch, BASE } from '../api'
 import type { MyProduct, PersonaCandidate } from '../api'
 import { getAccessToken } from '../supabase'
 
@@ -38,11 +38,21 @@ export default function ScriptGenWizard() {
   const [mapping, setMapping] = useState<MappingPreview | null>(null)
   const [mappingLoading, setMappingLoading] = useState(false)
   const [mappingError, setMappingError] = useState('')
-  // chunk별 override (chunk.section → user_usp_id) — wizard에서 사용자가 직접 매핑
-  const [chunkOverrides, setChunkOverrides] = useState<Record<string, number>>({})
+  // chunk별 override (chunk.section → user_usp_ids[] multi) — wizard에서 사용자가 직접 매핑
+  const [chunkOverrides, setChunkOverrides] = useState<Record<string, number[]>>({})
   // chunk metadata 수정 (topic/role/section) — 이번 generation에만 적용
   const [chunkEdits, setChunkEdits] = useState<Record<string, { topic: string; role: string; section?: string }>>({})
   const [editingChunk, setEditingChunk] = useState<Record<string, boolean>>({})
+  // 삭제된 chunk (이번 generation에서 skip — 백엔드에 skip_chunk_sections로 전달)
+  const [skippedChunks, setSkippedChunks] = useState<Set<string>>(new Set())
+  // 삭제된 문장 (start time 기준, 이번 generation에서 skip — 백엔드에 skip_sentence_starts로 전달)
+  const [skippedSentenceStarts, setSkippedSentenceStarts] = useState<Set<number>>(new Set())
+  // CTA override — 다른 ref의 CTA로 교체 (null이면 원본 사용)
+  type OverrideData = { shortcode: string; author: string; section_text: string; section_chunk: any; topic?: string }
+  // 섹션별 차용 ref (hook/intro/cta — 각각 독립). 미설정 시 원본 사용.
+  const [sectionOverrides, setSectionOverrides] = useState<Record<string, OverrideData>>({})
+  // hook archetype primary 선택 (분석 default 외에 secondary 후보로 변경 가능)
+  const [hookArchetypeOverride, setHookArchetypeOverride] = useState<{ archetype: string; pattern?: string; core_word?: string } | null>(null)
 
   // 3. 페르소나
   const [allPersonas, setAllPersonas] = useState<Array<PersonaCandidate & { _uspIndex: number; _uspName: string }>>([])
@@ -67,6 +77,9 @@ export default function ScriptGenWizard() {
     setMappingLoading(true)
     setMappingError('')
     setChunkOverrides({})
+    setSkippedChunks(new Set())
+    setSkippedSentenceStarts(new Set())
+    setHookArchetypeOverride(null)
     try {
       const r = await api.previewMapping(shortcode, pid)
       setMapping(r)
@@ -75,6 +88,64 @@ export default function ScriptGenWizard() {
     } finally {
       setMappingLoading(false)
     }
+  }
+
+  // (deleteChunkSentence 제거 — 매핑 단계는 DB 영구 삭제 X. 대신 skippedSentenceStarts wizard 상태)
+
+  // ref 대본 한 문장 수정 (오타 수정) — chunks DB + transcripts.segments 동기화
+  // 주의: chunk skip/restore와는 완전 별개 동작. text만 수정.
+  const updateChunkSentenceText = async (
+    chunkSection: string,
+    sentIdx: number,
+    newText: string,
+  ): Promise<{ ok: boolean; error?: string }> => {
+    if (!mapping || !shortcode) return { ok: false, error: '매핑/shortcode 미로드' }
+    const trimmed = newText.trim()
+    if (!trimmed) return { ok: false, error: '문장이 비어있음' }
+    // 새 chunks 배열 만들기 — 해당 chunk의 sent text만 교체 (skip 상태 무관, DB는 항상 전체 chunks)
+    const newChunks = mapping.section_chunks.map((c: any) => {
+      if (c.section !== chunkSection) return c
+      const newSents = (c.sentences || []).map((s: any, i: number) =>
+        i === sentIdx ? { ...s, text: trimmed } : s,
+      )
+      return { ...c, sentences: newSents }
+    })
+    try {
+      await api.updateSectionChunks(shortcode, newChunks)
+    } catch (e: any) {
+      return { ok: false, error: e?.message || 'DB 저장 실패' }
+    }
+    setMapping({ ...mapping, section_chunks: newChunks })
+    return { ok: true }
+  }
+
+  // 기존 USP 수정 — 매핑 단계에서 인라인 편집
+  const updateUsp = async (
+    userUspId: number,  // 1-based
+    name: string,
+    description: string,
+    reviews: string[],
+  ): Promise<{ ok: boolean; error?: string }> => {
+    if (!mapping || !productId) return { ok: false, error: '매핑/상품 미로드' }
+    if (!name.trim()) return { ok: false, error: 'USP 이름 필수' }
+    const idx = userUspId - 1
+    if (idx < 0 || idx >= mapping.product.usps.length) return { ok: false, error: 'USP id 범위 밖' }
+    const cleanReviews = reviews.map(r => r.trim()).filter(Boolean)
+    const newUsps = mapping.product.usps.map((u: any, i: number) =>
+      i === idx
+        ? { ...u, usp: name.trim(), description: description.trim() || undefined, reviews: cleanReviews }
+        : u,
+    )
+    try {
+      await api.updateMyProduct(productId, {
+        name: mapping.product.name,
+        usps: newUsps,
+      })
+    } catch (e: any) {
+      return { ok: false, error: e.message || 'DB 저장 실패' }
+    }
+    setMapping({ ...mapping, product: { ...mapping.product, usps: newUsps } })
+    return { ok: true }
   }
 
   // 새 USP를 즉석 생성 + my_products DB에 저장 + chunk 매핑 자동 적용
@@ -103,25 +174,25 @@ export default function ScriptGenWizard() {
     }
     const newUserUspId = newUsps.length  // 1-based id
     setMapping({ ...mapping, product: { ...mapping.product, usps: newUsps } })
-    setChunkOverrides({ ...chunkOverrides, [chunkSection]: newUserUspId })
+    setChunkOverrides({ ...chunkOverrides, [chunkSection]: [newUserUspId] })
     return { ok: true }
   }
 
-  // chunk별 effective user_usp_id (precedence: chunkOverride > LLM 자동 매핑)
-  const effectiveChunkUspId = (chunk: MappingPreview['section_chunks'][number]): number | null => {
+  // chunk별 effective user_usp_ids (precedence: chunkOverride > LLM 자동 매핑) — multi
+  // override는 빈 배열도 명시적 "미매핑"으로 인정 (key 존재 여부로 판단)
+  const effectiveChunkUspIds = (chunk: MappingPreview['section_chunks'][number]): number[] => {
     const sec = chunk.section || ''
-    if (chunkOverrides[sec]) return chunkOverrides[sec]
+    if (sec in chunkOverrides) return chunkOverrides[sec]
     const m = mapping?.chunk_mapping.find(x => x.chunk_section === sec)
-    return m ? m.user_usp_id : null
+    return m?.user_usp_ids || []
   }
 
-  // override 적용 후 unused user USPs 재계산 — chunk effective USPs만 기준
+  // override 적용 후 unused user USPs 재계산 — chunk effective USPs만 기준 (multi)
   const effectiveUnusedUsps = (() => {
     if (!mapping) return []
     const used = new Set<number>()
     mapping.section_chunks.forEach(c => {
-      const eff = effectiveChunkUspId(c)
-      if (eff) used.add(eff)
+      effectiveChunkUspIds(c).forEach(uid => used.add(uid))
     })
     return mapping.product.usps
       .map((u: any, i: number) => ({ user_usp_id: i + 1, user_usp_name: u.usp }))
@@ -144,11 +215,10 @@ export default function ScriptGenWizard() {
       )
       const newMapping = { ...mapping, product: { ...mapping.product, usps: newUsps } }
       setMapping(newMapping)
-      // allPersonas 갱신 — chunk effective USPs만 기준
+      // allPersonas 갱신 — chunk effective USPs만 기준 (multi)
       const matched = new Set<number>()
       mapping.section_chunks.forEach(c => {
-        const eff = effectiveChunkUspId(c)
-        if (eff) matched.add(eff)
+        effectiveChunkUspIds(c).forEach(uid => matched.add(uid))
       })
       const collected: typeof allPersonas = []
       newUsps.forEach((x: any, i: number) => {
@@ -170,31 +240,33 @@ export default function ScriptGenWizard() {
     if (!mapping) return [] as Array<{ idx: number; name: string; personaCount: number; reviewCount: number }>
     const matched = new Set<number>()
     mapping.section_chunks.forEach(c => {
-      const eff = effectiveChunkUspId(c)
-      if (eff) matched.add(eff)
+      effectiveChunkUspIds(c).forEach(uid => matched.add(uid))
     })
-    return mapping.product.usps
-      .map((u: any, i: number) => ({
-        idx: i,
-        name: u.usp || '',
-        personaCount: (u.personas || []).length,
-        reviewCount: (u.reviews || []).filter(Boolean).length,
-        match: matched.has(i + 1),
-      }))
-      .filter(x => x.match)
-      .map(({ match: _m, ...rest }) => rest)
+    const all = mapping.product.usps.map((u: any, i: number) => ({
+      idx: i,
+      name: u.usp || '',
+      personaCount: (u.personas || []).length,
+      reviewCount: (u.reviews || []).filter(Boolean).length,
+      match: matched.has(i + 1),
+    }))
+    // matched가 0개면 fallback — 모든 USP 노출 (사용자가 페르소나 직접 선택 가능)
+    const filtered = matched.size > 0 ? all.filter(x => x.match) : all
+    return filtered.map(({ match: _m, ...rest }) => rest)
   })()
 
   const goToPersona = async () => {
     if (!mapping) return
     setStep('persona')
 
-    // override 반영한 매칭된 user USP 인덱스 — chunk effective USPs만 기준
-    const matched = new Set<number>()
+    // override 반영한 매칭된 user USP 인덱스 — chunk effective USPs만 기준 (multi)
+    const matchedRaw = new Set<number>()
     mapping.section_chunks.forEach(c => {
-      const eff = effectiveChunkUspId(c)
-      if (eff) matched.add(eff)
+      effectiveChunkUspIds(c).forEach(uid => matchedRaw.add(uid))
     })
+    // matched가 0개면 fallback — 모든 USP 사용 (사용자가 페르소나 직접 선택 가능)
+    const matched: Set<number> = matchedRaw.size > 0
+      ? matchedRaw
+      : new Set(mapping.product.usps.map((_: any, i: number) => i + 1))
 
     // pain/desire 없는 USP를 식별하고 재추출 (병렬)
     const stale: { idx: number; usp: any }[] = []
@@ -347,6 +419,18 @@ export default function ScriptGenWizard() {
             chunk_meta_override: Object.keys(chunkEdits).length
               ? chunkEdits
               : undefined,
+            skip_chunk_sections: skippedChunks.size > 0
+              ? Array.from(skippedChunks)
+              : undefined,
+            skip_sentence_starts: skippedSentenceStarts.size > 0
+              ? Array.from(skippedSentenceStarts)
+              : undefined,
+            section_overrides: Object.keys(sectionOverrides).length
+              ? Object.fromEntries(Object.entries(sectionOverrides).map(([sec, ov]) => [
+                  sec, { shortcode: ov.shortcode, section_chunk: ov.section_chunk }
+                ]))
+              : undefined,
+            hook_archetype_override: hookArchetypeOverride || undefined,
           }),
         })
         if (!r.ok) throw new Error(`${r.status} ${await r.text()}`)
@@ -397,7 +481,25 @@ export default function ScriptGenWizard() {
         ← 분석 페이지
       </button>
 
-      <Stepper step={step} />
+      <Stepper step={step} onJump={(target) => {
+        // 가능한 곳만 점프 (mapping 미로드면 mapping/persona/done 잠금)
+        if (target === 'product') {
+          setStep('product')
+          return
+        }
+        if (target === 'mapping' && mapping) {
+          setStep('mapping')
+          return
+        }
+        if (target === 'persona' && allPersonas.length > 0) {
+          setStep('persona')
+          return
+        }
+        if (target === 'done' && Object.keys(genResult).length > 0) {
+          setStep('done')
+          return
+        }
+      }} />
 
       {step === 'product' && (
         <StepProduct
@@ -412,16 +514,15 @@ export default function ScriptGenWizard() {
           mapping={mapping}
           loading={mappingLoading}
           error={mappingError}
-          overrides={overrides}
           chunkOverrides={chunkOverrides}
           unusedUsps={effectiveUnusedUsps}
-          onChunkOverride={(section, userId) => {
+          onChunkOverride={(section, userIds) => {
             const next = { ...chunkOverrides }
-            if (userId === null) delete next[section]
-            else next[section] = userId
+            if (userIds === null) delete next[section]   // null → override 해제 (LLM 자동 매핑 복원)
+            else next[section] = userIds                  // [] → 명시적 미매핑 / [1,2] → 수동 매핑
             setChunkOverrides(next)
           }}
-          getEffectiveChunkUspId={effectiveChunkUspId}
+          getEffectiveChunkUspIds={effectiveChunkUspIds}
           chunkEdits={chunkEdits}
           editingChunk={editingChunk}
           setChunkEdits={setChunkEdits}
@@ -441,6 +542,32 @@ export default function ScriptGenWizard() {
             })
           }}
           onCreateUsp={createUspForChunk}
+          onUpdateUsp={updateUsp}
+          onUpdateChunkSentenceText={updateChunkSentenceText}
+          skippedSentenceStarts={skippedSentenceStarts}
+          onToggleSkipSentence={(start) => {
+            setSkippedSentenceStarts(prev => {
+              const next = new Set(prev)
+              const key = Math.round(start * 100) / 100
+              if (next.has(key)) next.delete(key)
+              else next.add(key)
+              return next
+            })
+          }}
+          skippedChunks={skippedChunks}
+          onToggleSkipChunk={(section) => {
+            setSkippedChunks(prev => {
+              const next = new Set(prev)
+              if (next.has(section)) next.delete(section)
+              else next.add(section)
+              return next
+            })
+          }}
+          sectionOverrides={sectionOverrides}
+          setSectionOverrides={setSectionOverrides}
+          hookArchetypeOverride={hookArchetypeOverride}
+          setHookArchetypeOverride={setHookArchetypeOverride}
+          currentShortcode={shortcode || ''}
           onBack={() => setStep('product')}
           onNext={goToPersona}
         />
@@ -485,8 +612,24 @@ export default function ScriptGenWizard() {
 
       {step === 'generating' && (
         <div style={cardSt}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>
-            대본 생성 중… (페르소나 {Object.keys(genProgress).length || 1}개 동시)
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
+              대본 생성 중… (페르소나 {Object.keys(genProgress).length || 1}개 동시)
+            </div>
+            <button
+              onClick={() => {
+                setGenError('')
+                setGenProgress({})
+                setStep('persona')
+              }}
+              style={{
+                padding: '6px 14px', fontSize: 12,
+                background: 'transparent', color: 'var(--text-body)',
+                border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                cursor: 'pointer',
+              }}>
+              ← 페르소나로 돌아가기
+            </button>
           </div>
           <div style={{ display: 'grid', gap: 14 }}>
             {Object.entries(genProgress).map(([sid, p]) => {
@@ -533,6 +676,47 @@ export default function ScriptGenWizard() {
       {step === 'done' && (
         <StepDone
           result={genResult}
+          refChunks={(() => {
+            // 1) skipped chunks 제외 (gen에 없으니 ref에서도 빼서 1:1 페어링 유지)
+            // 2) skipped sentences 제외 (각 chunk 안 sentences에서 필터)
+            // 3) section_overrides가 있으면 해당 섹션 chunk를 차용본으로 교체해서 ref 비교에 반영
+            const baseAll = mapping?.section_chunks || []
+            const skipSentSet = skippedSentenceStarts
+            const filterSents = (sents: any[]) => sents.filter((s: any) =>
+              !skipSentSet.has(Math.round((s.start || 0) * 100) / 100),
+            )
+            const base = baseAll
+              .filter(c => !skippedChunks.has(c.section))
+              .map((c: any) => ({ ...c, sentences: filterSents(c.sentences || []) }))
+              .filter((c: any) => (c.sentences || []).length > 0)
+            if (!Object.keys(sectionOverrides).length) return base
+            return base.map(c => {
+              const sec = (c.section || '').toLowerCase()
+              const ov = sectionOverrides[sec]
+              if (!ov || !ov.section_chunk) return c
+              const ovChunk = ov.section_chunk
+              return {
+                ...c,
+                sentences: (ovChunk.sentences || c.sentences || []),
+                topic: ovChunk.topic || c.topic,
+                role: ovChunk.role || c.role,
+                _borrowed_from: ov.shortcode,
+              } as any
+            })
+          })()}
+          chunkUspMapping={(() => {
+            // section → { ids, names } — wizard에서 사용자가 선택한 effective mapping
+            const out: Record<string, { ids: number[]; names: string[] }> = {}
+            if (!mapping) return out
+            const usps = mapping.product.usps || []
+            for (const c of mapping.section_chunks || []) {
+              const sec = c.section || ''
+              const ids = effectiveChunkUspIds(c)
+              const names = ids.map(uid => (usps[uid - 1] as any)?.usp || '').filter(Boolean)
+              out[sec.toLowerCase()] = { ids, names }
+            }
+            return out
+          })()}
           onRestart={() => {
             setStep('product')
             setProductId(null)
@@ -541,13 +725,28 @@ export default function ScriptGenWizard() {
             setSelectedPersonaIdx(new Set())
             setGenResult({})
           }}
+          onBackToPersona={() => {
+            setGenError('')
+            setStep('persona')
+          }}
+          onBackToMapping={() => {
+            setGenError('')
+            setStep('mapping')
+          }}
+          onSkipChunkSection={(section) => {
+            setSkippedChunks(prev => {
+              const next = new Set(prev)
+              next.add(section)
+              return next
+            })
+          }}
         />
       )}
     </div>
   )
 }
 
-function Stepper({ step }: { step: Step }) {
+function Stepper({ step, onJump }: { step: Step; onJump?: (target: Step) => void }) {
   const items: [Step | 'all', string][] = [
     ['product', '상품'],
     ['mapping', '매핑 리뷰'],
@@ -562,16 +761,24 @@ function Stepper({ step }: { step: Step }) {
         const idx = order.indexOf(s as Step)
         const active = idx === stepIdx
         const done = idx < stepIdx
+        const clickable = !!onJump && (done || active)
+        const handle = clickable ? () => onJump!(s as Step) : undefined
         return (
           <div key={s} style={{ display: 'flex', alignItems: 'center', flex: 1 }}>
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              padding: '8px 14px', borderRadius: 'var(--radius-pill)',
-              background: active ? 'var(--accent-light)' : 'transparent',
-              fontWeight: active ? 700 : 500,
-              color: active ? 'var(--accent)' : (done ? 'var(--text-secondary)' : 'var(--text-muted)'),
-              fontSize: 12,
-            }}>
+            <div
+              onClick={handle}
+              role={clickable ? 'button' : undefined}
+              tabIndex={clickable ? 0 : undefined}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '8px 14px', borderRadius: 'var(--radius-pill)',
+                background: active ? 'var(--accent-light)' : 'transparent',
+                fontWeight: active ? 700 : 500,
+                color: active ? 'var(--accent)' : (done ? 'var(--text-secondary)' : 'var(--text-muted)'),
+                fontSize: 12,
+                cursor: clickable ? 'pointer' : 'default',
+                userSelect: 'none',
+              }}>
               <span style={{
                 width: 18, height: 18, borderRadius: '50%',
                 background: active ? 'var(--accent)' : (done ? 'var(--text-secondary)' : 'var(--bg-elevated)'),
@@ -640,32 +847,134 @@ function StepProduct({
 }
 
 function StepMapping({
-  mapping, loading, error, overrides, chunkOverrides, unusedUsps, onChunkOverride,
-  getEffectiveChunkUspId, chunkEdits, editingChunk, setChunkEdits, toggleChunkEdit,
-  onCreateUsp, onBack, onNext,
+  mapping, loading, error, chunkOverrides, unusedUsps, onChunkOverride,
+  getEffectiveChunkUspIds, chunkEdits, editingChunk, setChunkEdits, toggleChunkEdit,
+  onCreateUsp, onUpdateUsp, onUpdateChunkSentenceText, skippedSentenceStarts, onToggleSkipSentence, skippedChunks, onToggleSkipChunk, sectionOverrides, setSectionOverrides,
+  hookArchetypeOverride, setHookArchetypeOverride,
+  currentShortcode, onBack, onNext,
 }: {
   mapping: MappingPreview | null
   loading: boolean
   error: string
-  overrides: Record<number, number>
-  chunkOverrides: Record<string, number>
+  chunkOverrides: Record<string, number[]>
   unusedUsps: { user_usp_id: number; user_usp_name: string }[]
-  onChunkOverride: (section: string, userId: number | null) => void
-  getEffectiveChunkUspId: (chunk: MappingPreview['section_chunks'][number]) => number | null
+  onChunkOverride: (section: string, userIds: number[] | null) => void
+  getEffectiveChunkUspIds: (chunk: MappingPreview['section_chunks'][number]) => number[]
   chunkEdits: Record<string, { topic: string; role: string; section?: string }>
   editingChunk: Record<string, boolean>
   setChunkEdits: React.Dispatch<React.SetStateAction<Record<string, { topic: string; role: string; section?: string }>>>
   toggleChunkEdit: (section: string, currentTopic: string, currentRole: string) => void
   onCreateUsp: (chunkSection: string, name: string, description: string, reviews: string[]) => Promise<{ ok: boolean; error?: string }>
+  onUpdateUsp: (userUspId: number, name: string, description: string, reviews: string[]) => Promise<{ ok: boolean; error?: string }>
+  onUpdateChunkSentenceText: (chunkSection: string, sentIdx: number, newText: string) => Promise<{ ok: boolean; error?: string }>
+  skippedSentenceStarts: Set<number>
+  onToggleSkipSentence: (start: number) => void
+  skippedChunks: Set<string>
+  onToggleSkipChunk: (section: string) => void
+  sectionOverrides: Record<string, { shortcode: string; author: string; section_text: string; section_chunk: any; topic?: string }>
+  setSectionOverrides: React.Dispatch<React.SetStateAction<Record<string, { shortcode: string; author: string; section_text: string; section_chunk: any; topic?: string }>>>
+  hookArchetypeOverride: { archetype: string; pattern?: string; core_word?: string } | null
+  setHookArchetypeOverride: React.Dispatch<React.SetStateAction<{ archetype: string; pattern?: string; core_word?: string } | null>>
+  currentShortcode: string
   onBack: () => void
   onNext: () => void
 }) {
+  // CTA pool picker
+  type SectionItem = { shortcode: string; author: string; section_text: string; section_chunk: any; topic?: string }
+  const [pickerSection, setPickerSection] = useState<'hook' | 'intro' | 'cta' | null>(null)
+  const [sectionPools, setSectionPools] = useState<Record<string, SectionItem[]>>({})
+  const [poolLoading, setPoolLoading] = useState(false)
+  const [sectionSearch, setSectionSearch] = useState('')
+
+  const openSectionPicker = async (sec: 'hook' | 'intro' | 'cta') => {
+    setPickerSection(sec)
+    setSectionSearch('')
+    if ((sectionPools[sec] || []).length > 0) return
+    setPoolLoading(true)
+    try {
+      const r = await authedFetch(`/api/script/section-pool?section=${sec}&exclude=${encodeURIComponent(currentShortcode)}&limit=200`)
+      if (r.ok) {
+        const d = await r.json()
+        setSectionPools(prev => ({ ...prev, [sec]: d.items || [] }))
+      }
+    } finally {
+      setPoolLoading(false)
+    }
+  }
+  const lookupBySc = async (sc: string) => {
+    if (!sc || !pickerSection) return
+    const pool = sectionPools[pickerSection] || []
+    if (pool.some(c => c.shortcode === sc)) return
+    try {
+      const r = await authedFetch(`/api/script/section-pool?section=${pickerSection}&shortcode=${encodeURIComponent(sc)}`)
+      if (r.ok) {
+        const d = await r.json()
+        if (d.items && d.items.length > 0) {
+          setSectionPools(prev => ({ ...prev, [pickerSection]: [...d.items, ...(prev[pickerSection] || [])] }))
+        }
+      }
+    } catch {}
+  }
+  const _extractShortcode = (raw: string): string => {
+    const s = raw.trim()
+    if (!s) return ''
+    let m = s.match(/instagram\.com\/(?:reels?|p)\/([A-Za-z0-9_-]{6,})/i)
+    if (m) return m[1]
+    m = s.match(/youtube\.com\/shorts\/([A-Za-z0-9_-]{6,})/i)
+    if (m) return m[1]
+    m = s.match(/youtu\.be\/([A-Za-z0-9_-]{6,})/i)
+    if (m) return m[1]
+    if (/^[A-Za-z0-9_-]{6,}$/.test(s)) return s
+    return ''
+  }
+  const currentPool = pickerSection ? (sectionPools[pickerSection] || []) : []
+  const filteredPool = currentPool.filter(c => {
+    if (!sectionSearch.trim()) return true
+    const q = sectionSearch.toLowerCase().trim()
+    const sc = _extractShortcode(sectionSearch)
+    if (sc && (c.shortcode || '').toLowerCase() === sc.toLowerCase()) return true
+    return (c.section_text || '').toLowerCase().includes(q)
+      || (c.author || '').toLowerCase().includes(q)
+      || (c.shortcode || '').toLowerCase().includes(q)
+  })
   const [creatingFor, setCreatingFor] = useState<string | null>(null)  // chunk.section
   const [newName, setNewName] = useState('')
   const [newDesc, setNewDesc] = useState('')
   const [newReviews, setNewReviews] = useState('')
   const [creating, setCreating] = useState(false)
   const [createErr, setCreateErr] = useState('')
+  // USP 수정 인라인 편집 상태 — 한 번에 1개만. editingChunkSection이 있으면 그 chunk 안에서만 폼 렌더
+  const [editingUspId, setEditingUspId] = useState<number | null>(null)
+  const [editingChunkSection, setEditingChunkSection] = useState<string | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editDesc, setEditDesc] = useState('')
+  const [editReviews, setEditReviews] = useState('')
+  const [savingUsp, setSavingUsp] = useState(false)
+  const [editErr, setEditErr] = useState('')
+  // ref 대본 문장 텍스트 수정 (오타) — 한 번에 1개만
+  const [editingSent, setEditingSent] = useState<{ chunkSection: string; sentIdx: number } | null>(null)
+  const [sentDraft, setSentDraft] = useState('')
+  const [savingSent, setSavingSent] = useState(false)
+  const [sentEditErr, setSentEditErr] = useState('')
+
+  const startEditSent = (chunkSection: string, sentIdx: number, text: string) => {
+    setEditingSent({ chunkSection, sentIdx })
+    setSentDraft(text || '')
+    setSentEditErr('')
+  }
+  const cancelEditSent = () => {
+    setEditingSent(null)
+    setSentEditErr('')
+  }
+  const submitEditSent = async () => {
+    if (!editingSent) return
+    setSavingSent(true)
+    setSentEditErr('')
+    const r = await onUpdateChunkSentenceText(editingSent.chunkSection, editingSent.sentIdx, sentDraft)
+    setSavingSent(false)
+    if (r.ok) setEditingSent(null)
+    else setSentEditErr(r.error || '실패')
+  }
 
   const startCreate = (chunkSection: string, chunkSummary: string) => {
     setCreatingFor(chunkSection)
@@ -713,23 +1022,62 @@ function StepMapping({
   const mappingByChunkSection = new Map<string, MappingPreview['chunk_mapping'][number]>()
   mapping.chunk_mapping.forEach(m => mappingByChunkSection.set(m.chunk_section, m))
 
+  const startEditUsp = (uspId: number, fromChunkSection: string) => {
+    const u: any = mapping?.product.usps[uspId - 1]
+    if (!u) return
+    setEditingUspId(uspId)
+    setEditingChunkSection(fromChunkSection)
+    setEditName(u.usp || '')
+    setEditDesc(u.description || '')
+    setEditReviews((u.reviews || []).join('\n'))
+    setEditErr('')
+  }
+  const cancelEditUsp = () => {
+    setEditingUspId(null)
+    setEditingChunkSection(null)
+    setEditErr('')
+  }
+  const submitEditUsp = async () => {
+    if (editingUspId == null) return
+    setSavingUsp(true)
+    setEditErr('')
+    const reviews = editReviews.split('\n').map(s => s.trim()).filter(Boolean)
+    const r = await onUpdateUsp(editingUspId, editName, editDesc, reviews)
+    setSavingUsp(false)
+    if (r.ok) {
+      setEditingUspId(null)
+      setEditingChunkSection(null)
+    } else {
+      setEditErr(r.error || '실패')
+    }
+  }
+
   return (
     <>
       <div style={cardSt}>
         <div style={labelSt}>2단계 — 매핑 리뷰</div>
         <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>
-          참고 릴스의 각 섹션 chunk와 그에 매핑된 우리 USP. 자동 매칭이 안 된 자리는 드롭다운으로 직접 채우거나 페르소나로 풀 수 있습니다.
+          참고 릴스의 각 섹션 chunk와 그에 매핑된 우리 USP. USP pill 옆 ✏ 아이콘으로 인라인 편집 가능.
         </div>
 
         <div style={{ display: 'grid', gap: 10 }}>
           {mapping.section_chunks.map((chunk, ci) => {
             const mappingRec = mappingByChunkSection.get(chunk.section) || null
-            const isPersonaSlot = !chunk.section.startsWith('body') && !mappingRec?.user_usp_id  // hook/intro/cta — 특정 USP 없음
+            const mappedIds = mappingRec?.user_usp_ids || []
+            const sec = (chunk.section || '').toLowerCase()
+            const isOverridable = sec === 'hook' || sec === 'intro' || sec === 'cta'
+            const sectionOv = sectionOverrides[sec] || null
+            // hook/intro/cta/body 모두 USP 직접 선택 허용. 페르소나 슬롯은 명시적 "매핑 없음" 선택 시에만.
+            const isPersonaSlot = false
+            const isSkipped = skippedChunks.has(chunk.section)
 
             return (
               <div key={ci} style={{
-                background: 'var(--bg-surface)', border: '1px solid var(--border)',
+                background: isSkipped ? 'var(--bg-elevated)' : 'var(--bg-surface)',
+                border: `1px ${isSkipped ? 'dashed' : 'solid'} var(--border)`,
                 borderRadius: 'var(--radius-md)', padding: 14,
+                opacity: isSkipped ? 0.45 : 1,
+                position: 'relative',
               }}>
                 {/* 헤더: 섹션 라벨 + 토픽 + 역할 + 약한매칭 경고 */}
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -763,7 +1111,7 @@ function StepMapping({
                       ⚠ 약한 매칭
                     </span>
                   )}
-                  {!isPersonaSlot && (
+                  {!isPersonaSlot && !isSkipped && (
                     <button
                       onClick={() => toggleChunkEdit(chunk.section, chunk.topic || '', chunk.role || '')}
                       style={{
@@ -775,6 +1123,20 @@ function StepMapping({
                       {editingChunk[chunk.section] ? '저장' : '✏ 분석 수정'}
                     </button>
                   )}
+                  <button
+                    onClick={() => onToggleSkipChunk(chunk.section)}
+                    title={isSkipped ? '복원' : '이 chunk를 이번 생성에서 제외'}
+                    style={{
+                      marginLeft: (isPersonaSlot || isSkipped) ? 'auto' : 0,
+                      padding: '2px 8px', fontSize: 11, fontWeight: 600,
+                      border: `1px solid ${isSkipped ? 'var(--accent)' : 'var(--error)'}`,
+                      borderRadius: 'var(--radius-sm)',
+                      background: 'var(--bg-surface)',
+                      color: isSkipped ? 'var(--accent)' : 'var(--error)',
+                      cursor: 'pointer', opacity: 1, pointerEvents: 'auto',
+                    }}>
+                    {isSkipped ? '↺ 복원' : '✕ 삭제'}
+                  </button>
                 </div>
                 {editingChunk[chunk.section] && (
                   <div style={{ marginBottom: 10, padding: 10, background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)' }}>
@@ -822,20 +1184,153 @@ function StepMapping({
                   </div>
                 )}
 
-                {/* ref 대본 */}
-                {chunk.sentences && chunk.sentences.length > 0 && (
+                {/* hook chunk — archetype primary 선택 (top-2 candidates) */}
+                {sec === 'hook' && mapping?.hook_archetype && (
+                  <HookArchetypePicker
+                    classified={mapping.hook_archetype}
+                    override={hookArchetypeOverride}
+                    setOverride={setHookArchetypeOverride}
+                  />
+                )}
+
+                {/* hook/intro/cta — 다른 ref에서 가져오기 배너 */}
+                {isOverridable && (
+                  <div style={{
+                    background: sectionOv ? 'rgba(99,102,241,0.08)' : 'var(--bg-elevated)',
+                    border: `1px ${sectionOv ? 'solid' : 'dashed'} ${sectionOv ? 'var(--accent)' : 'var(--border)'}`,
+                    borderRadius: 'var(--radius-sm)', padding: '10px 12px', marginBottom: 10,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      {sectionOv ? (
+                        <>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)' }}>✨ 다른 ref {sec.toUpperCase()} 사용 중</span>
+                          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>@{sectionOv.author || sectionOv.shortcode}</span>
+                          <button onClick={() => setSectionOverrides(prev => {
+                            const next = { ...prev }; delete next[sec]; return next
+                          })} style={{
+                            marginLeft: 'auto', padding: '3px 10px', fontSize: 11, background: 'transparent',
+                            border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', color: 'var(--text-muted)',
+                          }}>원본으로</button>
+                        </>
+                      ) : (
+                        <>
+                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>현재 ref의 {sec.toUpperCase()} 사용 중. 다른 ref로 교체 가능.</span>
+                          <button onClick={() => openSectionPicker(sec)} style={{
+                            marginLeft: 'auto', padding: '4px 12px', fontSize: 11, fontWeight: 600,
+                            background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer',
+                          }}>📚 다른 {sec.toUpperCase()} 가져오기</button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* override 시 차용 sentences 우선 표시 */}
+                {isOverridable && sectionOv && (sectionOv.section_chunk?.sentences?.length || 0) > 0 && (
+                  <div style={{
+                    background: 'rgba(99,102,241,0.05)', borderRadius: 'var(--radius-sm)',
+                    padding: '10px 12px', marginBottom: 10,
+                    border: '1px solid var(--accent)',
+                  }}>
+                    {(sectionOv.section_chunk.sentences as any[]).map((s, si) => (
+                      <div key={si} style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text-body)' }}>
+                        {s.text}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* ref 대본 (override 없을 때) — 오타 수정 인라인 편집 */}
+                {!(isOverridable && sectionOv) && chunk.sentences && chunk.sentences.length > 0 && (
                   <div style={{
                     background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)',
                     padding: '10px 12px', marginBottom: 10,
                   }}>
-                    {chunk.sentences.map((s, si) => (
-                      <div key={si} style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text-body)' }}>
-                        <span style={{ color: 'var(--text-muted)', fontSize: 11, marginRight: 8 }}>
-                          {s.start.toFixed(1)}–{s.end.toFixed(1)}s
-                        </span>
-                        {s.text}
-                      </div>
-                    ))}
+                    {chunk.sentences.map((s, si) => {
+                      const isEditing = editingSent?.chunkSection === chunk.section && editingSent?.sentIdx === si
+                      if (isEditing) {
+                        return (
+                          <div key={si} style={{ marginBottom: 6, padding: 8, background: 'var(--bg-base)', border: '1px solid var(--accent)', borderRadius: 6 }}>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
+                              {s.start.toFixed(1)}–{s.end.toFixed(1)}s · 오타 수정 (저장하면 분석 DB에 반영)
+                            </div>
+                            <textarea
+                              value={sentDraft}
+                              onChange={(e) => setSentDraft(e.target.value)}
+                              rows={2}
+                              autoFocus
+                              style={{
+                                width: '100%', padding: '6px 8px', fontSize: 13,
+                                border: '1px solid var(--border)', borderRadius: 4,
+                                background: 'var(--bg-surface)', resize: 'vertical', fontFamily: 'inherit',
+                              }}
+                            />
+                            {sentEditErr && (
+                              <div style={{ fontSize: 11, color: 'var(--error)', marginTop: 4 }}>{sentEditErr}</div>
+                            )}
+                            <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                              <button onClick={submitEditSent} disabled={savingSent || !sentDraft.trim()} style={{
+                                padding: '4px 12px', fontSize: 11, fontWeight: 600,
+                                background: 'var(--accent)', color: '#fff', border: 'none',
+                                borderRadius: 4,
+                                opacity: (savingSent || !sentDraft.trim()) ? 0.5 : 1,
+                                cursor: (savingSent || !sentDraft.trim()) ? 'not-allowed' : 'pointer',
+                              }}>{savingSent ? '저장 중…' : '저장'}</button>
+                              <button onClick={cancelEditSent} disabled={savingSent} style={{
+                                padding: '4px 12px', fontSize: 11,
+                                background: 'transparent', color: 'var(--text-body)',
+                                border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer',
+                              }}>취소</button>
+                            </div>
+                          </div>
+                        )
+                      }
+                      const isSentSkipped = skippedSentenceStarts.has(Math.round((s.start || 0) * 100) / 100)
+                      return (
+                        <div key={si} style={{
+                          fontSize: 13, lineHeight: 1.6,
+                          color: isSentSkipped ? 'var(--text-muted)' : 'var(--text-body)',
+                          textDecoration: isSentSkipped ? 'line-through' : 'none',
+                          opacity: isSentSkipped ? 0.55 : 1,
+                          display: 'flex', alignItems: 'flex-start', gap: 6,
+                        }}>
+                          <span style={{ color: 'var(--text-muted)', fontSize: 11, flexShrink: 0, marginTop: 2 }}>
+                            {s.start.toFixed(1)}–{s.end.toFixed(1)}s
+                          </span>
+                          <span style={{ flex: 1 }}>{s.text}</span>
+                          <button
+                            onClick={() => startEditSent(chunk.section, si, s.text || '')}
+                            title="이 문장의 오타 수정"
+                            disabled={!!editingSent}
+                            style={{
+                              padding: '2px 6px', fontSize: 10, fontWeight: 500,
+                              background: 'transparent', color: 'var(--text-muted)',
+                              border: '1px solid var(--border)', borderRadius: 3,
+                              cursor: editingSent ? 'not-allowed' : 'pointer',
+                              opacity: editingSent ? 0.4 : 1,
+                              flexShrink: 0,
+                            }}>✏</button>
+                          {(() => {
+                            const isSkippedSent = skippedSentenceStarts.has(Math.round((s.start || 0) * 100) / 100)
+                            return (
+                          <button
+                            onClick={() => onToggleSkipSentence(s.start || 0)}
+                            title={isSkippedSent ? '복원' : '이 문장 이번 generation에서 skip (DB 영구 X)'}
+                            disabled={!!editingSent}
+                            style={{
+                              padding: '2px 6px', fontSize: 10, fontWeight: 600,
+                              background: isSkippedSent ? 'rgba(245,158,11,0.10)' : 'transparent',
+                              color: isSkippedSent ? 'var(--accent)' : 'var(--error)',
+                              border: `1px solid ${isSkippedSent ? 'var(--accent)' : 'var(--error)'}`, borderRadius: 3,
+                              cursor: editingSent ? 'not-allowed' : 'pointer',
+                              opacity: editingSent ? 0.4 : 1,
+                              flexShrink: 0,
+                            }}>{isSkippedSent ? '↺' : '🗑'}</button>
+                            )
+                          })()}
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
 
@@ -848,17 +1343,25 @@ function StepMapping({
                   }}>
                     이 chunk는 특정 USP에 묶이지 않습니다 — <b>페르소나 톤 + ref 구조</b>로 작성됩니다.
                   </div>
-                ) : mappingRec && (() => {
-                  const chunkUserId = getEffectiveChunkUspId(chunk)
+                ) : (() => {
+                  const chunkUserIds = getEffectiveChunkUspIds(chunk)
                   const isChunkOverride = chunkOverrides[chunk.section] !== undefined
+                  const isMulti = chunkUserIds.length >= 2
                   // 모든 user USP 옵션 (chunk별로 자유롭게 다 선택 가능 — unused 제한 X)
                   const allUserUsps = mapping.product.usps.map((u: any, i: number) => ({
                     user_usp_id: i + 1, user_usp_name: u.usp,
                   }))
+                  const toggleUsp = (uid: number) => {
+                    const next = chunkUserIds.includes(uid)
+                      ? chunkUserIds.filter(x => x !== uid)
+                      : [...chunkUserIds, uid].sort((a, b) => a - b)
+                    // 빈 배열도 명시적 "미매핑"으로 저장 (LLM 자동 매핑 복원 X)
+                    onChunkOverride(chunk.section, next)
+                  }
                   return (
                   <div style={{
                     display: 'grid',
-                    gridTemplateColumns: 'minmax(180px, 1fr) 16px minmax(220px, 1fr) 1.3fr',
+                    gridTemplateColumns: 'minmax(180px, 1fr) 16px minmax(260px, 1.3fr)',
                     gap: 10, alignItems: 'start', fontSize: 13,
                     padding: '8px 0',
                   }}>
@@ -866,8 +1369,16 @@ function StepMapping({
                       <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
                         chunk [{chunk.section}] · {chunk.topic}
                       </div>
+                      {chunk.role && (
+                        <div style={{ marginTop: 4, display: 'inline-block', padding: '2px 8px',
+                          background: 'rgba(99,102,241,0.12)', color: 'var(--accent)',
+                          borderRadius: 'var(--radius-sm)', fontSize: 11, fontWeight: 600,
+                        }}>
+                          역할: {chunk.role}
+                        </div>
+                      )}
                       {chunk.summary && (
-                        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
+                        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6 }}>
                           {chunk.summary}
                         </div>
                       )}
@@ -876,35 +1387,189 @@ function StepMapping({
                     <div>
                       <div style={{
                         fontWeight: 600,
-                        color: chunkUserId ? 'var(--text-primary)' : 'var(--warning)',
+                        color: chunkUserIds.length ? 'var(--text-primary)' : 'var(--warning)',
                         marginBottom: 6, fontSize: 12,
                       }}>
-                        {chunkUserId
+                        {chunkUserIds.length
                           ? (() => {
-                            const u = allUserUsps.find(x => x.user_usp_id === chunkUserId)
-                            const tag = isChunkOverride ? ' (수동 매핑)' : ''
-                            return `USP${chunkUserId} · ${u?.user_usp_name || ''}${tag}`
+                            const labels = chunkUserIds.map(uid => {
+                              const u = allUserUsps.find(x => x.user_usp_id === uid)
+                              return `USP${uid} · ${u?.user_usp_name || ''}`
+                            }).join(' / ')
+                            const tag = isChunkOverride ? ' (수동)' : ''
+                            const multiTag = isMulti ? ' ⭐ 통합 호소' : ''
+                            return `${labels}${tag}${multiTag}`
                           })()
-                          : '매칭 없음'}
+                          : '매칭 없음 — 페르소나로 풀기'}
                       </div>
-                      <select
-                        value={chunkUserId || ''}
-                        onChange={(e) => {
-                          const v = e.target.value
-                          onChunkOverride(chunk.section, v ? Number(v) : null)
-                        }}
-                        style={{
-                          width: '100%', padding: '6px 10px', fontSize: 12,
-                          border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                          background: 'var(--bg-base)', color: 'var(--text-primary)',
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+                        {allUserUsps.map(u => {
+                          const checked = chunkUserIds.includes(u.user_usp_id)
+                          return (
+                            <span key={u.user_usp_id} style={{ display: 'inline-flex', alignItems: 'stretch' }}>
+                              <button
+                                type="button"
+                                onClick={() => toggleUsp(u.user_usp_id)}
+                                style={{
+                                  padding: '4px 8px 4px 10px', fontSize: 11, fontWeight: checked ? 700 : 500,
+                                  border: `1px solid ${checked ? 'var(--accent)' : 'var(--border)'}`,
+                                  borderRight: 'none',
+                                  borderTopLeftRadius: 'var(--radius-pill)',
+                                  borderBottomLeftRadius: 'var(--radius-pill)',
+                                  background: checked ? 'var(--accent-light)' : 'var(--bg-base)',
+                                  color: checked ? 'var(--accent)' : 'var(--text-body)',
+                                  cursor: 'pointer',
+                                }}>
+                                {checked ? '✓ ' : ''}USP{u.user_usp_id} · {u.user_usp_name}
+                              </button>
+                              <button
+                                type="button"
+                                title={`USP${u.user_usp_id} 수정`}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  startEditUsp(u.user_usp_id, chunk.section)
+                                }}
+                                style={{
+                                  padding: '4px 8px', fontSize: 11,
+                                  border: `1px solid ${checked ? 'var(--accent)' : 'var(--border)'}`,
+                                  borderTopRightRadius: 'var(--radius-pill)',
+                                  borderBottomRightRadius: 'var(--radius-pill)',
+                                  background: checked ? 'var(--accent-light)' : 'var(--bg-base)',
+                                  color: 'var(--text-muted)',
+                                  cursor: 'pointer',
+                                }}>
+                                ✏
+                              </button>
+                            </span>
+                          )
+                        })}
+                        <button
+                          type="button"
+                          onClick={() => onChunkOverride(chunk.section, [])}
+                          title="모든 USP 매핑 해제 — 이 chunk는 페르소나 톤 + ref 구조로만 작성됨"
+                          style={{
+                            padding: '4px 10px', fontSize: 11,
+                            fontWeight: chunkUserIds.length === 0 ? 700 : 500,
+                            border: `1px dashed ${chunkUserIds.length === 0 ? 'var(--warning)' : 'var(--border)'}`,
+                            borderRadius: 'var(--radius-pill)',
+                            background: chunkUserIds.length === 0 ? 'rgba(245,158,11,0.10)' : 'transparent',
+                            color: chunkUserIds.length === 0 ? 'var(--warning)' : 'var(--text-muted)',
+                            cursor: 'pointer',
+                          }}>
+                          {chunkUserIds.length === 0 ? '✓ ' : ''}✕ 매핑 없음 (페르소나로 풀기)
+                        </button>
+                      </div>
+                      {/* 인라인 USP 편집 폼 — 이 chunk에서 ✏ 클릭한 경우만 렌더 */}
+                      {editingUspId != null && editingChunkSection === chunk.section && (
+                        <div style={{
+                          padding: 10, marginBottom: 8,
+                          background: 'var(--bg-base)',
+                          border: '1px solid var(--accent)',
+                          borderRadius: 'var(--radius-sm)',
                         }}>
-                        <option value="">— 매핑 없음 (페르소나로 풀기) —</option>
-                        {allUserUsps.map(u => (
-                          <option key={u.user_usp_id} value={u.user_usp_id}>
-                            USP{u.user_usp_id} · {u.user_usp_name}
-                          </option>
-                        ))}
-                      </select>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)', marginBottom: 6 }}>
+                            USP{editingUspId} 수정 (저장하면 내 상품 DB 갱신)
+                          </div>
+                          <input
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            placeholder="USP 이름"
+                            style={{
+                              width: '100%', padding: '7px 10px', fontSize: 12, marginBottom: 6,
+                              border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                              background: 'var(--bg-surface)',
+                            }}
+                          />
+                          <div style={{ display: 'flex', gap: 6, marginBottom: 4, alignItems: 'center' }}>
+                            <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1 }}>설명 (writer 어휘 source)</span>
+                            <button
+                              type="button"
+                              disabled={!editName.trim()}
+                              title={editName.trim() ? 'LLM이 USP 이름 + 리뷰로 description 자동 생성' : 'USP 이름 먼저'}
+                              onClick={async () => {
+                                if (!editName.trim()) return
+                                try {
+                                  const reviews = editReviews.split('\n').map(r => r.trim()).filter(Boolean)
+                                  const r = await api.suggestUspDescription({
+                                    product_name: mapping?.product?.name || '',
+                                    usp_name: editName,
+                                    reviews,
+                                  })
+                                  setEditDesc(r.description)
+                                } catch (err: any) {
+                                  alert('LLM 추천 실패: ' + (err?.message || err))
+                                }
+                              }}
+                              style={{
+                                padding: '3px 10px', fontSize: 11, fontWeight: 600,
+                                border: '1px solid var(--accent)', borderRadius: 4,
+                                background: editName.trim() ? 'var(--accent-light)' : 'var(--bg-elevated)',
+                                color: editName.trim() ? 'var(--accent)' : 'var(--text-muted)',
+                                cursor: editName.trim() ? 'pointer' : 'not-allowed',
+                              }}>
+                              🪄 LLM 추천
+                            </button>
+                          </div>
+                          <textarea
+                            value={editDesc}
+                            onChange={(e) => setEditDesc(e.target.value)}
+                            placeholder="설명 (예: 문제: ... / 해결: ... / 혜택: ...) — 또는 위 🪄 LLM 추천 클릭"
+                            rows={4}
+                            style={{
+                              width: '100%', padding: '7px 10px', fontSize: 12, marginBottom: 6,
+                              border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                              background: 'var(--bg-surface)', resize: 'vertical', fontFamily: 'inherit',
+                            }}
+                          />
+                          <textarea
+                            value={editReviews}
+                            onChange={(e) => setEditReviews(e.target.value)}
+                            placeholder={'리뷰 (한 줄에 하나씩)'}
+                            rows={4}
+                            style={{
+                              width: '100%', padding: '7px 10px', fontSize: 12, marginBottom: 6,
+                              border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                              background: 'var(--bg-surface)', resize: 'vertical', fontFamily: 'inherit',
+                            }}
+                          />
+                          {editErr && (
+                            <div style={{ fontSize: 11, color: 'var(--error)', marginBottom: 6 }}>{editErr}</div>
+                          )}
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button onClick={submitEditUsp} disabled={savingUsp || !editName.trim()} style={{
+                              ...primaryBtnSt, padding: '6px 14px', fontSize: 12,
+                              opacity: (savingUsp || !editName.trim()) ? 0.5 : 1,
+                              cursor: (savingUsp || !editName.trim()) ? 'not-allowed' : 'pointer',
+                            }}>
+                              {savingUsp ? '저장 중…' : '저장'}
+                            </button>
+                            <button onClick={cancelEditUsp} disabled={savingUsp} style={{
+                              ...ghostBtnSt, padding: '6px 14px', fontSize: 12,
+                            }}>취소</button>
+                          </div>
+                        </div>
+                      )}
+                      {chunkUserIds.length === 0 && (
+                        <div style={{
+                          fontSize: 11, color: 'var(--warning)', lineHeight: 1.5,
+                          padding: '6px 10px', background: 'rgba(245,158,11,0.08)',
+                          borderRadius: 'var(--radius-sm)', border: '1px dashed var(--warning)',
+                          marginBottom: 6,
+                        }}>
+                          이 chunk는 우리 USP에 매핑되지 않음 — <b>페르소나 톤 + ref 구조</b>로 작성됩니다.
+                        </div>
+                      )}
+                      {mappingRec?.reason && (
+                        <div style={{
+                          fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.5,
+                          padding: '6px 10px', background: 'var(--bg-base)',
+                          borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)',
+                          marginBottom: 6,
+                        }}>
+                          <span style={{ fontWeight: 600, color: 'var(--text-muted)' }}>매핑 근거: </span>
+                          {mappingRec.reason}
+                        </div>
+                      )}
                       {creatingFor === chunk.section ? (
                         <div style={{
                           marginTop: 8, padding: 10,
@@ -975,9 +1640,11 @@ function StepMapping({
                         </button>
                       )}
                     </div>
-                    <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                      {mappingRec.reason}
-                    </div>
+                    {mappingRec?.reason && (
+                      <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                        {mappingRec.reason}
+                      </div>
+                    )}
                   </div>
                   )
                 })()}
@@ -1007,6 +1674,90 @@ function StepMapping({
         <button onClick={onBack} style={ghostBtnSt}>← 상품 다시</button>
         <button onClick={onNext} style={primaryBtnSt}>페르소나 선택 →</button>
       </div>
+
+      {/* Section picker modal — hook/intro/cta 공용 */}
+      {pickerSection && (
+        <div onClick={() => setPickerSection(null)} style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+        }}>
+          <div onClick={(e) => e.stopPropagation()} style={{
+            background: 'var(--bg-base)', borderRadius: 'var(--radius-lg)',
+            width: 'min(720px, 92vw)', maxHeight: '80vh', overflow: 'hidden',
+            display: 'flex', flexDirection: 'column', border: '1px solid var(--border)',
+          }}>
+            <div style={{
+              padding: '14px 18px', borderBottom: '1px solid var(--border)',
+              display: 'flex', alignItems: 'center', gap: 10,
+            }}>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>📚 다른 ref {pickerSection.toUpperCase()} 가져오기</div>
+              <input
+                value={sectionSearch}
+                onChange={(e) => {
+                  const v = e.target.value
+                  setSectionSearch(v)
+                  const sc = _extractShortcode(v)
+                  if (sc) lookupBySc(sc)
+                }}
+                onPaste={(e) => {
+                  const txt = e.clipboardData.getData('text')
+                  const sc = _extractShortcode(txt)
+                  if (sc) lookupBySc(sc)
+                }}
+                placeholder="검색 (텍스트, 작성자, shortcode, 또는 URL 붙여넣기)"
+                style={{
+                  flex: 1, padding: '6px 10px', fontSize: 12,
+                  border: '1px solid var(--border)', borderRadius: 6,
+                  background: 'var(--bg-surface)',
+                }}
+              />
+              <button onClick={() => setPickerSection(null)} style={{
+                padding: '4px 10px', fontSize: 12, background: 'transparent',
+                border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer',
+              }}>닫기</button>
+            </div>
+            <div style={{ overflowY: 'auto', padding: '8px 0' }}>
+              {poolLoading ? (
+                <div style={{ padding: 30, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                  로딩 중…
+                </div>
+              ) : filteredPool.length === 0 ? (
+                <div style={{ padding: 30, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                  결과 없음
+                </div>
+              ) : (
+                filteredPool.map((c) => (
+                  <div key={c.shortcode} style={{
+                    padding: '10px 18px', borderBottom: '1px solid var(--border-subtle)',
+                    cursor: 'pointer',
+                  }} onClick={() => {
+                    if (!pickerSection) return
+                    setSectionOverrides(prev => ({
+                      ...prev,
+                      [pickerSection]: {
+                        shortcode: c.shortcode, author: c.author,
+                        section_text: c.section_text, section_chunk: c.section_chunk, topic: c.topic,
+                      },
+                    }))
+                    setPickerSection(null)
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-elevated)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
+                      @{c.author || '익명'} · <code>{c.shortcode}</code>
+                      {c.topic && <span style={{ marginLeft: 6 }}>· {c.topic}</span>}
+                    </div>
+                    <div style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--text-body)' }}>
+                      {c.section_text}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }
@@ -1064,9 +1815,9 @@ function StepPersona({
 
       {(mapping.ref_desires || []).length > 0 && (
         <div style={cardSt}>
-          <div style={labelSt}>참고 대본 기반 desire/pain 후보</div>
+          <div style={labelSt}>참고 대본 기반 desire/pain 후보 (선택사항)</div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10 }}>
-            참고 릴스의 hook/intro/페르소나성 chunk가 어필하는 emotional thrust. 우리 대본에 같은 desire를 녹이고 싶다면 선택.
+            참고 릴스의 emotional thrust를 product 도메인으로 transform한 페르소나. 기본 미선택 — 위 USP 페르소나가 우선 권장.
           </div>
           <div style={{ display: 'grid', gap: 8 }}>
             {(mapping.ref_desires || []).map((d, i) => {
@@ -1229,27 +1980,120 @@ function StepPersona({
 }
 
 function StepDone({
-  result, onRestart,
+  result, refChunks, chunkUspMapping, onRestart, onBackToPersona, onBackToMapping, onSkipChunkSection,
 }: {
   result: Record<string, GeneratedScript>
+  refChunks: MappingPreview['section_chunks']
+  chunkUspMapping: Record<string, { ids: number[]; names: string[] }>
   onRestart: () => void
+  onBackToPersona: () => void
+  onBackToMapping: () => void
+  onSkipChunkSection: (section: string) => void
 }) {
+  // ref 문장 평탄화 (start 시간순 정렬, 빈 문장 제외) — _borrowed_from 메타 전파
+  const refSentences = refChunks
+    .flatMap((c: any) => (c.sentences || []).map((s: any) => ({
+      ...s, section: c.section || '', _borrowed_from: c._borrowed_from || '',
+    })))
+    .filter((s: any) => (s.text || '').trim())
+    .sort((a: any, b: any) => (a.start || 0) - (b.start || 0))
   const navigate = useNavigate()
   const tabs = Object.keys(result)
   const [active, setActive] = useState(tabs[0] || '')
-  const cur = active && result[active] ? result[active] : null
+  // 편집 상태 (탭별로 독립)
+  const [editingTab, setEditingTab] = useState<string | null>(null)
+  // 저장된 편집본 — 새 result 들어오면 리셋
+  const [editedResult, setEditedResult] = useState<Record<string, GeneratedScript>>({})
+  // 진행 중 편집 draft (저장 누르기 전)
+  const [draftSentences, setDraftSentences] = useState<{ start: number; end: number; text: string }[] | null>(null)
+
+  // 새 result 들어올 때 (생성 재시작) 편집 상태 리셋
+  useEffect(() => {
+    setEditedResult({})
+    setEditingTab(null)
+    setDraftSentences(null)
+  }, [result])
+
+  const display = (tab: string): GeneratedScript | null => {
+    if (!tab) return null
+    return editedResult[tab] || result[tab] || null
+  }
+  const cur = display(active)
+
+  const startEdit = () => {
+    if (!cur) return
+    setDraftSentences((cur.sentences || []).map(s => ({ start: s.start, end: s.end, text: s.text })))
+    setEditingTab(active)
+  }
+  const cancelEdit = () => {
+    setEditingTab(null)
+    setDraftSentences(null)
+  }
+  const saveEdit = () => {
+    if (!cur || !draftSentences) return
+    // 원본 sentence를 text만 교체 (direction/emotion 등 메타 보존)
+    const merged = (cur.sentences || []).map((orig, i) => {
+      const draft = draftSentences[i]
+      if (!draft) return orig
+      return { ...orig, text: draft.text }
+    })
+    const ttsLines = merged.map(s => s.text).join('\n')
+    const updated: GeneratedScript = { ...cur, sentences: merged, tts_script: ttsLines }
+    setEditedResult(prev => ({ ...prev, [active]: updated }))
+    setEditingTab(null)
+    setDraftSentences(null)
+  }
+  const updateDraft = (idx: number, text: string) => {
+    setDraftSentences(prev => prev ? prev.map((s, i) => i === idx ? { ...s, text } : s) : prev)
+  }
+
+  // chunk 단위 삭제 — 결과에서 특정 section의 모든 generated sentences 제거
+  // + skippedChunks(부모)에도 추가해서 재생성 시 section-planner/writer 단계에서도 제외
+  const deleteChunkRows = (rowIndices: number[], section?: string) => {
+    const c = display(active)
+    if (!c) return
+    const indexSet = new Set(rowIndices)
+    const newSentences = (c.sentences || []).filter((_, i) => !indexSet.has(i))
+    const ttsLines = newSentences.map(s => s.text).join('\n')
+    const updated: GeneratedScript = { ...c, sentences: newSentences, tts_script: ttsLines }
+    setEditedResult(prev => ({ ...prev, [active]: updated }))
+    if (section) onSkipChunkSection(section)
+  }
+
+  const isEditingActive = editingTab === active && draftSentences !== null
+  const dirty = !!editedResult[active]
+
+  // 원본 문장 (편집 전) — start time → text 매핑. 색상 강조용.
+  const originalTextByStart = (() => {
+    const m = new Map<number, string>()
+    const orig = result[active]
+    if (orig?.sentences) {
+      for (const s of orig.sentences) m.set(Math.round(s.start * 100), s.text || '')
+    }
+    return m
+  })()
+  const isSentenceEdited = (s: { start: number; text: string }): boolean => {
+    const orig = originalTextByStart.get(Math.round(s.start * 100))
+    if (orig === undefined) return false  // 원본에 없으면 비교 불가 (정상 X — 그냥 false)
+    return (orig || '').trim() !== (s.text || '').trim()
+  }
 
   return (
     <>
       {tabs.length > 1 && (
         <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
           {tabs.map(t => (
-            <button key={t} onClick={() => setActive(t)} style={{
-              padding: '8px 14px', fontSize: 12,
-              border: 'none', borderBottom: `2px solid ${active === t ? 'var(--accent)' : 'transparent'}`,
-              background: 'transparent', color: active === t ? 'var(--text-primary)' : 'var(--text-muted)',
-              fontWeight: active === t ? 600 : 500, cursor: 'pointer',
-            }}>{t}</button>
+            <button key={t} onClick={() => { if (isEditingActive) return; setActive(t) }}
+              disabled={isEditingActive && t !== active}
+              style={{
+                padding: '8px 14px', fontSize: 12,
+                border: 'none', borderBottom: `2px solid ${active === t ? 'var(--accent)' : 'transparent'}`,
+                background: 'transparent',
+                color: active === t ? 'var(--text-primary)' : 'var(--text-muted)',
+                fontWeight: active === t ? 600 : 500,
+                cursor: isEditingActive && t !== active ? 'not-allowed' : 'pointer',
+                opacity: isEditingActive && t !== active ? 0.5 : 1,
+              }}>{t}{editedResult[t] ? ' ✏' : ''}</button>
           ))}
         </div>
       )}
@@ -1258,40 +2102,222 @@ function StepDone({
         <div style={cardSt}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 8, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 16, fontWeight: 700 }}>
-              생성된 대본 ({cur.duration_target_sec}초)
+              생성된 대본 ({cur.duration_target_sec}초){dirty && <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>· 편집됨</span>}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={async () => {
-                const text = cur.tts_script || (cur.sentences || []).map(s => s.text).join('\n')
-                await navigator.clipboard.writeText(text)
-              }} style={ghostBtnSt}>TTS 복사</button>
-              <button
-                onClick={() => navigate('/tts', { state: { sentences: cur.sentences, title: active } })}
-                disabled={!cur.sentences?.length}
-                style={{
-                  ...ghostBtnSt,
-                  background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)',
-                  cursor: cur.sentences?.length ? 'pointer' : 'not-allowed',
-                  opacity: cur.sentences?.length ? 1 : 0.5,
-                }}
-              >🎙 음성 생성</button>
+              {!isEditingActive ? (
+                <>
+                  <button onClick={startEdit} style={ghostBtnSt}>✏ 대본 수정</button>
+                  <button onClick={async () => {
+                    // direction(감정 지시)도 같이 복사 — 편집 후에도 보존된 cur.sentences에서 조립
+                    const sents = cur.sentences || []
+                    const text = sents.length
+                      ? sents.map(s => {
+                          const dir = (s.direction || '').trim()
+                          const txt = (s.text || '').trim()
+                          return dir ? `(${dir}) ${txt}` : txt
+                        }).join('\n')
+                      : (cur.tts_script || '')
+                    await navigator.clipboard.writeText(text)
+                  }} style={ghostBtnSt}>TTS 복사</button>
+                  <button
+                    onClick={() => navigate('/tts', { state: { sentences: cur.sentences, title: active } })}
+                    disabled={!cur.sentences?.length}
+                    style={{
+                      ...ghostBtnSt,
+                      background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)',
+                      cursor: cur.sentences?.length ? 'pointer' : 'not-allowed',
+                      opacity: cur.sentences?.length ? 1 : 0.5,
+                    }}
+                  >🎙 음성 생성</button>
+                </>
+              ) : (
+                <>
+                  <button onClick={cancelEdit} style={ghostBtnSt}>취소</button>
+                  <button onClick={saveEdit} style={{
+                    ...ghostBtnSt,
+                    background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)',
+                  }}>💾 저장하기</button>
+                </>
+              )}
             </div>
           </div>
-          {(cur.sentences || []).map((s, i) => (
-            <div key={i} style={{
-              fontSize: 13, padding: '8px 0',
-              borderTop: i > 0 ? '1px solid var(--border-subtle)' : 'none',
+          {/* 컬럼 헤더 */}
+          {refSentences.length > 0 && (
+            <div style={{
+              display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12,
+              padding: '6px 0', marginBottom: 4,
+              fontSize: 10, fontWeight: 700, letterSpacing: '0.06em',
+              textTransform: 'uppercase', color: 'var(--text-muted)',
+              borderBottom: '1px solid var(--border-subtle)',
             }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', marginRight: 8 }}>
-                [{s.start.toFixed(1)}–{s.end.toFixed(1)}s]
-              </span>
-              {s.text}
+              <div>📋 참고 (REF)</div>
+              <div>✨ 생성된 대본</div>
             </div>
-          ))}
+          )}
+          {/* 행별 비교 — section별 그룹 헤더 + chunk 삭제 버튼 */}
+          {(() => {
+            const genList = isEditingActive && draftSentences ? draftSentences : (cur.sentences || [])
+            const rows = Math.max(refSentences.length, genList.length)
+            // section별 row 인덱스 그룹화 (chunk 삭제 시 해당 그룹의 모든 row 인덱스 제거)
+            const sectionRows = new Map<string, number[]>()
+            for (let i = 0; i < rows; i++) {
+              const sec = (refSentences[i]?.section || '').toLowerCase()
+              if (!sec) continue
+              if (!sectionRows.has(sec)) sectionRows.set(sec, [])
+              sectionRows.get(sec)!.push(i)
+            }
+            const elements: React.ReactNode[] = []
+            let prevSection = ''
+            for (let i = 0; i < rows; i++) {
+              const ref = refSentences[i]
+              const gen = genList[i]
+              const curSection = (ref?.section || '').toLowerCase()
+              if (curSection && curSection !== prevSection) {
+                const groupIndices = sectionRows.get(curSection) || []
+                const mappedUsps = chunkUspMapping[curSection] || { ids: [], names: [] }
+                elements.push(
+                  <div key={`hdr-${curSection}-${i}`} style={{
+                    display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                    padding: '10px 0 6px', borderTop: i > 0 ? '1px dashed var(--border)' : 'none',
+                  }}>
+                    <span style={{
+                      fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase',
+                      padding: '3px 8px', borderRadius: 4,
+                      background: 'var(--bg-elevated)', color: 'var(--text-muted)',
+                    }}>{curSection}</span>
+                    {/* 매핑된 USP 뱃지 */}
+                    {mappedUsps.ids.length > 0 ? (
+                      mappedUsps.ids.map((uid, k) => (
+                        <span key={uid} style={{
+                          fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
+                          background: 'rgba(99,102,241,0.12)', color: 'var(--accent)',
+                          border: '1px solid var(--accent)',
+                        }}>
+                          USP{uid} · {mappedUsps.names[k] || ''}
+                        </span>
+                      ))
+                    ) : (
+                      <span style={{
+                        fontSize: 10, fontWeight: 500, padding: '2px 8px', borderRadius: 4,
+                        background: 'transparent', color: 'var(--text-muted)',
+                        border: '1px dashed var(--border)',
+                      }}>매핑 없음 (페르소나)</span>
+                    )}
+                    {mappedUsps.ids.length >= 2 && (
+                      <span style={{ fontSize: 10, color: 'var(--accent)', fontWeight: 600 }}>⭐ 통합 호소</span>
+                    )}
+                    {!isEditingActive && (
+                      <button
+                        onClick={() => {
+                          if (!confirm(`이 chunk(${curSection})의 ${groupIndices.length}문장을 결과에서 삭제하고\n재생성 시에도 자동 제외할까요?`)) return
+                          deleteChunkRows(groupIndices, curSection)
+                        }}
+                        title="이 chunk를 결과에서 삭제 + 재생성 시 section-planner/writer에서도 제외"
+                        style={{
+                          marginLeft: 'auto',
+                          padding: '2px 8px', fontSize: 10, fontWeight: 600,
+                          border: '1px solid var(--error)', borderRadius: 4,
+                          background: 'transparent', color: 'var(--error)', cursor: 'pointer',
+                        }}>
+                        ✕ 이 chunk 삭제
+                      </button>
+                    )}
+                  </div>
+                )
+                prevSection = curSection
+              }
+              elements.push(
+                <div key={i} style={{
+                  display: 'grid', gridTemplateColumns: refSentences.length > 0 ? '1fr 1fr' : '1fr',
+                  gap: 12, padding: '8px 0', alignItems: 'start',
+                  borderTop: i > 0 && curSection === prevSection ? '1px solid var(--border-subtle)' : 'none',
+                }}>
+                  {refSentences.length > 0 && (
+                    <div style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--text-secondary)' }}>
+                      {ref ? (
+                        <>
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2, fontFamily: 'monospace' }}>
+                            [{(ref.start || 0).toFixed(1)}–{(ref.end || 0).toFixed(1)}s]
+                            {ref.section && (
+                              <span style={{
+                                marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 5px',
+                                borderRadius: 3, background: 'var(--bg-elevated)', textTransform: 'uppercase',
+                              }}>{ref.section}</span>
+                            )}
+                            {(ref as any)._borrowed_from && (
+                              <span style={{
+                                marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 6px',
+                                borderRadius: 3, background: 'rgba(99,102,241,0.15)', color: 'var(--accent)',
+                                border: '1px solid var(--accent)', textTransform: 'none',
+                              }}>↗ from {(ref as any)._borrowed_from}</span>
+                            )}
+                          </div>
+                          <div>{ref.text}</div>
+                        </>
+                      ) : (
+                        <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>—</span>
+                      )}
+                    </div>
+                  )}
+                  <div>
+                    {gen ? (() => {
+                      const edited = !isEditingActive && isSentenceEdited(gen)
+                      return (
+                      <>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 2, fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span>[{gen.start.toFixed(1)}–{gen.end.toFixed(1)}s]</span>
+                          {edited && (
+                            <span style={{
+                              fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3,
+                              background: 'rgba(34,197,94,0.15)', color: 'var(--success)',
+                              border: '1px solid var(--success)', letterSpacing: '0.05em',
+                            }}>✏ 편집됨</span>
+                          )}
+                        </div>
+                        {isEditingActive && draftSentences ? (
+                          <textarea
+                            value={gen.text}
+                            onChange={e => updateDraft(i, e.target.value)}
+                            rows={Math.max(1, Math.ceil(gen.text.length / 40))}
+                            style={{
+                              width: '100%', padding: '6px 10px', fontSize: 13, lineHeight: 1.5,
+                              border: '1px solid var(--border)', borderRadius: 6,
+                              background: 'var(--bg-base)', color: 'var(--text-body)',
+                              resize: 'vertical', fontFamily: 'inherit',
+                            }}
+                          />
+                        ) : (
+                          <div style={{
+                            fontSize: 13, lineHeight: 1.5, fontWeight: 500,
+                            color: edited ? 'var(--success)' : 'var(--text-primary)',
+                            background: edited ? 'rgba(34,197,94,0.08)' : 'transparent',
+                            padding: edited ? '4px 8px' : 0,
+                            borderRadius: edited ? 4 : 0,
+                            borderLeft: edited ? '3px solid var(--success)' : 'none',
+                          }}>
+                            {gen.text}
+                          </div>
+                        )}
+                      </>
+                      )
+                    })() : (
+                      <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: 12 }}>—</span>
+                    )}
+                  </div>
+                </div>,
+              )
+            }
+            return elements
+          })()}
         </div>
       )}
 
-      <button onClick={onRestart} style={{ ...ghostBtnSt, width: '100%' }}>↺ 다시 처음부터</button>
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <button onClick={onBackToMapping} style={{ ...ghostBtnSt, flex: 1 }}>← 매핑으로</button>
+        <button onClick={onBackToPersona} style={{ ...ghostBtnSt, flex: 1 }}>← 페르소나로</button>
+        <button onClick={onRestart} style={{ ...ghostBtnSt, flex: 1 }}>↺ 처음부터</button>
+      </div>
     </>
   )
 }
@@ -1307,4 +2333,77 @@ const ghostBtnSt: React.CSSProperties = {
   background: 'var(--bg-surface)', color: 'var(--text-body)',
   border: '1px solid var(--border)',
   borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+}
+
+function HookArchetypePicker({
+  classified, override, setOverride,
+}: {
+  classified: NonNullable<MappingPreview['hook_archetype']>
+  override: { archetype: string; pattern?: string; core_word?: string } | null
+  setOverride: React.Dispatch<React.SetStateAction<{ archetype: string; pattern?: string; core_word?: string } | null>>
+}) {
+  const candidates = classified.candidates && classified.candidates.length > 0
+    ? classified.candidates
+    : [{ archetype: classified.archetype, pattern: classified.pattern || '', core_word: classified.core_word || '', score: 1 }]
+  const activeArch = override?.archetype || classified.archetype
+  if (candidates.length < 2) {
+    return (
+      <div style={{
+        background: 'rgba(99,102,241,0.08)', border: '1px solid var(--accent)',
+        borderRadius: 'var(--radius-sm)', padding: '8px 12px', marginBottom: 10,
+        fontSize: 11, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+      }}>
+        <span style={{ fontWeight: 700, color: 'var(--accent)' }}>🎯 Hook archetype</span>
+        <span style={{ fontWeight: 600 }}>{classified.archetype}</span>
+        {classified.core_word && <span style={{ color: 'var(--text-secondary)' }}>· core: <b>{classified.core_word}</b></span>}
+        {classified.pattern && <span style={{ color: 'var(--text-muted)' }}>· pattern: <code>{classified.pattern}</code></span>}
+      </div>
+    )
+  }
+  return (
+    <div style={{
+      background: 'rgba(99,102,241,0.06)', border: '1px solid var(--accent)',
+      borderRadius: 'var(--radius-sm)', padding: '10px 12px', marginBottom: 10,
+    }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', marginBottom: 6 }}>
+        🎯 Hook archetype 후보 ({candidates.length}개) — primary 선택
+      </div>
+      <div style={{ display: 'grid', gap: 6 }}>
+        {candidates.map((c, i) => {
+          const checked = c.archetype === activeArch
+          return (
+            <label key={`${c.archetype}-${i}`} style={{
+              display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px',
+              fontSize: 11, lineHeight: 1.4,
+              background: checked ? 'var(--bg-surface)' : 'transparent',
+              border: `1px solid ${checked ? 'var(--accent)' : 'var(--border)'}`,
+              borderRadius: 4, cursor: 'pointer',
+            }}>
+              <input
+                type="radio" name="hook-archetype" checked={checked}
+                onChange={() => {
+                  if (c.archetype === classified.archetype) {
+                    // 분석 default로 복귀 → override 해제
+                    setOverride(null)
+                  } else {
+                    setOverride({ archetype: c.archetype, pattern: c.pattern, core_word: c.core_word })
+                  }
+                }}
+                style={{ flexShrink: 0 }}
+              />
+              <span style={{ fontWeight: 600 }}>{c.archetype}</span>
+              {c.score != null && (
+                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>score {(c.score * 100).toFixed(0)}%</span>
+              )}
+              {c.core_word && <span style={{ color: 'var(--text-secondary)' }}>· core: <b>{c.core_word}</b></span>}
+              {c.pattern && <span style={{ color: 'var(--text-muted)' }}>· {c.pattern}</span>}
+              {c.archetype === classified.archetype && (
+                <span style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--text-muted)' }}>(분석 default)</span>
+              )}
+            </label>
+          )
+        })}
+      </div>
+    </div>
+  )
 }

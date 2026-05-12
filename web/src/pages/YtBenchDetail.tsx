@@ -1,8 +1,16 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { authedFetch } from '../api'
 import { fmtNum, engagementRate, erColor, parseFrameAnalysis } from '../utils'
 import FrameTimeline from '../components/FrameTimeline'
+
+interface UspLayoutItem {
+  id: number
+  label: string
+  description: string
+  appears_in: string[]
+  evidence?: string
+}
 
 const EMO_KO: Record<string, string> = {
   happy: '기쁨', excited: '신남', sad: '슬픔', angry: '분노',
@@ -101,6 +109,37 @@ export default function YtBenchDetail() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [tab, setTab] = useState<Tab>('overview')
+  const [analyzing, setAnalyzing] = useState<string | null>(null)
+  const [analyzeErr, setAnalyzeErr] = useState('')
+
+  const reload = async () => {
+    if (!shortcode) return
+    const r = await authedFetch(`/api/yt/bench/${shortcode}`)
+    if (r.ok) setData(await r.json())
+  }
+
+  const runUspAnalysis = async () => {
+    if (!shortcode) return
+    setAnalyzing('classify'); setAnalyzeErr('')
+    try {
+      let r = await authedFetch(`/api/yt/script/classify-sentences/${shortcode}`, { method: 'POST' })
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}))
+        throw new Error(d.detail || `classify-sentences ${r.status}`)
+      }
+      setAnalyzing('usp_layout')
+      r = await authedFetch(`/api/yt/script/reanalyze-usp-layout/${shortcode}`, { method: 'POST' })
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}))
+        throw new Error(d.detail || `reanalyze-usp-layout ${r.status}`)
+      }
+      await reload()
+    } catch (e: any) {
+      setAnalyzeErr(e.message || String(e))
+    } finally {
+      setAnalyzing(null)
+    }
+  }
 
   useEffect(() => {
     if (!shortcode) return
@@ -304,6 +343,14 @@ export default function YtBenchDetail() {
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
                 <div className="eyebrow-label" style={{ marginBottom: 0 }}>대본 구조</div>
+                <button
+                  onClick={() => navigate(`/script/new/yt/${shortcode}`)}
+                  style={{
+                    marginLeft: 'auto', padding: '6px 14px', fontSize: 12, fontWeight: 600,
+                    background: 'var(--accent)', color: '#fff',
+                    border: 'none', borderRadius: 6, cursor: 'pointer',
+                  }}
+                >📝 이 영상으로 대본 생성</button>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
                 {([
@@ -336,6 +383,134 @@ export default function YtBenchDetail() {
                   <strong style={{ color: 'var(--error)' }}>Improve:</strong> {ss.overall.weakness}
                 </div>
               )}
+
+              {/* USP Layout — 인스타와 동일 분석 (classify-sentences + reanalyze-usp-layout) */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <div className="eyebrow-label" style={{ marginBottom: 0 }}>USP 배치 분석</div>
+                <button
+                  onClick={runUspAnalysis}
+                  disabled={!!analyzing}
+                  style={{
+                    marginLeft: 'auto', padding: '4px 10px', fontSize: 11, fontWeight: 600,
+                    background: analyzing ? 'var(--bg-elevated)' : 'var(--accent)',
+                    color: analyzing ? 'var(--text-muted)' : '#fff',
+                    border: 'none', borderRadius: 4, cursor: analyzing ? 'wait' : 'pointer',
+                  }}
+                >
+                  {analyzing === 'classify' ? '분석 중… (1/2) 문장 분류'
+                   : analyzing === 'usp_layout' ? '분석 중… (2/2) USP 배치'
+                   : ((ss.overall as any)?.usp_layout?.length ? '🔄 재분석' : '✨ 분석 실행')}
+                </button>
+              </div>
+              {analyzeErr && (
+                <div style={{ marginBottom: 10, padding: 8, fontSize: 12, color: '#c00', background: '#fff5f5', border: '1px solid #fcc', borderRadius: 4 }}>
+                  {analyzeErr}
+                </div>
+              )}
+              {(() => {
+                const layout = ((ss.overall as any)?.usp_layout || []) as UspLayoutItem[]
+                if (!layout.length) {
+                  return (
+                    <div className="empty-state" style={{ marginBottom: 20, fontSize: 12 }}>
+                      USP 배치 분석 결과 없음 — 위 "분석 실행" 클릭
+                    </div>
+                  )
+                }
+                const secOrder = ['hook', 'intro', 'body_1', 'body_2', 'body_3', 'body_4', 'body_5', 'body_6', 'body', 'cta']
+                const secToUsps: Record<string, number[]> = {}
+                layout.forEach(u => {
+                  (u.appears_in || []).forEach(sec => {
+                    const k = sec.toLowerCase()
+                    if (!secToUsps[k]) secToUsps[k] = []
+                    if (!secToUsps[k].includes(u.id)) secToUsps[k].push(u.id)
+                  })
+                })
+                const usedSecs = secOrder.filter(s => secToUsps[s])
+                const uspColors: Record<number, string> = {
+                  1: '#f97316', 2: '#3b82f6', 3: '#10b981', 4: '#a855f7', 5: '#ec4899',
+                }
+                const colorOf = (id: number) => uspColors[id] || '#6b7280'
+                const adFormat = (ss.overall as any)?.ad_format as string | undefined
+                const adScore = (ss.overall as any)?.ad_suitability_score as number | undefined
+                const adReason = (ss.overall as any)?.ad_format_reason as string | undefined
+                const fmtColor: Record<string, string> = {
+                  '광고형': '#10b981', '후기형': '#3b82f6', '정보형': '#a855f7',
+                  '브랜딩형': '#ec4899', '유머형': '#f59e0b', '일상형': '#ef4444',
+                }
+                const scoreColor = (s?: number) => !s ? '#6b7280' : s >= 70 ? '#10b981' : s >= 50 ? '#f59e0b' : '#ef4444'
+                return (
+                  <div className="section-card section-card--block" style={{ marginBottom: 20, background: 'var(--bg-elevated)' }}>
+                    {(adFormat || adScore != null) && (
+                      <div style={{ marginBottom: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        {adFormat && (
+                          <span style={{
+                            background: fmtColor[adFormat] || '#6b7280', color: '#fff',
+                            fontSize: 12, fontWeight: 700, padding: '4px 10px', borderRadius: 6,
+                          }}>{adFormat}</span>
+                        )}
+                        {adScore != null && (
+                          <span style={{
+                            border: `1px solid ${scoreColor(adScore)}`, color: scoreColor(adScore),
+                            fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+                          }}>광고적합성 {adScore}</span>
+                        )}
+                        {adReason && (
+                          <span style={{ fontSize: 11, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                            {adReason}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 10 }}>
+                      🗺 총 <b style={{ color: '#1e40af' }}>{layout.length}개 USP</b>가 {usedSecs.length}개 섹션에 배치됨
+                    </div>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 12, padding: 8, background: 'var(--bg-surface)', borderRadius: 6 }}>
+                      {usedSecs.map((sec, i) => (
+                        <Fragment key={sec}>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
+                              {sec.replace('_', ' ').toUpperCase()}
+                            </div>
+                            <div style={{ display: 'flex', gap: 2 }}>
+                              {secToUsps[sec].map(uid => (
+                                <span key={uid} style={{
+                                  background: colorOf(uid), color: '#fff',
+                                  fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
+                                }}>USP{uid}</span>
+                              ))}
+                            </div>
+                          </div>
+                          {i < usedSecs.length - 1 && (
+                            <div style={{ alignSelf: 'flex-end', paddingBottom: 4, color: 'var(--text-muted)', fontSize: 12 }}>→</div>
+                          )}
+                        </Fragment>
+                      ))}
+                    </div>
+                    {layout.map(u => (
+                      <div key={u.id} style={{ marginBottom: 6, paddingBottom: 5, borderBottom: '1px solid var(--border-subtle)', fontSize: 12 }}>
+                        <div style={{ marginBottom: 2, display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
+                          <span style={{
+                            background: colorOf(u.id), color: '#fff',
+                            fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
+                          }}>USP{u.id}</span>
+                          <span className={u.label === 'MAIN' ? 'tag-pill tag-pill--strong' : 'tag-pill'} style={{ fontSize: 10 }}>
+                            {u.label}
+                          </span>
+                          <span style={{ fontWeight: 600 }}>{u.description}</span>
+                        </div>
+                        <div style={{ fontSize: 10, color: 'var(--text-secondary)' }}>
+                          📍 {(u.appears_in || []).map(s => s.replace('_', ' ').toUpperCase()).join(' · ')}
+                        </div>
+                        {u.evidence && (
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, fontStyle: 'italic' }}>
+                            "{u.evidence}"
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )
+              })()}
             </>
           ) : (
             <div className="empty-state" style={{ marginBottom: 20 }}>

@@ -74,6 +74,7 @@ class ScriptGenRequest(BaseModel):
     desire: str = ""
     usps: list[dict]  # 광고에 들어갈 USP 목록 (첫 항목 = 메인, 나머지 = 서브)
     reference_shortcodes: list[str]
+    reference_source: str = "reels"  # 'reels' | 'youtube' — 참고 영상 플랫폼
     refine: bool = True  # False = 1차만 (draft), True = 1차+2차
     target_persona: dict | None = None  # { name, scenario, signals, tone_hint }
     # chunk.section→user_usp_id (단일) 또는 user_usp_ids[] (multi). 둘 다 지원.
@@ -133,6 +134,7 @@ def gen_script(req: ScriptGenRequest):
             desire=req.desire,
             usps=req.usps or [],
             reference_shortcodes=req.reference_shortcodes,
+            reference_source=req.reference_source if req.reference_source in ("reels", "youtube") else "reels",
             refine=req.refine,
             target_persona=req.target_persona,
             chunk_usp_override=chunk_override,
@@ -490,15 +492,17 @@ def reanalyze_structure_for_reel(shortcode: str, request: Request):
 
 
 @app.post("/api/script/analyze-section-chunks/{shortcode}")
-def analyze_section_chunks_for_reel(shortcode: str, request: Request):
+def analyze_section_chunks_for_reel(shortcode: str, request: Request, source: str = "reels"):
     """모든 섹션(hook/intro/body_N/cta) chunk별 분석. overall.section_chunks에 저장 (+ body_chunks 호환 alias).
 
     Plan-A: chunks 결과를 정본으로 sentence.section + usp.appears_in 자동 동기화.
+    source: 'reels' | 'youtube'
     """
     auth_svc.require_user(request)
-    ref = script_gen.fetch_reference(shortcode)
+    src = source if source in ("reels", "youtube") else "reels"
+    ref = script_gen.fetch_reference(shortcode, source=src)
     if not ref:
-        raise HTTPException(404, "참고 릴스 없음")
+        raise HTTPException(404, "참고 영상 없음")
     sentences = list(ref.get("sentences") or [])
     if not any(s.get("section") for s in sentences):
         raise HTTPException(400, "section 라벨된 sentences 필요")
@@ -509,8 +513,10 @@ def analyze_section_chunks_for_reel(shortcode: str, request: Request):
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
     H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    tbl = script_gen._TABLES_BY_SOURCE[src]
+    structure_tbl = tbl["structure"]
     rows = _r.get(
-        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=overall&limit=1",
+        f"{SUPA}/rest/v1/{structure_tbl}?shortcode=eq.{shortcode}&select=overall&limit=1",
         headers=H, timeout=10,
     ).json()
     if not rows:
@@ -525,27 +531,42 @@ def analyze_section_chunks_for_reel(shortcode: str, request: Request):
     script_gen.chunks_as_source_of_truth(chunks, sentences, None)
 
     _r.patch(
-        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
+        f"{SUPA}/rest/v1/{structure_tbl}?shortcode=eq.{shortcode}",
         headers={**H, "Prefer": "return=minimal"},
         json={"overall": overall}, timeout=15,
     )
-    # sentences DB 갱신 (transcripts.segments — section 라벨 + text 동기화)
+    # sentences DB 갱신
     try:
-        # text가 변경됐을 수 있으니 transcript 문자열도 segments에서 재생성
-        transcript_text = " ".join((s.get("text") or "").strip() for s in sentences if (s.get("text") or "").strip())
-        _r.post(
-            f"{SUPA}/rest/v1/reels_transcripts?on_conflict=shortcode",
-            headers={**H, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"},
-            json={"shortcode": shortcode, "transcript": transcript_text, "language": "ko", "segments": sentences},
-            timeout=15,
-        )
+        if src == "reels":
+            transcript_text = " ".join((s.get("text") or "").strip() for s in sentences if (s.get("text") or "").strip())
+            _r.post(
+                f"{SUPA}/rest/v1/reels_transcripts?on_conflict=shortcode",
+                headers={**H, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"},
+                json={"shortcode": shortcode, "transcript": transcript_text, "language": "ko", "segments": sentences},
+                timeout=15,
+            )
+        else:
+            # youtube: pro_audio.sentences 갱신
+            pa_tbl = tbl["pro_audio"]
+            pa_rows = _r.get(
+                f"{SUPA}/rest/v1/{pa_tbl}?shortcode=eq.{shortcode}&select=pro_audio&limit=1",
+                headers=H, timeout=10,
+            ).json()
+            pro = (pa_rows[0].get("pro_audio") if pa_rows else {}) or {}
+            pro["sentences"] = sentences
+            _r.patch(
+                f"{SUPA}/rest/v1/{pa_tbl}?shortcode=eq.{shortcode}",
+                headers={**H, "Content-Type": "application/json", "Prefer": "return=minimal"},
+                json={"pro_audio": pro}, timeout=15,
+            )
     except Exception as e:
         logger.warning("[analyze-section-chunks] sentences sync failed: %s", e)
-    return {"shortcode": shortcode, "chunks": chunks, "count": len(chunks)}
+    return {"shortcode": shortcode, "source": src, "chunks": chunks, "count": len(chunks)}
 
 
 class PreviewMappingRequest(BaseModel):
     product_id: int
+    source: str = "reels"  # 'reels' | 'youtube'
 
 
 class UpdateSectionChunksRequest(BaseModel):
@@ -553,16 +574,19 @@ class UpdateSectionChunksRequest(BaseModel):
 
 
 @app.patch("/api/script/section-chunks/{shortcode}")
-def update_section_chunks(shortcode: str, body: UpdateSectionChunksRequest, request: Request):
+def update_section_chunks(shortcode: str, body: UpdateSectionChunksRequest, request: Request, source: str = "reels"):
     """ref의 section_chunks 분석 결과를 직접 수정 (분석이 잘못된 경우 보정용)."""
     auth_svc.require_user(request)
+    src = source if source in ("reels", "youtube") else "reels"
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
     H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    tbl = script_gen._TABLES_BY_SOURCE[src]
+    structure_tbl = tbl["structure"]
 
     rows = _r.get(
-        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=overall&limit=1",
+        f"{SUPA}/rest/v1/{structure_tbl}?shortcode=eq.{shortcode}&select=overall&limit=1",
         headers=H, timeout=10,
     ).json()
     if not rows:
@@ -573,7 +597,7 @@ def update_section_chunks(shortcode: str, body: UpdateSectionChunksRequest, requ
         {**c, "body_n": c.get("section")} for c in body.chunks if (c.get("section") or "").startswith("body")
     ]
     r = _r.patch(
-        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
+        f"{SUPA}/rest/v1/{structure_tbl}?shortcode=eq.{shortcode}",
         headers={**H, "Prefer": "return=minimal"},
         json={"overall": overall}, timeout=15,
     )
@@ -582,40 +606,59 @@ def update_section_chunks(shortcode: str, body: UpdateSectionChunksRequest, requ
 
     # ⭐ chunks 변경 후 sentences.section 동기화 (chunks 정본화)
     try:
-        trans_rows = _r.get(
-            f"{SUPA}/rest/v1/reels_transcripts?shortcode=eq.{shortcode}&select=transcript,segments&limit=1",
-            headers=H, timeout=10,
-        ).json()
-        if trans_rows:
-            sentences = list(trans_rows[0].get("segments") or [])
-            script_gen.chunks_as_source_of_truth(body.chunks, sentences, None)
-            # text가 변경됐을 수 있으니 transcript 문자열도 segments에서 재생성
-            transcript_text = " ".join((s.get("text") or "").strip() for s in sentences if (s.get("text") or "").strip())
-            _r.post(
-                f"{SUPA}/rest/v1/reels_transcripts?on_conflict=shortcode",
-                headers={**H, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"},
-                json={"shortcode": shortcode, "transcript": transcript_text, "language": "ko", "segments": sentences},
-                timeout=15,
-            )
-            logger.info("[update-section-chunks] sentences synced (section+text, %d sentences)", len(sentences))
+        if src == "reels":
+            trans_rows = _r.get(
+                f"{SUPA}/rest/v1/reels_transcripts?shortcode=eq.{shortcode}&select=transcript,segments&limit=1",
+                headers=H, timeout=10,
+            ).json()
+            if trans_rows:
+                sentences = list(trans_rows[0].get("segments") or [])
+                script_gen.chunks_as_source_of_truth(body.chunks, sentences, None)
+                transcript_text = " ".join((s.get("text") or "").strip() for s in sentences if (s.get("text") or "").strip())
+                _r.post(
+                    f"{SUPA}/rest/v1/reels_transcripts?on_conflict=shortcode",
+                    headers={**H, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"},
+                    json={"shortcode": shortcode, "transcript": transcript_text, "language": "ko", "segments": sentences},
+                    timeout=15,
+                )
+                logger.info("[update-section-chunks] reels sentences synced (%d)", len(sentences))
+        else:
+            pa_tbl = tbl["pro_audio"]
+            pa_rows = _r.get(
+                f"{SUPA}/rest/v1/{pa_tbl}?shortcode=eq.{shortcode}&select=pro_audio&limit=1",
+                headers=H, timeout=10,
+            ).json()
+            if pa_rows:
+                pro = pa_rows[0].get("pro_audio") or {}
+                sentences = list(pro.get("sentences") or pro.get("tts_script") or [])
+                script_gen.chunks_as_source_of_truth(body.chunks, sentences, None)
+                pro["sentences"] = sentences
+                _r.patch(
+                    f"{SUPA}/rest/v1/{pa_tbl}?shortcode=eq.{shortcode}",
+                    headers={**H, "Content-Type": "application/json", "Prefer": "return=minimal"},
+                    json={"pro_audio": pro}, timeout=15,
+                )
+                logger.info("[update-section-chunks] youtube sentences synced (%d)", len(sentences))
     except Exception as e:
         logger.warning("[update-section-chunks] sentences sync failed: %s", e)
 
-    return {"shortcode": shortcode, "count": len(body.chunks)}
+    return {"shortcode": shortcode, "source": src, "count": len(body.chunks)}
 
 
 @app.patch("/api/script/hook-archetype/{shortcode}")
-def update_hook_archetype(shortcode: str, body: dict, request: Request):
+def update_hook_archetype(shortcode: str, body: dict, request: Request, source: str = "reels"):
     """Hook chunk의 archetype 메타데이터 수정 (분석이 잘못 분류한 경우).
 
     body: {"archetype": "curiosity_teaser" | ..., "pattern": "...", "core_word": "...", "reasoning": "..."}
     archetype만 보내면 pattern/core_word는 보존.
     """
     auth_svc.require_user(request)
+    src = source if source in ("reels", "youtube") else "reels"
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
     H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    structure_tbl = script_gen._TABLES_BY_SOURCE[src]["structure"]
 
     new_arch = (body or {}).get("archetype")
     valid_keys = set(script_gen.HOOK_ARCHETYPES.keys())
@@ -623,7 +666,7 @@ def update_hook_archetype(shortcode: str, body: dict, request: Request):
         raise HTTPException(400, f"archetype은 다음 중 하나: {sorted(valid_keys)}")
 
     rows = _r.get(
-        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}&select=overall&limit=1",
+        f"{SUPA}/rest/v1/{structure_tbl}?shortcode=eq.{shortcode}&select=overall&limit=1",
         headers=H, timeout=10,
     ).json()
     if not rows:
@@ -644,13 +687,13 @@ def update_hook_archetype(shortcode: str, body: dict, request: Request):
     overall["section_chunks"] = chunks
 
     r = _r.patch(
-        f"{SUPA}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",
+        f"{SUPA}/rest/v1/{structure_tbl}?shortcode=eq.{shortcode}",
         headers={**H, "Prefer": "return=minimal"},
         json={"overall": overall}, timeout=15,
     )
     if r.status_code not in (200, 204):
         raise HTTPException(r.status_code, r.text[:200])
-    return {"shortcode": shortcode, "archetype": new_dict}
+    return {"shortcode": shortcode, "source": src, "archetype": new_dict}
 
 
 @app.post("/api/usp/suggest-description")
@@ -772,10 +815,11 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
 
     import time as _t
     t_start = _t.time()
+    src = body.source if body.source in ("reels", "youtube") else "reels"
     # 1. ref + section_chunks 로드
-    ref = script_gen.fetch_reference(shortcode)
+    ref = script_gen.fetch_reference(shortcode, source=src)
     if not ref:
-        raise HTTPException(404, "참고 릴스 없음")
+        raise HTTPException(404, "참고 영상 없음")
     overall = ((ref.get("structure") or {}).get("overall") or {})
     section_chunks = overall.get("section_chunks") or []
     chunks_cached = bool(section_chunks)
@@ -1379,6 +1423,7 @@ class MyProductIn(BaseModel):
     name: str
     persona: str | None = None
     usps: list[dict] = []
+    social_proof: list[dict] = []
 
 
 _MY_PRODUCTS_CACHE_TTL = 20
@@ -1481,7 +1526,7 @@ def create_my_product(req: MyProductIn, request: Request):
         f"{SUPA}/rest/v1/my_products",
         headers={"apikey": SK, "Authorization": f"Bearer {SK}",
                  "Content-Type": "application/json", "Prefer": "return=representation"},
-        json={"owner_id": me["id"], "name": req.name, "persona": req.persona, "usps": req.usps},
+        json={"owner_id": me["id"], "name": req.name, "persona": req.persona, "usps": req.usps, "social_proof": req.social_proof},
         timeout=10,
     )
     if r.status_code not in (200, 201):
@@ -1514,13 +1559,413 @@ def update_my_product(pid: int, req: MyProductIn, request: Request):
         f"{SUPA}/rest/v1/my_products?id=eq.{pid}",
         headers={"apikey": SK, "Authorization": f"Bearer {SK}",
                  "Content-Type": "application/json", "Prefer": "return=representation"},
-        json={"name": req.name, "persona": req.persona, "usps": req.usps},
+        json={"name": req.name, "persona": req.persona, "usps": req.usps, "social_proof": req.social_proof},
         timeout=10,
     )
     if r.status_code not in (200, 204):
         raise HTTPException(r.status_code, r.text[:200])
     _invalidate_my_products_cache()
     return r.json()[0] if r.json() else {}
+
+
+# ── Generated Scripts: 생성된 대본 저장·관리 ──
+
+class GenScriptIn(BaseModel):
+    ref_shortcode: str | None = None
+    source_type: str = "insta"  # insta | youtube | fb_ads
+    persona_name: str | None = None
+    title: str | None = None
+    sentences: list[dict] = []
+    meta: dict = {}
+    caption: str | None = None
+    pinned_comment: str | None = None
+
+
+class GenScriptPatch(BaseModel):
+    title: str | None = None
+    caption: str | None = None
+    pinned_comment: str | None = None
+    sentences: list[dict] | None = None
+    shooting_plan_url: str | None = None
+
+
+class GenScriptShareIn(BaseModel):
+    shared_with_id: str | None = None  # 우선
+    email: str | None = None  # backward compat
+    permission: str = "view"  # 'view' | 'edit'
+
+
+def _check_script_access(pid: int, sid: str, me: dict, edit: bool = False) -> dict:
+    """대본 접근 권한 체크. 반환: 대본 행. created_by OR 공유 OR admin."""
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    rows = _r.get(
+        f"{SUPA}/rest/v1/generated_scripts?id=eq.{sid}&product_id=eq.{pid}&select=*&limit=1",
+        headers=H, timeout=10,
+    ).json()
+    if not rows:
+        raise HTTPException(404, "대본 없음")
+    row = rows[0]
+    if me.get("role") == "admin" or row.get("created_by") == me["id"]:
+        return row
+    perm_q = "permission=eq.edit" if edit else ""
+    qs = f"script_id=eq.{sid}&shared_with_id=eq.{me['id']}&select=id&limit=1"
+    if perm_q:
+        qs += f"&{perm_q}"
+    share = _r.get(f"{SUPA}/rest/v1/generated_script_shares?{qs}", headers=H, timeout=10).json()
+    if not share:
+        raise HTTPException(403, "대본 권한 없음")
+    return row
+
+
+def _check_product_access(pid: int, me: dict, edit: bool = False) -> None:
+    """소유 OR (edit이면 edit share / view면 view+) OR admin."""
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    own = _r.get(f"{SUPA}/rest/v1/my_products?id=eq.{pid}&select=owner_id",
+                 headers=H, timeout=10).json()
+    if not own:
+        raise HTTPException(404, "상품 없음")
+    if me.get("role") == "admin" or own[0]["owner_id"] == me["id"]:
+        return
+    perm_filter = "permission=eq.edit" if edit else ""
+    qs = f"product_id=eq.{pid}&shared_with_id=eq.{me['id']}&select=id&limit=1"
+    if perm_filter:
+        qs += f"&{perm_filter}"
+    share = _r.get(f"{SUPA}/rest/v1/my_product_shares?{qs}", headers=H, timeout=10).json()
+    if not share:
+        raise HTTPException(403, "권한 없음")
+
+
+@app.post("/api/my-products/{pid}/scripts")
+def create_gen_script(pid: int, body: GenScriptIn, request: Request):
+    me = auth_svc.require_user(request)
+    _check_product_access(pid, me, edit=True)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    meta_full = dict(body.meta or {})
+    if body.caption is not None:
+        meta_full["caption"] = body.caption
+    if body.pinned_comment is not None:
+        meta_full["pinned_comment"] = body.pinned_comment
+    r = _r.post(
+        f"{SUPA}/rest/v1/generated_scripts",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json={
+            "product_id": pid,
+            "ref_shortcode": body.ref_shortcode,
+            "source_type": body.source_type,
+            "persona_name": body.persona_name,
+            "title": body.title or (body.persona_name or "대본"),
+            "sentences": body.sentences,
+            "meta": meta_full,
+            "created_by": me["id"],
+        }, timeout=15,
+    )
+    if r.status_code not in (200, 201):
+        raise HTTPException(r.status_code, r.text[:300])
+    return r.json()[0] if r.json() else {}
+
+
+@app.patch("/api/my-products/{pid}/scripts/{sid}")
+def update_gen_script(pid: int, sid: str, body: GenScriptPatch, request: Request):
+    """저장된 대본 일부 수정 (title / sentences / caption / pinned_comment). 작성자 또는 edit 공유 가능."""
+    me = auth_svc.require_user(request)
+    row = _check_script_access(pid, sid, me, edit=True)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    cur_meta = row.get("meta") or {}
+    payload: dict = {}
+    if body.title is not None:
+        payload["title"] = body.title
+    if body.sentences is not None:
+        payload["sentences"] = body.sentences
+    if body.caption is not None:
+        cur_meta["caption"] = body.caption
+    if body.pinned_comment is not None:
+        cur_meta["pinned_comment"] = body.pinned_comment
+    if body.shooting_plan_url is not None:
+        cur_meta["shooting_plan_url"] = body.shooting_plan_url
+    if body.caption is not None or body.pinned_comment is not None or body.shooting_plan_url is not None:
+        payload["meta"] = cur_meta
+    if not payload:
+        return {"updated": False, "row": row}
+    logger.info("[gen-script PATCH] sid=%s pid=%s keys=%s sentences_n=%s",
+                sid, pid, list(payload.keys()),
+                len(payload.get("sentences") or []) if "sentences" in payload else None)
+    r = _r.patch(
+        f"{SUPA}/rest/v1/generated_scripts?id=eq.{sid}&product_id=eq.{pid}",
+        headers={**H, "Content-Type": "application/json", "Prefer": "return=representation"},
+        json=payload, timeout=15,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:300])
+    rows = r.json() if r.status_code == 200 else []
+    return {"updated": True, "row": rows[0] if rows else None}
+
+
+@app.get("/api/my-products/{pid}/scripts/{sid}/shares")
+def list_script_shares(pid: int, sid: str, request: Request):
+    me = auth_svc.require_user(request)
+    _check_script_access(pid, sid, me, edit=False)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    shares = _r.get(
+        f"{SUPA}/rest/v1/generated_script_shares?script_id=eq.{sid}"
+        f"&select=id,shared_with_id,shared_by,permission,created_at"
+        f"&order=created_at.desc",
+        headers=H, timeout=10,
+    ).json() or []
+    if shares:
+        ids = list({s["shared_with_id"] for s in shares} | {s["shared_by"] for s in shares})
+        ids_csv = ",".join(f'"{x}"' for x in ids)
+        profiles = _r.get(
+            f"{SUPA}/rest/v1/profiles?id=in.({ids_csv})&select=id,email,display_name",
+            headers=H, timeout=10,
+        ).json() or []
+        by_id = {p["id"]: p for p in profiles}
+        for s in shares:
+            s["shared_with_email"] = (by_id.get(s["shared_with_id"]) or {}).get("email", "")
+            s["shared_with_name"] = (by_id.get(s["shared_with_id"]) or {}).get("display_name", "")
+            s["shared_by_email"] = (by_id.get(s["shared_by"]) or {}).get("email", "")
+    return shares
+
+
+@app.post("/api/my-products/{pid}/scripts/{sid}/shares")
+def add_script_share(pid: int, sid: str, body: GenScriptShareIn, request: Request):
+    me = auth_svc.require_user(request)
+    row = _check_script_access(pid, sid, me, edit=False)
+    # 작성자 또는 admin만 공유 추가 가능
+    if me.get("role") != "admin" and row.get("created_by") != me["id"]:
+        raise HTTPException(403, "공유 권한은 작성자만 부여할 수 있습니다")
+    perm = body.permission if body.permission in ("view", "edit") else "view"
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    target_id = (body.shared_with_id or "").strip()
+    if not target_id and body.email:
+        email = body.email.strip().lower()
+        target = _r.get(
+            f"{SUPA}/rest/v1/profiles?email=eq.{email}&select=id&limit=1",
+            headers=H, timeout=10,
+        ).json() or []
+        if not target:
+            raise HTTPException(404, f"사용자 없음: {email}")
+        target_id = target[0]["id"]
+    if not target_id:
+        raise HTTPException(400, "shared_with_id 또는 email 필요")
+    if target_id == me["id"]:
+        raise HTTPException(400, "본인에게는 공유할 수 없습니다")
+    r = _r.post(
+        f"{SUPA}/rest/v1/generated_script_shares?on_conflict=script_id,shared_with_id",
+        headers={**H, "Content-Type": "application/json",
+                 "Prefer": "resolution=merge-duplicates,return=representation"},
+        json={
+            "script_id": sid, "shared_with_id": target_id, "shared_by": me["id"],
+            "permission": perm,
+        }, timeout=10,
+    )
+    if r.status_code not in (200, 201):
+        raise HTTPException(r.status_code, r.text[:300])
+    return r.json()[0] if r.json() else {}
+
+
+@app.delete("/api/my-products/{pid}/scripts/{sid}/shares/{share_id}")
+def delete_script_share(pid: int, sid: str, share_id: str, request: Request):
+    me = auth_svc.require_user(request)
+    row = _check_script_access(pid, sid, me, edit=False)
+    if me.get("role") != "admin" and row.get("created_by") != me["id"]:
+        raise HTTPException(403, "작성자만 공유를 제거할 수 있습니다")
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    _r.delete(
+        f"{SUPA}/rest/v1/generated_script_shares?id=eq.{share_id}&script_id=eq.{sid}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}", "Prefer": "return=minimal"},
+        timeout=10,
+    )
+    return {"deleted": True}
+
+
+@app.get("/api/my-products/{pid}/scripts")
+def list_gen_scripts(pid: int, request: Request):
+    me = auth_svc.require_user(request)
+    _check_product_access(pid, me, edit=False)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    # 본인 created_by + 공유받은 대본 (해당 product에 한정)
+    shares = _r.get(
+        f"{SUPA}/rest/v1/generated_script_shares?shared_with_id=eq.{me['id']}&select=script_id",
+        headers=H, timeout=10,
+    ).json() or []
+    shared_ids = [s["script_id"] for s in shares]
+    if shared_ids:
+        sids_csv = ",".join(f'"{x}"' for x in shared_ids)
+        or_filter = f"or=(created_by.eq.{me['id']},id.in.({sids_csv}))"
+    else:
+        or_filter = f"created_by=eq.{me['id']}"
+    r = _r.get(
+        f"{SUPA}/rest/v1/generated_scripts?product_id=eq.{pid}&archived_at=is.null"
+        f"&{or_filter}"
+        f"&select=id,ref_shortcode,source_type,persona_name,title,meta,created_at,created_by"
+        f"&order=created_at.desc",
+        headers=H, timeout=10,
+    )
+    scripts = r.json() if r.status_code == 200 else []
+    creator_ids = list({s["created_by"] for s in scripts if s.get("created_by")})
+    if creator_ids:
+        cids_csv = ",".join(f'"{x}"' for x in creator_ids)
+        prof = _r.get(
+            f"{SUPA}/rest/v1/profiles?id=in.({cids_csv})&select=id,email,display_name",
+            headers=H, timeout=10,
+        ).json() or []
+        by_id = {p["id"]: p for p in prof}
+        share_perm_by_sid = {x["script_id"]: x["permission"] for x in (shares or []) if isinstance(x, dict)}
+        for s in scripts:
+            cb = s.get("created_by")
+            if cb in by_id:
+                s["_creator_name"] = by_id[cb].get("display_name") or ""
+                s["_creator_email"] = by_id[cb].get("email") or ""
+            if cb != me["id"]:
+                s["_shared"] = True
+                s["_permission"] = share_perm_by_sid.get(s["id"], "view")
+    return scripts
+
+
+@app.get("/api/my-scripts")
+def list_all_my_scripts(request: Request):
+    """내가 owner이거나 공유받은 모든 상품의 저장 대본 통합."""
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+
+    if me.get("role") == "admin":
+        prod = _r.get(f"{SUPA}/rest/v1/my_products?select=id,name", headers=H, timeout=10).json()
+    else:
+        own = _r.get(
+            f"{SUPA}/rest/v1/my_products?owner_id=eq.{me['id']}&select=id,name",
+            headers=H, timeout=10,
+        ).json() or []
+        shared = _r.get(
+            f"{SUPA}/rest/v1/my_product_shares?shared_with_id=eq.{me['id']}&select=product_id",
+            headers=H, timeout=10,
+        ).json() or []
+        shared_ids = [s["product_id"] for s in shared]
+        extras = []
+        if shared_ids:
+            ids_csv = ",".join(str(x) for x in shared_ids)
+            extras = _r.get(
+                f"{SUPA}/rest/v1/my_products?id=in.({ids_csv})&select=id,name",
+                headers=H, timeout=10,
+            ).json() or []
+        prod = list({p["id"]: p for p in (own + extras)}.values())
+
+    # 공유받은 대본 id (어느 product든)
+    shares = _r.get(
+        f"{SUPA}/rest/v1/generated_script_shares?shared_with_id=eq.{me['id']}&select=script_id,permission",
+        headers=H, timeout=10,
+    ).json() or []
+    shared_ids = [s["script_id"] for s in shares]
+    perm_by_sid = {s["script_id"]: s["permission"] for s in shares}
+
+    ids_csv = ",".join(str(p["id"]) for p in prod) if prod else "0"
+    # 본인 (자기 prod 안) + 공유받은 (어느 prod든)
+    if shared_ids:
+        sids_csv = ",".join(f'"{x}"' for x in shared_ids)
+        or_filter = f"or=(and(product_id.in.({ids_csv}),created_by.eq.{me['id']}),id.in.({sids_csv}))"
+    else:
+        or_filter = f"product_id=in.({ids_csv})&created_by=eq.{me['id']}"
+    scripts = _r.get(
+        f"{SUPA}/rest/v1/generated_scripts?archived_at=is.null&{or_filter}"
+        f"&select=id,product_id,ref_shortcode,source_type,persona_name,title,meta,created_at,created_by"
+        f"&order=created_at.desc",
+        headers=H, timeout=15,
+    ).json() or []
+    # 공유받은 대본의 product도 prod 목록에 보충 (이름 표기용)
+    prod_id_set = {p["id"] for p in prod}
+    extra_pids = [s["product_id"] for s in scripts if s["product_id"] not in prod_id_set]
+    if extra_pids:
+        extra_csv = ",".join(str(x) for x in set(extra_pids))
+        extra_prod = _r.get(
+            f"{SUPA}/rest/v1/my_products?id=in.({extra_csv})&select=id,name",
+            headers=H, timeout=10,
+        ).json() or []
+        prod = list(prod) + extra_prod
+    # 작성자 정보 + 공유 플래그
+    creator_ids = list({s["created_by"] for s in scripts if s.get("created_by")})
+    creator_by_id: dict[str, dict] = {}
+    if creator_ids:
+        cids_csv = ",".join(f'"{x}"' for x in creator_ids)
+        prof = _r.get(
+            f"{SUPA}/rest/v1/profiles?id=in.({cids_csv})&select=id,email,display_name",
+            headers=H, timeout=10,
+        ).json() or []
+        creator_by_id = {p["id"]: p for p in prof}
+    for s in scripts:
+        cb = s.get("created_by")
+        if cb and cb in creator_by_id:
+            p = creator_by_id[cb]
+            s["_creator_name"] = p.get("display_name") or ""
+            s["_creator_email"] = p.get("email") or ""
+        if cb != me["id"]:
+            s["_shared"] = True
+            s["_permission"] = perm_by_sid.get(s["id"], "view")
+    return {"products": prod, "scripts": scripts}
+
+
+@app.get("/api/my-products/{pid}/scripts/{sid}")
+def get_gen_script(pid: int, sid: str, request: Request):
+    me = auth_svc.require_user(request)
+    # 본인 created_by + 공유받은 사용자 + admin 허용
+    row = _check_script_access(pid, sid, me, edit=False)
+    cb = row.get("created_by")
+    if cb:
+        SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+        SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+        _r = supabase.get_session()
+        prof = _r.get(
+            f"{SUPA}/rest/v1/profiles?id=eq.{cb}&select=email,display_name&limit=1",
+            headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+        ).json() or []
+        if prof:
+            row["_creator_name"] = prof[0].get("display_name") or ""
+            row["_creator_email"] = prof[0].get("email") or ""
+    return row
+
+
+@app.delete("/api/my-products/{pid}/scripts/{sid}")
+def delete_gen_script(pid: int, sid: str, request: Request):
+    me = auth_svc.require_user(request)
+    _check_product_access(pid, me, edit=True)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    # soft delete via archived_at — 본인이 만든 대본만 삭제 가능
+    r = _r.patch(
+        f"{SUPA}/rest/v1/generated_scripts?id=eq.{sid}&product_id=eq.{pid}"
+        f"&created_by=eq.{me['id']}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=minimal"},
+        json={"archived_at": "now()"}, timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:300])
+    return {"deleted": True}
 
 
 @app.delete("/api/my-products/{pid}")
@@ -1636,6 +2081,131 @@ def delete_product_share(pid: int, user_id: str, request: Request):
     return {"message": "공유 해제 완료"}
 
 
+class UspGroupIn(BaseModel):
+    name: str
+    color: str | None = None
+    order_idx: int = 0
+
+
+class UspGroupMembersIn(BaseModel):
+    usp_indexes: list[int] = []  # 1-based, my_products.usps[]에서의 위치
+
+
+@app.get("/api/my-products/{pid}/usp-groups")
+def list_usp_groups(pid: int, request: Request):
+    me = auth_svc.require_user(request)
+    _check_product_access(pid, me, edit=False)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    groups = _r.get(
+        f"{SUPA}/rest/v1/usp_groups?product_id=eq.{pid}&select=*&order=order_idx.asc,created_at.asc",
+        headers=H, timeout=10,
+    ).json() or []
+    members = _r.get(
+        f"{SUPA}/rest/v1/usp_group_members?product_id=eq.{pid}&select=group_id,usp_index",
+        headers=H, timeout=10,
+    ).json() or []
+    by_group: dict[str, list[int]] = {}
+    for m in members:
+        by_group.setdefault(m["group_id"], []).append(m["usp_index"])
+    for g in groups:
+        g["usp_indexes"] = sorted(by_group.get(g["id"], []))
+    return groups
+
+
+@app.post("/api/my-products/{pid}/usp-groups")
+def create_usp_group(pid: int, body: UspGroupIn, request: Request):
+    me = auth_svc.require_user(request)
+    _check_product_access(pid, me, edit=True)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(400, "그룹 이름 필수")
+    r = _r.post(
+        f"{SUPA}/rest/v1/usp_groups",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json={"product_id": pid, "name": name, "color": body.color,
+              "order_idx": body.order_idx, "created_by": me["id"]},
+        timeout=10,
+    )
+    if r.status_code not in (200, 201):
+        raise HTTPException(r.status_code, r.text[:300])
+    return r.json()[0] if r.json() else {}
+
+
+@app.patch("/api/my-products/{pid}/usp-groups/{gid}")
+def update_usp_group(pid: int, gid: str, body: UspGroupIn, request: Request):
+    me = auth_svc.require_user(request)
+    _check_product_access(pid, me, edit=True)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    payload: dict = {}
+    if body.name:
+        payload["name"] = body.name.strip()
+    if body.color is not None:
+        payload["color"] = body.color or None
+    if body.order_idx is not None:
+        payload["order_idx"] = body.order_idx
+    if not payload:
+        return {"updated": False}
+    r = _r.patch(
+        f"{SUPA}/rest/v1/usp_groups?id=eq.{gid}&product_id=eq.{pid}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=minimal"},
+        json=payload, timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:300])
+    return {"updated": True}
+
+
+@app.delete("/api/my-products/{pid}/usp-groups/{gid}")
+def delete_usp_group(pid: int, gid: str, request: Request):
+    me = auth_svc.require_user(request)
+    _check_product_access(pid, me, edit=True)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    _r.delete(
+        f"{SUPA}/rest/v1/usp_groups?id=eq.{gid}&product_id=eq.{pid}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}", "Prefer": "return=minimal"},
+        timeout=10,
+    )
+    return {"deleted": True}
+
+
+@app.put("/api/my-products/{pid}/usp-groups/{gid}/members")
+def set_usp_group_members(pid: int, gid: str, body: UspGroupMembersIn, request: Request):
+    """그룹의 멤버 USP indexes를 통째 교체 (idempotent set)."""
+    me = auth_svc.require_user(request)
+    _check_product_access(pid, me, edit=True)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    # 기존 멤버 모두 제거
+    _r.delete(
+        f"{SUPA}/rest/v1/usp_group_members?group_id=eq.{gid}&product_id=eq.{pid}",
+        headers={**H, "Prefer": "return=minimal"}, timeout=10,
+    )
+    # 새 멤버 추가 (dedupe)
+    unique_idxs = sorted({int(i) for i in body.usp_indexes if isinstance(i, int) and i >= 1})
+    if unique_idxs:
+        rows = [{"group_id": gid, "product_id": pid, "usp_index": i} for i in unique_idxs]
+        _r.post(
+            f"{SUPA}/rest/v1/usp_group_members",
+            headers={**H, "Content-Type": "application/json", "Prefer": "return=minimal"},
+            json=rows, timeout=10,
+        )
+    return {"count": len(unique_idxs)}
+
+
 @app.get("/api/users/shareable")
 def list_shareable_users(request: Request):
     """공유 대상 picker용 — 활성 사용자 (자기 제외). 일반 직원도 호출 가능."""
@@ -1680,6 +2250,21 @@ def get_me(request: Request, background_tasks: BackgroundTasks):
     profile = auth_svc.require_user(request)
     background_tasks.add_task(_update_last_login, profile["id"])
     return profile
+
+
+@app.get("/api/users/colleagues")
+def list_colleagues(request: Request):
+    """인증된 모든 사용자가 호출 가능 — 본인 제외 다른 사용자 minimal info (공유 등 dropdown용)."""
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    KEY = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.get(
+        f"{SUPA}/rest/v1/profiles?active=eq.true&select=id,display_name,email&order=display_name.asc",
+        headers={"apikey": KEY, "Authorization": f"Bearer {KEY}"}, timeout=10,
+    )
+    rows = r.json() if r.status_code == 200 else []
+    return [p for p in rows if p.get("id") != me["id"]]
 
 
 @app.get("/api/users")

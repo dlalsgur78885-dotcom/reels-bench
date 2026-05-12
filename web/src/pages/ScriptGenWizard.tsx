@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { api, authedFetch, BASE } from '../api'
 import type { MyProduct, PersonaCandidate } from '../api'
 import { getAccessToken } from '../supabase'
@@ -27,12 +27,21 @@ const cardSt: React.CSSProperties = {
 
 export default function ScriptGenWizard() {
   const { shortcode } = useParams<{ shortcode: string }>()
+  const location = useLocation()
+  const source: 'reels' | 'youtube' = location.pathname.includes('/script/new/yt/') ? 'youtube' : 'reels'
   const navigate = useNavigate()
   const [step, setStep] = useState<Step>('product')
 
   // 1. 상품
   const [products, setProducts] = useState<MyProduct[]>([])
   const [productId, setProductId] = useState<number | null>(null)
+  // USP 그룹
+  type UspGroupLite = { id: string; name: string; color: string | null; order_idx: number; usp_indexes: number[] }
+  const [uspGroups, setUspGroups] = useState<UspGroupLite[]>([])
+  useEffect(() => {
+    if (!productId) { setUspGroups([]); return }
+    api.listUspGroups(productId).then(setUspGroups).catch(() => setUspGroups([]))
+  }, [productId])
 
   // 2. 매핑
   const [mapping, setMapping] = useState<MappingPreview | null>(null)
@@ -81,7 +90,7 @@ export default function ScriptGenWizard() {
     setSkippedSentenceStarts(new Set())
     setHookArchetypeOverride(null)
     try {
-      const r = await api.previewMapping(shortcode, pid)
+      const r = await api.previewMapping(shortcode, pid, source)
       setMapping(r)
     } catch (e: any) {
       setMappingError(e.message || String(e))
@@ -111,7 +120,7 @@ export default function ScriptGenWizard() {
       return { ...c, sentences: newSents }
     })
     try {
-      await api.updateSectionChunks(shortcode, newChunks)
+      await api.updateSectionChunks(shortcode, newChunks, source)
     } catch (e: any) {
       return { ok: false, error: e?.message || 'DB 저장 실패' }
     }
@@ -401,6 +410,7 @@ export default function ScriptGenWizard() {
             pain: '', desire: '',
             usps: cleanUsps,
             reference_shortcodes: [shortcode],
+            reference_source: source,
             refine: false,
             session_id: sessionIds[idx],
             target_persona: persona ? {
@@ -570,6 +580,7 @@ export default function ScriptGenWizard() {
           currentShortcode={shortcode || ''}
           onBack={() => setStep('product')}
           onNext={goToPersona}
+          uspGroups={uspGroups}
         />
       )}
 
@@ -740,6 +751,9 @@ export default function ScriptGenWizard() {
               return next
             })
           }}
+          productId={productId}
+          shortcode={shortcode || ''}
+          source={source}
         />
       )}
     </div>
@@ -852,6 +866,7 @@ function StepMapping({
   onCreateUsp, onUpdateUsp, onUpdateChunkSentenceText, skippedSentenceStarts, onToggleSkipSentence, skippedChunks, onToggleSkipChunk, sectionOverrides, setSectionOverrides,
   hookArchetypeOverride, setHookArchetypeOverride,
   currentShortcode, onBack, onNext,
+  uspGroups,
 }: {
   mapping: MappingPreview | null
   loading: boolean
@@ -878,6 +893,7 @@ function StepMapping({
   currentShortcode: string
   onBack: () => void
   onNext: () => void
+  uspGroups: Array<{ id: string; name: string; color: string | null; order_idx: number; usp_indexes: number[] }>
 }) {
   // CTA pool picker
   type SectionItem = { shortcode: string; author: string; section_text: string; section_chunk: any; topic?: string }
@@ -1351,6 +1367,17 @@ function StepMapping({
                   const allUserUsps = mapping.product.usps.map((u: any, i: number) => ({
                     user_usp_id: i + 1, user_usp_name: u.usp,
                   }))
+                  // 그룹별 버킷 정리 (있는 그룹만, 마지막에 미분류)
+                  type _G = (typeof uspGroups)[number]
+                  const idxToGroup = new Map<number, _G>()
+                  for (const g of uspGroups) for (const i of g.usp_indexes) idxToGroup.set(i, g)
+                  const buckets: Array<{ group: _G | null; usps: typeof allUserUsps }> = []
+                  for (const g of uspGroups) {
+                    const inG = allUserUsps.filter(u => g.usp_indexes.includes(u.user_usp_id))
+                    if (inG.length) buckets.push({ group: g, usps: inG })
+                  }
+                  const unclassified = allUserUsps.filter(u => !idxToGroup.has(u.user_usp_id))
+                  if (unclassified.length) buckets.push({ group: null, usps: unclassified })
                   const toggleUsp = (uid: number) => {
                     const next = chunkUserIds.includes(uid)
                       ? chunkUserIds.filter(x => x !== uid)
@@ -1402,47 +1429,61 @@ function StepMapping({
                           })()
                           : '매칭 없음 — 페르소나로 풀기'}
                       </div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
-                        {allUserUsps.map(u => {
-                          const checked = chunkUserIds.includes(u.user_usp_id)
-                          return (
-                            <span key={u.user_usp_id} style={{ display: 'inline-flex', alignItems: 'stretch' }}>
-                              <button
-                                type="button"
-                                onClick={() => toggleUsp(u.user_usp_id)}
-                                style={{
-                                  padding: '4px 8px 4px 10px', fontSize: 11, fontWeight: checked ? 700 : 500,
-                                  border: `1px solid ${checked ? 'var(--accent)' : 'var(--border)'}`,
-                                  borderRight: 'none',
-                                  borderTopLeftRadius: 'var(--radius-pill)',
-                                  borderBottomLeftRadius: 'var(--radius-pill)',
-                                  background: checked ? 'var(--accent-light)' : 'var(--bg-base)',
-                                  color: checked ? 'var(--accent)' : 'var(--text-body)',
-                                  cursor: 'pointer',
-                                }}>
-                                {checked ? '✓ ' : ''}USP{u.user_usp_id} · {u.user_usp_name}
-                              </button>
-                              <button
-                                type="button"
-                                title={`USP${u.user_usp_id} 수정`}
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  startEditUsp(u.user_usp_id, chunk.section)
-                                }}
-                                style={{
-                                  padding: '4px 8px', fontSize: 11,
-                                  border: `1px solid ${checked ? 'var(--accent)' : 'var(--border)'}`,
-                                  borderTopRightRadius: 'var(--radius-pill)',
-                                  borderBottomRightRadius: 'var(--radius-pill)',
-                                  background: checked ? 'var(--accent-light)' : 'var(--bg-base)',
-                                  color: 'var(--text-muted)',
-                                  cursor: 'pointer',
-                                }}>
-                                ✏
-                              </button>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 6 }}>
+                        {buckets.map((bucket, bi) => (
+                          <div key={bucket.group?.id || `unclassified-${bi}`}
+                            style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                            <span style={{
+                              padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700,
+                              background: bucket.group?.color || 'var(--bg-elevated)',
+                              color: bucket.group?.color ? '#fff' : 'var(--text-muted)',
+                              border: bucket.group ? 'none' : '1px dashed var(--border)',
+                              whiteSpace: 'nowrap', minWidth: 56, textAlign: 'center',
+                            }}>
+                              {bucket.group ? bucket.group.name : '미분류'}
                             </span>
-                          )
-                        })}
+                            {bucket.usps.map(u => {
+                              const checked = chunkUserIds.includes(u.user_usp_id)
+                              return (
+                                <span key={u.user_usp_id} style={{ display: 'inline-flex', alignItems: 'stretch' }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleUsp(u.user_usp_id)}
+                                    style={{
+                                      padding: '4px 8px 4px 10px', fontSize: 11, fontWeight: checked ? 700 : 500,
+                                      border: `1px solid ${checked ? 'var(--accent)' : 'var(--border)'}`,
+                                      borderRight: 'none',
+                                      borderTopLeftRadius: 'var(--radius-pill)',
+                                      borderBottomLeftRadius: 'var(--radius-pill)',
+                                      background: checked ? 'var(--accent-light)' : 'var(--bg-base)',
+                                      color: checked ? 'var(--accent)' : 'var(--text-body)',
+                                      cursor: 'pointer',
+                                    }}>
+                                    {checked ? '✓ ' : ''}USP{u.user_usp_id} · {u.user_usp_name}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    title={`USP${u.user_usp_id} 수정`}
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      startEditUsp(u.user_usp_id, chunk.section)
+                                    }}
+                                    style={{
+                                      padding: '4px 8px', fontSize: 11,
+                                      border: `1px solid ${checked ? 'var(--accent)' : 'var(--border)'}`,
+                                      borderTopRightRadius: 'var(--radius-pill)',
+                                      borderBottomRightRadius: 'var(--radius-pill)',
+                                      background: checked ? 'var(--accent-light)' : 'var(--bg-base)',
+                                      color: 'var(--text-muted)',
+                                      cursor: 'pointer',
+                                    }}>
+                                    ✏
+                                  </button>
+                                </span>
+                              )
+                            })}
+                          </div>
+                        ))}
                         <button
                           type="button"
                           onClick={() => onChunkOverride(chunk.section, [])}
@@ -1981,6 +2022,7 @@ function StepPersona({
 
 function StepDone({
   result, refChunks, chunkUspMapping, onRestart, onBackToPersona, onBackToMapping, onSkipChunkSection,
+  productId, shortcode, source,
 }: {
   result: Record<string, GeneratedScript>
   refChunks: MappingPreview['section_chunks']
@@ -1989,6 +2031,9 @@ function StepDone({
   onBackToPersona: () => void
   onBackToMapping: () => void
   onSkipChunkSection: (section: string) => void
+  productId: number | null
+  shortcode: string
+  source: 'reels' | 'youtube'
 }) {
   // ref 문장 평탄화 (start 시간순 정렬, 빈 문장 제외) — _borrowed_from 메타 전파
   const refSentences = refChunks
@@ -2063,6 +2108,38 @@ function StepDone({
   const isEditingActive = editingTab === active && draftSentences !== null
   const dirty = !!editedResult[active]
 
+  const [saving, setSaving] = useState(false)
+  const saveCurrent = async () => {
+    if (!productId || saving || !active) return
+    const draft = editedResult[active] || result[active]
+    if (!draft) {
+      alert('현재 페르소나 대본이 없습니다.')
+      return
+    }
+    setSaving(true)
+    try {
+      await api.saveGenScript(productId, {
+        ref_shortcode: shortcode || undefined,
+        source_type: source === 'youtube' ? 'youtube' : 'insta',
+        persona_name: active,
+        title: active,
+        sentences: (draft.sentences || []) as any[],
+        meta: {
+          duration_target_sec: draft.duration_target_sec,
+          _cost: (draft as any)._cost,
+          _usp_mapping: draft._usp_mapping,
+        },
+      })
+      if (confirm(`"${active}" 대본 저장 완료! 저장된 대본 목록으로 이동할까요?`)) {
+        navigate(`/my-products/${productId}/scripts`)
+      }
+    } catch (e: any) {
+      alert('저장 실패: ' + (e.message || e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
   // 원본 문장 (편집 전) — start time → text 매핑. 색상 강조용.
   const originalTextByStart = (() => {
     const m = new Map<number, string>()
@@ -2080,6 +2157,18 @@ function StepDone({
 
   return (
     <>
+      {productId && active && (
+        <button
+          onClick={saveCurrent}
+          disabled={saving}
+          style={{
+            ...primaryBtnSt, width: '100%', marginBottom: 12,
+            opacity: saving ? 0.7 : 1, cursor: saving ? 'wait' : 'pointer',
+          }}>
+          {saving ? '저장 중…' : `💾 "${active}" 대본 저장`}
+        </button>
+      )}
+
       {tabs.length > 1 && (
         <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
           {tabs.map(t => (

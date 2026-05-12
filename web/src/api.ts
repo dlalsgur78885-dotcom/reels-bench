@@ -104,6 +104,16 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
   return r.json()
 }
 
+async function put<T>(path: string, body: unknown): Promise<T> {
+  const r = await authedFetch(path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) throw new Error(await _errMsg(r, r.status))
+  return r.json()
+}
+
 async function del<T>(path: string): Promise<T> {
   const r = await authedFetch(path, { method: 'DELETE' })
   if (!r.ok) {
@@ -466,27 +476,62 @@ export const api = {
     patch<{ message: string; personas: PersonaCandidate[] }>(`/api/my-products/${pid}/usp-personas`, { usp_index, personas }),
   referenceInfo: (sc: string) =>
     get<ReferenceInfo>(`/api/script/reference-info/${sc}`),
-  updateSectionChunks: (sc: string, chunks: any[]) =>
-    patch<{ shortcode: string; count: number }>(`/api/script/section-chunks/${sc}`, { chunks })
+  updateSectionChunks: (sc: string, chunks: any[], source: 'reels' | 'youtube' = 'reels') =>
+    patch<{ shortcode: string; count: number }>(`/api/script/section-chunks/${sc}?source=${source}`, { chunks })
       .then(r => { clearClientCache(`/api/extra/${sc}`); return r }),
-  updateHookArchetype: (sc: string, archetype: string, opts?: { pattern?: string; core_word?: string }) =>
+  updateHookArchetype: (sc: string, archetype: string, opts?: { pattern?: string; core_word?: string; source?: 'reels' | 'youtube' }) =>
     patch<{ shortcode: string; archetype: { archetype: string; pattern: string; core_word: string; reasoning: string } }>(
-      `/api/script/hook-archetype/${sc}`,
-      { archetype, ...(opts || {}) },
+      `/api/script/hook-archetype/${sc}?source=${opts?.source || 'reels'}`,
+      { archetype, pattern: opts?.pattern, core_word: opts?.core_word },
     ).then(r => { clearClientCache(`/api/extra/${sc}`); return r }),
   suggestUspDescription: (input: { product_name: string; usp_name: string; reviews?: string[] }) =>
     post<{ description: string; parts: { 문제: string; 해결: string; 혜택: string; 핵심_명사: string } }>(
       '/api/usp/suggest-description',
       input,
     ),
+  // 생성된 대본 저장·관리
+  saveGenScript: (pid: number, input: { ref_shortcode?: string; source_type?: 'insta' | 'youtube' | 'fb_ads'; persona_name?: string; title?: string; sentences: any[]; meta?: any; caption?: string; pinned_comment?: string }) =>
+    post<{ id: string; product_id: number; title: string }>(`/api/my-products/${pid}/scripts`, input),
+  updateGenScript: (pid: number, sid: string, input: { title?: string; caption?: string; pinned_comment?: string; sentences?: any[]; shooting_plan_url?: string }) =>
+    patch<{ updated: boolean; row: any }>(`/api/my-products/${pid}/scripts/${sid}`, input),
+  listScriptShares: (pid: number, sid: string) =>
+    get<Array<{ id: string; shared_with_id: string; shared_by: string; permission: 'view' | 'edit'; created_at: string; shared_with_email?: string; shared_with_name?: string; shared_by_email?: string }>>(`/api/my-products/${pid}/scripts/${sid}/shares`),
+  addScriptShare: (pid: number, sid: string, input: { shared_with_id: string; permission: 'view' | 'edit' }) =>
+    post<{ id: string }>(`/api/my-products/${pid}/scripts/${sid}/shares`, input),
+  listColleagues: () =>
+    get<Array<{ id: string; display_name: string | null; email: string }>>('/api/users/colleagues'),
+  // USP 그룹핑
+  listUspGroups: (pid: number) =>
+    get<Array<{ id: string; product_id: number; name: string; color: string | null; order_idx: number; usp_indexes: number[] }>>(`/api/my-products/${pid}/usp-groups`),
+  createUspGroup: (pid: number, input: { name: string; color?: string; order_idx?: number }) =>
+    post<{ id: string; name: string; color: string | null; order_idx: number }>(`/api/my-products/${pid}/usp-groups`, input),
+  updateUspGroup: (pid: number, gid: string, input: { name?: string; color?: string; order_idx?: number }) =>
+    patch<{ updated: boolean }>(`/api/my-products/${pid}/usp-groups/${gid}`, input),
+  deleteUspGroup: (pid: number, gid: string) =>
+    del<{ deleted: boolean }>(`/api/my-products/${pid}/usp-groups/${gid}`),
+  setUspGroupMembers: (pid: number, gid: string, usp_indexes: number[]) =>
+    put<{ count: number }>(`/api/my-products/${pid}/usp-groups/${gid}/members`, { usp_indexes }),
+  deleteScriptShare: (pid: number, sid: string, share_id: string) =>
+    del<{ deleted: boolean }>(`/api/my-products/${pid}/scripts/${sid}/shares/${share_id}`),
+  listGenScripts: (pid: number) =>
+    get<Array<{ id: string; ref_shortcode: string | null; source_type: string; persona_name: string | null; title: string; meta: any; created_at: string; created_by: string }>>(`/api/my-products/${pid}/scripts`),
+  getGenScript: (pid: number, sid: string) =>
+    get<{ id: string; product_id: number; ref_shortcode: string | null; source_type: string; persona_name: string | null; title: string; sentences: any[]; meta: any; created_at: string }>(`/api/my-products/${pid}/scripts/${sid}`),
+  deleteGenScript: (pid: number, sid: string) =>
+    del<{ deleted: boolean }>(`/api/my-products/${pid}/scripts/${sid}`),
+  listAllMyScripts: () =>
+    get<{
+      products: Array<{ id: number; name: string }>
+      scripts: Array<{ id: string; product_id: number; ref_shortcode: string | null; source_type: string; persona_name: string | null; title: string; meta: any; created_at: string; created_by: string; _shared?: boolean; _permission?: 'view' | 'edit'; _creator_name?: string; _creator_email?: string }>
+    }>('/api/my-scripts'),
   scriptProgress: (sessionId: string) =>
     get<{ session_id: string; found: boolean; step?: string; percent?: number; message?: string; started_at?: number; updated_at?: number }>(
       `/api/script/progress/${sessionId}`,
     ),
-  analyzeSectionChunks: (sc: string) =>
-    post<any>(`/api/script/analyze-section-chunks/${sc}`, {})
+  analyzeSectionChunks: (sc: string, source: 'reels' | 'youtube' = 'reels') =>
+    post<any>(`/api/script/analyze-section-chunks/${sc}?source=${source}`, {})
       .then(r => { clearClientCache(`/api/extra/${sc}`); return r }),
-  previewMapping: (sc: string, product_id: number) =>
+  previewMapping: (sc: string, product_id: number, source: 'reels' | 'youtube' = 'reels') =>
     post<{
       shortcode: string
       product: { id: number; name: string; usps: any[] }
@@ -515,7 +560,7 @@ export const api = {
         archetype: string; pattern?: string; core_word?: string; reasoning?: string
         candidates?: Array<{ archetype: string; pattern?: string; core_word?: string; score: number }>
       } | null
-    }>(`/api/script/preview-mapping/${sc}`, { product_id }),
+    }>(`/api/script/preview-mapping/${sc}`, { product_id, source }),
   classifySentences: (sc: string) =>
     post<{ shortcode: string; total_sentences: number; sections: Record<string, number> }>(`/api/script/classify-sentences/${sc}`, {})
       .then(r => { clearClientCache(`/api/extra/${sc}`); return r }),

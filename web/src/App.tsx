@@ -18,6 +18,8 @@ const ScriptGenWizard = lazy(() => import('./pages/ScriptGenWizard'))
 const TtsGen = lazy(() => import('./pages/TtsGen'))
 const MyProducts = lazy(() => import('./pages/MyProducts'))
 const MyProductEdit = lazy(() => import('./pages/MyProductEdit'))
+const MyProductScripts = lazy(() => import('./pages/MyProductScripts'))
+const MyScripts = lazy(() => import('./pages/MyScripts'))
 const Phrases = lazy(() => import('./pages/Phrases'))
 const Ads = lazy(() => import('./pages/Ads'))
 const Settings = lazy(() => import('./pages/Settings'))
@@ -28,6 +30,7 @@ const YtBenchDetail = lazy(() => import('./pages/YtBenchDetail'))
 const FbAdvertisers = lazy(() => import('./pages/FbAdvertisers'))
 const FbSearchAdvertisers = lazy(() => import('./pages/FbSearchAdvertisers'))
 const FbSearchAds = lazy(() => import('./pages/FbSearchAds'))
+const FbAdImportPage = lazy(() => import('./pages/FbAdImportPage'))
 
 const routePrefetchers: Record<string, () => Promise<unknown>> = {
   '/': () => import('./pages/Home'),
@@ -133,6 +136,7 @@ const NAV_BY_PLATFORM: Record<Platform, { to: string; label: string; icon: strin
     { to: '/', label: '홈', icon: '&#x2302;' },
     { to: '/fb/advertisers', label: '광고주', icon: '&#x2631;' },
     { to: '/fb/search/ads', label: '광고 검색', icon: '&#x1F50D;' },
+    { to: '/fb/import', label: '광고 import', icon: '&#x2795;' },
   ],
 }
 
@@ -274,12 +278,16 @@ export default function App() {
           <Route path="/fb/advertisers" element={<FbAdvertisers />} />
           <Route path="/fb/search/advertisers" element={<FbSearchAdvertisers />} />
           <Route path="/fb/search/ads" element={<FbSearchAds />} />
+          <Route path="/fb/import" element={<FbAdImportPage />} />
           <Route path="/script" element={<ScriptGen />} />
           <Route path="/script/new/:shortcode" element={<ScriptGenWizard />} />
+          <Route path="/script/new/yt/:shortcode" element={<ScriptGenWizard />} />
           <Route path="/tts" element={<TtsGen />} />
           <Route path="/my-products" element={<MyProducts />} />
           <Route path="/my-products/new" element={<MyProductEdit />} />
           <Route path="/my-products/:id/edit" element={<MyProductEdit />} />
+          <Route path="/my-products/:id/scripts" element={<MyProductScripts />} />
+          <Route path="/my-scripts" element={<MyScripts />} />
           <Route path="/login" element={<Navigate to="/" replace />} />
           <Route path="/settings" element={
             meLoading ? <div style={{ padding: 40, color: 'var(--text-muted)' }}>로딩...</div>
@@ -331,6 +339,10 @@ function UserMenu({ me }: { me: UserProfile | null }) {
       <div style={{ fontSize: 10, marginBottom: 6 }}>
         {me?.role === 'admin' ? '관리자' : '직원'}
       </div>
+      <button
+        onClick={() => navigate('/my-scripts')}
+        style={{ ...btnSt, marginBottom: 6 }}
+      >🎬 대본</button>
       <button
         onMouseEnter={() => prefetchRouteWork('/my-products')}
         onFocus={() => prefetchRouteWork('/my-products')}

@@ -98,6 +98,86 @@ export default function MyProductEdit() {
   const [replaceFrom, setReplaceFrom] = useState('트립쿠폰')
   const [replaceTo, setReplaceTo] = useState('')
 
+  // USP 그룹
+  type UspGroup = { id: string; name: string; color: string | null; order_idx: number; usp_indexes: number[] }
+  const [groups, setGroups] = useState<UspGroup[]>([])
+  const [newGroupName, setNewGroupName] = useState('')
+  const [groupsExpanded, setGroupsExpanded] = useState(true)
+
+  const reloadGroups = async () => {
+    if (!productId) return
+    try { setGroups(await api.listUspGroups(productId)) } catch {}
+  }
+  useEffect(() => { reloadGroups() }, [productId])
+
+  // 1-based usp index → groupId map
+  const groupByUspIdx = (() => {
+    const m = new Map<number, UspGroup>()
+    for (const g of groups) for (const i of (g.usp_indexes || [])) m.set(i, g)
+    return m
+  })()
+
+  const setUspGroup = async (uspIdx: number, newGroupId: string | null) => {
+    if (!productId) { alert('상품 저장 후 그룹 사용 가능'); return }
+    const prevGroups = groups
+    // Optimistic UI: 즉시 state 갱신
+    const optimistic = groups.map(g => {
+      const has = g.usp_indexes.includes(uspIdx)
+      const shouldHave = g.id === newGroupId
+      if (has === shouldHave) return g
+      return {
+        ...g,
+        usp_indexes: shouldHave
+          ? [...g.usp_indexes, uspIdx].sort((a, b) => a - b)
+          : g.usp_indexes.filter(i => i !== uspIdx),
+      }
+    })
+    setGroups(optimistic)
+    // 백엔드는 변경된 그룹만 병렬 호출
+    const calls = optimistic
+      .filter(g => {
+        const prev = prevGroups.find(p => p.id === g.id)
+        return prev && JSON.stringify(prev.usp_indexes) !== JSON.stringify(g.usp_indexes)
+      })
+      .map(g => api.setUspGroupMembers(productId, g.id, g.usp_indexes))
+    try {
+      await Promise.all(calls)
+    } catch (e: any) {
+      // 실패 시 rollback
+      setGroups(prevGroups)
+      alert('그룹 설정 실패: ' + (e.message || e))
+    }
+  }
+
+  const addGroup = async () => {
+    if (!productId) { alert('상품 저장 후 그룹 추가 가능'); return }
+    const n = newGroupName.trim()
+    if (!n) return
+    try {
+      await api.createUspGroup(productId, { name: n, order_idx: groups.length })
+      setNewGroupName('')
+      await reloadGroups()
+    } catch (e: any) { alert('그룹 추가 실패: ' + (e.message || e)) }
+  }
+
+  const renameGroup = async (gid: string, current: string) => {
+    const v = prompt('그룹 이름', current)
+    if (!v || !v.trim() || !productId) return
+    try {
+      await api.updateUspGroup(productId, gid, { name: v.trim() })
+      await reloadGroups()
+    } catch (e: any) { alert('이름 수정 실패: ' + (e.message || e)) }
+  }
+
+  const removeGroup = async (gid: string) => {
+    if (!productId) return
+    if (!confirm('이 그룹을 삭제할까요? (USP 자체는 안 지워짐, 멤버 매핑만 제거)')) return
+    try {
+      await api.deleteUspGroup(productId, gid)
+      await reloadGroups()
+    } catch (e: any) { alert('삭제 실패: ' + (e.message || e)) }
+  }
+
   // 편집 시 데이터 로드 — 캐시 우선, 없으면 API
   useEffect(() => {
     if (isNew) return
@@ -256,12 +336,86 @@ export default function MyProductEdit() {
 
         <section>
           <label style={labelSt}>USP & 연관 리뷰</label>
-          {usps.map((u, i) => (
+
+          {productId && (
+            <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-md)', padding: 10, marginBottom: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: groupsExpanded ? 10 : 0 }}>
+                <strong style={{ fontSize: 12 }}>🏷 USP 그룹 ({groups.length})</strong>
+                <button type="button" onClick={() => setGroupsExpanded(v => !v)}
+                  style={{ marginLeft: 'auto', padding: '2px 8px', fontSize: 11,
+                    background: 'transparent', border: '1px solid var(--border)',
+                    borderRadius: 4, cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                  {groupsExpanded ? '▲ 접기' : '▼ 펼치기'}
+                </button>
+              </div>
+              {groupsExpanded && (
+                <>
+                  {groups.length > 0 && (
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+                      {groups.map(g => (
+                        <div key={g.id} style={{
+                          display: 'flex', alignItems: 'center', gap: 4,
+                          padding: '4px 8px', borderRadius: 6,
+                          background: g.color || 'var(--bg-elevated)',
+                          color: g.color ? '#fff' : 'var(--text-body)',
+                          border: '1px solid var(--border)', fontSize: 11,
+                        }}>
+                          <span style={{ fontWeight: 700 }}>{g.name}</span>
+                          <span style={{ opacity: 0.7 }}>({g.usp_indexes.length})</span>
+                          <button type="button" onClick={() => renameGroup(g.id, g.name)}
+                            title="이름 수정"
+                            style={{ background: 'transparent', border: 'none', cursor: 'pointer',
+                              color: 'inherit', fontSize: 11, padding: 0 }}>✏</button>
+                          <button type="button" onClick={() => removeGroup(g.id)}
+                            title="삭제"
+                            style={{ background: 'transparent', border: 'none', cursor: 'pointer',
+                              color: 'inherit', fontSize: 11, padding: 0 }}>✕</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input value={newGroupName} onChange={e => setNewGroupName(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addGroup() } }}
+                      placeholder="새 그룹 이름 (예: 디자인, 가격, 후기)"
+                      style={{ ...inputSt, flex: 1, fontSize: 12 }} />
+                    <button type="button" onClick={addGroup}
+                      disabled={!newGroupName.trim()}
+                      style={{ padding: '4px 12px', fontSize: 11, fontWeight: 600,
+                        background: 'var(--accent)', color: '#fff', border: 'none',
+                        borderRadius: 4, cursor: newGroupName.trim() ? 'pointer' : 'not-allowed',
+                        opacity: newGroupName.trim() ? 1 : 0.5 }}>
+                      + 추가
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {usps.map((u, i) => {
+            const uspIdx = i + 1
+            const curGroup = groupByUspIdx.get(uspIdx)
+            return (
             <div key={i} style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: 12, marginBottom: 10 }}>
               <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
                 <input style={{ ...inputSt, flex: 1 }} value={u.usp}
                   onChange={e => setUsps(usps.map((x, idx) => idx === i ? { ...x, usp: e.target.value } : x))}
                   placeholder={`USP ${i + 1} (한 줄)`} />
+                {productId && groups.length > 0 && (
+                  <select
+                    value={curGroup?.id || ''}
+                    onChange={e => setUspGroup(uspIdx, e.target.value || null)}
+                    style={{ padding: '4px 8px', fontSize: 11, borderRadius: 4,
+                      border: '1px solid var(--border)',
+                      background: curGroup?.color || 'var(--bg-base)',
+                      color: curGroup?.color ? '#fff' : 'var(--text-body)',
+                      fontWeight: curGroup ? 700 : 400, minWidth: 110 }}>
+                    <option value="">미분류</option>
+                    {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+                  </select>
+                )}
                 {usps.length > 1 && (
                   <button type="button" onClick={() => setUsps(usps.filter((_, idx) => idx !== i))} style={{ padding: '4px 10px', fontSize: 11, border: '1px solid var(--error)', borderRadius: 4, background: 'transparent', color: 'var(--error)', cursor: 'pointer' }}>USP 삭제</button>
                 )}
@@ -316,7 +470,8 @@ export default function MyProductEdit() {
                   style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600, border: '1px solid var(--accent)', borderRadius: 4, background: 'var(--accent-light)', color: 'var(--accent)', cursor: 'pointer' }}>+ 리뷰 추가</button>
               </div>
             </div>
-          ))}
+            )
+          })}
           <button type="button" onClick={() => setUsps([...usps, { usp: '', description: '', reviews: [''] }])}
             style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, border: '1px solid var(--accent)', borderRadius: 'var(--radius-sm)', background: 'var(--accent-light)', color: 'var(--accent)', cursor: 'pointer' }}>+ USP 추가</button>
         </section>

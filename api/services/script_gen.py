@@ -665,6 +665,20 @@ def analyze_section_chunks(ref: dict) -> list[dict]:
   - CTA: callback / 행동유도 / 인센티브 / 재강조
 - relation_to_prev: start / 확장 / 대조 / 심화 / 새토픽 / 회수 / 요약
 - summary: 한 줄
+- bundle_logic: ⭐ **묶음의 의미 흐름 + sentence 내부 구조** — 정확히 N개 문장으로 작성하도록 + 한 문장 안 multi-item 나열도 보존
+  - **항상 채울 것** (sentence 1개여도 그 안의 구조 표시)
+  - 형식: "sent1: [무엇 + 만약 multi-item이면 그 items] → sent2: [...]"
+  - sentence 내부 multi-item 검출 룰:
+    1. 같은 조사·어미가 3+ 반복 (A서 / B서 / 혹은 C라면)
+    2. 콤마/슬래시/와/and 나열 (A, B, C)
+    3. 등위 접속 (A고 B고 C도)
+    → 이런 패턴이면 반드시 **item_count와 items_summary** 표시
+  - 예 (multi-item sentence): "sent1: **페인 3개 나열** (환율 헷갈림/언어 못함/스케줄 걱정)이라면 → sent2: 솔루션 prelude(이렇게 해보세요)"
+  - 예 (단일 페인 + 후속): "sent1: 페인 상황을 명사로 마침(걱정러라면) → sent2: 솔루션 prelude(이렇게 해보세요)"
+  - 예 (비교 흐름): "sent1: 비교 시작(기존엔 X) → sent2: 케이스 A → sent3: 케이스 B"
+  - 예 (시연 흐름): "sent1: 시연 step1 → sent2: 결과 묘사 → sent3: 효과 강조"
+  - 예 (단일 sentence): "sent1: 호기심 질문 — Hook 1문장 단일"
+  - 목적: writer가 이 흐름을 따라 N개 문장 + 각 문장 내부 multi-item 수까지 정확히 미러링 (압축 차단)
 
 ### ⭐⭐⭐ CTA primary_usp_id 룰 (반드시 따를 것)
 **디폴트로 MAIN을 박지 마세요.** 텍스트가 어느 USP를 다루는지 보고 결정.
@@ -689,15 +703,16 @@ def analyze_section_chunks(ref: dict) -> list[dict]:
 JSON만:
 {{
   "chunks": [
-    {{"section": "hook", "sentence_idxs": [0,1], "topic": "...", "usp_ids": [], "primary_usp_id": null, "role": "engagement", "relation_to_prev": "start", "summary": "..."}},
-    {{"section": "body_1a", "sentence_idxs": [3,4], "topic": "브이넥 가림", "usp_ids": [2], "primary_usp_id": 2, "role": "디테일", "relation_to_prev": "새토픽", "summary": "브이넥 라인으로 가슴골 노출 방지"}},
-    {{"section": "body_1b", "sentence_idxs": [5,6,7], "topic": "셔링·절개 효과", "usp_ids": [2,3], "primary_usp_id": 2, "role": "디테일", "relation_to_prev": "확장", "summary": "셔링·절개로 가슴라인 미관 + 부유방 커버"}},
-    {{"section": "cta", "sentence_idxs": [12,13,14], "topic": "팔로우+DM 통합 호소", "usp_ids": [1,2,3], "primary_usp_id": null, "role": "행동유도", "relation_to_prev": "회수", "summary": "모든 USP를 통합 회수 + 팔로우/DM generic 액션"}}
+    {{"section": "hook", "sentence_idxs": [0,1], "topic": "...", "usp_ids": [], "primary_usp_id": null, "role": "engagement", "relation_to_prev": "start", "summary": "...", "bundle_logic": "sent1: 호기심 질문(아세요?) → sent2: 조건 명시"}},
+    {{"section": "body_1a", "sentence_idxs": [3,4], "topic": "브이넥 가림", "usp_ids": [2], "primary_usp_id": 2, "role": "디테일", "relation_to_prev": "새토픽", "summary": "브이넥 라인으로 가슴골 노출 방지", "bundle_logic": "sent1: 기능 소개(브이넥) → sent2: 효과(가슴골 안 보임)"}},
+    {{"section": "body_1b", "sentence_idxs": [5,6,7], "topic": "셔링·절개 효과", "usp_ids": [2,3], "primary_usp_id": 2, "role": "디테일", "relation_to_prev": "확장", "summary": "셔링·절개로 가슴라인 미관 + 부유방 커버", "bundle_logic": "sent1: 디자인 소개(셔링·절개) → sent2: 효과 A(라인) → sent3: 효과 B(부유방 커버)"}},
+    {{"section": "cta", "sentence_idxs": [12,13,14], "topic": "팔로우+DM 통합 호소", "usp_ids": [1,2,3], "primary_usp_id": null, "role": "행동유도", "relation_to_prev": "회수", "summary": "모든 USP를 통합 회수 + 팔로우/DM generic 액션", "bundle_logic": "sent1: 통합 회수(이 모든 ~) → sent2: 액션(팔로우) → sent3: 인센티브(DM 줄게)"}}
   ]
 }}"""
 
     try:
-        result = call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=8192)
+        # bundle_logic 추가로 응답 길어짐 → 16384로 증가
+        result = call_gemini(prompt, model="gemini-3.1-pro-preview", max_tokens=16384)
         if isinstance(result, list) and result:
             result = result[0]
         chunks_raw = (result or {}).get("chunks") or []
@@ -760,6 +775,7 @@ JSON만:
             "role": c.get("role", ""),
             "relation_to_prev": c.get("relation_to_prev", ""),
             "summary": c.get("summary", ""),
+            "bundle_logic": (c.get("bundle_logic") or "").strip(),
         })
 
     # 시간순 정렬 (chunk의 첫 문장 start 기준)
@@ -3654,12 +3670,19 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
             c_topic = chunk_meta.get("topic", "")
             c_summary = chunk_meta.get("summary", "")
             c_rel = chunk_meta.get("relation_to_prev", "")
+            c_bundle = (chunk_meta.get("bundle_logic") or "").strip()
             c_sec = (chunk_meta.get("section") or "").strip()
             c_user_ids = chunk_to_user_usps.get(c_sec) or []
             c_reason = (chunk_to_reason.get(c_sec) or "").strip()
             is_unmapped = not c_user_ids and (c_sec in chunk_to_user_usps)  # 명시적 "매핑 없음" (key 존재, ids 빈 배열)
-            if c_role or c_topic or c_summary or c_user_ids or c_reason:
+            if c_role or c_topic or c_summary or c_user_ids or c_reason or c_bundle:
                 spec_block += "\n  ⭐ 이 묶음의 ref 의도 (DB 분석 결과 — 표면 미러링보다 우선)\n"
+                if c_bundle:
+                    spec_block += f"    🔗 **묶음 흐름 + 문장 내부 구조 (bundle_logic)**:\n"
+                    spec_block += f"       {c_bundle}\n"
+                    if len(group) >= 2:
+                        spec_block += f"    ⚠️ 정확히 {len(group)}개 문장으로 — 합치기·생략 금지\n"
+                    spec_block += "    ⚠️ sentence 내부에 multi-item 나열(3개 페인/3개 효과 등)이 표시되면, 우리 출력도 **같은 개수의 item**으로 나열할 것 (1개로 압축 ❌)\n"
                 if c_role:
                     spec_block += f"    chunk_role: {c_role}\n"
                 # 매핑 없는 chunk는 chunk_topic/chunk_summary가 ref 도메인 그대로 박혀있음 → 추상화 표시
@@ -5603,7 +5626,7 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     return draft
 
 
-def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], refine: bool = True, target_persona: dict | None = None, chunk_usp_override: dict[str, list[int] | int] | None = None, chunk_meta_override: dict[str, dict] | None = None, skip_chunk_sections: list[str] | None = None, skip_sentence_starts: list[float] | None = None, section_overrides: dict[str, dict] | None = None, cta_override: dict | None = None, hook_archetype_override: dict | None = None, session_id: str | None = None) -> dict:
+def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], reference_source: str = "reels", refine: bool = True, target_persona: dict | None = None, chunk_usp_override: dict[str, list[int] | int] | None = None, chunk_meta_override: dict[str, dict] | None = None, skip_chunk_sections: list[str] | None = None, skip_sentence_starts: list[float] | None = None, section_overrides: dict[str, dict] | None = None, cta_override: dict | None = None, hook_archetype_override: dict | None = None, session_id: str | None = None) -> dict:
     """엔드투엔드 — 참고 릴스 fetch → 1차 생성 → (선택) 2차 다듬기 → 최종.
 
     chunk_usp_override: chunk.section → user_usp_id 수동 매핑 (chunk 단위).
@@ -5616,7 +5639,7 @@ def generate(product_name: str, pain: str, desire: str, usps: list[dict], refere
         update_progress(session_id, "fetch_ref", 5, "참고 릴스 데이터 로드")
     refs = []
     for sc in reference_shortcodes:
-        ref = fetch_reference(sc)
+        ref = fetch_reference(sc, source=reference_source)
         if ref:
             refs.append(ref)
     if not refs:

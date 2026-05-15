@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { buildTtsText } from '../ttsCopy'
 import { api, authedFetch, BASE } from '../api'
@@ -2351,16 +2351,18 @@ function StepDone({
     } catch {}
   }, [stepDoneKey, shortcode, active, editedResult, stagesByTab, stageViewByTab])
 
-  // 새 result 들어올 때 (생성 재시작 — 탭 자체 변경) 편집/단계 상태 리셋
-  // result reference만 바뀌어도 트리거되면 안 됨 (다듬기 → setGenResult로 매번 새 ref) — 탭 키 기반 의존성
+  // 새 result 들어올 때 (생성 재시작 — 탭 자체 변경) 편집/단계 상태 리셋.
+  // 첫 mount 에선 sessionStorage 복원본 보존해야 하므로 prev ref 가드 — 실제 변경 시만 reset.
   const tabsKey = tabs.join('|')
+  const prevTabsKey = useRef(tabsKey)
   useEffect(() => {
+    if (prevTabsKey.current === tabsKey) return
+    prevTabsKey.current = tabsKey
     setEditedResult({})
     setEditingTab(null)
     setDraftSentences(null)
     setStagesByTab({})
     setStageViewByTab({})
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabsKey])
 
   const display = (tab: string): GeneratedScript | null => {

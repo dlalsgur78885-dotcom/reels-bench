@@ -15,8 +15,11 @@ async function authedHeaders(extra?: HeadersInit, token?: string | null): Promis
 export async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = await authedHeaders(init.headers)
   const r = await fetch(`${BASE}${path}`, { ...init, headers })
-  // 401 → 토큰 만료 의심 → 강제 refresh 후 한 번 재시도
+  // 401 → 토큰 만료 의심 → 강제 refresh 후 한 번 재시도.
+  // 단 미들웨어가 API key 부재로 401 친 경우 refresh 해봐야 소용없음 → 그대로 반환.
   if (r.status === 401) {
+    const body = await r.clone().text().catch(() => '')
+    if (/api[_\s-]?key/i.test(body)) return r  // refresh 무의미 → 폭주 방지
     const fresh = await forceRefreshToken()
     if (fresh) {
       const headers2 = await authedHeaders(init.headers, fresh)

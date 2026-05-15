@@ -32,6 +32,25 @@ _PUBLIC_API_PATHS = {
     "/api/_debug/auth",
 }
 _OUR_DOMAINS = ("reels-bench.vercel.app", "localhost", "127.0.0.1")
+# Vercel 프리뷰 (reels-bench-<hash>-<team>.vercel.app) 도 허용
+_OUR_HOST_PREFIXES = ("reels-bench-",)
+_OUR_HOST_SUFFIX = ".vercel.app"
+
+
+def _is_our_origin(value: str) -> bool:
+    if not value:
+        return False
+    if any(d in value for d in _OUR_DOMAINS):
+        return True
+    # 프리뷰 URL: scheme 떼고 host만 검사
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(value).hostname or ""
+    except Exception:
+        host = ""
+    if host.endswith(_OUR_HOST_SUFFIX) and any(host.startswith(p) for p in _OUR_HOST_PREFIXES):
+        return True
+    return False
 
 
 @app.middleware("http")
@@ -44,10 +63,8 @@ async def api_key_middleware(request, call_next):
     if path in _PUBLIC_API_PATHS:
         return await call_next(request)
 
-    # same-origin (자체 사이트) → skip
-    origin = request.headers.get("origin", "")
-    referer = request.headers.get("referer", "")
-    if any(d in origin for d in _OUR_DOMAINS) or any(d in referer for d in _OUR_DOMAINS):
+    # same-origin (자체 사이트 + Vercel 프리뷰) → skip
+    if _is_our_origin(request.headers.get("origin", "")) or _is_our_origin(request.headers.get("referer", "")):
         return await call_next(request)
 
     # 외부 → API Key 요구

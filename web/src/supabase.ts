@@ -27,17 +27,35 @@ export async function getAccessToken(): Promise<string | null> {
   return cachedAccessToken
 }
 
-// 401 받으면 강제로 refreshSession 호출해서 새 토큰 받기
+// 401 받으면 강제로 refreshSession 호출해서 새 토큰 받기.
+// 동시 다발 401 이 refresh-token rotation 을 망가뜨리지 않도록 single-flight.
+let _refreshInflight: Promise<string | null> | null = null
+let _lastRefreshFailAt = 0
+const _REFRESH_FAIL_COOLDOWN_MS = 5_000
+
 export async function forceRefreshToken(): Promise<string | null> {
-  try {
-    const { data, error } = await supabase.auth.refreshSession()
-    if (error || !data.session) return null
-    cachedAccessToken = data.session.access_token
-    cachedAccessTokenUntil = Date.now() + 30_000
-    return cachedAccessToken
-  } catch {
-    return null
-  }
+  // 최근에 refresh 실패했으면 잠시 쿨다운 — 401 폭주 시 무한 재시도 방지
+  if (Date.now() - _lastRefreshFailAt < _REFRESH_FAIL_COOLDOWN_MS) return null
+  if (_refreshInflight) return _refreshInflight
+  _refreshInflight = (async () => {
+    try {
+      const { data, error } = await supabase.auth.refreshSession()
+      if (error || !data.session) {
+        _lastRefreshFailAt = Date.now()
+        return null
+      }
+      cachedAccessToken = data.session.access_token
+      cachedAccessTokenUntil = Date.now() + 30_000
+      return cachedAccessToken
+    } catch {
+      _lastRefreshFailAt = Date.now()
+      return null
+    } finally {
+      // 다음 tick 에 해제 — 같은 micro-task 안의 동시 호출은 모두 같은 promise 받음
+      setTimeout(() => { _refreshInflight = null }, 0)
+    }
+  })()
+  return _refreshInflight
 }
 
 // 탭 활성화 시 토큰 강제 갱신 — 단, 60초 throttle (잦은 refreshSession 호출이 세션 무효화 원인이 될 수 있음)

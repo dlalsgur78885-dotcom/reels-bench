@@ -597,16 +597,29 @@ export default function ScriptGenWizard() {
     }
   }
 
+  // step 별 "이전 단계" 라벨 + 동작
+  const prevStepNav = (() => {
+    if (step === 'mapping') return { label: '← 1단계: 상품', go: () => setStep('product') }
+    if (step === 'persona') return { label: '← 2단계: 매핑 리뷰', go: () => setStep('mapping') }
+    if (step === 'done') return { label: '← 3단계: 페르소나', go: () => setStep('persona') }
+    if (step === 'generating') return { label: '← 3단계: 페르소나', go: () => { setGenProgress({}); setStep('persona') } }
+    return null  // product 는 첫 단계 → 분석 페이지 버튼 하나로 충분
+  })()
+  const navBtnSt: React.CSSProperties = {
+    background: 'transparent', border: '1px solid var(--border)', padding: '6px 14px',
+    borderRadius: 'var(--radius-sm)', cursor: 'pointer', color: 'var(--text-body)',
+    fontSize: 12,
+  }
+  const benchPath = source === 'youtube' ? `/yt/bench/${shortcode}` : `/bench/${shortcode}`
+
   return (
     <div style={{ maxWidth: 1000, margin: '0 auto', padding: 20 }}>
-      <button onClick={() => navigate(`/bench/${shortcode}`)}
-        style={{
-          background: 'transparent', border: '1px solid var(--border)', padding: '6px 14px',
-          borderRadius: 'var(--radius-sm)', cursor: 'pointer', color: 'var(--text-body)',
-          fontSize: 12, marginBottom: 16,
-        }}>
-        ← 분석 페이지
-      </button>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        <button onClick={() => navigate(benchPath)} style={navBtnSt}>← 분석 페이지</button>
+        {prevStepNav && (
+          <button onClick={prevStepNav.go} style={navBtnSt}>{prevStepNav.label}</button>
+        )}
+      </div>
 
       <Stepper step={step} onJump={(target) => {
         // 가능한 곳만 점프 (mapping 미로드면 mapping/persona/done 잠금)

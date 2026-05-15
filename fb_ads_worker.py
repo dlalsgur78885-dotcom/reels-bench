@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api"))
 
 from api.services.fb_ads_scraper import AdLibraryScraper  # noqa: E402
+from api.services import thumb as thumb_svc  # noqa: E402
 
 SUPA = os.getenv("SUPABASE_URL")
 KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
@@ -76,6 +77,17 @@ def update_advertiser(adv_id: int, ad_count: int, status: str = "ok"):
     )
 
 
+def _persist_thumb(shortcode: str, fb_thumb_url: str) -> None:
+    """FB CDN 썸네일을 Supabase Storage에 영구 저장 + DB의 thumbnail_url 교체.
+    실패해도 조용히 넘어감 (DB의 FB CDN URL은 유지)."""
+    if not fb_thumb_url:
+        return
+    try:
+        thumb_svc.download(shortcode, fb_thumb_url)
+    except Exception as e:
+        print(f"[{now()}] thumb persist failed for {shortcode}: {e}", flush=True)
+
+
 def insert_ad_to_reels(ad: dict, page_name: str) -> bool:
     """수집된 광고 dict → reels + reels_metadata 삽입 (shortcode='fb_{id}')."""
     ad_id = ad.get("id") or ""
@@ -108,12 +120,15 @@ def insert_ad_to_reels(ad: dict, page_name: str) -> bool:
         # ISO8601 형식 보장 (yyyy-mm-dd → yyyy-mm-ddT00:00:00+00:00)
         sd = ad["start_date"]
         meta_payload["taken_at"] = sd if "T" in sd else f"{sd}T00:00:00+00:00"
+    fb_thumb_url = meta_payload.get("thumbnail_url") or ""
     meta_payload = {k: v for k, v in meta_payload.items() if v not in (None, "") or k == "shortcode"}
     requests.post(
         f"{SUPA}/rest/v1/reels_metadata?on_conflict=shortcode",
         headers={**H, "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"},
         json=meta_payload, timeout=15,
     )
+    # 썸네일 영구 저장 (FB CDN은 만료/차단 → Supabase Storage로 옮김, DB url 자동 갱신)
+    _persist_thumb(shortcode, fb_thumb_url)
     return True
 
 

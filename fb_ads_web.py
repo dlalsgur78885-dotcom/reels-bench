@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api"))
 
 from api.services.fb_ads_scraper import AdLibraryScraper  # noqa: E402
+from api.services import thumb as thumb_svc  # noqa: E402
 
 SUPA = os.getenv("SUPABASE_URL")
 KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
@@ -78,10 +79,11 @@ def insert_ad_to_reels(ad: dict, page_name: str) -> bool:
     if r1.status_code not in (200, 201, 204):
         print(f"[insert] reels POST failed sc={r1.status_code} {r1.text[:150]}", flush=True)
         return False
+    fb_thumb_url = ad.get("video_thumbnail") or ad.get("banner_url") or ""
     meta = {
         "shortcode": shortcode,
         "video_url": ad.get("video_url") or "",
-        "thumbnail_url": ad.get("video_thumbnail") or ad.get("banner_url") or "",
+        "thumbnail_url": fb_thumb_url,
         "caption_text": ad.get("caption") or "",
         "author_username": actual_author,
     }
@@ -94,6 +96,12 @@ def insert_ad_to_reels(ad: dict, page_name: str) -> bool:
     if r2.status_code not in (200, 201, 204):
         print(f"[insert] meta POST failed sc={r2.status_code} {r2.text[:150]}", flush=True)
         return False
+    # 썸네일 영구 저장 (FB CDN은 만료/차단 위험)
+    if fb_thumb_url:
+        try:
+            thumb_svc.download(shortcode, fb_thumb_url)
+        except Exception as e:
+            print(f"[insert] thumb persist failed {shortcode}: {e}", flush=True)
     return True
 
 

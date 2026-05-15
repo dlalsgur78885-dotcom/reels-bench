@@ -105,7 +105,7 @@ async def scrape_one(adv: dict) -> int:
     print(f"[{now()}] scraping '{keyword}'...", flush=True)
     scraper = AdLibraryScraper(headless=True, output_dir="/tmp/fb_ads_output", proxy=PROXY)
     try:
-        ads = await scraper.scrape(keyword=keyword, country="KR", max_ads=30)
+        ads = await scraper.scrape(keyword=keyword, country="KR", max_ads=100)
     except Exception as e:
         print(f"[{now()}] scrape error: {e}", flush=True)
         return 0

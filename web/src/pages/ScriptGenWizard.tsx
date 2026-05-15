@@ -599,10 +599,10 @@ export default function ScriptGenWizard() {
 
   // step 별 "이전 단계" 라벨 + 동작
   const prevStepNav = (() => {
-    if (step === 'mapping') return { label: '← 1단계: 상품', go: () => setStep('product') }
-    if (step === 'persona') return { label: '← 2단계: 매핑 리뷰', go: () => setStep('mapping') }
-    if (step === 'done') return { label: '← 3단계: 페르소나', go: () => setStep('persona') }
-    if (step === 'generating') return { label: '← 3단계: 페르소나', go: () => { setGenProgress({}); setStep('persona') } }
+    if (step === 'mapping') return { label: '← 상품 선택', go: () => setStep('product') }
+    if (step === 'persona') return { label: '← 매핑 리뷰', go: () => setStep('mapping') }
+    if (step === 'done') return { label: '← 페르소나', go: () => setStep('persona') }
+    if (step === 'generating') return { label: '← 페르소나', go: () => { setGenProgress({}); setStep('persona') } }
     return null  // product 는 첫 단계 → 분석 페이지 버튼 하나로 충분
   })()
   const navBtnSt: React.CSSProperties = {

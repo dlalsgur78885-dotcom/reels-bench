@@ -26,16 +26,39 @@ const cardSt: React.CSSProperties = {
   borderRadius: 'var(--radius-md)', padding: 18, marginBottom: 14,
 }
 
+// sessionStorage 영속화 — 위저드 state 유지 (새로고침/뒤로가기/탭 이동 후에도 결과 단계 유지)
+const WIZARD_TTL_MS = 60 * 60 * 1000  // 1시간
+function wizKey(sc: string | undefined): string { return `rb_wizard:${sc || ''}` }
+function loadWiz(sc: string | undefined): any | null {
+  if (!sc) return null
+  try {
+    const raw = sessionStorage.getItem(wizKey(sc))
+    if (!raw) return null
+    const s = JSON.parse(raw)
+    if (!s || (Date.now() - (s._t || 0)) > WIZARD_TTL_MS) {
+      sessionStorage.removeItem(wizKey(sc))
+      return null
+    }
+    return s
+  } catch { return null }
+}
+function clearWiz(sc: string | undefined) {
+  if (!sc) return
+  try { sessionStorage.removeItem(wizKey(sc)) } catch {}
+}
+
 export default function ScriptGenWizard() {
   const { shortcode } = useParams<{ shortcode: string }>()
   const location = useLocation()
   const source: 'reels' | 'youtube' = location.pathname.includes('/script/new/yt/') ? 'youtube' : 'reels'
   const navigate = useNavigate()
-  const [step, setStep] = useState<Step>('product')
+  // 위저드 영속화 — 마운트 시 1회 load (lazy init)
+  const saved = (() => loadWiz(shortcode))()
+  const [step, setStep] = useState<Step>((saved?.step as Step) || 'product')
 
   // 1. 상품
   const [products, setProducts] = useState<MyProduct[]>([])
-  const [productId, setProductId] = useState<number | null>(null)
+  const [productId, setProductId] = useState<number | null>(saved?.productId ?? null)
   // USP 그룹
   type UspGroupLite = { id: string; name: string; color: string | null; order_idx: number; usp_indexes: number[]; capability_out?: string | null }
   const [uspGroups, setUspGroups] = useState<UspGroupLite[]>([])
@@ -45,28 +68,22 @@ export default function ScriptGenWizard() {
   }, [productId])
 
   // 2. 매핑
-  const [mapping, setMapping] = useState<MappingPreview | null>(null)
+  const [mapping, setMapping] = useState<MappingPreview | null>(saved?.mapping || null)
   const [mappingLoading, setMappingLoading] = useState(false)
   const [mappingError, setMappingError] = useState('')
-  // chunk별 override (chunk.section → user_usp_ids[] multi) — wizard에서 사용자가 직접 매핑
-  const [chunkOverrides, setChunkOverrides] = useState<Record<string, number[]>>({})
-  // chunk metadata 수정 (topic/role/section) — 이번 generation에만 적용
-  const [chunkEdits, setChunkEdits] = useState<Record<string, { topic: string; role: string; section?: string }>>({})
+  const [chunkOverrides, setChunkOverrides] = useState<Record<string, number[]>>(saved?.chunkOverrides || {})
+  const [chunkEdits, setChunkEdits] = useState<Record<string, { topic: string; role: string; section?: string }>>(saved?.chunkEdits || {})
   const [editingChunk, setEditingChunk] = useState<Record<string, boolean>>({})
-  // 삭제된 chunk (이번 generation에서 skip — 백엔드에 skip_chunk_sections로 전달)
-  const [skippedChunks, setSkippedChunks] = useState<Set<string>>(new Set())
-  // 삭제된 문장 (start time 기준, 이번 generation에서 skip — 백엔드에 skip_sentence_starts로 전달)
-  const [skippedSentenceStarts, setSkippedSentenceStarts] = useState<Set<number>>(new Set())
+  const [skippedChunks, setSkippedChunks] = useState<Set<string>>(new Set(saved?.skippedChunks || []))
+  const [skippedSentenceStarts, setSkippedSentenceStarts] = useState<Set<number>>(new Set(saved?.skippedSentenceStarts || []))
   // CTA override — 다른 ref의 CTA로 교체 (null이면 원본 사용)
   type OverrideData = { shortcode: string; author: string; section_text: string; section_chunk: any; topic?: string }
-  // 섹션별 차용 ref (hook/intro/cta — 각각 독립). 미설정 시 원본 사용.
-  const [sectionOverrides, setSectionOverrides] = useState<Record<string, OverrideData>>({})
-  // hook archetype primary 선택 (분석 default 외에 secondary 후보로 변경 가능)
-  const [hookArchetypeOverride, setHookArchetypeOverride] = useState<{ archetype: string; pattern?: string; core_word?: string } | null>(null)
+  const [sectionOverrides, setSectionOverrides] = useState<Record<string, OverrideData>>(saved?.sectionOverrides || {})
+  const [hookArchetypeOverride, setHookArchetypeOverride] = useState<{ archetype: string; pattern?: string; core_word?: string } | null>(saved?.hookArchetypeOverride || null)
 
   // 3. 페르소나
-  const [allPersonas, setAllPersonas] = useState<Array<PersonaCandidate & { _uspIndex: number; _uspName: string; _unified?: boolean; _coversUsps?: number[] }>>([])
-  const [selectedPersonaIdx, setSelectedPersonaIdx] = useState<Set<number>>(new Set())
+  const [allPersonas, setAllPersonas] = useState<Array<PersonaCandidate & { _uspIndex: number; _uspName: string; _unified?: boolean; _coversUsps?: number[] }>>(saved?.allPersonas || [])
+  const [selectedPersonaIdx, setSelectedPersonaIdx] = useState<Set<number>>(new Set(saved?.selectedPersonaIdx || []))
   // ref-derived desire 후보 (참고 대본 emotional arc 기반)
   const [selectedRefDesireIdx, setSelectedRefDesireIdx] = useState<Set<number>>(new Set())
   // 통합 페르소나 생성 진행 + 분석 결과
@@ -75,13 +92,35 @@ export default function ScriptGenWizard() {
 
   // 4. 생성
   const [genError, setGenError] = useState('')
-  const [genResult, setGenResult] = useState<Record<string, GeneratedScript>>({})
+  const [genResult, setGenResult] = useState<Record<string, GeneratedScript>>(saved?.genResult || {})
   // 진행률 polling state — 페르소나별 (sessionId → progress)
   const [genProgress, setGenProgress] = useState<Record<string, { step?: string; percent?: number; message?: string; label: string }>>({})
 
   useEffect(() => {
     api.listMyProducts().then(setProducts).catch(() => {})
   }, [])
+
+  // 위저드 영속화 — state 변경 시마다 sessionStorage에 저장 (debounce 없음, 한 키 통째)
+  useEffect(() => {
+    if (!shortcode) return
+    if (step === 'product' && !productId && !mapping && !Object.keys(genResult).length) {
+      // 깨끗한 초기 상태 — 저장 불필요
+      return
+    }
+    try {
+      sessionStorage.setItem(wizKey(shortcode), JSON.stringify({
+        _t: Date.now(),
+        step, productId, mapping, chunkOverrides, chunkEdits,
+        skippedChunks: Array.from(skippedChunks),
+        skippedSentenceStarts: Array.from(skippedSentenceStarts),
+        sectionOverrides, hookArchetypeOverride,
+        allPersonas, selectedPersonaIdx: Array.from(selectedPersonaIdx),
+        genResult,
+      }))
+    } catch {}
+  }, [shortcode, step, productId, mapping, chunkOverrides, chunkEdits,
+      skippedChunks, skippedSentenceStarts, sectionOverrides, hookArchetypeOverride,
+      allPersonas, selectedPersonaIdx, genResult])
 
   const goToMapping = async (pid: number) => {
     if (!shortcode) return
@@ -816,6 +855,13 @@ export default function ScriptGenWizard() {
             setAllPersonas([])
             setSelectedPersonaIdx(new Set())
             setGenResult({})
+            setChunkOverrides({})
+            setChunkEdits({})
+            setSkippedChunks(new Set())
+            setSkippedSentenceStarts(new Set())
+            setSectionOverrides({})
+            setHookArchetypeOverride(null)
+            clearWiz(shortcode)
           }}
           onBackToPersona={() => {
             setGenError('')

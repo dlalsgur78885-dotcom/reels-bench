@@ -862,6 +862,7 @@ export default function ScriptGenWizard() {
             setSectionOverrides({})
             setHookArchetypeOverride(null)
             clearWiz(shortcode)
+            try { sessionStorage.removeItem(`rb_wizard_stepdone:${shortcode || ''}`) } catch {}
           }}
           onBackToPersona={() => {
             setGenError('')
@@ -2314,21 +2315,41 @@ function StepDone({
     .sort((a: any, b: any) => (a.start || 0) - (b.start || 0))
   const navigate = useNavigate()
   const tabs = Object.keys(result)
-  const [active, setActive] = useState(tabs[0] || '')
-  // 편집 상태 (탭별로 독립)
+  // StepDone 영속화 — shortcode별 별도 키, TTL 1시간
+  const stepDoneKey = `rb_wizard_stepdone:${shortcode || ''}`
+  const stepDoneSaved = (() => {
+    if (!shortcode) return null
+    try {
+      const raw = sessionStorage.getItem(stepDoneKey)
+      if (!raw) return null
+      const s = JSON.parse(raw)
+      if (!s || (Date.now() - (s._t || 0)) > 60 * 60 * 1000) {
+        sessionStorage.removeItem(stepDoneKey)
+        return null
+      }
+      return s
+    } catch { return null }
+  })()
+  const [active, setActive] = useState(stepDoneSaved?.active || tabs[0] || '')
   const [editingTab, setEditingTab] = useState<string | null>(null)
-  // 2차 refine 진행 중인 탭
   const [refiningTab, setRefiningTab] = useState<string | null>(null)
-  // 저장된 편집본 — 새 result 들어오면 리셋
-  const [editedResult, setEditedResult] = useState<Record<string, GeneratedScript>>({})
-  // 진행 중 편집 draft (저장 누르기 전)
+  const [editedResult, setEditedResult] = useState<Record<string, GeneratedScript>>(stepDoneSaved?.editedResult || {})
   const [draftSentences, setDraftSentences] = useState<{ start: number; end: number; text: string }[] | null>(null)
-  // refine stages — 탭별로 {base, alt_a?, alt_b?} (최대 3개)
   type StageKey = 'base' | 'alt_a' | 'alt_b'
   type RefineStage = { key: StageKey; sentences: any[]; created_at: string }
-  const [stagesByTab, setStagesByTab] = useState<Record<string, RefineStage[]>>({})
-  const [stageViewByTab, setStageViewByTab] = useState<Record<string, StageKey | null>>({})
+  const [stagesByTab, setStagesByTab] = useState<Record<string, RefineStage[]>>(stepDoneSaved?.stagesByTab || {})
+  const [stageViewByTab, setStageViewByTab] = useState<Record<string, StageKey | null>>(stepDoneSaved?.stageViewByTab || {})
   const stageLabel = (k: StageKey) => k === 'base' ? '기본' : k === 'alt_a' ? 'A원고' : 'B원고'
+
+  // StepDone 자동 영속화
+  useEffect(() => {
+    if (!shortcode) return
+    try {
+      sessionStorage.setItem(stepDoneKey, JSON.stringify({
+        _t: Date.now(), active, editedResult, stagesByTab, stageViewByTab,
+      }))
+    } catch {}
+  }, [stepDoneKey, shortcode, active, editedResult, stagesByTab, stageViewByTab])
 
   // 새 result 들어올 때 (생성 재시작 — 탭 자체 변경) 편집/단계 상태 리셋
   // result reference만 바뀌어도 트리거되면 안 됨 (다듬기 → setGenResult로 매번 새 ref) — 탭 키 기반 의존성

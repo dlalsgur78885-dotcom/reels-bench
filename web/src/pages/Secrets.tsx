@@ -3,12 +3,26 @@ import { api } from '../api'
 
 interface Item { id: string; name: string; description: string; updated_at: string }
 
+const CACHE_KEY = 'settings_secrets_cache'
+
+function readCache(): Item[] | null {
+  try {
+    const raw = sessionStorage.getItem(CACHE_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+function writeCache(items: Item[]) {
+  try { sessionStorage.setItem(CACHE_KEY, JSON.stringify(items)) } catch {}
+}
+
 const KNOWN: { name: string; description: string }[] = [
   { name: 'GEMINI_API_KEY', description: 'Gemini Pro API key (대본 생성·분석)' },
 ]
 
 export default function Secrets() {
-  const [items, setItems] = useState<Item[]>([])
+  const cachedItems = readCache()
+  const [items, setItems] = useState<Item[]>(cachedItems || [])
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
   const [editName, setEditName] = useState('')
@@ -18,10 +32,12 @@ export default function Secrets() {
   const [savedMsg, setSavedMsg] = useState('')
 
   const load = async () => {
-    setLoading(true); setErr('')
+    if (!readCache()) setLoading(true)
+    setErr('')
     try {
       const data = await api.listSecrets()
       setItems(data)
+      writeCache(data)
     } catch (e: any) {
       setErr(e.message || '로드 실패')
     }

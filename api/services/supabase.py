@@ -11,10 +11,18 @@ load_dotenv(ENV_PATH)
 
 SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").strip()
 SUPABASE_ANON_KEY = (os.getenv("SUPABASE_ANON_KEY") or "").strip()
+SUPABASE_SERVICE_KEY = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
 
 SUPABASE_HEADERS = {
     "apikey": SUPABASE_ANON_KEY,
     "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+    "Content-Type": "application/json",
+}
+
+# Service-role 헤더 — RLS 우회 필요 시 (분석/관리용)
+SUPABASE_SERVICE_HEADERS = {
+    "apikey": SUPABASE_SERVICE_KEY,
+    "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
     "Content-Type": "application/json",
 }
 

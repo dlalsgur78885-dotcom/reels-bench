@@ -1980,6 +1980,165 @@ JSON만 출력. 설명 금지.
     return []
 
 
+def extract_unified_personas(usps: list[dict], product_name: str = "") -> dict:
+    """선택된 USP들의 공통점 분석 + 모든 USP에 fit하는 통합 페르소나 5개 추출.
+
+    기존 extract_personas는 단일 USP별로 페르소나 생성 → 페르소나가 한 USP에만 강하게 묶임.
+    extract_unified_personas는 모든 USP를 동시에 보고 **교집합 페르소나** 도출 — 어떤 chunk가 어떤 USP에 매핑되든 자연 fit.
+
+    Returns: {
+        "common_pain": "...",
+        "common_context": "...",
+        "common_audience": "...",
+        "shared_keywords": [...],
+        "personas": [PersonaCandidate, ...]
+    }
+    """
+    if not usps:
+        return {"common_pain": "", "common_context": "", "common_audience": "", "shared_keywords": [], "personas": []}
+
+    # USP 블록 — 각 USP의 description + 대표 리뷰 5개씩
+    usp_blocks = []
+    for i, u in enumerate(usps):
+        name = u.get("usp", "")
+        desc = u.get("description", "") or ""
+        reviews = u.get("reviews", []) or []
+        rev_block = "\n".join(f"  - {r}" for r in reviews[:5] if isinstance(r, str) and r.strip())
+        usp_blocks.append(
+            f"### USP {i+1}: {name}\n"
+            f"description:\n{desc[:400]}\n"
+            + (f"대표 리뷰:\n{rev_block}\n" if rev_block else "")
+        )
+    usp_section = "\n".join(usp_blocks)
+
+    prompt = f"""당신은 광고 페르소나 분석가입니다. 아래 **여러 USP를 동시에 사용하는** 광고용 **통합 페르소나 정확히 5개**를 추출하세요.
+
+⚠️⚠️⚠️ **반드시 정확히 5개 페르소나** 출력. 1개·2개·3개·4개 출력은 무효. 5개 이상도 출력 X.
+
+⭐ 핵심: 단일 USP 페르소나가 아니라 **모든 USP에 공통 적용 가능한** 페르소나. 어떤 USP가 강조돼도 페르소나 어휘가 자연 fit해야 함.
+
+## product
+{product_name or '(미명시)'}
+
+## 선택된 USPs
+{usp_section}
+
+## 작업
+
+### 1. USP 교집합 분석
+모든 USP가 공통으로 해결하는 것을 찾기:
+- **common_pain**: 모든 USP가 공통으로 다루는 시청자 문제 (한 줄, vivid scene)
+- **common_context**: 시청자가 모든 USP를 함께 쓰는 상황 (시간·장소·트리거)
+- **common_audience**: 인구통계·라이프스타일 교집합
+- **shared_keywords**: USP description·리뷰에서 반복 등장하는 단어 5-10개
+
+### 2. 통합 페르소나 — **정확히 5개** (반드시)
+교집합을 가진 페르소나 5개 도출. 각 페르소나가 **모든 USP를 자연스럽게 사용**해야 함.
+5개는 인구통계(연령/성별/직업)·라이프스타일·상황(시간·장소·트리거) 조합으로 **서로 명확히 다른** 페르소나여야 함. 시나리오·signals 중복 X.
+
+⚠️ **5개 출력 가이드 — 다양화 축**:
+- 페르소나 1: **나이축 — 20대 초중반 학생/사회초년생** (예산 빠듯, 첫 경험)
+- 페르소나 2: **나이축 — 30대 직장인 커플** (시간 부족, 효율 중시)
+- 페르소나 3: **상황축 — 가족여행 부모** (애 챙김, 안전·편리 우선)
+- 페르소나 4: **트리거축 — 출장·비즈니스** (효율·기록·공유)
+- 페르소나 5: **라이프스타일축 — 솔로 여행자** (자유, 깊이 있는 경험)
+
+위 5축은 가이드. product 도메인에 맞춰 조정하되 **5개 모두 다른 인구·상황** 확보.
+
+각 페르소나 6필드 (extract_personas와 동일):
+1. **job_statement**: "When [상황], I want to [motivation], so I can [outcome]"
+2. **lf8**: Drew Whitman LF8 (1-8 정수)
+3. **lf8_label**: 한국어
+4. **pain_scene**: 구체 visual scene
+5. **desire_scene**: 구체 visual scene
+6. **identity**: 정체성 한 줄
+
+### 페르소나 룰
+- **모든 USP를 한 페르소나가 자연스럽게 사용**해야 함 — 한 USP만 fit하는 페르소나는 X
+- shared_keywords가 페르소나 scenario·signals에 박혀야 함
+- pain_scene/desire_scene이 어떤 USP angle에서도 자연 호응
+
+## 출력 JSON — **personas 배열에 정확히 5개 객체** (반드시)
+{{
+  "common_pain": "...",
+  "common_context": "...",
+  "common_audience": "...",
+  "shared_keywords": ["키워드1", "키워드2", ...],
+  "personas": [
+    {{"name":"페르소나 1 — ...","scenario":"...","job_statement":"...","lf8":4,"lf8_label":"...","pain_scene":"...","desire_scene":"...","identity":"...","pain":"...","desire":"...","signals":["..."],"destinations":[],"tone_hint":"...","covers_usps":[1,2,3]}},
+    {{"name":"페르소나 2 — ...","scenario":"...","job_statement":"...","lf8":5,"lf8_label":"...","pain_scene":"...","desire_scene":"...","identity":"...","pain":"...","desire":"...","signals":["..."],"destinations":[],"tone_hint":"...","covers_usps":[1,2,3]}},
+    {{"name":"페르소나 3 — ...","scenario":"...","job_statement":"...","lf8":7,"lf8_label":"...","pain_scene":"...","desire_scene":"...","identity":"...","pain":"...","desire":"...","signals":["..."],"destinations":[],"tone_hint":"...","covers_usps":[1,2,3]}},
+    {{"name":"페르소나 4 — ...","scenario":"...","job_statement":"...","lf8":6,"lf8_label":"...","pain_scene":"...","desire_scene":"...","identity":"...","pain":"...","desire":"...","signals":["..."],"destinations":[],"tone_hint":"...","covers_usps":[1,2,3]}},
+    {{"name":"페르소나 5 — ...","scenario":"...","job_statement":"...","lf8":8,"lf8_label":"...","pain_scene":"...","desire_scene":"...","identity":"...","pain":"...","desire":"...","signals":["..."],"destinations":[],"tone_hint":"...","covers_usps":[1,2,3]}}
+  ]
+}}
+
+⚠️ personas.length === 5 강제. 1·2·3·4·6개 출력 시 무효. JSON만. 설명 X.
+"""
+    schema = {
+        "type": "object",
+        "properties": {
+            "common_pain": {"type": "string"},
+            "common_context": {"type": "string"},
+            "common_audience": {"type": "string"},
+            "shared_keywords": {"type": "array", "items": {"type": "string"}},
+            "personas": {
+                "type": "array",
+                "minItems": 5,
+                "maxItems": 5,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "scenario": {"type": "string"},
+                        "job_statement": {"type": "string"},
+                        "lf8": {"type": "integer"},
+                        "lf8_label": {"type": "string"},
+                        "pain_scene": {"type": "string"},
+                        "desire_scene": {"type": "string"},
+                        "identity": {"type": "string"},
+                        "pain": {"type": "string"},
+                        "desire": {"type": "string"},
+                        "signals": {"type": "array", "items": {"type": "string"}},
+                        "tone_hint": {"type": "string"},
+                    },
+                    "required": ["name", "scenario", "pain_scene", "desire_scene"],
+                },
+            },
+        },
+        "required": ["personas"],
+    }
+    def _call_and_extract():
+        result = call_gemini(prompt, model="gemini-3.1-flash-lite-preview", max_tokens=8192, response_schema=schema)
+        if isinstance(result, list) and result:
+            result = result[0]
+        return result if isinstance(result, dict) else None
+
+    try:
+        result = _call_and_extract()
+        # personas가 5개 미만이면 1회 retry
+        if result and len(result.get("personas") or []) < 5:
+            logger.warning("[unified-personas] got %d/5 — retrying with stronger 5-count emphasis",
+                          len(result.get("personas") or []))
+            try:
+                result2 = _call_and_extract()
+                if result2 and len(result2.get("personas") or []) > len(result.get("personas") or []):
+                    result = result2
+            except Exception as e:
+                logger.warning("[unified-personas] retry failed: %s", e)
+        if isinstance(result, dict):
+            return {
+                "common_pain": (result.get("common_pain") or "").strip(),
+                "common_context": (result.get("common_context") or "").strip(),
+                "common_audience": (result.get("common_audience") or "").strip(),
+                "shared_keywords": result.get("shared_keywords") or [],
+                "personas": result.get("personas") or [],
+            }
+    except Exception as e:
+        logger.warning("extract_unified_personas failed: %s", e)
+    return {"common_pain": "", "common_context": "", "common_audience": "", "shared_keywords": [], "personas": []}
+
+
 def build_prompt(product_name: str, pain: str, desire: str, usps: list[dict], references: list[dict], target_persona: dict | None = None) -> str:
     """R-C-T-F-C-E 프레임워크 프롬프트 구성. 참고 릴스의 섹션 비율 미러링 + 리뷰 사전 선택."""
     # 첫 참고 릴스를 길이/비율 기준으로 사용
@@ -2539,7 +2698,7 @@ def call_gemini(prompt: str, min_sentences: int | None = None, model: str | None
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": gen_config,
     }
-    r = requests.post(url, params={"key": key}, json=body, timeout=240)
+    r = requests.post(url, params={"key": key}, json=body, timeout=480)
     if r.status_code != 200:
         raise RuntimeError(f"Gemini call {r.status_code}: {r.text[:300]}")
     data = r.json()
@@ -2771,11 +2930,12 @@ JSON만. 설명 X."""
     return []
 
 
-def build_refine_prompt(draft: dict, unified_city: str | None, ref_info: dict | None = None, usps: list[dict] | None = None, awkward_info: list[dict] | None = None) -> str:
+def build_refine_prompt(draft: dict, unified_city: str | None, ref_info: dict | None = None, usps: list[dict] | None = None, awkward_info: list[dict] | None = None, vocab_repeats: dict[str, list[int]] | None = None) -> str:
     """1차 결과를 다듬기 위한 검토 프롬프트.
 
     ref_info가 있으면 길이 매칭 + 리뷰 내용 조정 추가.
     awkward_info가 있으면 어색 문장 명시 + 강제 수정 지시.
+    vocab_repeats가 있으면 어휘 중복 문장 pinpoint 교체 지시.
     """
     sentences = draft.get("sentences", [])
     sent_text = "\n".join(
@@ -2794,6 +2954,36 @@ def build_refine_prompt(draft: dict, unified_city: str | None, ref_info: dict | 
             reason = aw.get("reason", "어색")
             aw_lines.append(f'  [{idx}] "{txt}" — {reason}')
         awkward_block = "\n## ⚠️ 어색 문장 — 강제 교정 필수\n" + "\n".join(aw_lines) + "\n→ 위 문장은 자연 한국어로 다시 쓰기 (의미·시그니처 보존)\n"
+
+    # 어휘 중복 pinpoint 교정 블록 — 2번째 이후 등장 문장만 단어 갈아끼우기
+    vocab_block = ""
+    if vocab_repeats:
+        repeat_lines = []
+        # idx → [stems] 역매핑 (한 문장이 여러 stem 중복 가능)
+        idx_to_stems: dict[int, list[str]] = {}
+        for stem, idxs in vocab_repeats.items():
+            # 첫 등장은 keep, 2번째부터 교정 대상
+            for vi in idxs[1:]:
+                idx_to_stems.setdefault(vi, []).append(stem)
+        for idx in sorted(idx_to_stems.keys()):
+            stems_str = ", ".join(f"\"{s}\"" for s in idx_to_stems[idx])
+            sent_text_target = sentences[idx].get("text", "") if idx < len(sentences) else ""
+            # 첫 등장 문장 위치도 표시
+            first_idxs = []
+            for stem in idx_to_stems[idx]:
+                first_idx = vocab_repeats[stem][0]
+                first_sent_text = sentences[first_idx].get("text", "") if first_idx < len(sentences) else ""
+                first_idxs.append(f"[{first_idx}] \"{first_sent_text}\"")
+            repeat_lines.append(
+                f'  [{idx}] "{sent_text_target}" — 단어 {stems_str}가 앞 문장(들)과 중복: {" / ".join(first_idxs)}'
+            )
+        vocab_block = (
+            "\n## ⛔ 어휘 중복 — pinpoint 교정 필수\n"
+            "아래 문장들에서 표시된 단어가 이전 문장과 중복됩니다. **해당 단어만 다른 단어(동의어·다른 명사·다른 동사)로 갈아끼우세요**.\n"
+            "전체 문장 구조·시그니처·어절 수·음절은 그대로. **문제 단어만 교체**.\n\n"
+            + "\n".join(repeat_lines)
+            + "\n\n예: 앞 문장에 '정보 찾다가'가 있고 뒷 문장도 '정보 찾느라'라면 → 뒷 문장의 '정보 찾'을 '사이트 비교'/'가격 비교'/'후기 보다' 등 다른 어휘로 교체.\n"
+        )
 
     # 길이 매칭 섹션
     length_match_block = ""
@@ -2857,9 +3047,9 @@ def build_refine_prompt(draft: dict, unified_city: str | None, ref_info: dict | 
 - **문장 개수 = {target_n}개** (±2 허용) — 모든 문장 출력
 - **각 문장 음절 = 참고 ±15% 이내** — 위치별로 참고 음절수에 맞춰 다듬기
 - **마케터 톤 어휘 제거** ("최고잖아요/딱이죠/찾거든요/어때요/도와줘요/줍니다/입니다" → 자연 일상 어휘)
-- **참고 시그니처(끝 어구) 보존** — 1차에 시그니처 변형됐으면 원복
+- **참고 시그니처(끝 어구)는 같은 카테고리 punchy 어미면 OK** — 정확 매칭 X. 카테고리: 존댓말 punchy(잖아요/거든요/예요/네요/라요/더라구요/죠) / 반말 punchy(있지/이지/지롱/잖아) / 약속(보여줄게/알려줄게). 카테고리 외로 빠지면 원복
 - emotion·delivery·direction은 1차 값 유지 (텍스트만 다듬기)
-{awkward_block}
+{awkward_block}{vocab_block}
 ## 검토·다듬기 규칙
 {city_rule}- 어색한 한국어 어미·동사 조합 교체
 - 같은 단어·어미 반복 줄임 (~죠 3+ 연속이면 변형)
@@ -2878,8 +3068,10 @@ def build_refine_prompt(draft: dict, unified_city: str | None, ref_info: dict | 
    - ✅ 교정: 동사형/형용사형으로 "줄지 않고/굽지 않는/안 쳐져"
 4. **이질 결합** — "실크와 튼튼함을 맞춘" (소재 + 특성)
    - ✅ 교정: 같은 카테고리로 통일 "실크처럼 튼튼한 / 부드러우면서 튼튼한"
-5. **시그니처 변형** — 끝 어구 "잖아요/거든요/보여줄게" 임의 변경
-   - ✅ 교정: 참고 원본 시그니처로 원복
+5. **시그니처 카테고리 이탈** — 끝 어구가 ref와 다른 카테고리로 바뀜
+   - 카테고리: 존댓말 punchy(잖아요/거든요/예요/네요/라요/더라구요/죠) / 반말 punchy(있지/이지/지롱/잖아) / 약속(보여줄게/알려줄게)
+   - ✅ 같은 카테고리 안 변형은 OK (예: 잖아요 → 거든요 자연스러우면 유지)
+   - ❌ 카테고리 이탈은 교정 (예: ref "잖아요"인데 우리 "다" 평이 종결 → 같은 카테고리 punchy로 원복)
 
 ## 출력 (JSON만)
 - 형식: {{"sentences": [...]}} (정확히 {target_n}±2개 객체)
@@ -2911,7 +3103,7 @@ def build_refine_retry_prompt(prev_refined: dict, violations: list[tuple], all_r
     for idx, gen_syl, ref_syl, ref_text, gen_text in violations:
         lines.append(
             f"  [{idx+1}] 참고({ref_syl}음절) \"{ref_text}\" → 우리({gen_syl}음절) \"{gen_text}\""
-            f" — **{ref_syl}±2 음절로 강제 압축** (현재 {gen_syl - ref_syl}음절 초과)"
+            f" — **{ref_syl}±3 음절로 강제 압축** (현재 {gen_syl - ref_syl}음절 초과)"
         )
     sent_text = "\n".join(
         f'  [{i+1}] [{s.get("start",0):.1f}~{s.get("end",0):.1f}s] "{s.get("text","")}"'
@@ -3400,7 +3592,7 @@ def _build_planner_prompt(product_name: str, pain: str, desire: str, usps: list[
 - position: 섹션 내 순서
 - role: 참고 [역할=X] 그대로
 - topic: 우리 제품 맥락의 주제 (한 줄)
-- syllables: 참고 음절 ±2
+- syllables: 참고 음절 ±3
 - ref_text: 참고 원문
 - skeleton: [SLOT]이 박힌 골격 (단어 채우지 X)
 - signature: skeleton 끝의 시그니처 어구
@@ -3457,6 +3649,137 @@ def _eojeol_syllable_pattern(text: str) -> list[int]:
     return [_count_kor_syllables(w) for w in text.split() if w.strip()]
 
 
+# ── 시그니처 카테고리 (B 옵션: 정확 매칭 X, 같은 카테고리 punchy 어미면 OK) ──
+# ref 시그니처와 우리 시그니처가 같은 카테고리 안에서 자유롭게 교환 가능.
+# speech level + 의도(평이 단정 / 약속 / 호소) 기준으로 그룹화.
+_SIGNATURE_CATEGORIES: dict[str, list[str]] = {
+    # 존댓말 punchy — 평이 단정·동의 호소·확인
+    "formal_punchy": [
+        "잖아요", "거든요", "예요", "네요", "라요", "이라",
+        "더라구요", "더라고요", "죠", "려요",
+    ],
+    # 반말 punchy — 단정·확인·강조
+    "casual_punchy": [
+        "있지", "있어", "이지", "지롱", "끝", "잖아", "거든",
+    ],
+    # 약속·유도 (카메라 톤 — "내가 보여줄게/알려줄게")
+    "promise": [
+        "보여줄게", "알려줄게", "줄게",
+    ],
+}
+
+# 전체 시그니처 패턴 (카테고리 무관) — 추출용
+_SIGNATURE_PATTERNS_ALL: list[str] = [p for pats in _SIGNATURE_CATEGORIES.values() for p in pats]
+
+
+def signature_category(sig: str) -> str:
+    """시그니처 어구가 속한 카테고리 반환. 매칭 안 되면 빈 문자열."""
+    if not sig:
+        return ""
+    for cat, pats in _SIGNATURE_CATEGORIES.items():
+        for p in pats:
+            if sig.endswith(p):
+                return cat
+    return ""
+
+
+def extract_signature(text: str) -> str:
+    """문장 끝 시그니처 어구 추출 (있으면). 평이 연결 어미면 빈 문자열.
+
+    module-level 버전 — 2차 refine에서도 사용.
+    """
+    if not text:
+        return ""
+    t = text.rstrip(' .!?~❤️♥️🥰😊😄').strip()
+    tail = t[-10:] if len(t) >= 10 else t
+    # 긴 패턴부터 매칭 (잖아요 > 잖아 같은 충돌 방지)
+    for pat in sorted(_SIGNATURE_PATTERNS_ALL, key=len, reverse=True):
+        if pat in tail:
+            idx = tail.rfind(pat)
+            return tail[idx:]
+    return ""
+
+
+def category_label(cat: str) -> str:
+    """카테고리 한국어 라벨 (prompt 표시용)."""
+    return {
+        "formal_punchy": "존댓말 punchy",
+        "casual_punchy": "반말 punchy",
+        "promise": "약속/유도",
+    }.get(cat, cat)
+
+
+# ── 어휘 중복 검출 (2차 refine에서 사용) ──
+# anchor [:2] — 동사 활용 차이 무시하고 root 잡기 (포기했/포기하 → 둘 다 "포기")
+_VOCAB_STOPWORDS = {
+    "그래", "그러", "그런", "그건", "이건", "저건", "이게", "저게",
+    "진짜", "정말", "너무", "완전", "진심", "굳이", "오히려",
+    "같은", "같이", "같아", "같다", "같지",
+    "근데", "하지", "그리", "이렇", "그렇", "저렇",
+    "있는", "있어", "있다", "있었", "있을", "없는", "없어", "없다", "없었",
+    "해서", "하고", "하면", "되면", "되는", "되니", "되어",
+    "보면", "보니", "보고", "보다", "한번", "다시",
+    # ⭐ 관용 표현·rhetorical 신호 — ref-gen 간 재사용 OK (도메인 명사 X)
+    "꿈도", "못꾸", "꾸고", "여기", "저기", "어딜", "어디", "조차",
+    "신경", "쓰여", "쓸일", "지치", "들여", "여태", "맨날",
+    "자꾸", "괜히", "그냥", "그저", "딱히", "별로",
+    "얼마", "얼른", "한참", "겨우", "막상", "이미",
+    "차라", "차마", "막막", "허무", "정신", "걱정",
+}
+_VOCAB_POSTPOSITIONS = ["에서", "에게", "한테", "처럼", "보다", "마다", "까지", "부터", "조차", "이랑", "으로", "이나", "이면",
+                       "은", "는", "이", "가", "을", "를", "도", "와", "과", "의", "에", "로", "랑", "야", "아"]
+_VOCAB_VERB_SUFFIXES = ["었어요", "았어요", "겠어요", "어요", "아요", "지요", "려고", "다가", "으면", "면서", "느라", "는데", "는지",
+                        "었", "았", "겠", "어", "아", "지", "다", "고", "려", "는", "면"]
+
+
+def content_stems(text: str) -> set[str]:
+    """문장에서 content-bearing 한글 stem (2자 anchor) 집합 추출.
+
+    조사·종결어미 stripping + stopword 제외 → anchor [:2]로 동사 활용 차이 무시.
+    예: "여행 경비 아끼려고 정보 찾다가" → {여행, 경비, 아끼, 정보, 찾다}
+    """
+    import re as _re
+    stems: set[str] = set()
+    for w in text.split():
+        # 양옆 구두점·따옴표 제거
+        w = _re.sub(r"^[^\uAC00-\uD7A3]+|[^\uAC00-\uD7A3]+$", "", w)
+        if len(w) < 2:
+            continue
+        # 조사 trailing strip (긴 것부터)
+        for p in sorted(_VOCAB_POSTPOSITIONS, key=len, reverse=True):
+            if w.endswith(p) and len(w) > len(p) + 1:
+                w = w[:-len(p)]
+                break
+        if len(w) < 2:
+            continue
+        # 동사/형용사 활용 suffix strip
+        for suf in _VOCAB_VERB_SUFFIXES:
+            if w.endswith(suf) and len(w) > len(suf) + 1:
+                w = w[:-len(suf)]
+                break
+        if len(w) < 2:
+            continue
+        anchor = w[:2]
+        if anchor in _VOCAB_STOPWORDS:
+            continue
+        stems.add(anchor)
+    return stems
+
+
+def detect_vocab_repeats(sentences: list[dict]) -> dict[str, list[int]]:
+    """sentences에서 같은 content stem 등장 검출. stem → [sentence_idx, ...].
+
+    2+ 문장에 같은 stem이 있는 경우만 반환.
+    2차 refine 패스에서 활용 — pinpoint하게 중복 문장만 교체.
+    """
+    stems_per_sent = [content_stems((s or {}).get("text", "")) for s in sentences]
+    counter: dict[str, list[int]] = {}
+    for i, ss in enumerate(stems_per_sent):
+        for s in ss:
+            counter.setdefault(s, []).append(i)
+    return {s: idxs for s, idxs in counter.items() if len(idxs) >= 2}
+
+
 # 핵심 conjunction (보존 필수) — writer가 드롭하면 ref 구조 깨짐
 _KEY_CONJUNCTION_PATTERNS = [
     ("~가 아니라", ["가 아니라", "이 아니라"]),  # 대조
@@ -3498,15 +3821,30 @@ def _extract_key_conjunctions(text: str) -> list[str]:
 
 
 def _parse_usp_description(desc: str) -> dict[str, str]:
-    """USP description을 문제/해결/혜택/핵심 명사 4단으로 파싱.
-    "문제: X\n해결: Y\n혜택: Z\n핵심 명사: A,B,C" 패턴 인식. 패턴 없으면 raw에 통째로.
+    """USP description을 문제/해결/혜택/핵심 명사/capability fence로 파싱.
+
+    "문제: X\n해결: Y\n혜택: Z\n핵심 명사: ...\n앱이 하는 것: ...\n앱이 안 하는 것: ..." 패턴 인식.
+
+    v2: 핵심 명사 카테고리 분리 (문제 측 / 해결 측 / 혜택 측) 파싱 추가.
+    v3: capability fence (앱이 하는 것 / 앱이 안 하는 것) 추가 — writer가 false claim 회피용.
     """
     if not desc or not desc.strip():
-        return {"raw": "", "문제": "", "해결": "", "혜택": "", "핵심_명사": ""}
+        return {"raw": "", "문제": "", "해결": "", "혜택": "", "핵심_명사": "",
+                "핵심_명사_문제": "", "핵심_명사_해결": "", "핵심_명사_혜택": "",
+                "앱이_하는_것": "", "앱이_안_하는_것": ""}
     import re as _re
-    out = {"raw": desc.strip(), "문제": "", "해결": "", "혜택": "", "핵심_명사": ""}
-    # 라인 단위 또는 마커 단위 파싱 (핵심 명사 / 핵심명사 둘 다 인식)
-    pattern = _re.compile(r"(문제|해결|혜택|기능|효과|핵심\s*명사)\s*[:：]\s*(.+?)(?=\n\s*(?:문제|해결|혜택|기능|효과|핵심\s*명사)\s*[:：]|\Z)", _re.S)
+    out: dict[str, str] = {
+        "raw": desc.strip(), "문제": "", "해결": "", "혜택": "", "핵심_명사": "",
+        "핵심_명사_문제": "", "핵심_명사_해결": "", "핵심_명사_혜택": "",
+        "앱이_하는_것": "", "앱이_안_하는_것": "",
+    }
+    # 마커 인식 — 핵심 명사 / 핵심명사 / 앱이 하는 것 / 앱이 안 하는 것 / capability_in / capability_out
+    # 줄바꿈 직후 + 마커 + : 형식
+    marker_pat = r"(문제|해결|혜택|기능|효과|핵심\s*명사|앱이\s*하는\s*것|앱이\s*안\s*하는\s*것|capability_in|capability_out)"
+    pattern = _re.compile(
+        rf"(?:^|\n)\s*{marker_pat}\s*[:：]\s*(.+?)(?=\n\s*{marker_pat}\s*[:：]|\Z)",
+        _re.S,
+    )
     for m in pattern.finditer(desc):
         key = _re.sub(r"\s+", "", m.group(1)).strip()
         val = m.group(2).strip()
@@ -3517,9 +3855,62 @@ def _parse_usp_description(desc: str) -> dict[str, str]:
             out["혜택"] = val
         elif key == "핵심명사":
             out["핵심_명사"] = val
+        elif key == "앱이하는것" or key == "capability_in":
+            out["앱이_하는_것"] = val
+        elif key == "앱이안하는것" or key == "capability_out":
+            out["앱이_안_하는_것"] = val
         else:
             out[key] = val
+
+    # v2: 핵심 명사 카테고리 분리 파싱
+    if out["핵심_명사"]:
+        nouns_text = out["핵심_명사"]
+        sub_pat = _re.compile(r"-\s*(문제|해결|혜택)\s*측\s*[:：]\s*(.+?)(?=\n\s*-\s*(?:문제|해결|혜택)\s*측|\Z)", _re.S)
+        for sm in sub_pat.finditer(nouns_text):
+            cat = sm.group(1)
+            words = sm.group(2).strip()
+            out[f"핵심_명사_{cat}"] = words
     return out
+
+
+def parse_usp_numbered_features(desc: str) -> list[str]:
+    """USP description에서 numbered feature 리스트 추출.
+
+    패턴: "1. xxx\n2. yyy\n3. zzz" 또는 "1) xxx 2) yyy" 또는 "①xxx ②yyy"
+    각 feature는 다음 번호 직전까지의 텍스트로 캡처.
+
+    Returns: feature 텍스트 리스트 (각 80자 이내로 trim).
+    """
+    if not desc or not desc.strip():
+        return []
+    import re as _re
+    # 1) 아라비아 숫자 + dot/paren — "1. ", "1) ", "1) "
+    # 줄 시작 또는 공백 뒤에 등장하는 1-9 숫자
+    pattern = _re.compile(r"(?:^|\n|\s)\s*([1-9])[.)]\s*(.+?)(?=(?:\n|\s)\s*[1-9][.)]|\Z)", _re.S)
+    matches = pattern.findall(desc)
+    features: list[str] = []
+    if matches:
+        for _num, text in matches:
+            t = text.strip()
+            # 다음 줄(빈 줄 또는 다른 마커)에서 끊기
+            t = _re.split(r"\n\s*(?:문제|해결|혜택|기능|효과|핵심\s*명사)\s*[:：]", t)[0].strip()
+            if t and len(t) >= 2:
+                features.append(t[:120])
+    # 2) 동그라미 숫자 (①②③) 패턴 fallback
+    if not features:
+        for circled, num_str in [("①", "1"), ("②", "2"), ("③", "3"), ("④", "4"), ("⑤", "5")]:
+            if circled in desc:
+                parts = desc.split(circled, 1)
+                if len(parts) == 2:
+                    text = parts[1]
+                    # 다음 동그라미까지
+                    for next_circ in ["②", "③", "④", "⑤", "\n"]:
+                        if next_circ in text:
+                            text = text.split(next_circ, 1)[0]
+                            break
+                    if text.strip():
+                        features.append(text.strip()[:120])
+    return features
 
 
 def _extract_main_usp_keywords(usps: list[dict], target_persona: dict | None) -> list[str]:
@@ -3720,6 +4111,15 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
             chunk_meta and (chunk_meta.get("section") or "").strip() in chunk_to_user_usps
             and not (chunk_to_user_usps.get((chunk_meta.get("section") or "").strip()) or [])
         )
+        # bundle_logic을 sentence별로 분해 ("sent1: 페인 3개 나열 → sent2: 솔루션")
+        bundle_by_sent: dict[int, str] = {}
+        if c_bundle:
+            import re as _re
+            for m in _re.finditer(r"sent\s*(\d+)\s*:\s*([^→]+?)(?=→|$)", c_bundle, _re.UNICODE):
+                try:
+                    bundle_by_sent[int(m.group(1))] = m.group(2).strip(" .,")
+                except Exception:
+                    pass
         for s in group:
             usp_tag = f" [USP{s.get('usp_id')}]" if s.get("usp_id") else ""
             slot_tag = f" slot={slot_id}" if slot_id is not None else ""
@@ -3732,6 +4132,12 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
             spec_block += f"\n  문장 {s['position']}{usp_tag}{slot_tag}\n"
             spec_block += f"    역할: {s.get('role','')}\n"
             spec_block += f"    토픽: {s.get('topic','')}\n"
+            # ⭐ 이 문장의 묶음 내 의미 (bundle_logic에서 split) — sentence-level 직접 박아 압축 차단
+            sent_intent = bundle_by_sent.get(int(s.get('position') or 0))
+            if sent_intent:
+                spec_block += f"    🔗 **이 문장의 의미 구조 (bundle_logic 추출)**: {sent_intent}\n"
+                if any(k in sent_intent for k in ["나열", "3개", "2개", "4개", "5개", "items", "item"]):
+                    spec_block += f"    ⚠️ **multi-item 나열 신호** — ref와 동일 개수의 item을 USP/페르소나 어휘로 1:1 치환. 1개로 압축 ❌\n"
             # ⭐ 종결 형태 + 실제 ref 끝 어절 명시 (writer가 그대로 박을 수 있게)
             ref_last_word = ref_text.split()[-1] if ref_text.split() else ""
             spec_block += f"    종결 형태: {ending_marker}\n"
@@ -3740,7 +4146,7 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
             spec_block += f"    음절 합계: {ref_syl}\n"
             if ref_eojeol_pattern:
                 pattern_str = "-".join(str(p) for p in ref_eojeol_pattern)
-                spec_block += f"    어절 수: {ref_eojeol_n}개 (±1 허용) / 어절별 음절 패턴: {pattern_str} (각 ±2 허용)\n"
+                spec_block += f"    어절 수: {ref_eojeol_n}개 (±1 허용) / 어절별 음절 패턴: {pattern_str} (각 ±3 허용)\n"
             # Hook은 종결 타입 명시
             if is_hook_section:
                 end_type = _detect_hook_ending_type(ref_text)
@@ -3755,8 +4161,14 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
                 solution = desc_parsed_inline.get("해결", "")[:200]
                 benefit = desc_parsed_inline.get("혜택", "")[:200]
                 core_nouns = desc_parsed_inline.get("핵심_명사", "")[:300]
+                # capability fence — USP description에서 추출 + group_capability_out (그룹 단위 boundary)
+                cap_in = desc_parsed_inline.get("앱이_하는_것", "")[:300]
+                cap_out_desc = desc_parsed_inline.get("앱이_안_하는_것", "")[:300]
+                cap_out_group = (u_match.get("group_capability_out") or "")[:300]
+                # 그룹 capability_out이 있으면 우선 (제품 단위 boundary). description 것은 보조.
+                cap_out = cap_out_group or cap_out_desc
                 # 구조적 description 있으면 4 부분 노출, 없으면 raw fallback
-                if problem or solution or benefit or core_nouns:
+                if problem or solution or benefit or core_nouns or cap_in or cap_out:
                     spec_block += f"    ⭐⭐ 매핑된 USP{spec_usp_id} ({u_name}) — **이 USP 어휘로만 작성**\n"
                     if problem:
                         spec_block += f"       문제: {problem}\n"
@@ -3766,6 +4178,11 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
                         spec_block += f"       혜택: {benefit}\n"
                     if core_nouns:
                         spec_block += f"       🔑 **핵심 명사 (이 단어들로 ref noun 대체)**: {core_nouns}\n"
+                    if cap_in:
+                        spec_block += f"       ✅ **앱이 하는 것** (이 capability만 functionality로 박기): {cap_in}\n"
+                    if cap_out:
+                        spec_block += f"       ⛔ **앱이 안 하는 것** (이 어휘를 functionality claim으로 박지 말 것): {cap_out}\n"
+                        spec_block += f"          예: \"안 하는 것\"에 '실제 예약'이 있으면 → '검색부터 예약까지 한 번에' 같은 false claim 금지\n"
                     spec_block += f"    ⛔ **ref noun 출력 금지** — 아래 ref text의 명사·동사·connector 패턴 (다른 X랑 같이 / 세탁해봤는데 같은 ref 도메인어 + 동작 흐름)을 그대로 박지 말 것. 위 핵심 명사로 USP 시나리오 새로 짜기.\n"
                     # ⭐ 짧은 spec (≤4 어절) — USP 핵심 명사 1개 강제
                     if ref_eojeol_n <= 4:
@@ -3775,7 +4192,13 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
                     if raw_desc:
                         spec_block += f"    ⭐ 매핑된 USP{spec_usp_id} ({u_name}) 어휘 source:\n"
                         spec_block += f"       \"{raw_desc}\"\n"
-            spec_block += f"    참고 ref text (구조·어절·종결만 측정 / 명사·동사 차용 X): \"{ref_text}\"\n"
+            spec_block += f"    참고 ref text (구조·어절·종결만 측정 / **도메인** 명사·동사 차용 X): \"{ref_text}\"\n"
+            spec_block += f"    ⛔ **ref 도메인 명사·동사 ZERO overlap** — ref text의 **도메인 특수 명사·동사** (설거지/플레이팅/구글맵/메뉴 등 ref product에만 해당하는 어휘)를 우리 출력에 박지 말 것.\n"
+            spec_block += f"    ✅ **관용 표현·rhetorical은 보존 OK** — \"꿈도 못 꾸\" / \"할 줄 알았는데\" / \"신경 쓸 일\" / \"여기저기\" / \"어딜 가도\" / \"~조차 안\" 같은 관용·감정 신호는 재사용 권장 (rhetorical 효과 유지).\n"
+            spec_block += f"       예시: ref=\"설거지 폭탄에 플레이팅은 꿈도 못꾸고 있었는데\" + USP=항공권\n"
+            spec_block += f"         ❌ GEN \"더 깔끔 보이게 카테고리 나누고 색깔로 정리\" (모든 단어 회피 — rhetorical 신호 사라짐)\n"
+            spec_block += f"         ✅ GEN \"항공권이 너무 올라 여행은 꿈도 못 꾸고 있었는데\" (도메인 명사만 교체: 설거지→항공권, 플레이팅→여행. 관용구 \"꿈도 못 꾸고\" 보존)\n"
+            spec_block += f"       체크리스트: ref의 **도메인 특수 명사** (그 ref product에만 해당)만 회피. 관용·감정 신호 표현은 가져와도 OK.\n"
 
     persona_str = ""
     if target_persona:
@@ -4213,16 +4636,16 @@ ref의 **"X했던 Y"** / **"X하는 Y"** / **"X 없는 Y"** 같은 패턴 미러
 
 ### 허용 범위
 1. **어절 수**: ref ±1 (띄어쓰기 단위 개수)
-2. **각 어절의 음절 수**: ref 어절별 ±2 음절
+2. **각 어절의 음절 수**: ref 어절별 ±3 음절
 3. **어절 순서**: 가능한 한 ref와 동일 위치에 동일 의미 어절 배치
 
 ### 예시 (ref: "잘 때는 편한 게 최고잖아요" → 어절 4, 패턴 3-2-1-5)
-- ✅ "잘 때는 시원한 게 최고잖아요" (어절 4 / 3-3-1-5 / 모두 ±2 OK)
+- ✅ "잘 때는 시원한 게 최고잖아요" (어절 4 / 3-3-1-5 / 모두 ±3 OK)
 - ✅ "쓸 때는 편한 게 좋아요" (어절 4 / 3-3-1-3 / 마지막 5↔3 = ±2 OK)
 - ✅ "엄청 쓸 때 편한 게 최고예요" (어절 5 = ref ±1 OK)
-- ❌ "쓸 때는 편 게 짱" (마지막 5↔2 = 3 차이, 음절 ±2 초과)
+- ❌ "쓸 때는 편 게 짱" (마지막 5↔1 = 4 차이, 음절 ±3 초과)
 
-⚠️ 어절 ±1, 음절 ±2는 **허용 범위**이지 절대 강제 X. 범위 내에서 의미·호응이 자연스러운 어휘를 우선.
+⚠️ 어절 ±1, 음절 ±3은 **허용 범위**이지 절대 강제 X. 범위 내에서 의미·호응이 자연스러운 어휘를 우선.
 
 ## 🔗 Slot 일관성 ⭐⭐⭐ (같은 slot 안의 모든 문장은 같은 핵심 명사 1개 공유)
 - spec_block의 **`━━━ slot N ━━━` 묶음**은 같은 토픽을 다룸
@@ -4371,40 +4794,49 @@ ref slot 2: "캡내장인데 캡이 박음질돼 있어서 / 세탁하고 캡이
 
 ⚠️ spec.role + USP description의 일부 + 소비자 일상 어휘 변환 = 자연 카피
 
-### 🔑 핵심 작업
-Planner가 각 문장에 **skeleton + signature + usp_id**를 줍니다.
+### 🔑 핵심 작업 — Inspiration Rewrite (자유도 모드)
+Planner가 각 문장에 **skeleton + signature + usp_id**를 줍니다. 하지만:
+
+⭐⭐⭐ **skeleton은 hint이지 강제가 아님.** ref 문장의 **구조·리듬·플로우**를 빌리는 영감 source. [SLOT] 채우기에 갇히지 말 것.
+
 당신의 작업:
-1. skeleton의 [SLOT_NAME]에 들어갈 **단어를 USP 리뷰에서 추출** (해당 spec의 usp_id에 매핑된 USP 리뷰)
-2. **slot 타입에 맞게 grammatical 변환** (형용사 어간/의태어/비유 등)
-3. skeleton의 **고정 부분(시그니처·연결어·조사)은 한 글자도 바꾸지 말 것**
-4. 추출 단어를 [SLOT] 자리에 박아 자연스러운 한국어로 조립
+1. ref 문장의 **역할** (pain 환기 / 솔루션 시연 / 감정 / proof / 전환) 파악
+2. **USP description의 문제·해결·혜택**을 영감으로 읽기 — 그대로 옮기지 말 것
+3. **자연 한국어로 새 문장 작성** — ref와 같은 역할·같은 톤, 다른 단어
+4. **보존**: 문장 수 / 시그니처 카테고리(punchy ↔ punchy) / 대략 길이(ref ±30% 음절)
+5. **자유**: 어휘 source 어디서든 (USP description, 리뷰, 페르소나, 일상 한국어)
+6. **금지**: ref 단어 통째 박기 (영감만 받기). skeleton의 fixed text를 그대로 박는 거 X.
 
-### Slot 타입별 채우기
-- [형용사] → 형용사 (시원한, 부드러운, 쾌적한)
-- [형용사어간] → 어간만 ("시원하", "가볍")
-- [의태어] → 의태어 (챱챱, 부들부들, 촤르르)
-- [비유] → 비유 명사 (실크, 모찌, 구름)
-- [부위] → 신체/제품 부위 (목, 등, 허리)
-- [디자인특징] → 디자인 특징 (노카라, 셔링, 절개)
-- [동작] → 동사 (꿀잠, 외출, 휴식)
+### 시그니처 카테고리 (참고만)
+- 존댓말 punchy: 잖아요/거든요/예요/네요/라요/이라/더라구요/죠/려요
+- 반말 punchy: 있지/있어/이지/지롱/끝/잖아/거든
+- 약속: 보여줄게/알려줄게
+- ref="최고**잖아요**" → 우리 "후회**돼요**" / "후회**되더라구요**" / "후회**잖아요**" 등 같은 카테고리면 OK
 
-### 작성 예시
-**예시 1** — 1 slot:
-- skeleton: "잘 때는 [형용사] 게 최고잖아요"
-- signature: "최고잖아요" / usp_id=1 (시원감)
-- 리뷰 풀: "땀이 안 차서 시원해요", "쿨링감 좋아요"
-- → 추출: "시원한"
-- ✅ 조립: "잘 때는 시원한 게 최고잖아요"
+### Slot 타입 (참고만 — 영감용. 강제 채움 X)
+[형용사] / [형용사어간] / [의태어] / [비유] / [부위] / [디자인특징] / [동작] — Planner가 ref 문장 분해할 때 자리 표시. 우리는 같은 위치에 자연 어휘 박으면 됨.
 
-**예시 2** — multi-slot:
-- skeleton: "[의태어] [형용사1]고 [형용사2] [비유] 같은 촉감이라"
-- signature: "촉감이라" / usp_id=1
-- 리뷰 풀: "받자마자 시원하고 부들부들한 재질에 놀랐어요"
-- → 추출: 의태어="챱챱", 형용사1="시원하", 형용사2="부드러운", 비유="실크"
-- ✅ 조립: "챱챱 시원하고 부드러운 실크 같은 촉감이라"
+### Inspiration Rewrite 예시
 
-**예시 3** — slot 없는 경우 (skeleton에 [SLOT] 0개):
-- skeleton·ref가 같으면 그대로 사용 — 새 단어 추가 X
+**예시 1**
+- ref: "잘 때는 편한 게 최고잖아요"
+- 역할: solution + benefit 진술 (편안함 강조)
+- USP description: "노카라 디자인 / 자국 없음 / 푹 자는 아침"
+- ✅ Inspiration rewrite: "자고 일어났을 때 자국 없는 게 진짜 차이거든요" (다른 단어, 같은 역할, 같은 punchy 톤)
+- ❌ 옛 skeleton fill: "잘 때는 노카라가 최고잖아요" (ref 골격 답습)
+
+**예시 2**
+- ref: "후들후들 가볍고 쫀득한 모찌 같은 촉감이라"
+- 역할: 감각 묘사 (촉감)
+- USP description: "실크 혼방 / 매끈함 / 차가운 느낌"
+- ✅ Inspiration rewrite: "손에 닿는 느낌이 진짜 매끈하고 시원해요" (다른 단어, 같은 감각 묘사 역할, 평이 종결 OK)
+
+**예시 3** (slot 없는 ref)
+- ref: "새 지도 만들기를 눌러주세요"
+- 역할: 행동 유도 (CTA)
+- USP description: "일정 추가 → 카드 만들기"
+- ✅ Inspiration rewrite: "새 일정 카드 만들기 눌러주세요" (구조만 따옴, 우리 어휘로)
+- ❌ "새 지도 만들기를 눌러주세요" 그대로 출력 (ref 단어 박힘 → 금지)
 
 ### 🔧 Slot에 맞는 리뷰 단어 없을 때 (Fallback)
 1. **가장 가까운 의미 단어** 가져와 slot 타입에 맞게 변환
@@ -4442,9 +4874,9 @@ Planner가 각 문장에 **skeleton + signature + usp_id**를 줍니다.
 
 ## 핵심 규칙 — **음절/어절만 매칭, 조사·동사는 자유**
 
-### 1. 미러링 강도 = 어절 수 ±1 / 어절별 음절 ±2 만 강제
+### 1. 미러링 강도 = 어절 수 ±1 / 어절별 음절 ±3 만 강제
 - ref와 우리 문장의 **어절 수**만 ±1 허용 (ref 5어절 → 우리 4~6어절)
-- **어절별 음절 수**도 ±2 허용 (ref 어절 [3,2,1,4] → 우리 [3,2,2,3] OK)
+- **어절별 음절 수**도 ±3 허용 (ref 어절 [3,2,1,4] → 우리 [3,2,2,3] OK)
 - 그 외 모든 것 (조사·동사·연결어·종결어미)은 **자연스러운 한국어 우선**, ref 박제 금지
 
 ### 2. 조사·동사·어미는 자유 변형
@@ -4452,9 +4884,14 @@ Planner가 각 문장에 **skeleton + signature + usp_id**를 줍니다.
 - ref 동사 그대로 복사 X — 우리 USP 시연에 맞는 동사 사용
 - ref 종결어미 그대로 박을 필요 X (자연 종결로 결정)
 
-### 3. 시그니처 어구는 보존 (잖아요/거든요/보여줄게/예요 같은 punchy 끝 어구만)
-- ref "~잖아요" → 우리도 "~잖아요" (punch tone 유지)
-- 하지만 그 외 일반 종결 ("~다", "~해요", "~네요")은 자유
+### 3. 시그니처 어구는 같은 카테고리 punchy 어미면 OK (정확 매칭 X)
+- 카테고리 매칭 룰:
+  - **존댓말 punchy**: 잖아요, 거든요, 예요, 네요, 라요, 이라, 더라구요, 죠, 려요
+  - **반말 punchy**: 있지, 있어, 이지, 지롱, 끝, 잖아, 거든
+  - **약속/유도**: 보여줄게, 알려줄게, 줄게
+- ref "~잖아요" → 우리 "잖아요/거든요/예요/네요/더라구요" 중 자연스러운 것 OK
+- ref 시그니처가 우리 도메인에서 어색하면 같은 카테고리 다른 어미 선택 (예: "후회잖아요" 어색 → "후회되더라구요" 자연)
+- ref가 punchy 시그니처 아니면 (연결 어미·평이 종결) → 우리도 자유
 
 ### 4. Slot fill = USP 리뷰에서 단어 추출
 - 리뷰 verbatim 금지, 단어/개념만
@@ -4665,7 +5102,7 @@ def _build_section_planner_prompt(section_name: str, ref_subset: list[dict], usp
 
     ref_lines = "\n".join(_ref_line(i, s) for i, s in enumerate(ref_subset))
 
-    # 섹션 안에서 사용되는 USP 목록 (간단 요약)
+    # 섹션 안에서 사용되는 USP 목록 — numbered feature가 있으면 명시적으로 분리해서 보여줌
     used_usp_ids = sorted({s.get("usp_id") for s in ref_subset if isinstance(s.get("usp_id"), int)})
     usp_summary = ""
     if used_usp_ids:
@@ -4675,7 +5112,27 @@ def _build_section_planner_prompt(section_name: str, ref_subset: list[dict], usp
                 u = usps[uid - 1]
                 desc_parsed_p = _parse_usp_description(u.get("description") or "")
                 desc_brief = (desc_parsed_p.get("raw") or "")[:200]
-                usp_summary += f"- USP{uid}: {u.get('usp','')} — {desc_brief}\n"
+                features = parse_usp_numbered_features(u.get("description") or "")
+                usp_summary += f"- **USP{uid}: {u.get('usp','')}** — {desc_brief}\n"
+                # 카테고리별 명사 분리 (grouped 형식이면) — Writer가 카테고리 섞지 않도록
+                n_prob = desc_parsed_p.get("핵심_명사_문제") or ""
+                n_sol = desc_parsed_p.get("핵심_명사_해결") or ""
+                n_ben = desc_parsed_p.get("핵심_명사_혜택") or ""
+                if n_prob or n_sol or n_ben:
+                    usp_summary += f"  ⛔ **명사 카테고리 분리 — 한 문장에 한 카테고리 명사만**:\n"
+                    if n_prob:
+                        usp_summary += f"    🔻 문제 측 명사: {n_prob}\n"
+                    if n_sol:
+                        usp_summary += f"    ✅ 해결 측 명사: {n_sol}\n"
+                    if n_ben:
+                        usp_summary += f"    💎 혜택 측 명사: {n_ben}\n"
+                    usp_summary += f"  → 문제 톤 문장 = 🔻만 / 해결 톤 = ✅만 / 혜택 톤 = 💎만. 카테고리 섞으면 의미 충돌 (예: '불안한 최저가'❌)\n"
+                if features:
+                    usp_summary += f"  ⭐ **이 USP는 {len(features)}개의 distinct feature 보유 — 각 spec에 1 feature만 매핑**:\n"
+                    for fi, feat in enumerate(features, 1):
+                        usp_summary += f"    [Feature {fi}] {feat[:100]}\n"
+                    usp_summary += f"  → spec 수가 {len(features)}개 이상이면 spec1=Feature1 / spec2=Feature2 식으로 분배\n"
+                    usp_summary += f"  → spec 1개당 1 feature만. 한 skeleton에 여러 feature 명사 박지 말 것\n"
 
     expected_n = len(ref_subset)
 
@@ -4732,6 +5189,75 @@ def _build_section_planner_prompt(section_name: str, ref_subset: list[dict], usp
 - 예: ref "일본 가면 돈키호테 싹 쓸어와야 되잖아" → 매핑 USP=땡처리항공권모음 (도메인 mismatch)
   → skeleton: "[목적지] 가면 [동작_명사] [동작_동사] 되잖아" (도메인어 [목적지]/[명사]/[동사]로 추상화)
 
+## ⛔⛔⛔ Third-party 도구·서비스명 강제 SLOT 추출 (가장 빈번한 실수)
+ref에 등장하는 **다른 회사·서비스·앱 이름**은 매핑 USP description에 명시되어 있지 않으면 **무조건 [SLOT_도구]로 추상화**. "같은 카테고리"여도 그대로 박지 말 것.
+
+### 강제 SLOT 대상 (예시 — 더 있음)
+- **지도/내비**: 구글맵, 네이버지도, 카카오맵, 티맵, 지도앱
+- **문서/메모**: 엑셀, 구글시트, 노션, 메모장, 워드, 한컴
+- **메신저**: 카톡, 라인, 텔레그램, 디스코드
+- **쇼핑/이커머스**: 쿠팡, 11번가, 무신사, 지마켓, 클룩
+- **숙박/여행**: 부킹닷컴, 아고다, 에어비앤비, 호텔스닷컴, 트립닷컴
+- **결제**: 토스, 카카오페이, 페이코, 네이버페이
+- **OS/SNS**: 인스타, 페북, 유튜브, 틱톡 (단, "릴스/피드/스크롤" 같은 platform 맥락어는 예외 — 그대로 박음)
+- 그 외 명시된 **회사/앱/사이트 이름** 모두
+
+### 강제 SLOT 대상의 워크플로 UI 요소도 추상화
+ref에 도구 + 그 도구의 UI 메뉴/버튼/액션이 같이 나오면 **전부 SLOT 처리**:
+- ref "구글맵 메뉴 → 저장됨 → 지도 → 내 지도 열기 누른 후"
+  → skeleton: "[SLOT_도구] [SLOT_메뉴1] [SLOT_메뉴2] [SLOT_메뉴3] [SLOT_액션] 누른 후"
+  - 이유: "메뉴/저장됨/지도/내 지도 열기"는 구글맵 UI 특수 명사 → 우리 앱의 동일 워크플로 UI 명사로 채워야 함
+- ref "엑셀에 일정 정리하고 셀 색칠하고"
+  → skeleton: "[SLOT_도구]에 [SLOT_데이터] 정리하고 [SLOT_액션] 하고"
+
+### "같은 카테고리"와 "같은 도구" 구분 룰 (⭐ 핵심)
+| 케이스 | 판단 |
+|---|---|
+| ref USP="일정관리" + ref 도구="구글맵" + 우리 USP="일정관리" | ❌ 같은 카테고리지만 "구글맵"은 우리 USP에 없음 → **[SLOT_도구]** |
+| ref USP="잠옷" + ref 명사="셔링" + 우리 USP="잠옷" | ✅ 같은 카테고리고 둘 다 잠옷 디자인 어휘 → 그대로 박음 가능 (단, USP description에 셔링이 없으면 [SLOT_디자인]) |
+| ref USP="항공권" + ref 명사="돈키호테" + 우리 USP="항공권" | ❌ "돈키호테"는 항공권 USP와 무관 → **[SLOT_매장]** |
+
+**판단 기준**: USP description에 ref 명사가 **명시적으로 적혀있나** 보고 결정. 안 적혀있으면 [SLOT].
+
+## ⛔ Multi-feature USP — 1 spec = 1 feature
+USP description에 번호 매겨진 multi-feature (1./2./3.) 있으면:
+- **한 spec(=한 ref 문장)에는 1개 feature만 다루는 skeleton 생성**
+- 한 chunk에 여러 spec 있으면 spec별로 feature 분배 (spec1=feature1, spec2=feature2, ...)
+- 한 skeleton에 여러 feature 명사 박지 말 것 — Writer가 그대로 다 박아서 어색해짐
+
+예 — USP="가계부 (1) 영수증 인식 / (2) 1/n 정산 / (3) 동기화"
+- 한 chunk에 3 spec → spec1 skeleton에는 "영수증" 어휘 자리만, spec2에는 "1/n" 자리만, spec3에는 "동기화" 자리만
+- 한 chunk에 1 spec → skeleton에 1 feature만 (writer가 풀 1개 선택)
+
+## ⭐⭐⭐ USP 핵심 명사 강제 박기 룰 (가장 중요)
+**각 spec의 skeleton에는 매핑된 USP의 핵심 명사(feature noun)가 최소 1개 [SLOT_USP핵심]으로 들어가야 함.**
+
+### 왜
+Writer는 skeleton의 [SLOT]만 채울 수 있음. skeleton에 USP 명사 자리가 없으면 → 최종 출력에 USP 어휘 0회 등장 → 광고 의미 X.
+
+### 룰
+1. **매핑된 USP 이름 + description에서 핵심 명사 추출** (예: USP="일정관리 가계부" → 핵심 명사="가계부", USP="통합 - 일정" → 핵심 명사="일정")
+2. **ref 문장에 그 핵심 명사가 등장하지 않으면 skeleton에 [SLOT_USP핵심]을 명시적으로 끼워넣음**:
+   - ref에 USP 명사를 끼울 자연스러운 자리 (주어/목적어/수식 자리) 찾기
+   - 자연스러운 자리가 없으면 ref의 일반 명사를 [SLOT_USP핵심]으로 치환
+3. **ref 문장에 그 명사가 이미 등장하면 그대로 둠** (Writer 채울 필요 없음)
+
+### 예시
+**case A**: ref="공유 버튼 누르고 카톡으로 보내면 바로 볼 수 있겠죠?" + USP="일정관리 **가계부** <기능>"
+- ❌ 잘못된 skeleton: "공유 버튼 누르고 [SLOT_메신저]으로 보내면 [SLOT] 볼 수 있겠죠?"
+  - "가계부"가 어디에도 없음 — Writer가 못 박음
+- ✅ 올바른 skeleton: "[SLOT_USP핵심] 공유 버튼 누르고 [SLOT_메신저]으로 보내면 바로 볼 수 있겠죠?"
+  - Writer가 [SLOT_USP핵심]="가계부" 채움 → "가계부 공유 버튼 누르고 카톡으로 보내면..."
+
+**case B**: ref="여행지마다 관광지, 맛집, 카페, 쇼핑 등 카테고리별로 정리해두고 떠나요" + USP="**일정** 메인 <기능>"
+- ❌ 잘못된 skeleton: "여행지마다 [SLOT_장소1], [SLOT_장소2], ... 카테고리별로 [SLOT_동작]"
+  - "일정" 명사 누락
+- ✅ 올바른 skeleton: "여행지마다 관광지, 맛집, 카페, 쇼핑 카테고리별로 [SLOT_USP핵심]을 [SLOT_동작]"
+  - Writer가 [SLOT_USP핵심]="일정"/"동선"/"플랜" 등 USP 어휘 채움
+
+**case C** (USP 명사가 ref에 이미 있음): ref="제가 이번 여행에 일정 정리할 때 썼던 방법" + USP="일정 관리"
+- ✅ skeleton: "제가 이번 [SLOT_상황]에 일정 정리할 때 썼던 방법" (USP 명사 "일정"이 ref에 이미 있어서 그대로)
+
 ⚠️ slot 단어는 **출력하지 말 것** — Writer가 USP 리뷰에서 채움. Planner는 빈 [SLOT]만.
 
 ## 예시
@@ -4750,6 +5276,14 @@ def _build_section_planner_prompt(section_name: str, ref_subset: list[dict], usp
 참고: "몸에 닿는 느낌이 진짜 좋아요"
 → skeleton: "[부위]에 [동작] 느낌이 진짜 좋아요"
 → signature: "좋아요"
+
+참고: "PC 구글맵 들어가서 메뉴, 저장됨, 지도, 내 지도 열기를 누른 후" (매핑 USP=일정관리, 우리 도구 ≠ 구글맵)
+→ skeleton: "[SLOT_플랫폼] [SLOT_도구] 들어가서 [SLOT_메뉴1], [SLOT_메뉴2], [SLOT_메뉴3], [SLOT_액션]을 누른 후"
+→ signature: "" (연결어 종결)
+
+참고: "새 지도 만들기를 눌러주세요" (매핑 USP=일정관리, 구글맵 UI 워크플로)
+→ skeleton: "[SLOT_액션]을 눌러주세요"
+→ signature: "눌러주세요"
 
 ## 이 섹션의 ref 문장
 {ref_lines}
@@ -5347,31 +5881,17 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     logger.info("[multistep] 2. section writers (parallel)")
 
     # 시그니처 패턴 — 이 패턴들이 참고 끝에 있으면 우리도 보존해야 함
-    _SIGNATURE_PATTERNS = ["잖아요", "거든요", "있지", "있어", "보여줄게", "예요", "네요", "이라", "라요", "끝", "이지", "지롱"]
-
-    def _extract_signature(text: str) -> str:
-        """참고문장 끝이 'punchy 시그니처'인 경우만 시그니처 어구 반환.
-        연결 어미(~면/~고/~서 등)이면 빈 문자열 반환 (검증 skip)."""
-        if not text:
-            return ""
-        t = text.rstrip(' .!?~❤️♥️🥰😊😄').strip()
-        # 마지막 8자에 시그니처 패턴이 있는지 확인
-        tail = t[-10:] if len(t) >= 10 else t
-        for pat in _SIGNATURE_PATTERNS:
-            if pat in tail:
-                # 시그니처 패턴 등장 위치부터 끝까지 추출
-                idx = tail.rfind(pat)
-                return tail[idx:]
-        return ""  # 연결 어미 → 검증 skip
+    # _extract_signature는 module-level extract_signature alias (B 옵션: 카테고리 기반)
+    _extract_signature = extract_signature
 
     def _validate_sentences(spec_list: list[dict], generated: list[dict], section_name: str = "") -> list[tuple[int, str]]:
         """미러링 위반 인덱스 + 위반 사유 반환.
-        사유: 'eojeol_count' | 'eojeol_pattern' | 'length'
-        Hook 섹션은 페르소나 자유 생성 모드 — 어절·음절 검증 skip.
+        사유: 'eojeol_count' | 'eojeol_pattern' | 'length' | 'ref_overlap'
+        Hook 섹션은 페르소나 자유 생성 모드 — 어절·음절 검증 skip (ref overlap은 검증).
+
+        자유도 모드 — ref 단어 ZERO overlap 강제 (auto-retry 트리거).
         """
-        # Hook은 페르소나마다 다르게 자유 생성하는 게 정상 — 미러링 검증 skip
-        if (section_name or "").lower() == "hook":
-            return []
+        is_hook = (section_name or "").lower() == "hook"
         violations = []
         for i, spec in enumerate(spec_list):
             ref = spec.get("ref_text", "")
@@ -5381,23 +5901,30 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
             if not gen_text.strip():
                 continue
             reasons = []
-            ref_pat = _eojeol_syllable_pattern(ref)
-            gen_pat = _eojeol_syllable_pattern(gen_text)
-            # 어절 수 검증 — ±1 허용, ±2부터 위반
-            if ref_pat:
-                eojeol_diff = abs(len(gen_pat) - len(ref_pat))
-                if eojeol_diff > 1:
-                    reasons.append(f"eojeol_count(ref={len(ref_pat)},gen={len(gen_pat)},diff={eojeol_diff})")
-                # 어절별 음절 ±2 검증 (어절 수가 같을 때만 의미 있음)
-                if len(gen_pat) == len(ref_pat):
-                    bad = [j for j in range(len(ref_pat)) if abs(ref_pat[j] - gen_pat[j]) > 2]
-                    if bad:
-                        reasons.append(f"eojeol_pattern(diff at {bad})")
-            # 음절 합계 검증 — 너무 짧으면 표시 (보조)
-            ref_syl = sum(ref_pat)
-            gen_syl = sum(gen_pat)
-            if ref_syl > 0 and gen_syl < ref_syl * 0.5:
-                reasons.append("length(too short)")
+            if not is_hook:
+                ref_pat = _eojeol_syllable_pattern(ref)
+                gen_pat = _eojeol_syllable_pattern(gen_text)
+                # 어절 수 검증 — ±1 허용, ±2부터 위반
+                if ref_pat:
+                    eojeol_diff = abs(len(gen_pat) - len(ref_pat))
+                    if eojeol_diff > 1:
+                        reasons.append(f"eojeol_count(ref={len(ref_pat)},gen={len(gen_pat)},diff={eojeol_diff})")
+                    # 어절별 음절 ±3 검증 (어절 수가 같을 때만 의미 있음)
+                    if len(gen_pat) == len(ref_pat):
+                        bad = [j for j in range(len(ref_pat)) if abs(ref_pat[j] - gen_pat[j]) > 3]
+                        if bad:
+                            reasons.append(f"eojeol_pattern(diff at {bad})")
+                # 음절 합계 검증 — 너무 짧으면 표시 (보조)
+                ref_syl = sum(ref_pat)
+                gen_syl = sum(gen_pat)
+                if ref_syl > 0 and gen_syl < ref_syl * 0.5:
+                    reasons.append("length(too short)")
+            # ⭐ ref 단어 overlap 검증 (자유도 모드) — content stem 2개 이상 겹치면 위반
+            ref_stems = content_stems(ref)
+            gen_stems = content_stems(gen_text)
+            common = ref_stems & gen_stems
+            if len(common) >= 2:
+                reasons.append(f"ref_overlap(겹친 stem: {list(common)[:5]})")
             if reasons:
                 violations.append((i, "+".join(reasons)))
         return violations
@@ -5437,13 +5964,14 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                         sentences = s2
                 except Exception as e2:
                     logger.warning("[writer] count retry failed: %s", e2)
-            # 미러링 검증 — 최대 1회 retry + smart skip (위반 < 3개면 retry skip)
+            # 미러링 검증 — 최대 1회 retry + smart skip (위반 < 3개면 retry skip, 단 ref_overlap은 1개여도 retry)
             for retry_round in range(1):
                 violations = _validate_sentences(spec_list, sentences, sec.get("name", ""))
                 if not violations:
                     break
-                # 위반 3개 미만이면 retry 안 함 (cost vs quality trade-off)
-                if len(violations) < 3:
+                has_ref_overlap = any("ref_overlap" in r for _, r in violations)
+                # ref_overlap 있으면 무조건 retry. 그 외는 3개 미만이면 skip.
+                if not has_ref_overlap and len(violations) < 3:
                     logger.info("[writer] section=%s round=%d violations=%d < 3 → skip retry",
                                 sec.get("name"), retry_round + 1, len(violations))
                     break
@@ -5464,16 +5992,26 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
                         action = "줄여" if gen_eojeol_n > ref_eojeol_n else "늘려"
                         issue_parts.append(f"⛔ 어절 수 위반 (차이 {diff}): 참고 {ref_eojeol_n}어절 → 우리 {gen_eojeol_n}어절. 정확히 {ref_eojeol_n}±1 어절({ref_eojeol_n-1}~{ref_eojeol_n+1}개)로 {action} 다시 쓰기. 여러 정보 한 문장에 욱여넣지 말 것 — 핵심 1개만 남기고 나머지 잘라내기")
                     if "eojeol_pattern" in reason:
-                        issue_parts.append(f"⚠️ 어절별 음절 차이 ±2 초과 — 각 어절별 음절 수를 참고에 맞추세요")
+                        issue_parts.append(f"⚠️ 어절별 음절 차이 ±3 초과 — 각 어절별 음절 수를 참고에 맞추세요")
                     if "signature" in reason and sig:
-                        issue_parts.append(f"시그니처 \"{sig}\" 누락 — 반드시 \"{sig}\"로 끝나야 함")
+                        sig_cat = signature_category(sig)
+                        if sig_cat:
+                            other_options = [p for p in _SIGNATURE_CATEGORIES[sig_cat] if p != sig][:5]
+                            opts_str = " / ".join(other_options) if other_options else ""
+                            opts_block = f" (또는 같은 {category_label(sig_cat)} 어미: {opts_str})" if opts_str else ""
+                            issue_parts.append(f"시그니처 카테고리 누락 — \"{sig}\" 또는 같은 카테고리 punchy 어미로 끝맺기{opts_block}")
+                        else:
+                            issue_parts.append(f"시그니처 \"{sig}\" 누락 — punchy 어미로 끝맺기")
                     if "length" in reason:
-                        issue_parts.append(f"음절 {gen_syl} (참고 {ref_syl}) — {ref_syl}±2 음절로 압축")
+                        issue_parts.append(f"음절 {gen_syl} (참고 {ref_syl}) — {ref_syl}±3 음절로 압축")
+                    if "ref_overlap" in reason:
+                        # ref와 gen의 겹친 stem 표시 (이미 reason에 들어있음)
+                        issue_parts.append(f"⛔ **ref 단어 overlap 위반** — ref와 명사·동사 어휘가 겹침. USP description의 어휘로 **완전히 다른 단어**로 새 시나리오 작성. ref text 단어 ZERO 박기.")
                     bad_lines.append(
                         f"  문장 {i+1}: 참고 \"{ref_text}\" ({ref_eojeol_n}어절) → 우리 \"{gen_text}\" ({gen_eojeol_n}어절) "
                         f"({'; '.join(issue_parts)})"
                     )
-                retry_prompt = prompt + f"\n\n## ⚠️ 재시도 (round {retry_round + 1}/3) — 미러링 위반 검출\n{chr(10).join(bad_lines)}\n\n위 문장들 **반드시** 다시 쓰세요.\n- ⛔ 어절 수: 참고 ±1 절대 강제 — 위반 시 무효 처리되어 다시 retry됨\n- 여러 USP/카테고리 한 문장에 욱여넣지 말 것 — ref가 짧으면 우리도 짧게\n- 시그니처(끝 어구) 보존\n- 음절 수: 참고 ±2 안에서"
+                retry_prompt = prompt + f"\n\n## ⚠️ 재시도 (round {retry_round + 1}/3) — 위반 검출\n{chr(10).join(bad_lines)}\n\n위 문장들 **반드시** 다시 쓰세요.\n- ⛔ 어절 수: 참고 ±1 절대 강제\n- ⛔ **ref 단어 ZERO overlap**: 명사·동사 어휘 겹치면 무효. USP description으로 완전 새 시나리오\n- 시그니처는 같은 카테고리 punchy 어미면 OK\n- 음절 수: 참고 ±3 안에서"
                 try:
                     r2 = call_llm(retry_prompt, model=writer_model, max_tokens=4096, min_sentences=len(sentences))
                     s2 = r2.get("sentences") or []

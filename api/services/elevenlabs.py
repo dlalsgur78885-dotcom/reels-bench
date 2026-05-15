@@ -222,33 +222,28 @@ def probe_duration(path):
     return int(h) * 3600 + int(mn) * 60 + float(s)
 
 
-def merge_segments(segments, output, max_speedup=2.0):
-    """순차 atempo strict — 슬롯 초과 시 최대 max_speedup까지 압축."""
+def merge_segments(segments, output, max_speedup=1.0):
+    """자연 속도 + 순차 이어붙임. 슬롯 매칭(atempo 가속) 제거 — 음성 톤 보존 우선.
+
+    각 segment의 자연 길이대로 배치 → 영상 sync는 어긋날 수 있으나 음성 변형 없음.
+    글자수·감정에 따른 길이는 elevenlabs audio tag가 자체 처리.
+    (max_speedup 인자는 backward-compat용 — 무시됨)
+    """
     durations = [probe_duration(s["path"]) for s in segments]
     tempos, starts, dur_used = [], [], []
     cur_t = 0.0
-    for i, seg in enumerate(segments):
-        slot = float(seg["end"]) - float(seg["start"])
+    for i, _seg in enumerate(segments):
         natural = durations[i]
-        if natural <= slot or slot <= 0:
-            tempo, new_dur = 1.0, natural
-        else:
-            tempo = min(natural / slot, max_speedup)
-            new_dur = natural / tempo
-        tempos.append(tempo)
-        dur_used.append(new_dur)
-        st = max(float(seg["start"]), cur_t)
-        starts.append(st)
-        cur_t = st + new_dur
+        tempos.append(1.0)        # atempo 없음
+        dur_used.append(natural)
+        starts.append(cur_t)
+        cur_t += natural          # 순차 누적
 
     inputs, filters = [], []
     for i, seg in enumerate(segments):
         inputs.extend(["-i", str(seg["path"])])
         ms = int(starts[i] * 1000)
-        if tempos[i] > 1.001:
-            filters.append(f"[{i}:a]atempo={tempos[i]:.4f},adelay={ms}|{ms}[a{i}]")
-        else:
-            filters.append(f"[{i}:a]adelay={ms}|{ms}[a{i}]")
+        filters.append(f"[{i}:a]adelay={ms}|{ms}[a{i}]")
     mix = "".join(f"[a{i}]" for i in range(len(segments)))
     fc = ";".join(filters) + f";{mix}amix=inputs={len(segments)}:normalize=0:duration=longest[out]"
     cmd = [FFMPEG, "-y", *inputs, "-filter_complex", fc,
@@ -257,7 +252,7 @@ def merge_segments(segments, output, max_speedup=2.0):
     if r.returncode != 0:
         err = r.stderr.decode("utf-8", errors="replace")
         raise RuntimeError(f"ffmpeg error:\n{err[-1500:]}")
-    return cur_t, tempos
+    return cur_t, tempos, starts, dur_used
 
 
 def _job_dir(job_id):
@@ -300,7 +295,7 @@ def _state_response(meta):
     }
 
 
-def synthesize_script(sentences, voice_name="yuna", model_id="eleven_v3",
+def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
                      emotion_strength=DEFAULT_EMOTION):
     """전체 합성. job 폴더 생성하고 meta.json + 모든 seg + final.mp3 저장."""
     if voice_name not in PRESETS:
@@ -336,7 +331,12 @@ def synthesize_script(sentences, voice_name="yuna", model_id="eleven_v3",
         seg_paths.append({"path": out, "start": float(s["start"]), "end": float(s["end"])})
 
     final_path = job_dir / "final.mp3"
-    total_duration, tempos = merge_segments(seg_paths, final_path)
+    total_duration, tempos, new_starts, new_durs = merge_segments(seg_paths, final_path)
+    # 자연 길이로 재할당된 start/end를 sent_meta에 반영
+    for i, sm in enumerate(sent_meta):
+        if i < len(new_starts):
+            sm["start"] = round(new_starts[i], 3)
+            sm["end"] = round(new_starts[i] + new_durs[i], 3)
 
     # Supabase Storage 업로드 → public URL
     supabase_url = _upload_final_to_supabase(job_id, final_path)
@@ -414,7 +414,12 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
             "end": float(sm["end"]),
         })
     final_path = _job_dir(job_id) / "final.mp3"
-    total_duration, tempos = merge_segments(seg_paths, final_path)
+    total_duration, tempos, new_starts, new_durs = merge_segments(seg_paths, final_path)
+    # 자연 길이로 재할당
+    for i, sm in enumerate(sentences):
+        if i < len(new_starts):
+            sm["start"] = round(new_starts[i], 3)
+            sm["end"] = round(new_starts[i] + new_durs[i], 3)
 
     # Supabase Storage에 새 final.mp3 업로드 (overwrite)
     supabase_url = _upload_final_to_supabase(job_id, final_path)

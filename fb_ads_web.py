@@ -153,14 +153,16 @@ def status():
 
 
 @app.api_route("/trigger", methods=["GET", "POST"])
-async def trigger(key: str = "", x_trigger_key: str | None = Header(None)):
+async def trigger(key: str = "", limit: int = 3, x_trigger_key: str | None = Header(None)):
     if TRIGGER_SECRET:
         provided = key or x_trigger_key
         if provided != TRIGGER_SECRET:
             raise HTTPException(401, "invalid trigger key")
     # asyncio.create_task로 백그라운드 실행 (이벤트 루프 안에서 OK)
-    asyncio.create_task(process_pending(3))
-    return {"ok": True, "queued": True, "ts": now()}
+    # limit: 1회 trigger로 처리할 광고주 수. Render free tier sequential처리 ~10초/광고주.
+    bounded = max(1, min(int(limit or 3), 100))
+    asyncio.create_task(process_pending(bounded))
+    return {"ok": True, "queued": True, "limit": bounded, "ts": now()}
 
 
 if __name__ == "__main__":

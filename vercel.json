@@ -1,12 +1,16 @@
 {
   "version": 2,
+  "regions": ["icn1"],
   "buildCommand": "cd web && npm install && npm run build",
   "builds": [
     { "src": "api/index.py", "use": "@vercel/python", "config": { "maxDuration": 800, "includeFiles": "web/dist/**" } },
-    { "src": "api/cron/fb-scrape.ts", "use": "@vercel/node", "config": { "maxDuration": 300 } }
+    { "src": "api/cron/fb-scrape.ts", "use": "@vercel/node", "config": { "maxDuration": 60 } }
   ],
   "routes": [
     { "src": "/api/cron/fb-scrape", "dest": "/api/cron/fb-scrape.ts" },
     { "src": "/(.*)", "dest": "/api/index.py" }
+  ],
+  "crons": [
+    { "path": "/api/cron/fb-scrape", "schedule": "0 18 * * *" }
   ]
 }

@@ -98,8 +98,45 @@ def get_script_progress(session_id: str, request: Request):
     return {"session_id": session_id, "found": True, **p}
 
 
+def _log_gen_event(profile: dict | None, req, *, success: bool, cost_usd: float | None = None,
+                   sentence_count: int | None = None, duration_target_sec: int | None = None,
+                   error_msg: str | None = None) -> None:
+    """script_gen_events에 비동기 best-effort insert. 실패해도 무시 (table 없거나 등)."""
+    try:
+        SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+        SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+        if not SUPA or not SK:
+            return
+        payload = {
+            "user_id": (profile or {}).get("id"),
+            "product_name": req.product_name,
+            "reference_shortcodes": req.reference_shortcodes,
+            "reference_source": req.reference_source,
+            "persona_name": (req.target_persona or {}).get("name"),
+            "success": success,
+            "cost_usd": cost_usd,
+            "sentence_count": sentence_count,
+            "duration_target_sec": duration_target_sec,
+            "error_msg": (error_msg[:500] if error_msg else None),
+        }
+        supabase.get_session().post(
+            f"{SUPA}/rest/v1/script_gen_events",
+            headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                     "Content-Type": "application/json", "Prefer": "return=minimal"},
+            json=payload, timeout=5,
+        )
+    except Exception as e:
+        logger.warning("[gen-event] log failed: %s", e)
+
+
 @app.post("/api/script/generate")
-def gen_script(req: ScriptGenRequest):
+def gen_script(req: ScriptGenRequest, request: Request):
+    # 인증된 user면 profile 추출 (이벤트 로그용). 실패해도 generation은 진행.
+    profile = None
+    try:
+        profile = auth_svc.require_user(request)
+    except Exception:
+        pass
     if not req.product_name.strip():
         raise HTTPException(400, "제품명/서비스명 필수")
     if not req.reference_shortcodes:
@@ -154,11 +191,18 @@ def gen_script(req: ScriptGenRequest):
             n_sentences, result.get("duration_target_sec"), result.get("_refined", False),
             cost["total_cost_usd"], cost["total_calls"], cost["total_in_tokens"], cost["total_out_tokens"],
         )
+        _log_gen_event(
+            profile, req, success=True,
+            cost_usd=cost.get("total_cost_usd"),
+            sentence_count=n_sentences,
+            duration_target_sec=result.get("duration_target_sec"),
+        )
         return result
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
         logger.error("[script/gen] FAILED: %s\n%s", e, tb[-2000:])
+        _log_gen_event(profile, req, success=False, error_msg=str(e))
         raise HTTPException(500, f"스크립트 생성 실패: {e}")
 
 
@@ -235,6 +279,28 @@ def extract_personas(req: PersonaExtractRequest):
             logger.warning("personas cache write failed: %s", e)
 
     return {"personas": personas, "_cached": False}
+
+
+class UnifiedPersonasRequest(BaseModel):
+    usps: list[dict]
+    product_name: str = ""
+
+
+@app.post("/api/script/unified-personas")
+def extract_unified_personas_ep(req: UnifiedPersonasRequest, request: Request):
+    """선택된 USP들의 공통점 분석 + 모든 USP에 fit하는 통합 페르소나 추출.
+
+    기존 /api/script/personas는 단일 USP별. 이 endpoint는 다수 USP를 동시에 보고 교집합 페르소나 도출.
+    """
+    auth_svc.require_user(request)
+    if not req.usps:
+        raise HTTPException(400, "usps 비어있음")
+    try:
+        result = script_gen.extract_unified_personas(req.usps, req.product_name or "")
+        return result
+    except Exception as e:
+        logger.warning("[unified-personas] failed: %s", e)
+        raise HTTPException(500, f"unified personas 추출 실패: {e}")
 
 
 class UspPersonasUpdateRequest(BaseModel):
@@ -745,22 +811,40 @@ def suggest_usp_description(body: dict, request: Request):
    - 결과 scene: "푹 자고 일어나는 게 달라요", "외출 직전 꺼내 입어도 OK"
    - 감정: "편하다", "신경 안 쓴다", "든든하다"
 
-4. **핵심 명사**: 광고에 쓸 5~10개 소비자 어휘 (콤마 구분)
-   - 일상 단어: 답답, 처짐, 뒤척, 신경, 깨다, 굴러, 받침, 편안
-   - 판매자 단어 X: 패드/와이어/내장 같은 spec명은 1~2개만 (꼭 필요할 때)
+4. **핵심 명사 (카테고리별 분리)**: writer가 어떤 톤의 문장에 어떤 단어 쓸지 명확히 — **3 그룹으로 분리**
+   - **문제 측**: pain·friction 어휘 (답답, 자국, 신경 쓰여, 뒤척)
+   - **해결 측**: action·mechanism 어휘 (그냥 입어, 안 답답, 굴러봐도 안 흘러)
+   - **혜택 측**: outcome·emotion 어휘 (푹 자, 아침 다르다, 편안, 든든)
+   - ⚠️ **카테고리 섞지 말 것** — "불안(문제)+최저가(해결)" 한 문장 들어가면 의미 충돌
+
+5. **앱이 하는 것 / 앱이 안 하는 것 (Capability Fence)** ⭐⭐⭐: writer가 false claim 안 만들도록 boundary 명시
+   - **앱이 하는 것** (capability_in): 실제 제품·서비스가 제공하는 기능·동작 (콤마 구분)
+     - 예 (멤버십): "가격 검색, 비교, 최저가 알림, 가격 추적"
+     - 예 (잠옷): "노카라 디자인, 모달 안감, 셔링 라인"
+   - **앱이 안 하는 것** (capability_out): description에 어휘로 등장하지만 실제로는 안 하는 것 (콤마 구분)
+     - 예 (멤버십): "실제 예약 (제휴 사이트 이동), 결제 (외부 처리)"
+     - 예 (잠옷): "수선·교환 직접 처리 X"
+   - ⚠️ "예약"이 description에 있어도 외부 사이트로 이동하면 capability_out에 명시 → writer가 "예약까지 한 번에" 같은 false functionality claim 회피
 
 ## 예 (USP="노브라잠옷")
 문제: 잘 때 브라 자국 신경 쓰이고, 벗고 자면 가슴 처지는 거 느껴서 맨날 어쩌지 싶어
 해결: 그냥 입고 자도 안 답답하고, 누워서 굴러봐도 안 흘러내려요
 혜택: 자다가 깨도 신경 안 써지고, 푹 자고 아침 일어나는 게 달라요
-핵심 명사: 답답, 자국, 처짐, 뒤척, 깨다, 굴러, 신경, 안 흘러, 푹 자다, 아침
+핵심 명사:
+- 문제 측: 답답, 자국, 처짐, 뒤척, 신경 쓰여
+- 해결 측: 그냥 입어, 안 흘러, 굴러봐도, 누워도
+- 혜택 측: 푹 자다, 아침 달라, 편안, 든든
 
 ## 출력 JSON
 {{
   "문제": "...",
   "해결": "...",
   "혜택": "...",
-  "핵심_명사": "..."
+  "핵심_명사_문제": "콤마 구분 (5-8개)",
+  "핵심_명사_해결": "콤마 구분 (5-8개)",
+  "핵심_명사_혜택": "콤마 구분 (3-6개)",
+  "앱이_하는_것": "콤마 구분 (실제 제품 capability)",
+  "앱이_안_하는_것": "콤마 구분 (description에 어휘 등장하지만 실제 안 하는 것)"
 }}
 
 JSON만. 설명 X.
@@ -771,9 +855,13 @@ JSON만. 설명 X.
             "문제": {"type": "string"},
             "해결": {"type": "string"},
             "혜택": {"type": "string"},
-            "핵심_명사": {"type": "string"},
+            "핵심_명사_문제": {"type": "string"},
+            "핵심_명사_해결": {"type": "string"},
+            "핵심_명사_혜택": {"type": "string"},
+            "앱이_하는_것": {"type": "string"},
+            "앱이_안_하는_것": {"type": "string"},
         },
-        "required": ["문제", "해결", "혜택", "핵심_명사"],
+        "required": ["문제", "해결", "혜택"],
     }
     try:
         result = script_gen.call_gemini(prompt, model="gemini-3.1-flash-lite-preview", max_tokens=4096, response_schema=schema)
@@ -784,7 +872,9 @@ JSON만. 설명 X.
         problem = (result.get("문제") or "").strip()
         solution = (result.get("해결") or "").strip()
         benefit = (result.get("혜택") or "").strip()
-        core_nouns = (result.get("핵심_명사") or "").strip()
+        nouns_prob = (result.get("핵심_명사_문제") or "").strip()
+        nouns_sol = (result.get("핵심_명사_해결") or "").strip()
+        nouns_ben = (result.get("핵심_명사_혜택") or "").strip()
         description_lines = []
         if problem:
             description_lines.append(f"문제: {problem}")
@@ -792,13 +882,128 @@ JSON만. 설명 X.
             description_lines.append(f"해결: {solution}")
         if benefit:
             description_lines.append(f"혜택: {benefit}")
-        if core_nouns:
-            description_lines.append(f"핵심 명사: {core_nouns}")
+        if nouns_prob or nouns_sol or nouns_ben:
+            description_lines.append("핵심 명사:")
+            if nouns_prob:
+                description_lines.append(f"- 문제 측: {nouns_prob}")
+            if nouns_sol:
+                description_lines.append(f"- 해결 측: {nouns_sol}")
+            if nouns_ben:
+                description_lines.append(f"- 혜택 측: {nouns_ben}")
+        # capability fence
+        cap_in = (result.get("앱이_하는_것") or "").strip()
+        cap_out = (result.get("앱이_안_하는_것") or "").strip()
+        if cap_in:
+            description_lines.append(f"앱이 하는 것: {cap_in}")
+        if cap_out:
+            description_lines.append(f"앱이 안 하는 것: {cap_out}")
         description = "\n".join(description_lines)
         return {"description": description, "parts": result}
     except Exception as e:
         logger.warning("[suggest_usp_description] failed: %s", e)
         raise HTTPException(500, f"description 생성 실패: {e}")
+
+
+@app.post("/api/usp/generate-reviews")
+def generate_usp_reviews(body: dict, request: Request):
+    """USP 이름 + description → LLM이 소비자 언어 리뷰 N개 생성.
+
+    body: {product_name, usp_name, usp_description?, existing_reviews?: [str], count?: int (default 5)}
+    Returns: {reviews: [str]}
+    """
+    auth_svc.require_user(request)
+    product_name = (body.get("product_name") or "").strip()
+    usp_name = (body.get("usp_name") or "").strip()
+    usp_description = (body.get("usp_description") or "").strip()
+    existing = body.get("existing_reviews") or []
+    count = max(1, min(int(body.get("count") or 5), 10))
+    if not usp_name:
+        raise HTTPException(400, "usp_name 필수")
+
+    existing_block = ""
+    if isinstance(existing, list) and existing:
+        joined = "\n".join(f"- {r}" for r in existing[:10] if isinstance(r, str) and r.strip())
+        if joined:
+            existing_block = f"\n## 이미 있는 리뷰 (중복 X — 다른 angle로)\n{joined}\n"
+
+    desc_block = ""
+    if usp_description:
+        desc_block = f"\n## USP description\n{usp_description}\n"
+
+    prompt = f"""당신은 한국 소비자 리뷰 작가입니다. 광고 작가가 어휘 source로 쓸 **진짜 소비자가 쓴 것 같은 리뷰** {count}개를 작성하세요.
+
+## 입력
+- product: {product_name or '(미명시)'}
+- USP: {usp_name}
+{desc_block}{existing_block}
+
+## 핵심 원칙 — 진짜 소비자 톤
+- ✅ **소비자 1인칭**: "저는 ~", "처음에 ~", "사실 ~", "써보니까 ~", "이거 ~"
+- ✅ **구체 상황·행동**: "잘 때 ~", "출근하면서 ~", "고민하다가 ~", "몇 번 ~"
+- ✅ **감정 어휘**: 답답, 짜증, 신경 쓰여, 편하다, 든든하다, 깜짝, 진짜
+- ✅ **자연 호흡**: "~인 거 같아요", "~더라구요", "~라서 좋아요", "~네요"
+- ❌ **판매자 톤 금지**: "프리미엄 ~", "고급 ~", "혁신적 ~", "최고의 ~"
+- ❌ **광고 카피 금지**: "결국 인생템", "강추!", "10점 만점에 10점"
+
+## angle 다양화 (필수)
+{count}개 리뷰는 **다른 사용 시나리오·다른 pain·다른 측면**으로:
+- 리뷰 A: 처음 시도 + 만족
+- 리뷰 B: 이전 실패 + 비교
+- 리뷰 C: 구체 상황 + 결과 감정
+- 리뷰 D: 의외의 장점
+- 리뷰 E: 디테일 묘사
+→ 5개 리뷰가 같은 명사·동사로 시작하거나 같은 키워드 반복하면 무효
+
+## 길이
+- 각 리뷰 30~80자 (한국 인스타·블로그 리뷰 평균)
+- 너무 짧지 않게 (15자 미만 X), 너무 길지 않게 (100자 초과 X)
+
+## 출력 JSON
+{{
+  "reviews": [
+    "리뷰 1 ...",
+    "리뷰 2 ...",
+    "리뷰 3 ..."
+  ]
+}}
+
+JSON만. 설명·앞말·줄번호 X.
+"""
+    schema = {
+        "type": "object",
+        "properties": {
+            "reviews": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": count,
+            },
+        },
+        "required": ["reviews"],
+    }
+    try:
+        result = script_gen.call_gemini(prompt, model="gemini-3.1-flash-lite-preview", max_tokens=4096, response_schema=schema)
+        if isinstance(result, list) and result:
+            result = result[0]
+        if not isinstance(result, dict):
+            raise RuntimeError("LLM 응답 형식 오류")
+        raw = result.get("reviews") or []
+        # 정제: 빈 문자열 제거, 너무 짧은 거 제거, 중복 제거
+        seen: set[str] = set()
+        cleaned: list[str] = []
+        for r in raw:
+            if not isinstance(r, str):
+                continue
+            t = r.strip().strip('"').strip("'").strip()
+            if len(t) < 8 or t in seen:
+                continue
+            seen.add(t)
+            cleaned.append(t)
+        if not cleaned:
+            raise RuntimeError("리뷰 0개")
+        return {"reviews": cleaned[:count]}
+    except Exception as e:
+        logger.warning("[generate_usp_reviews] failed: %s", e)
+        raise HTTPException(500, f"리뷰 생성 실패: {e}")
 
 
 @app.post("/api/script/preview-mapping/{shortcode}")
@@ -1222,6 +1427,25 @@ def section_pool(section: str = Query("cta", description="hook|intro|cta"), excl
     return {"items": out, "total": len(out)}
 
 
+@app.get("/api/script/ref-sentences/{shortcode}")
+def get_ref_sentences(shortcode: str, request: Request, source: str = "reels"):
+    """ref 영상의 sentences (start/end/text/section) 시간순 반환 — 대본 비교용."""
+    auth_svc.require_user(request)
+    src = source if source in ("reels", "youtube") else "reels"
+    ref = script_gen.fetch_reference(shortcode, source=src)
+    if not ref:
+        raise HTTPException(404, "ref 없음")
+    sents = ref.get("sentences") or []
+    out = [{
+        "start": s.get("start"),
+        "end": s.get("end"),
+        "text": s.get("text", ""),
+        "section": s.get("section", ""),
+    } for s in sents if (s.get("text") or "").strip()]
+    out.sort(key=lambda x: x.get("start") or 0)
+    return {"shortcode": shortcode, "source": src, "sentences": out}
+
+
 @app.get("/api/script/reference-info/{shortcode}")
 def reference_info(shortcode: str):
     """참고 릴스의 구조 정보 (분류·문장 수·body 슬롯 수) — UI 가이드용.
@@ -1267,6 +1491,10 @@ class ScriptRefineRequest(BaseModel):
     draft: dict
     usps: list[dict] = []  # 통일 도시 추출용
     reference_shortcode: str | None = None  # 참고 길이 매칭용
+    # ⭐ wizard에서 사용자가 삭제한 chunk/sentence — ref filtering에 활용 (복원 방지)
+    skip_chunk_sections: list[str] | None = None
+    skip_sentence_starts: list[float] | None = None
+    variant: str = "default"  # 'default' (기본 다듬기) | 'strong' (강한 변주 — 어휘 더 크게 변경)
 
 
 @app.post("/api/script/refine")
@@ -1283,6 +1511,19 @@ def refine_script(req: ScriptRefineRequest):
                 ref = script_gen.fetch_reference(req.reference_shortcode)
                 if ref:
                     ref_sents = [s for s in (ref.get("sentences") or []) if s.get("text", "").strip()]
+                    # ⭐ 사용자가 wizard에서 삭제한 chunk/sentence는 ref에서도 제외
+                    # → refine이 "삭제된 문장을 복원" 안 함 (draft 길이와 ref 길이 매칭)
+                    skip_secs = {(s or "").strip().lower() for s in (req.skip_chunk_sections or []) if isinstance(s, str)}
+                    skip_starts = {round(float(x), 2) for x in (req.skip_sentence_starts or [])}
+                    if skip_secs or skip_starts:
+                        before = len(ref_sents)
+                        ref_sents = [
+                            s for s in ref_sents
+                            if (s.get("section") or "").strip().lower() not in skip_secs
+                            and round(float(s.get("start") or 0), 2) not in skip_starts
+                        ]
+                        logger.info("[refine] ref filtered: %d → %d (skip chunks=%s, skip starts=%d)",
+                                    before, len(ref_sents), sorted(skip_secs), len(skip_starts))
                     ref_duration = max((float(s.get("end", 0)) for s in ref_sents), default=0) if ref_sents else 0
                     ref_info = {
                         "sentence_count": len(ref_sents),
@@ -1300,7 +1541,61 @@ def refine_script(req: ScriptRefineRequest):
                 logger.info("[refine] %d awkward sentences detected", len(awkward_info))
         except Exception as e:
             logger.warning("[refine] awkward detection failed: %s", e)
-        prompt = script_gen.build_refine_prompt(req.draft, unified.get("city"), ref_info=ref_info, usps=req.usps, awkward_info=awkward_info)
+        # B-2. 어휘 중복 검출 — anchor [:2] 기준, 같은 stem 2+ 문장 등장 시 교정 대상
+        vocab_repeats: dict[str, list[int]] = {}
+        try:
+            vocab_repeats = script_gen.detect_vocab_repeats(req.draft.get("sentences") or [])
+            if vocab_repeats:
+                logger.info("[refine] vocab repeats: %s", {k: v for k, v in list(vocab_repeats.items())[:5]})
+        except Exception as e:
+            logger.warning("[refine] vocab repeat detection failed: %s", e)
+        prompt = script_gen.build_refine_prompt(req.draft, unified.get("city"), ref_info=ref_info, usps=req.usps, awkward_info=awkward_info, vocab_repeats=vocab_repeats)
+        # variant: strong = 기본 refine + humanize-korean 룰 추가 (AI 티 제거)
+        variant = req.variant if req.variant in ("default", "strong") else "default"
+        if variant == "strong":
+            prompt += """
+
+## ⚡ humanize 후처리 (variant=strong — im-not-ai 스타일)
+기본 다듬기 룰에 더해 **AI가 쓴 한글 티**를 자연스러운 사람말투로 교정.
+
+### 1. 번역투 제거 (강제)
+- ❌ "~을 통해 / ~에 있어 / ~로 인해 / ~에 대해 / ~로서의"
+  → ✅ 자연 한국어 ("~로 / ~한 / ~서 / ~한테는 / ~인")
+- 예: "이 기능을 통해 절약할 수 있어요" → "이 기능으로 절약돼요"
+
+### 2. 추상명사 회피
+- ❌ "편리함 / 효율성 / 만족도 / 자신감 / 행복 / 즐거움 / 가능성"
+  → ✅ 구체 동사·장면 ("편해요 / 빠르게 / 쓸 만해요 / 자국 안 남아요")
+- AI 티 1순위: 추상명사 끝 + 광고적 어휘
+
+### 3. 종결 어미 다양화 (균일 금지)
+- ❌ 모든 문장이 "~어요/~예요/~해요"로 균일 종결
+- ✅ ref와 같이 ~잖아요/~거든요/~봐/~줘/~네/~지/~ㄴ/체언 종결을 섞기
+- ref가 ~ㄴ 관형형이면 우리도 ~ㄴ (~한·~된)
+
+### 4. 접속사 남발 제거
+- ❌ "그리고 / 또한 / 하지만 / 그러나" 매 문장 머리에 박지 말 것
+- ✅ 흐름은 어미·문맥으로. 접속사 1~2개만 정말 필요한 자리에
+
+### 5. 직역·기계적 패턴 제거
+- ❌ "당신의 ~ / 우리의 ~ / 본 제품은 ~" 같은 직역구
+- ❌ "~할 수 있습니다 / ~하실 수 있어요" 정중·기계 어투 균일
+- ✅ ref 톤 그대로 (구어·반말·일상)
+
+### 6. 광고 클리셰 회피
+- ❌ "혁신적 / 프리미엄 / 차별화된 / 특별한 / 놀라운"
+- ✅ 구체 행동·수치·감각 어휘 (페르소나 vocab)
+
+### 7. 리듬 균일성 깨기
+- 문장 길이 모두 비슷하면 AI 티 — 짧은 문장 + 긴 문장 섞이기 (ref 패턴 따라)
+- 단, 어절·음절 룰은 spec 기준 그대로 준수
+
+### 출력 원칙
+- 위 룰을 적용하되 **의미는 100% 보존** (수치/USP 명사/페르소나 vocab 변경 금지)
+- ref 어절·음절·종결 형태 룰은 절대 깨지 않음 (구조 X, 어휘·톤만 humanize)
+- 결과가 1차와 동일하면 실패 — AI 티를 식별 가능하게 제거할 것
+"""
+        logger.info("[refine] variant=%s", variant)
         draft_n = len(req.draft.get("sentences") or [])
         # 길이 매칭: ref 있으면 그 수로, 없으면 draft 그대로
         if ref_info and ref_info["sentence_count"] > 0:
@@ -1587,6 +1882,9 @@ class GenScriptPatch(BaseModel):
     pinned_comment: str | None = None
     sentences: list[dict] | None = None
     shooting_plan_url: str | None = None
+    status: str | None = None  # 'pending' | 'done'
+    group_name: str | None = None  # 사용자 정의 그룹
+    stages: list[dict] | None = None  # meta.stages 통째 갱신 (key 기반: base/alt_a/alt_b)
 
 
 class GenScriptShareIn(BaseModel):
@@ -1694,7 +1992,17 @@ def update_gen_script(pid: int, sid: str, body: GenScriptPatch, request: Request
         cur_meta["pinned_comment"] = body.pinned_comment
     if body.shooting_plan_url is not None:
         cur_meta["shooting_plan_url"] = body.shooting_plan_url
-    if body.caption is not None or body.pinned_comment is not None or body.shooting_plan_url is not None:
+    if body.status is not None:
+        cur_meta["status"] = "done" if body.status == "done" else "pending"
+    if body.group_name is not None:
+        gn = body.group_name.strip()
+        if gn:
+            cur_meta["group_name"] = gn
+        else:
+            cur_meta.pop("group_name", None)
+    if body.stages is not None:
+        cur_meta["stages"] = body.stages
+    if any(x is not None for x in [body.caption, body.pinned_comment, body.shooting_plan_url, body.status, body.group_name, body.stages]):
         payload["meta"] = cur_meta
     if not payload:
         return {"updated": False, "row": row}
@@ -1710,6 +2018,140 @@ def update_gen_script(pid: int, sid: str, body: GenScriptPatch, request: Request
         raise HTTPException(r.status_code, r.text[:300])
     rows = r.json() if r.status_code == 200 else []
     return {"updated": True, "row": rows[0] if rows else None}
+
+
+class SavedRefineRequest(BaseModel):
+    variant: str = "default"
+
+
+@app.post("/api/my-products/{pid}/scripts/{sid}/refine")
+def refine_saved_script(pid: int, sid: str, body: SavedRefineRequest, request: Request):
+    """저장된 대본을 다듬기 처리 → meta.stages에 단계별 누적 + sentences 최신으로 갱신.
+
+    stages 구조: [{stage: 1, sentences, variant?, created_at}, ...]
+    stage 1 = 원본 (첫 다듬기 시 자동 백업), stage 2+ = 다듬기 결과.
+    """
+    me = auth_svc.require_user(request)
+    row = _check_script_access(pid, sid, me, edit=True)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+
+    from datetime import datetime, timezone
+    variant = body.variant if body.variant in ("default", "strong") else "default"
+    target_key = "alt_a" if variant == "default" else "alt_b"
+
+    # 기존 stages 정규화 + 입력 sentences는 base (stages.base 또는 row.sentences)
+    raw_stages = list((row.get("meta") or {}).get("stages") or [])
+    def _norm_key(s: dict):
+        if s.get("key") in ("base", "alt_a", "alt_b"): return s["key"]
+        v = s.get("variant")
+        if v == "original": return "base"
+        if v == "default": return "alt_a"
+        if v == "strong": return "alt_b"
+        return None
+    stages_map: dict = {}
+    for s in raw_stages:
+        k = _norm_key(s)
+        if k and k not in stages_map:
+            stages_map[k] = {"key": k, "sentences": s.get("sentences") or [], "created_at": s.get("created_at")}
+
+    base_sents = (stages_map.get("base") or {}).get("sentences") or row.get("sentences") or []
+    if not base_sents:
+        raise HTTPException(400, "현재 sentences 없음")
+    if target_key in stages_map:
+        raise HTTPException(400, f"{('A' if target_key == 'alt_a' else 'B')}원고 이미 있음 — 재생성 불가")
+    cur_sents = base_sents
+
+    # 매핑된 상품 USPs 로드 (refine prompt 입력)
+    prod_rows = _r.get(
+        f"{SUPA}/rest/v1/my_products?id=eq.{pid}&select=usps&limit=1",
+        headers=H, timeout=10,
+    ).json() or []
+    usps = (prod_rows[0].get("usps") if prod_rows else []) or []
+
+    ref_shortcode = row.get("ref_shortcode")
+    try:
+        script_gen.reset_cost_meter()
+        unified = script_gen.select_unified_scenario(usps or [])
+        ref_info = None
+        if ref_shortcode:
+            try:
+                ref = script_gen.fetch_reference(ref_shortcode)
+                if ref:
+                    ref_sents = [s for s in (ref.get("sentences") or []) if s.get("text", "").strip()]
+                    ref_duration = max((float(s.get("end", 0)) for s in ref_sents), default=0) if ref_sents else 0
+                    ref_info = {"sentence_count": len(ref_sents), "duration": ref_duration, "sentences": ref_sents}
+            except Exception as e:
+                logger.warning("[saved-refine] ref fetch failed: %s", e)
+        awkward_info = []
+        try:
+            ref_for_aw = (ref_info or {}).get("sentences") or []
+            awkward_info = script_gen.detect_awkward_sentences(cur_sents, ref_for_aw)
+        except Exception as e:
+            logger.warning("[saved-refine] awkward detection failed: %s", e)
+        vocab_repeats: dict = {}
+        try:
+            vocab_repeats = script_gen.detect_vocab_repeats(cur_sents)
+        except Exception as e:
+            logger.warning("[saved-refine] vocab repeat detection failed: %s", e)
+        draft = {"sentences": cur_sents}
+        prompt = script_gen.build_refine_prompt(draft, unified.get("city"), ref_info=ref_info, usps=usps, awkward_info=awkward_info, vocab_repeats=vocab_repeats)
+        if variant == "strong":
+            prompt += """
+
+## ⚡ humanize 후처리 (variant=strong — im-not-ai 스타일)
+번역투/추상명사/균일 종결/접속사 남발/직역구/광고 클리셰 제거.
+어절·음절·종결 룰은 보존, 어휘·톤만 humanize. 1차와 동일하면 실패.
+"""
+        target_n = ref_info["sentence_count"] if ref_info else len(cur_sents)
+        min_n = max(1, target_n - 2)
+        refined = script_gen.call_gemini(prompt, min_sentences=min_n)
+        if isinstance(refined, list) and refined:
+            refined = refined[0]
+        new_sents = (refined or {}).get("sentences") or []
+        if not new_sents:
+            raise HTTPException(500, "refine 결과 없음")
+        # direction/emotion/delivery 같은 TTS 메타를 base에서 1:1 merge (LLM 응답에 빠지면 base 유지)
+        merged_new: list[dict] = []
+        for i, rs in enumerate(new_sents):
+            base = base_sents[i] if i < len(base_sents) else {}
+            merged_new.append({
+                **base,
+                "text": rs.get("text") or base.get("text", ""),
+                "direction": rs.get("direction") if rs.get("direction") is not None else base.get("direction"),
+                "emotion": rs.get("emotion") if rs.get("emotion") is not None else base.get("emotion"),
+                "intensity": rs.get("intensity") if rs.get("intensity") is not None else base.get("intensity"),
+                "delivery": rs.get("delivery") if rs.get("delivery") is not None else base.get("delivery"),
+            })
+        new_sents = merged_new
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("[saved-refine] failed: %s", e)
+        raise HTTPException(500, f"다듬기 실패: {e}")
+
+    # key 기반 stages 갱신 — base 보장 + target_key (alt_a/alt_b) 추가
+    cur_meta = dict(row.get("meta") or {})
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if "base" not in stages_map:
+        stages_map["base"] = {"key": "base", "sentences": base_sents, "created_at": now_iso}
+    stages_map[target_key] = {"key": target_key, "sentences": new_sents, "created_at": now_iso}
+    order = ["base", "alt_a", "alt_b"]
+    stages = [stages_map[k] for k in order if k in stages_map]
+    cur_meta["stages"] = stages
+
+    # sentences 컬럼은 base로 유지 (A/B는 stages에만)
+    r = _r.patch(
+        f"{SUPA}/rest/v1/generated_scripts?id=eq.{sid}&product_id=eq.{pid}",
+        headers={**H, "Content-Type": "application/json", "Prefer": "return=representation"},
+        json={"sentences": base_sents, "meta": cur_meta}, timeout=15,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:300])
+    rows = r.json() if r.status_code == 200 else []
+    return {"refined": True, "key": target_key, "row": rows[0] if rows else None}
 
 
 @app.get("/api/my-products/{pid}/scripts/{sid}/shares")
@@ -1890,12 +2332,19 @@ def list_all_my_scripts(request: Request):
         or_filter = f"or=(and(product_id.in.({ids_csv}),created_by.eq.{me['id']}),id.in.({sids_csv}))"
     else:
         or_filter = f"product_id=in.({ids_csv})&created_by=eq.{me['id']}"
+    # 리스트 카드에서 실제 쓰는 meta 키는 status/group_name 둘뿐.
+    # meta JSONB 전체(caption/pinned_comment/_cost/생성로그) 대신 필요한 키만 PostgREST JSON path로 뽑아 응답 크기 축소.
     scripts = _r.get(
         f"{SUPA}/rest/v1/generated_scripts?archived_at=is.null&{or_filter}"
-        f"&select=id,product_id,ref_shortcode,source_type,persona_name,title,meta,created_at,created_by"
+        f"&select=id,product_id,ref_shortcode,source_type,persona_name,title,"
+        f"_status:meta->>status,_group_name:meta->>group_name,"
+        f"created_at,created_by"
         f"&order=created_at.desc",
         headers=H, timeout=15,
     ).json() or []
+    # 클라이언트 호환 위해 meta 객체 재조립
+    for s in scripts:
+        s["meta"] = {"status": s.pop("_status", None), "group_name": s.pop("_group_name", None)}
     # 공유받은 대본의 product도 prod 목록에 보충 (이름 표기용)
     prod_id_set = {p["id"] for p in prod}
     extra_pids = [s["product_id"] for s in scripts if s["product_id"] not in prod_id_set]
@@ -2082,9 +2531,10 @@ def delete_product_share(pid: int, user_id: str, request: Request):
 
 
 class UspGroupIn(BaseModel):
-    name: str
+    name: str | None = None  # PATCH 부분 업데이트 허용
     color: str | None = None
-    order_idx: int = 0
+    order_idx: int | None = None
+    capability_out: str | None = None  # 이 그룹이 안 하는 것 (콤마 구분)
 
 
 class UspGroupMembersIn(BaseModel):
@@ -2130,7 +2580,8 @@ def create_usp_group(pid: int, body: UspGroupIn, request: Request):
         headers={"apikey": SK, "Authorization": f"Bearer {SK}",
                  "Content-Type": "application/json", "Prefer": "return=representation"},
         json={"product_id": pid, "name": name, "color": body.color,
-              "order_idx": body.order_idx, "created_by": me["id"]},
+              "order_idx": body.order_idx or 0, "created_by": me["id"],
+              "capability_out": body.capability_out or None},
         timeout=10,
     )
     if r.status_code not in (200, 201):
@@ -2152,6 +2603,8 @@ def update_usp_group(pid: int, gid: str, body: UspGroupIn, request: Request):
         payload["color"] = body.color or None
     if body.order_idx is not None:
         payload["order_idx"] = body.order_idx
+    if body.capability_out is not None:
+        payload["capability_out"] = body.capability_out.strip() or None
     if not payload:
         return {"updated": False}
     r = _r.patch(
@@ -2250,6 +2703,102 @@ def get_me(request: Request, background_tasks: BackgroundTasks):
     profile = auth_svc.require_user(request)
     background_tasks.add_task(_update_last_login, profile["id"])
     return profile
+
+
+@app.get("/api/admin/script-stats")
+def admin_script_stats(request: Request, days: int = 30, metric: str = "saved"):
+    """admin 전용: 사용자별 날짜별 대본 카운트.
+
+    metric:
+      - "saved" (default) — generated_scripts에 저장된 대본 (archived 제외)
+      - "completed" — script_gen_events에 기록된 성공 generation (저장 안 해도 포함)
+
+    Returns:
+      [{user_id, display_name, email, total, by_date: {YYYY-MM-DD: N}}],
+      date_range: [YYYY-MM-DD ...]
+      metric: "saved" | "completed"
+    """
+    auth_svc.require_admin(request)
+    days = max(1, min(int(days or 30), 180))
+    metric = metric if metric in ("saved", "completed") else "saved"
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    KEY = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": KEY, "Authorization": f"Bearer {KEY}"}
+
+    from datetime import datetime, timedelta, timezone
+    from urllib.parse import quote
+    now_kst = datetime.now(timezone.utc) + timedelta(hours=9)
+    start_kst = (now_kst - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_utc = (start_kst - timedelta(hours=9)).replace(tzinfo=None)
+    # PostgREST는 timestamp의 + 부호를 URL에서 정확히 받으려면 encode 필요
+    start_str = quote(start_utc.strftime("%Y-%m-%dT%H:%M:%S"), safe="")
+
+    if metric == "completed":
+        # script_gen_events 테이블 — success=true만 집계
+        resp = _r.get(
+            f"{SUPA}/rest/v1/script_gen_events?success=eq.true"
+            f"&created_at=gte.{start_str}"
+            f"&select=user_id,created_at"
+            f"&order=created_at.asc",
+            headers=H, timeout=15,
+        )
+    else:
+        resp = _r.get(
+            f"{SUPA}/rest/v1/generated_scripts?archived_at=is.null"
+            f"&created_at=gte.{start_str}"
+            f"&select=created_by,created_at"
+            f"&order=created_at.asc",
+            headers=H, timeout=15,
+        )
+    try:
+        rows = resp.json()
+    except Exception:
+        rows = []
+    if not isinstance(rows, list):
+        logger.warning("[admin-script-stats] unexpected response: %s", str(rows)[:200])
+        rows = []
+
+    # 사용자별 + 날짜별 집계 (KST 기준)
+    # metric=completed면 user_id 필드, saved면 created_by 필드
+    user_field = "user_id" if metric == "completed" else "created_by"
+    by_user: dict[str, dict] = {}
+    for r in rows:
+        cb = r.get(user_field)
+        if not cb:
+            continue
+        ts = r.get("created_at") or ""
+        try:
+            t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            t_kst = t.astimezone(timezone(timedelta(hours=9)))
+            date_key = t_kst.strftime("%Y-%m-%d")
+        except Exception:
+            continue
+        u = by_user.setdefault(cb, {"user_id": cb, "total": 0, "by_date": {}})
+        u["total"] += 1
+        u["by_date"][date_key] = u["by_date"].get(date_key, 0) + 1
+
+    # 사용자 프로필 join
+    if by_user:
+        ids_csv = ",".join(f'"{x}"' for x in by_user.keys())
+        prof = _r.get(
+            f"{SUPA}/rest/v1/profiles?id=in.({ids_csv})&select=id,display_name,email",
+            headers=H, timeout=10,
+        ).json() or []
+        for p in prof:
+            u = by_user.get(p["id"])
+            if u:
+                u["display_name"] = p.get("display_name") or ""
+                u["email"] = p.get("email") or ""
+
+    # 날짜 range (오늘부터 N일)
+    date_range = []
+    for i in range(days):
+        d = (now_kst - timedelta(days=days - 1 - i)).strftime("%Y-%m-%d")
+        date_range.append(d)
+
+    users = sorted(by_user.values(), key=lambda u: u.get("total", 0), reverse=True)
+    return {"date_range": date_range, "users": users, "metric": metric}
 
 
 @app.get("/api/users/colleagues")
@@ -3235,13 +3784,30 @@ class AnalyzeRequest(BaseModel):
 def start_analysis(req: AnalyzeRequest, background_tasks: BackgroundTasks):
     if pipeline.analysis_status.get(req.shortcode, {}).get("status") == "running":
         return {"message": "이미 분석 중"}
+    # Vercel Lambda는 응답 후 종료라 background_tasks 실행 X → auto_worker가 처리하도록 위임
+    if os.getenv("VERCEL") or os.getenv("VERCEL_ENV"):
+        pipeline.analysis_status[req.shortcode] = {"status": "queued", "step": "auto_worker 대기 중", "progress": 0,
+                                                    "message": "분석은 PC의 auto_worker가 처리합니다 (보통 1-5분)"}
+        return {"message": "분석 큐 등록 — auto_worker가 처리", "shortcode": req.shortcode, "queued": True}
+    # 로컬 환경 (uvicorn) — background task 정상 동작
     background_tasks.add_task(pipeline.run, req.shortcode)
     pipeline.analysis_status[req.shortcode] = {"status": "running", "step": "시작", "progress": 0}
     return {"message": "분석 시작", "shortcode": req.shortcode}
 
 @app.get("/api/analysis-status/{shortcode}")
 def get_analysis_status(shortcode: str):
-    return pipeline.analysis_status.get(shortcode, {"status": "idle"})
+    cached = pipeline.analysis_status.get(shortcode, {"status": "idle"})
+    # Vercel — DB 체크로 실제 완료 여부 확인 (auto_worker가 다른 머신에서 처리하니 in-memory 상태 못 봄)
+    if os.getenv("VERCEL") or os.getenv("VERCEL_ENV"):
+        if cached.get("status") in ("queued", "running"):
+            # opus_analyses에 row 있으면 완료로 판정 (pipeline 마지막에 저장)
+            try:
+                rows = supabase.sb_get("opus_analyses", f"shortcode=eq.{shortcode}&select=shortcode&limit=1")
+                if rows:
+                    return {"status": "done", "step": "완료", "progress": 100, "shortcode": shortcode}
+            except Exception:
+                pass
+    return cached
 
 
 # ── Single Reel Intake ──
@@ -3345,8 +3911,12 @@ def add_reel(req: ReelAddRequest, background_tasks: BackgroundTasks):
                 logger.warning("thumb download error: %s", e)
 
     if req.analyze and pipeline.analysis_status.get(shortcode, {}).get("status") != "running":
-        background_tasks.add_task(pipeline.run, shortcode)
-        pipeline.analysis_status[shortcode] = {"status": "running", "step": "시작", "progress": 0}
+        # Vercel은 background task 실행 X → auto_worker 위임
+        if os.getenv("VERCEL") or os.getenv("VERCEL_ENV"):
+            pipeline.analysis_status[shortcode] = {"status": "queued", "step": "auto_worker 대기 중", "progress": 0}
+        else:
+            background_tasks.add_task(pipeline.run, shortcode)
+            pipeline.analysis_status[shortcode] = {"status": "running", "step": "시작", "progress": 0}
 
     threading.Thread(target=_refresh_bench, daemon=True).start()
     return {
@@ -3393,8 +3963,11 @@ def import_fb_ad(req: FbAdImportRequest, background_tasks: BackgroundTasks, requ
     existing = supabase.sb_get("reels", f"shortcode=eq.{shortcode}&select=shortcode&limit=1")
     if existing:
         if req.analyze and pipeline.analysis_status.get(shortcode, {}).get("status") != "running":
-            background_tasks.add_task(pipeline.run, shortcode)
-            pipeline.analysis_status[shortcode] = {"status": "running", "step": "시작", "progress": 0}
+            if os.getenv("VERCEL") or os.getenv("VERCEL_ENV"):
+                pipeline.analysis_status[shortcode] = {"status": "queued", "step": "auto_worker 대기 중", "progress": 0}
+            else:
+                background_tasks.add_task(pipeline.run, shortcode)
+                pipeline.analysis_status[shortcode] = {"status": "running", "step": "시작", "progress": 0}
         return {"shortcode": shortcode, "imported": False, "message": "이미 import됨 — 분석 재실행"}
 
     # Playwright로 ad fetch
@@ -3430,8 +4003,11 @@ def import_fb_ad(req: FbAdImportRequest, background_tasks: BackgroundTasks, requ
 
     # 분석 트리거
     if req.analyze:
-        background_tasks.add_task(pipeline.run, shortcode)
-        pipeline.analysis_status[shortcode] = {"status": "running", "step": "시작", "progress": 0}
+        if os.getenv("VERCEL") or os.getenv("VERCEL_ENV"):
+            pipeline.analysis_status[shortcode] = {"status": "queued", "step": "auto_worker 대기 중", "progress": 0}
+        else:
+            background_tasks.add_task(pipeline.run, shortcode)
+            pipeline.analysis_status[shortcode] = {"status": "running", "step": "시작", "progress": 0}
 
     return {
         "shortcode": shortcode,
@@ -3839,13 +4415,13 @@ def fb_search_advertisers(q: str = Query(""), limit: int = Query(50, ge=1, le=20
 @app.get("/api/fb/search/ads")
 def fb_search_ads(
     q: str = Query(""),
-    days: int = Query(0, description="광고 시작일 N일 이내만 (0=전체)"),
+    min_age_days: int = Query(7, description="광고 게재 시작일 기준 N일 이상 운영된 광고만 (0=전체)"),
     duration_max: int = Query(0, description="영상 길이 최대 초 (0=전체)"),
     duration_min: int = Query(0, description="영상 길이 최소 초"),
     sort: str = Query("recent", description="recent|started|duration_short|duration_long"),
     limit: int = Query(50, ge=1, le=200),
 ):
-    cache_key = f"{q}:{days}:{duration_min}:{duration_max}:{sort}:{limit}"
+    cache_key = f"{q}:{min_age_days}:{duration_min}:{duration_max}:{sort}:{limit}"
     cached = _cache_get(_fb_search_ads_cache, cache_key, _FB_CACHE_TTL)
     if cached is not None:
         return cached
@@ -3866,11 +4442,11 @@ def fb_search_ads(
         rows = [m for m in rows if
                 ql in (m.get("caption_text") or "").lower() or
                 ql in (m.get("author_username") or "").lower()]
-    # 광고 시작일 필터
-    if days and days > 0:
+    # 광고 게재 시작일 필터 — N일 이상 운영 중인 광고만 (= taken_at <= now - N일)
+    if min_age_days and min_age_days > 0:
         from datetime import timedelta
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        rows = [m for m in rows if (m.get("taken_at") or "") >= cutoff]
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=min_age_days)).isoformat()
+        rows = [m for m in rows if (m.get("taken_at") or "") and (m.get("taken_at") or "") <= cutoff]
     # 영상 길이 필터
     if duration_min and duration_min > 0:
         rows = [m for m in rows if (m.get("video_duration") or 0) >= duration_min]
@@ -4516,7 +5092,7 @@ def debug_fs():
 
 class TtsSynthRequest(BaseModel):
     sentences: list[dict]
-    voice_name: str = "yuna"
+    voice_name: str = "joonpark"
     model_id: str = "eleven_v3"
     emotion_strength: float = 0.5  # 0.0~1.0 (전체 base)
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
+import { buildTtsText } from '../ttsCopy'
 import { api, authedFetch, BASE } from '../api'
 import type { MyProduct, PersonaCandidate } from '../api'
 import { getAccessToken } from '../supabase'
@@ -36,7 +37,7 @@ export default function ScriptGenWizard() {
   const [products, setProducts] = useState<MyProduct[]>([])
   const [productId, setProductId] = useState<number | null>(null)
   // USP 그룹
-  type UspGroupLite = { id: string; name: string; color: string | null; order_idx: number; usp_indexes: number[] }
+  type UspGroupLite = { id: string; name: string; color: string | null; order_idx: number; usp_indexes: number[]; capability_out?: string | null }
   const [uspGroups, setUspGroups] = useState<UspGroupLite[]>([])
   useEffect(() => {
     if (!productId) { setUspGroups([]); return }
@@ -64,10 +65,13 @@ export default function ScriptGenWizard() {
   const [hookArchetypeOverride, setHookArchetypeOverride] = useState<{ archetype: string; pattern?: string; core_word?: string } | null>(null)
 
   // 3. 페르소나
-  const [allPersonas, setAllPersonas] = useState<Array<PersonaCandidate & { _uspIndex: number; _uspName: string }>>([])
+  const [allPersonas, setAllPersonas] = useState<Array<PersonaCandidate & { _uspIndex: number; _uspName: string; _unified?: boolean; _coversUsps?: number[] }>>([])
   const [selectedPersonaIdx, setSelectedPersonaIdx] = useState<Set<number>>(new Set())
   // ref-derived desire 후보 (참고 대본 emotional arc 기반)
   const [selectedRefDesireIdx, setSelectedRefDesireIdx] = useState<Set<number>>(new Set())
+  // 통합 페르소나 생성 진행 + 분석 결과
+  const [unifiedLoading, setUnifiedLoading] = useState(false)
+  const [unifiedMeta, setUnifiedMeta] = useState<{ common_pain: string; common_context: string; shared_keywords: string[] } | null>(null)
 
   // 4. 생성
   const [genError, setGenError] = useState('')
@@ -211,6 +215,49 @@ export default function ScriptGenWizard() {
   const [personaRefreshing, setPersonaRefreshing] = useState(false)
   const [refreshingUspIdx, setRefreshingUspIdx] = useState<number | null>(null)
 
+  // 통합 페르소나 생성 — 매핑된 USP들을 모두 한 번에 분석해서 교집합 페르소나 도출
+  const generateUnifiedPersonas = async () => {
+    if (!mapping) return
+    // 매핑된(chunk에서 사용 중인) USP만 모으기
+    const matched = new Set<number>()
+    mapping.section_chunks.forEach(c => {
+      effectiveChunkUspIds(c).forEach(uid => matched.add(uid))
+    })
+    const usps = mapping.product.usps
+      .map((u: any, i: number) => matched.has(i + 1) ? { ...u, _idx: i + 1 } : null)
+      .filter(Boolean) as Array<{ usp: string; description?: string; reviews?: string[]; _idx: number }>
+    if (usps.length === 0) {
+      alert('매핑된 USP가 없습니다. 매핑 단계에서 USP를 chunk에 할당해주세요.')
+      return
+    }
+    setUnifiedLoading(true)
+    try {
+      const r = await api.extractUnifiedPersonas(
+        usps.map(u => ({ usp: u.usp, description: u.description, reviews: u.reviews || [] })),
+        mapping.product.name || '',
+      )
+      const newPs: Array<PersonaCandidate & { _uspIndex: number; _uspName: string; _unified: true; _coversUsps?: number[] }> =
+        (r.personas || []).map(p => ({
+          ...p,
+          _uspIndex: 0,  // 0 = unified (specific USP에 속하지 않음)
+          _uspName: '통합',
+          _unified: true,
+          _coversUsps: (p as any).covers_usps as number[] | undefined,
+        }))
+      // 기존 allPersonas 뒤에 append
+      setAllPersonas(prev => [...prev.filter(p => !p._unified), ...newPs])
+      setUnifiedMeta({
+        common_pain: r.common_pain,
+        common_context: r.common_context,
+        shared_keywords: r.shared_keywords || [],
+      })
+    } catch (e: any) {
+      alert('통합 페르소나 생성 실패: ' + (e?.message || e))
+    } finally {
+      setUnifiedLoading(false)
+    }
+  }
+
   const refreshSingleUspPersonas = async (uspIdx: number) => {
     if (!mapping || !productId) return
     const u: any = mapping.product.usps[uspIdx]
@@ -318,17 +365,13 @@ export default function ScriptGenWizard() {
       }
     }
 
-    // 페르소나 모으기
-    const collected: typeof allPersonas = []
-    refreshedUsps.forEach((u: any, i: number) => {
-      if (!matched.has(i + 1)) return
-      const personas: PersonaCandidate[] = (u.personas as PersonaCandidate[]) || []
-      personas.forEach(p => {
-        collected.push({ ...p, _uspIndex: i + 1, _uspName: u.usp })
-      })
-    })
-    setAllPersonas(collected)
+    // per-USP 페르소나 수집 X — 대시보드에 통합 페르소나만 표시
+    setAllPersonas([])
     setSelectedPersonaIdx(new Set())
+    setUnifiedMeta(null)
+
+    // ⭐ 통합 페르소나 자동 추출 — 매핑된 USP들의 교집합 분석 (백그라운드, await X — UI 블록 X)
+    setTimeout(() => { generateUnifiedPersonas() }, 0)
   }
 
   const generate = async () => {
@@ -336,10 +379,19 @@ export default function ScriptGenWizard() {
     setStep('generating')
     setGenError('')
     setGenResult({})
-    const cleanUsps = mapping.product.usps.map((u: any) => ({
+    // USP 1-based index → group capability_out 매핑 (그룹별 boundary)
+    const uspIdxToCapOut = new Map<number, string>()
+    for (const g of uspGroups) {
+      const capOut = (g as any).capability_out
+      if (capOut && (g.usp_indexes || []).length) {
+        for (const idx of g.usp_indexes) uspIdxToCapOut.set(idx, capOut)
+      }
+    }
+    const cleanUsps = mapping.product.usps.map((u: any, i: number) => ({
       usp: (u.usp || '').trim(),
       description: (u.description || '').trim() || undefined,
       reviews: (u.reviews || []).map((r: string) => r.trim()).filter(Boolean),
+      group_capability_out: uspIdxToCapOut.get(i + 1) || undefined,
     })).filter((u: any) => u.usp)
 
     // 1) USP 페르소나 + 2) ref-derived desire 후보를 합쳐 사용
@@ -474,6 +526,32 @@ export default function ScriptGenWizard() {
       }
       setGenResult(out)
       setStep('done')
+
+      // 1차 끝나면 자동 2차 refine — vocab 중복 자동 검출 + pinpoint 교체
+      // 사용자가 chunk 안 어휘 중복 안 보고 싶음. 백그라운드 silent 실행.
+      // skip 정보 전달 — 삭제된 chunk/sentence가 ref에서 복원되지 않도록
+      const skipOpts = {
+        skip_chunk_sections: skippedChunks.size > 0 ? Array.from(skippedChunks) : undefined,
+        skip_sentence_starts: skippedSentenceStarts.size > 0 ? Array.from(skippedSentenceStarts) : undefined,
+      }
+      ;(async () => {
+        const refinedOut: Record<string, GeneratedScript> = { ...out }
+        await Promise.all(Object.entries(out).map(async ([name, draft]) => {
+          try {
+            const refined = await api.refineScript(draft, cleanUsps, shortcode, skipOpts)
+            if (refined && refined.sentences) {
+              refinedOut[name] = {
+                ...draft,
+                sentences: refined.sentences,
+                tts_script: refined.tts_script || draft.tts_script,
+              }
+            }
+          } catch (e) {
+            console.warn(`[auto-refine] ${name} skipped:`, e)
+          }
+        }))
+        setGenResult(refinedOut)
+      })()
     } catch (e: any) {
       setGenError(e.message || String(e))
       setStep('persona')
@@ -618,6 +696,9 @@ export default function ScriptGenWizard() {
           error={genError}
           onBack={() => setStep('mapping')}
           onGenerate={generate}
+          onGenerateUnified={generateUnifiedPersonas}
+          unifiedLoading={unifiedLoading}
+          unifiedMeta={unifiedMeta}
         />
       )}
 
@@ -754,6 +835,16 @@ export default function ScriptGenWizard() {
           productId={productId}
           shortcode={shortcode || ''}
           source={source}
+          usps={(mapping?.product?.usps || []).map((u: any) => ({
+            usp: u.usp || '', description: u.description, reviews: u.reviews || [],
+          }))}
+          onRefined={(tabName, refined) => {
+            setGenResult(prev => ({ ...prev, [tabName]: refined }))
+          }}
+          skipOpts={{
+            skip_chunk_sections: skippedChunks.size > 0 ? Array.from(skippedChunks) : undefined,
+            skip_sentence_starts: skippedSentenceStarts.size > 0 ? Array.from(skippedSentenceStarts) : undefined,
+          }}
         />
       )}
     </div>
@@ -959,6 +1050,8 @@ function StepMapping({
   const [newReviews, setNewReviews] = useState('')
   const [creating, setCreating] = useState(false)
   const [createErr, setCreateErr] = useState('')
+  // USP 그룹 필터: null=전체, 'unclassified'=미분류만, group.id=특정 그룹만
+  const [groupFilter, setGroupFilter] = useState<string | null>(null)
   // USP 수정 인라인 편집 상태 — 한 번에 1개만. editingChunkSection이 있으면 그 chunk 안에서만 폼 렌더
   const [editingUspId, setEditingUspId] = useState<number | null>(null)
   const [editingChunkSection, setEditingChunkSection] = useState<string | null>(null)
@@ -1073,8 +1166,72 @@ function StepMapping({
       <div style={cardSt}>
         <div style={labelSt}>2단계 — 매핑 리뷰</div>
         <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>
-          참고 릴스의 각 섹션 chunk와 그에 매핑된 우리 USP. USP pill 옆 ✏ 아이콘으로 인라인 편집 가능.
+          참고 릴스의 각 섹션 chunk와 그에 매핑된 우리 USP. USP pill 옆 편집 버튼으로 인라인 수정 가능.
         </div>
+
+        {/* USP 그룹 필터 — 그룹 있을 때만 표시
+            카운트는 실제 mapping.product.usps와 교차 (g.usp_indexes에 deleted index 있을 수 있음) */}
+        {uspGroups.length > 0 && (() => {
+          const allUsps = mapping.product.usps as any[]
+          const idxToGroup = new Map<number, typeof uspGroups[number]>()
+          for (const g of uspGroups) for (const i of g.usp_indexes) idxToGroup.set(i, g)
+          const unclassifiedCount = allUsps.filter((_: any, i: number) => !idxToGroup.has(i + 1)).length
+          const groupCount = (gid: string) => allUsps.filter((_: any, i: number) => idxToGroup.get(i + 1)?.id === gid).length
+          return (
+            <div style={{
+              display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center',
+              marginBottom: 14, padding: 10,
+              background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-sm)',
+            }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginRight: 4 }}>
+                USP 그룹 필터:
+              </span>
+              <button type="button" onClick={() => setGroupFilter(null)}
+                style={{
+                  padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700,
+                  cursor: 'pointer',
+                  background: groupFilter === null ? 'var(--accent)' : 'var(--bg-surface)',
+                  color: groupFilter === null ? '#fff' : 'var(--text-body)',
+                  border: '1px solid var(--border)',
+                }}>
+                전체 ({allUsps.length})
+              </button>
+              <button type="button" onClick={() => setGroupFilter('unclassified')}
+                style={{
+                  padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700,
+                  cursor: 'pointer',
+                  background: groupFilter === 'unclassified' ? 'var(--accent)' : 'var(--bg-surface)',
+                  color: groupFilter === 'unclassified' ? '#fff' : 'var(--text-body)',
+                  border: '1px dashed var(--border)',
+                }}>
+                미분류 ({unclassifiedCount})
+              </button>
+              {uspGroups.map(g => {
+                const isActive = groupFilter === g.id
+                return (
+                  <button key={g.id} type="button"
+                    onClick={() => setGroupFilter(isActive ? null : g.id)}
+                    style={{
+                      padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700,
+                      cursor: 'pointer',
+                      background: isActive ? (g.color || 'var(--accent)') : 'var(--bg-surface)',
+                      color: isActive ? '#fff' : (g.color || 'var(--text-body)'),
+                      border: `1px solid ${isActive ? (g.color || 'var(--accent)') : 'var(--border)'}`,
+                      boxShadow: isActive ? '0 0 0 2px rgba(99,102,241,0.2)' : 'none',
+                    }}>
+                    {g.name} ({groupCount(g.id)})
+                  </button>
+                )
+              })}
+              {groupFilter !== null && (
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                  ※ 필터된 USP만 chunk별로 표시됩니다
+                </span>
+              )}
+            </div>
+          )
+        })()}
 
         <div style={{ display: 'grid', gap: 10 }}>
           {mapping.section_chunks.map((chunk, ci) => {
@@ -1136,7 +1293,7 @@ function StepMapping({
                         background: 'var(--bg-surface)', color: 'var(--text-body)',
                         cursor: 'pointer',
                       }}>
-                      {editingChunk[chunk.section] ? '저장' : '✏ 분석 수정'}
+                      {editingChunk[chunk.section] ? '저장' : '분석 수정'}
                     </button>
                   )}
                   <button
@@ -1151,7 +1308,7 @@ function StepMapping({
                       color: isSkipped ? 'var(--accent)' : 'var(--error)',
                       cursor: 'pointer', opacity: 1, pointerEvents: 'auto',
                     }}>
-                    {isSkipped ? '↺ 복원' : '✕ 삭제'}
+                    {isSkipped ? '복원' : '삭제'}
                   </button>
                 </div>
                 {editingChunk[chunk.section] && (
@@ -1219,7 +1376,7 @@ function StepMapping({
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                       {sectionOv ? (
                         <>
-                          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)' }}>✨ 다른 ref {sec.toUpperCase()} 사용 중</span>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)' }}>다른 ref {sec.toUpperCase()} 사용 중</span>
                           <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>@{sectionOv.author || sectionOv.shortcode}</span>
                           <button onClick={() => setSectionOverrides(prev => {
                             const next = { ...prev }; delete next[sec]; return next
@@ -1325,7 +1482,7 @@ function StepMapping({
                               cursor: editingSent ? 'not-allowed' : 'pointer',
                               opacity: editingSent ? 0.4 : 1,
                               flexShrink: 0,
-                            }}>✏</button>
+                            }}>편집</button>
                           {(() => {
                             const isSkippedSent = skippedSentenceStarts.has(Math.round((s.start || 0) * 100) / 100)
                             return (
@@ -1371,13 +1528,19 @@ function StepMapping({
                   type _G = (typeof uspGroups)[number]
                   const idxToGroup = new Map<number, _G>()
                   for (const g of uspGroups) for (const i of g.usp_indexes) idxToGroup.set(i, g)
-                  const buckets: Array<{ group: _G | null; usps: typeof allUserUsps }> = []
+                  let buckets: Array<{ group: _G | null; usps: typeof allUserUsps }> = []
                   for (const g of uspGroups) {
                     const inG = allUserUsps.filter(u => g.usp_indexes.includes(u.user_usp_id))
                     if (inG.length) buckets.push({ group: g, usps: inG })
                   }
                   const unclassified = allUserUsps.filter(u => !idxToGroup.has(u.user_usp_id))
                   if (unclassified.length) buckets.push({ group: null, usps: unclassified })
+                  // 그룹 필터 적용
+                  if (groupFilter === 'unclassified') {
+                    buckets = buckets.filter(b => b.group === null)
+                  } else if (groupFilter) {
+                    buckets = buckets.filter(b => b.group?.id === groupFilter)
+                  }
                   const toggleUsp = (uid: number) => {
                     const next = chunkUserIds.includes(uid)
                       ? chunkUserIds.filter(x => x !== uid)
@@ -1424,7 +1587,7 @@ function StepMapping({
                               return `USP${uid} · ${u?.user_usp_name || ''}`
                             }).join(' / ')
                             const tag = isChunkOverride ? ' (수동)' : ''
-                            const multiTag = isMulti ? ' ⭐ 통합 호소' : ''
+                            const multiTag = isMulti ? ' · 통합 호소' : ''
                             return `${labels}${tag}${multiTag}`
                           })()
                           : '매칭 없음 — 페르소나로 풀기'}
@@ -1477,7 +1640,7 @@ function StepMapping({
                                       color: 'var(--text-muted)',
                                       cursor: 'pointer',
                                     }}>
-                                    ✏
+                                    편집
                                   </button>
                                 </span>
                               )
@@ -1497,7 +1660,7 @@ function StepMapping({
                             color: chunkUserIds.length === 0 ? 'var(--warning)' : 'var(--text-muted)',
                             cursor: 'pointer',
                           }}>
-                          {chunkUserIds.length === 0 ? '✓ ' : ''}✕ 매핑 없음 (페르소나로 풀기)
+                          {chunkUserIds.length === 0 ? '· ' : ''}매핑 없음 (페르소나로 풀기)
                         </button>
                       </div>
                       {/* 인라인 USP 편집 폼 — 이 chunk에서 ✏ 클릭한 경우만 렌더 */}
@@ -1807,9 +1970,10 @@ function StepPersona({
   mapping, personas, matchedUserUsps, selected, onToggle, onRefreshUspPersonas, refreshingUspIdx,
   selectedRefDesireIdx, onToggleRefDesire,
   error, onBack, onGenerate,
+  onGenerateUnified, unifiedLoading, unifiedMeta,
 }: {
   mapping: MappingPreview | null
-  personas: Array<PersonaCandidate & { _uspIndex: number; _uspName: string }>
+  personas: Array<PersonaCandidate & { _uspIndex: number; _uspName: string; _unified?: boolean; _coversUsps?: number[] }>
   matchedUserUsps: Array<{ idx: number; name: string; personaCount: number; reviewCount: number }>
   selected: Set<number>
   onToggle: (i: number) => void
@@ -1820,6 +1984,9 @@ function StepPersona({
   error: string
   onBack: () => void
   onGenerate: () => void
+  onGenerateUnified: () => Promise<void>
+  unifiedLoading: boolean
+  unifiedMeta: { common_pain: string; common_context: string; shared_keywords: string[] } | null
 }) {
   if (!mapping) return null
   return (
@@ -1930,13 +2097,60 @@ function StepPersona({
       )}
 
       <div style={cardSt}>
-        <div style={labelSt}>3단계 — 페르소나 선택 (총 0~2개)</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+          <div style={labelSt}>3단계 — 페르소나 선택 (총 0~2개)</div>
+          <button
+            type="button"
+            onClick={onGenerateUnified}
+            disabled={unifiedLoading}
+            title="선택된 USP들의 공통점을 분석해서 모든 USP에 자연 fit하는 통합 페르소나 생성"
+            style={{
+              marginLeft: 'auto',
+              padding: '6px 12px', fontSize: 12, fontWeight: 700,
+              border: '1px solid var(--accent)', borderRadius: 'var(--radius-sm)',
+              background: unifiedLoading ? 'var(--bg-elevated)' : 'var(--accent)',
+              color: unifiedLoading ? 'var(--text-muted)' : '#fff',
+              cursor: unifiedLoading ? 'not-allowed' : 'pointer',
+            }}>
+            {unifiedLoading ? '분석 중…' : '통합 페르소나 생성'}
+          </button>
+        </div>
         <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>
           위 desire 후보 + 아래 USP 페르소나 합쳐 0~2개. 0개 = 자동 추론.
         </div>
+        {unifiedMeta && (
+          <div style={{
+            padding: 10, marginBottom: 12,
+            background: 'var(--accent-light)', border: '1px solid var(--accent)',
+            borderRadius: 'var(--radius-sm)', fontSize: 12, lineHeight: 1.6,
+          }}>
+            <div style={{ fontWeight: 700, color: 'var(--accent)', marginBottom: 4 }}>🔗 USP 교집합 분석</div>
+            {unifiedMeta.common_pain && (
+              <div><span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>공통 pain:</span> {unifiedMeta.common_pain}</div>
+            )}
+            {unifiedMeta.common_context && (
+              <div><span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>공통 context:</span> {unifiedMeta.common_context}</div>
+            )}
+            {unifiedMeta.shared_keywords?.length > 0 && (
+              <div style={{ marginTop: 4 }}>
+                <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>공통 키워드:</span>{' '}
+                {unifiedMeta.shared_keywords.map((k, i) => (
+                  <span key={i} style={{
+                    display: 'inline-block', marginRight: 4, marginTop: 2,
+                    padding: '1px 7px', fontSize: 11,
+                    background: 'var(--bg-surface)', color: 'var(--text-body)',
+                    borderRadius: 4, border: '1px solid var(--border)',
+                  }}>{k}</span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         {personas.length === 0 ? (
           <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-            매칭된 USP에 등록된 페르소나가 없습니다. 위에서 재추출하거나, 자동 추론으로 진행하세요.
+            {unifiedLoading
+              ? '통합 페르소나 분석 중… (USP 교집합 + 5개 페르소나 도출)'
+              : '통합 페르소나 미생성. 위 버튼으로 생성하거나, 0개 = 자동 추론으로 진행하세요.'}
           </div>
         ) : (
           <div style={{ display: 'grid', gap: 8 }}>
@@ -1959,6 +2173,13 @@ function StepPersona({
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                       <span>{p.name}</span>
+                      {p._unified && (
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, padding: '2px 7px',
+                          background: 'var(--accent)', color: '#fff',
+                          borderRadius: 'var(--radius-sm)', letterSpacing: '0.03em',
+                        }}>🔗 통합 {p._coversUsps?.length ? `(USP ${p._coversUsps.join(',')})` : ''}</span>
+                      )}
                       {p.lf8 && (
                         <span style={{
                           fontSize: 10, fontWeight: 700, padding: '2px 7px',
@@ -2022,7 +2243,7 @@ function StepPersona({
 
 function StepDone({
   result, refChunks, chunkUspMapping, onRestart, onBackToPersona, onBackToMapping, onSkipChunkSection,
-  productId, shortcode, source,
+  productId, shortcode, source, usps, onRefined, skipOpts,
 }: {
   result: Record<string, GeneratedScript>
   refChunks: MappingPreview['section_chunks']
@@ -2034,6 +2255,9 @@ function StepDone({
   productId: number | null
   shortcode: string
   source: 'reels' | 'youtube'
+  usps: Array<{ usp: string; description?: string; reviews?: string[] }>
+  onRefined: (tabName: string, refined: GeneratedScript) => void
+  skipOpts: { skip_chunk_sections?: string[]; skip_sentence_starts?: number[] }
 }) {
   // ref 문장 평탄화 (start 시간순 정렬, 빈 문장 제외) — _borrowed_from 메타 전파
   const refSentences = refChunks
@@ -2047,17 +2271,30 @@ function StepDone({
   const [active, setActive] = useState(tabs[0] || '')
   // 편집 상태 (탭별로 독립)
   const [editingTab, setEditingTab] = useState<string | null>(null)
+  // 2차 refine 진행 중인 탭
+  const [refiningTab, setRefiningTab] = useState<string | null>(null)
   // 저장된 편집본 — 새 result 들어오면 리셋
   const [editedResult, setEditedResult] = useState<Record<string, GeneratedScript>>({})
   // 진행 중 편집 draft (저장 누르기 전)
   const [draftSentences, setDraftSentences] = useState<{ start: number; end: number; text: string }[] | null>(null)
+  // refine stages — 탭별로 {base, alt_a?, alt_b?} (최대 3개)
+  type StageKey = 'base' | 'alt_a' | 'alt_b'
+  type RefineStage = { key: StageKey; sentences: any[]; created_at: string }
+  const [stagesByTab, setStagesByTab] = useState<Record<string, RefineStage[]>>({})
+  const [stageViewByTab, setStageViewByTab] = useState<Record<string, StageKey | null>>({})
+  const stageLabel = (k: StageKey) => k === 'base' ? '기본' : k === 'alt_a' ? 'A원고' : 'B원고'
 
-  // 새 result 들어올 때 (생성 재시작) 편집 상태 리셋
+  // 새 result 들어올 때 (생성 재시작 — 탭 자체 변경) 편집/단계 상태 리셋
+  // result reference만 바뀌어도 트리거되면 안 됨 (다듬기 → setGenResult로 매번 새 ref) — 탭 키 기반 의존성
+  const tabsKey = tabs.join('|')
   useEffect(() => {
     setEditedResult({})
     setEditingTab(null)
     setDraftSentences(null)
-  }, [result])
+    setStagesByTab({})
+    setStageViewByTab({})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabsKey])
 
   const display = (tab: string): GeneratedScript | null => {
     if (!tab) return null
@@ -2076,7 +2313,6 @@ function StepDone({
   }
   const saveEdit = () => {
     if (!cur || !draftSentences) return
-    // 원본 sentence를 text만 교체 (direction/emotion 등 메타 보존)
     const merged = (cur.sentences || []).map((orig, i) => {
       const draft = draftSentences[i]
       if (!draft) return orig
@@ -2085,6 +2321,22 @@ function StepDone({
     const ttsLines = merged.map(s => s.text).join('\n')
     const updated: GeneratedScript = { ...cur, sentences: merged, tts_script: ttsLines }
     setEditedResult(prev => ({ ...prev, [active]: updated }))
+    // 편집 결과를 stagesByTab에도 반영 — 다듬기 A/B의 입력이 항상 "현재 보고 있는 base"가 되도록 보장
+    // stages 비어있으면 base 자동 생성 (편집된 sentences로)
+    const view: StageKey = stageViewByTab[active] || 'base'
+    const now = new Date().toISOString()
+    setStagesByTab(prev => {
+      const cur_stages = prev[active] || []
+      const idx = cur_stages.findIndex(s => s.key === view)
+      if (idx >= 0) {
+        return {
+          ...prev,
+          [active]: cur_stages.map(s => s.key === view ? { ...s, sentences: merged } : s),
+        }
+      }
+      // 해당 key 없으면 추가 (base가 보통)
+      return { ...prev, [active]: [...cur_stages, { key: view, sentences: merged, created_at: now }] }
+    })
     setEditingTab(null)
     setDraftSentences(null)
   }
@@ -2128,6 +2380,7 @@ function StepDone({
           duration_target_sec: draft.duration_target_sec,
           _cost: (draft as any)._cost,
           _usp_mapping: draft._usp_mapping,
+          stages: stagesByTab[active] || [],
         },
       })
       if (confirm(`"${active}" 대본 저장 완료! 저장된 대본 목록으로 이동할까요?`)) {
@@ -2182,7 +2435,7 @@ function StepDone({
                 fontWeight: active === t ? 600 : 500,
                 cursor: isEditingActive && t !== active ? 'not-allowed' : 'pointer',
                 opacity: isEditingActive && t !== active ? 0.5 : 1,
-              }}>{t}{editedResult[t] ? ' ✏' : ''}</button>
+              }}>{t}{editedResult[t] ? ' ·' : ''}</button>
           ))}
         </div>
       )}
@@ -2190,27 +2443,121 @@ function StepDone({
       {cur && (
         <div style={cardSt}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 8, flexWrap: 'wrap' }}>
-            <div style={{ fontSize: 16, fontWeight: 700 }}>
-              생성된 대본 ({cur.duration_target_sec}초){dirty && <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>· 편집됨</span>}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 16, fontWeight: 700 }}>
+                생성된 대본 ({cur.duration_target_sec}초)
+              </div>
+              {(stagesByTab[active] || []).length > 0 && !isEditingActive && (
+                <>
+                  <label style={{ fontSize: 11, color: 'var(--text-secondary)' }}>단계:</label>
+                  <select
+                    value={stageViewByTab[active] || (stagesByTab[active][0]?.key || 'base')}
+                    onChange={e => {
+                      const v = e.target.value as StageKey
+                      setStageViewByTab(prev => ({ ...prev, [active]: v }))
+                      const stages = stagesByTab[active] || []
+                      const pick = stages.find(s => s.key === v)
+                      if (pick) {
+                        const merged: GeneratedScript = { ...cur, sentences: pick.sentences }
+                        onRefined(active, merged)
+                      }
+                    }}
+                    style={{ padding: '4px 8px', fontSize: 11, borderRadius: 4,
+                      border: '1px solid var(--border)', background: 'var(--bg-base)', color: 'var(--text-body)' }}>
+                    {(stagesByTab[active] || []).map(s => (
+                      <option key={s.key} value={s.key}>{stageLabel(s.key)}</option>
+                    ))}
+                  </select>
+                </>
+              )}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               {!isEditingActive ? (
                 <>
-                  <button onClick={startEdit} style={ghostBtnSt}>✏ 대본 수정</button>
+                  <button onClick={startEdit} style={ghostBtnSt}>대본 수정</button>
+                  {(['default', 'strong'] as const).map(v => {
+                    const targetKey: StageKey = v === 'default' ? 'alt_a' : 'alt_b'
+                    const stages = stagesByTab[active] || []
+                    const already = stages.find(s => s.key === targetKey)
+                    return (
+                    <button key={v}
+                      onClick={async () => {
+                        if (refiningTab || already) return
+                        setRefiningTab(`${active}:${v}`)
+                        try {
+                          // 입력은 항상 base (있으면) 또는 현재 cur.sentences
+                          const baseSents = stages.find(s => s.key === 'base')?.sentences || cur.sentences || []
+                          const refined = await api.refineScript({ ...cur, sentences: baseSents }, usps, shortcode || undefined, skipOpts, v)
+                          if (refined && refined.sentences) {
+                            // direction/emotion/delivery 같은 TTS 메타를 base에서 1:1 merge (LLM 응답에 빠지면 base 유지)
+                            // — rs.direction이 빈 문자열("")일 때도 base로 fallback (??는 null/undefined만 fallback)
+                            refined.sentences = refined.sentences.map((rs: any, i: number) => {
+                              const base: any = baseSents[i] || {}
+                              const pickStr = (a: any, b: any) => (typeof a === 'string' && a.trim()) ? a : b
+                              return {
+                                ...base,
+                                text: rs.text || base.text,
+                                direction: pickStr(rs.direction, base.direction),
+                                emotion: pickStr(rs.emotion, base.emotion),
+                                intensity: (rs.intensity ?? base.intensity),
+                                delivery: pickStr(rs.delivery, base.delivery),
+                              }
+                            })
+                            const now = new Date().toISOString()
+                            setStagesByTab(prev => {
+                              const cur_stages = prev[active] || []
+                              const map = new Map<StageKey, RefineStage>()
+                              // base 보장
+                              const existingBase = cur_stages.find(s => s.key === 'base')
+                              map.set('base', existingBase || { key: 'base', sentences: baseSents, created_at: now })
+                              for (const s of cur_stages) {
+                                if (s.key !== 'base') map.set(s.key, s)
+                              }
+                              map.set(targetKey, { key: targetKey, sentences: refined.sentences, created_at: now })
+                              const order: StageKey[] = ['base', 'alt_a', 'alt_b']
+                              return { ...prev, [active]: order.filter(k => map.has(k)).map(k => map.get(k)!) }
+                            })
+                            setStageViewByTab(prev => ({ ...prev, [active]: targetKey }))
+                            const merged: GeneratedScript = { ...cur, sentences: refined.sentences, tts_script: refined.tts_script || cur.tts_script }
+                            onRefined(active, merged)
+                          }
+                        } catch (e: any) {
+                          alert('다듬기 실패: ' + (e?.message || e))
+                        } finally {
+                          setRefiningTab(null)
+                        }
+                      }}
+                      disabled={refiningTab !== null || !!already}
+                      title={already ? `${stageLabel(targetKey)}는 이미 만들어졌습니다. dropdown으로 확인.`
+                        : v === 'default'
+                        ? '기본 원고 → A원고 (어색 문장 + 어휘 중복 교정)'
+                        : '기본 원고 → B원고 (humanize — AI 티 제거)'}
+                      style={{
+                        ...ghostBtnSt,
+                        background: already ? 'var(--bg-elevated)'
+                          : refiningTab === `${active}:${v}` ? 'var(--bg-elevated)'
+                          : v === 'default' ? '#f59e0b' : '#8b5cf6',
+                        color: already ? 'var(--text-muted)'
+                          : refiningTab === `${active}:${v}` ? 'var(--text-muted)' : '#fff',
+                        borderColor: already ? 'var(--border)'
+                          : v === 'default' ? '#f59e0b' : '#8b5cf6',
+                        cursor: (refiningTab !== null || already) ? 'not-allowed' : 'pointer',
+                      }}>
+                      {refiningTab === `${active}:${v}` ? '다듬는 중…'
+                        : already ? (v === 'default' ? 'A원고 ✓' : 'B원고 ✓')
+                        : v === 'default' ? '다듬기 A (→ A원고)' : '다듬기 B (→ B원고 사람 톤)'}
+                    </button>
+                  )})}
                   <button onClick={async () => {
-                    // direction(감정 지시)도 같이 복사 — 편집 후에도 보존된 cur.sentences에서 조립
-                    const sents = cur.sentences || []
-                    const text = sents.length
-                      ? sents.map(s => {
-                          const dir = (s.direction || '').trim()
-                          const txt = (s.text || '').trim()
-                          return dir ? `(${dir}) ${txt}` : txt
-                        }).join('\n')
-                      : (cur.tts_script || '')
+                    const text = buildTtsText(cur.sentences || [], cur.tts_script)
                     await navigator.clipboard.writeText(text)
                   }} style={ghostBtnSt}>TTS 복사</button>
                   <button
-                    onClick={() => navigate('/tts', { state: { sentences: cur.sentences, title: active } })}
+                    onClick={() => navigate('/tts', { state: {
+                      sentences: cur.sentences,
+                      title: active,
+                      from: { path: '__back__', label: '대본 생성 결과' },
+                    } })}
                     disabled={!cur.sentences?.length}
                     style={{
                       ...ghostBtnSt,
@@ -2241,7 +2588,7 @@ function StepDone({
               borderBottom: '1px solid var(--border-subtle)',
             }}>
               <div>📋 참고 (REF)</div>
-              <div>✨ 생성된 대본</div>
+              <div>생성된 대본</div>
             </div>
           )}
           {/* 행별 비교 — section별 그룹 헤더 + chunk 삭제 버튼 */}
@@ -2294,7 +2641,7 @@ function StepDone({
                       }}>매핑 없음 (페르소나)</span>
                     )}
                     {mappedUsps.ids.length >= 2 && (
-                      <span style={{ fontSize: 10, color: 'var(--accent)', fontWeight: 600 }}>⭐ 통합 호소</span>
+                      <span style={{ fontSize: 10, color: 'var(--accent)', fontWeight: 600 }}>통합 호소</span>
                     )}
                     {!isEditingActive && (
                       <button
@@ -2309,7 +2656,7 @@ function StepDone({
                           border: '1px solid var(--error)', borderRadius: 4,
                           background: 'transparent', color: 'var(--error)', cursor: 'pointer',
                         }}>
-                        ✕ 이 chunk 삭제
+                        이 chunk 삭제
                       </button>
                     )}
                   </div>
@@ -2361,7 +2708,7 @@ function StepDone({
                               fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3,
                               background: 'rgba(34,197,94,0.15)', color: 'var(--success)',
                               border: '1px solid var(--success)', letterSpacing: '0.05em',
-                            }}>✏ 편집됨</span>
+                            }}>편집됨</span>
                           )}
                         </div>
                         {isEditingActive && draftSentences ? (

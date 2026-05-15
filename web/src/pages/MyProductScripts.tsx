@@ -148,7 +148,7 @@ export default function MyProductScripts() {
         <div style={{ display: 'grid', gap: 8 }}>
           {scripts.map(s => (
             <div key={s.id}
-              onClick={() => openScript(s.id)}
+              onClick={() => navigate(`/my-scripts/${pid}/${s.id}`)}
               style={{
                 background: selected?.sid === s.id ? 'var(--accent-light)' : 'var(--bg-surface)',
                 border: `1px solid ${selected?.sid === s.id ? 'var(--accent)' : 'var(--border)'}`,

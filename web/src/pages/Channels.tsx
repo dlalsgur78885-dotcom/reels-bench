@@ -42,6 +42,7 @@ export default function Channels() {
   const [input, setInput] = useState('')
   const [selected, setSelected] = useState('')
   const [analysis, setAnalysis] = useState<UserAnalysis | null>(null)
+  const [analysisError, setAnalysisError] = useState('')
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState('')
@@ -60,6 +61,7 @@ export default function Channels() {
     if (!user) return
     setSelected(user)
     setMsg('')
+    setAnalysisError('')
     // 캐시가 있으면 즉시 표시 + 백그라운드 갱신
     const cached = loadAn(user)
     if (cached) {
@@ -73,7 +75,9 @@ export default function Channels() {
       setAnalysis(res)
       saveAn(user, res)
     } catch {
-      if (!cached) setMsg('분석 결과를 불러오지 못했습니다.')
+      const message = '분석 결과를 불러오지 못했습니다.'
+      setAnalysisError(message)
+      if (!cached) setMsg(message)
     } finally {
       setLoading(false)
     }
@@ -84,8 +88,15 @@ export default function Channels() {
   }, [])
 
   useEffect(() => {
-    if (!selected && active[0]?.username) loadAnalysis(active[0].username)
-  }, [channels])
+    if (selected || !active[0]?.username) return
+    const name = active[0].username
+    if (loadAn(name)) {
+      loadAnalysis(name)
+      return
+    }
+    const timer = window.setTimeout(() => loadAnalysis(name), 500)
+    return () => window.clearTimeout(timer)
+  }, [channels, selected])
 
   const handleSubmit = async () => {
     if (!username) return
@@ -193,7 +204,14 @@ export default function Channels() {
         <main className="user-result">
           {loading && <div className="result-empty">분석 결과를 불러오는 중...</div>}
 
-          {!loading && !analysis && (
+          {!loading && analysisError && !analysis && (
+            <div className="result-empty error">
+              <div>{analysisError}</div>
+              {selected && <button onClick={() => loadAnalysis(selected)}>다시 시도</button>}
+            </div>
+          )}
+
+          {!loading && !analysis && !analysisError && (
             <div className="result-empty">상단에 인스타 링크를 입력하면 유저별 분석 결과가 여기에 표시됩니다.</div>
           )}
 

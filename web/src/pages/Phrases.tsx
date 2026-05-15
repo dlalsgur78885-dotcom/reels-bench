@@ -123,6 +123,25 @@ export default function Phrases() {
                   @{it.author || '?'}
                 </span>
                 <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{it.shortcode}</span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    navigator.clipboard.writeText(it.shortcode).then(() => {
+                      const btn = e.currentTarget as HTMLButtonElement
+                      const orig = btn.textContent
+                      btn.textContent = '✓ 복사됨'
+                      setTimeout(() => { btn.textContent = orig }, 1200)
+                    }).catch(() => {})
+                  }}
+                  title={`shortcode 복사: ${it.shortcode}`}
+                  style={{
+                    padding: '2px 8px', fontSize: 10, fontWeight: 600,
+                    background: 'var(--bg-elevated)', color: 'var(--text-muted)',
+                    border: '1px solid var(--border)', borderRadius: 4,
+                    cursor: 'pointer', font: 'inherit',
+                  }}
+                >📋 복사</button>
               </div>
 
               {isHookIntro(it) ? (

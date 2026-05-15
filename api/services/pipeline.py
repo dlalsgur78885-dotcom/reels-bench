@@ -468,13 +468,8 @@ def run(shortcode: str, skip_pro_audio: bool = False):
                                 except Exception as e:
                                     logger.warning("section_chunks failed: %s", e)
 
-                                # sp_sentences (사회적 증명 문장별 마킹)
-                                sp_sents = []
-                                try:
-                                    sp_sents = _sg.analyze_sp_per_sentence(sentences) or []
-                                    overall["sp_sentences"] = sp_sents
-                                except Exception as e:
-                                    logger.warning("sp_per_sentence failed: %s", e)
+                                # sp_sentences (사회적 증명) — 함수 제거됨, 옛 데이터 보존
+                                sp_sents = overall.get("sp_sentences") or []
 
                                 _r.patch(
                                     f"{supabase.SUPABASE_URL}/rest/v1/reels_script_structure?shortcode=eq.{shortcode}",

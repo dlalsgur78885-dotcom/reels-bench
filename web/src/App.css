@@ -158,6 +158,27 @@
   color: var(--text-dim);
   font-size: 24px;
 }
+.thumb-missing {
+  position: relative;
+  min-height: 96px;
+  background: var(--bg-elevated);
+}
+.thumb-missing::after {
+  content: "썸네일 없음";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+.reel-card .thumb-missing {
+  aspect-ratio: 4 / 5;
+}
 .reel-card .card-info {
   padding: 12px 14px 14px;
 }
@@ -853,6 +874,54 @@
   border-radius: var(--radius-md);
   text-align: center;
   font-size: 13px;
+}
+.result-empty.error {
+  border-color: var(--error-soft-border);
+  background: var(--error-soft-bg);
+  color: var(--error);
+}
+.result-empty button {
+  margin-top: 12px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-body);
+  font-weight: 600;
+  cursor: pointer;
+}
+.skeleton-line,
+.skeleton-card,
+.skeleton-thumb {
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-elevated);
+}
+.skeleton-line::after,
+.skeleton-card::after,
+.skeleton-thumb::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.5), transparent);
+  animation: skeleton-shimmer 1.2s infinite;
+}
+.skeleton-line {
+  height: 12px;
+  border-radius: 99px;
+}
+.skeleton-card {
+  min-height: 96px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.skeleton-thumb {
+  aspect-ratio: 4 / 5;
+  border-radius: var(--radius-sm);
+}
+@keyframes skeleton-shimmer {
+  100% { transform: translateX(100%); }
 }
 .manage-list {
   margin-top: 18px;

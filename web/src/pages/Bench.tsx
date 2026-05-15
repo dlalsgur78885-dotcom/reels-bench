@@ -215,7 +215,9 @@ export default function Bench() {
               onClick={() => onCardClick(r)}
               onMouseEnter={() => schedulePrefetchDetail(r.shortcode)}
               onMouseLeave={() => cancelPrefetchDetail(r.shortcode)}
-              onFocus={() => prefetchDetail(r.shortcode)}
+              onFocus={e => {
+                if (e.currentTarget.matches(':focus-visible')) schedulePrefetchDetail(r.shortcode)
+              }}
               aria-label={selectMode
                 ? `@${r.author || '알 수 없음'} ${checked ? '선택 해제' : '선택'}`
                 : `@${r.author || '알 수 없음'} 릴스 분석 보기`}

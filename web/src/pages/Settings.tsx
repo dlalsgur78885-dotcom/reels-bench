@@ -1,17 +1,20 @@
 import { useSearchParams } from 'react-router-dom'
 import Users from './Users'
 import Secrets from './Secrets'
+import ScriptStats from './ScriptStats'
 
-type Tab = 'users' | 'secrets'
+type Tab = 'users' | 'secrets' | 'script-stats'
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'users', label: '직원 관리' },
+  { key: 'script-stats', label: '📊 대본 통계' },
   { key: 'secrets', label: '시크릿' },
 ]
 
 export default function Settings() {
   const [params, setParams] = useSearchParams()
-  const tab: Tab = (params.get('tab') as Tab) === 'secrets' ? 'secrets' : 'users'
+  const raw = params.get('tab') as Tab
+  const tab: Tab = raw === 'secrets' ? 'secrets' : raw === 'script-stats' ? 'script-stats' : 'users'
 
   const setTab = (next: Tab) => {
     const p = new URLSearchParams(params)
@@ -39,7 +42,7 @@ export default function Settings() {
         ))}
       </div>
 
-      {tab === 'users' ? <Users /> : <Secrets />}
+      {tab === 'users' ? <Users /> : tab === 'script-stats' ? <ScriptStats /> : <Secrets />}
     </>
   )
 }

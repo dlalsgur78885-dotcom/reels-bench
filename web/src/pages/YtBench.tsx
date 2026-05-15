@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { authedFetch } from '../api'
 import { fmtNum, engagementRate } from '../utils'
+import Thumb from '../components/Thumb'
 
 interface YtItem {
   shortcode: string
@@ -114,10 +115,8 @@ export default function YtBench() {
               onClick={() => navigate(`/yt/bench/${it.shortcode}`)}
               style={{ cursor: 'pointer' }}
             >
-              <img
+              <Thumb
                 src={it.thumbnail_url}
-                alt=""
-                loading="lazy"
                 style={{ width: '100%', aspectRatio: '4/5', objectFit: 'cover', display: 'block', background: 'var(--bg-elevated)' }}
               />
               <div className="card-info">

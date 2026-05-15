@@ -14,12 +14,26 @@ interface Advertiser {
   registered: boolean
 }
 
+const CACHE_KEY = 'fb_advertisers_cache:'
+
+function readCache(key: string): Advertiser[] | null {
+  try {
+    const raw = sessionStorage.getItem(CACHE_KEY + key)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+function writeCache(key: string, items: Advertiser[]) {
+  try { sessionStorage.setItem(CACHE_KEY + key, JSON.stringify(items)) } catch {}
+}
+
 export default function FbAdvertisers() {
   const navigate = useNavigate()
   const [items, setItems] = useState<Advertiser[]>([])
   const [loading, setLoading] = useState(true)
   const [sort, setSort] = useState<'ad_count' | 'name'>('ad_count')
   const [q, setQ] = useState('')
+  const [debouncedQ, setDebouncedQ] = useState('')
   const [showAdd, setShowAdd] = useState(false)
   const [addMode, setAddMode] = useState<'search' | 'url'>('search')
   const [pageUrl, setPageUrl] = useState('')
@@ -30,17 +44,32 @@ export default function FbAdvertisers() {
   const [searching, setSearching] = useState(false)
 
   const load = () => {
-    setLoading(true)
     const params = new URLSearchParams()
     params.set('sort', sort)
-    if (q) params.set('q', q)
-    authedFetch(`/api/fb/advertisers?${params.toString()}`)
+    if (debouncedQ) params.set('q', debouncedQ)
+    const key = params.toString()
+    const cached = readCache(key)
+    if (cached) {
+      setItems(cached)
+      setLoading(false)
+    } else {
+      setLoading(true)
+    }
+    authedFetch(`/api/fb/advertisers?${key}`)
       .then(r => r.json())
-      .then(d => setItems(d.items || []))
+      .then(d => {
+        const next = d.items || []
+        setItems(next)
+        writeCache(key, next)
+      })
       .catch(() => setItems([]))
       .finally(() => setLoading(false))
   }
-  useEffect(load, [sort, q])
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQ(q), 250)
+    return () => window.clearTimeout(timer)
+  }, [q])
+  useEffect(load, [sort, debouncedQ])
 
   const onAdd = async () => {
     if (!pageUrl.trim().startsWith('http')) { alert('유효한 페이스북 페이지 URL 입력'); return }

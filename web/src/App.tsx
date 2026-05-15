@@ -1,4 +1,5 @@
-import { useEffect, useState, lazy, Suspense } from 'react'
+import { useEffect, useState, Suspense } from 'react'
+import { lazyWithRetry as lazy } from './lazyWithRetry'
 import { Routes, Route, NavLink, Navigate, useNavigate } from 'react-router-dom'
 import { supabase } from './supabase'
 import { api, type UserProfile } from './api'
@@ -20,6 +21,7 @@ const MyProducts = lazy(() => import('./pages/MyProducts'))
 const MyProductEdit = lazy(() => import('./pages/MyProductEdit'))
 const MyProductScripts = lazy(() => import('./pages/MyProductScripts'))
 const MyScripts = lazy(() => import('./pages/MyScripts'))
+const MyScriptDetail = lazy(() => import('./pages/MyScriptDetail'))
 const Phrases = lazy(() => import('./pages/Phrases'))
 const Ads = lazy(() => import('./pages/Ads'))
 const Settings = lazy(() => import('./pages/Settings'))
@@ -288,6 +290,7 @@ export default function App() {
           <Route path="/my-products/:id/edit" element={<MyProductEdit />} />
           <Route path="/my-products/:id/scripts" element={<MyProductScripts />} />
           <Route path="/my-scripts" element={<MyScripts />} />
+          <Route path="/my-scripts/:pid/:sid" element={<MyScriptDetail />} />
           <Route path="/login" element={<Navigate to="/" replace />} />
           <Route path="/settings" element={
             meLoading ? <div style={{ padding: 40, color: 'var(--text-muted)' }}>로딩...</div>

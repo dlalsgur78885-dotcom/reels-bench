@@ -42,19 +42,24 @@ def now() -> str:
 
 def get_pending_advertisers(limit: int = 5) -> list[dict]:
     """스크래핑 대상 광고주 — last_scraped_at IS NULL or 24h 경과."""
-    threshold = (datetime.now(timezone.utc) - timedelta(hours=RESCRAPE_HOURS)).isoformat()
+    import urllib.parse as _up
+    threshold = _up.quote((datetime.now(timezone.utc) - timedelta(hours=RESCRAPE_HOURS)).isoformat())
     # NULL 우선
     null_rows = requests.get(
         f"{SUPA}/rest/v1/fb_advertisers?last_scraped_at=is.null&is_active=eq.true&select=*&limit={limit}",
         headers=H, timeout=15,
-    ).json() or []
+    ).json()
+    if not isinstance(null_rows, list):
+        null_rows = []
     if len(null_rows) >= limit:
         return null_rows[:limit]
     remaining = limit - len(null_rows)
     old_rows = requests.get(
         f"{SUPA}/rest/v1/fb_advertisers?last_scraped_at=lt.{threshold}&is_active=eq.true&select=*&order=last_scraped_at.asc&limit={remaining}",
         headers=H, timeout=15,
-    ).json() or []
+    ).json()
+    if not isinstance(old_rows, list):
+        old_rows = []
     return null_rows + old_rows
 
 
@@ -83,7 +88,7 @@ def insert_ad_to_reels(ad: dict, page_name: str) -> bool:
         "shortcode": shortcode,
         "url": ad.get("snapshot_url") or "",
         "source": "fb_ad",
-        "collected_at": ad.get("start_date") or datetime.now(timezone.utc).isoformat(),
+        "collected_at": datetime.now(timezone.utc).isoformat(),  # 실제 수집 시점
     }
     requests.post(
         f"{SUPA}/rest/v1/reels?on_conflict=shortcode",
@@ -91,7 +96,7 @@ def insert_ad_to_reels(ad: dict, page_name: str) -> bool:
         json=reel_payload, timeout=15,
     )
 
-    # reels_metadata
+    # reels_metadata — taken_at에 광고 시작일 저장 (FB 광고 라이브러리 'started running' 날짜)
     meta_payload = {
         "shortcode": shortcode,
         "video_url": ad.get("video_url") or "",
@@ -100,7 +105,9 @@ def insert_ad_to_reels(ad: dict, page_name: str) -> bool:
         "author_username": page_name,
     }
     if ad.get("start_date"):
-        meta_payload["fetched_at"] = ad["start_date"]
+        # ISO8601 형식 보장 (yyyy-mm-dd → yyyy-mm-ddT00:00:00+00:00)
+        sd = ad["start_date"]
+        meta_payload["taken_at"] = sd if "T" in sd else f"{sd}T00:00:00+00:00"
     meta_payload = {k: v for k, v in meta_payload.items() if v not in (None, "") or k == "shortcode"}
     requests.post(
         f"{SUPA}/rest/v1/reels_metadata?on_conflict=shortcode",
@@ -111,29 +118,39 @@ def insert_ad_to_reels(ad: dict, page_name: str) -> bool:
 
 
 async def scrape_one(adv: dict) -> int:
-    """광고주 1명에 대해 스크래핑 → DB 삽입. 수집된 광고 수 반환."""
-    page_name = adv.get("page_name") or ""
+    """광고주 1명에 대해 스크래핑 → DB 삽입. 수집된 광고 수 반환.
+
+    page_name이 '[검색] X' 형태면 키워드 검색(필터 없이 결과 전체 저장),
+    아니면 광고주 페이지명 검색(이름 일치 광고만 저장).
+    """
+    page_name = (adv.get("page_name") or "").strip()
     if not page_name:
         return 0
-    print(f"[{now()}] scraping '{page_name}'...", flush=True)
+    is_keyword = page_name.startswith("[검색] ")
+    keyword = page_name.replace("[검색] ", "").strip() if is_keyword else page_name
+    print(f"[{now()}] scraping {'keyword' if is_keyword else 'advertiser'}: '{keyword}'...", flush=True)
     scraper = AdLibraryScraper(headless=True, output_dir="./fb_ads_output", proxy=PROXY)
     try:
-        ads = await scraper.scrape(keyword=page_name, country="KR", max_ads=50)
+        ads = await scraper.scrape(keyword=keyword, country="KR", max_ads=50)
     except Exception as e:
         print(f"[{now()}] scrape error: {e}", flush=True)
         return 0
     if not ads:
-        print(f"[{now()}] no ads found for '{page_name}'", flush=True)
+        print(f"[{now()}] no ads found for '{keyword}'", flush=True)
         return 0
     inserted = 0
     for ad in ads:
-        # 광고주 이름이 일치하는 광고만 (다른 페이지 결과 제외)
         ad_page_name = (ad.get("page_name") or "").strip()
-        if ad_page_name and ad_page_name != page_name and page_name not in ad_page_name:
-            continue
-        if insert_ad_to_reels(ad, page_name):
+        # 광고주 모드: 이름 일치 광고만. 키워드 모드: 전체 저장 (각 ad의 실제 page_name 사용).
+        if not is_keyword:
+            if ad_page_name and ad_page_name != page_name and page_name not in ad_page_name:
+                continue
+            author = page_name
+        else:
+            author = ad_page_name or page_name
+        if insert_ad_to_reels(ad, author):
             inserted += 1
-    print(f"[{now()}] {page_name}: {inserted} ads inserted (out of {len(ads)} scraped)", flush=True)
+    print(f"[{now()}] {keyword}: {inserted} ads inserted (out of {len(ads)} scraped)", flush=True)
     return inserted
 
 

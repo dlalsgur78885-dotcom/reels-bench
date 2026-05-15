@@ -2,9 +2,23 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { UserProfile } from '../api'
 
+const CACHE_KEY = 'settings_users_cache'
+
+function readCache(): UserProfile[] | null {
+  try {
+    const raw = sessionStorage.getItem(CACHE_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+function writeCache(users: UserProfile[]) {
+  try { sessionStorage.setItem(CACHE_KEY, JSON.stringify(users)) } catch {}
+}
+
 export default function Users() {
-  const [users, setUsers] = useState<UserProfile[]>([])
-  const [loading, setLoading] = useState(true)
+  const cachedUsers = readCache()
+  const [users, setUsers] = useState<UserProfile[]>(cachedUsers || [])
+  const [loading, setLoading] = useState(!cachedUsers)
   const [err, setErr] = useState('')
   const [showInvite, setShowInvite] = useState(false)
   const [inviteId, setInviteId] = useState('')
@@ -19,10 +33,12 @@ export default function Users() {
   const emailToId = (email: string) => (email || '').replace(`@${ID_DOMAIN}`, '')
 
   const load = async () => {
-    setLoading(true); setErr('')
+    if (!readCache()) setLoading(true)
+    setErr('')
     try {
       const data = await api.listUsers()
       setUsers(data)
+      writeCache(data)
     } catch (e: any) {
       setErr(e.message || '로딩 실패')
     }

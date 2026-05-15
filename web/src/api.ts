@@ -1,20 +1,29 @@
-import { getAccessToken } from './supabase'
+import { getAccessToken, forceRefreshToken } from './supabase'
 
 export const BASE = import.meta.env.VITE_API_BASE || ''
 // TTS 전용 (Render 별도 배포). 프로덕션 기본값 하드코딩 — Vite env 로드 누락 대비.
 const TTS_DEFAULT = import.meta.env.PROD ? 'https://tts-worker-m2zr.onrender.com' : BASE
 export const TTS_BASE = import.meta.env.VITE_TTS_API_BASE || TTS_DEFAULT
 
-async function authedHeaders(extra?: HeadersInit): Promise<HeadersInit> {
-  const token = await getAccessToken()
+async function authedHeaders(extra?: HeadersInit, token?: string | null): Promise<HeadersInit> {
+  const tk = token ?? await getAccessToken()
   const h: Record<string, string> = { ...(extra as Record<string, string> || {}) }
-  if (token) h['Authorization'] = `Bearer ${token}`
+  if (tk) h['Authorization'] = `Bearer ${tk}`
   return h
 }
 
 export async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = await authedHeaders(init.headers)
-  return fetch(`${BASE}${path}`, { ...init, headers })
+  const r = await fetch(`${BASE}${path}`, { ...init, headers })
+  // 401 → 토큰 만료 의심 → 강제 refresh 후 한 번 재시도
+  if (r.status === 401) {
+    const fresh = await forceRefreshToken()
+    if (fresh) {
+      const headers2 = await authedHeaders(init.headers, fresh)
+      return fetch(`${BASE}${path}`, { ...init, headers: headers2 })
+    }
+  }
+  return r
 }
 
 export async function ttsAuthedFetch(path: string, init: RequestInit = {}): Promise<Response> {
@@ -468,14 +477,29 @@ export const api = {
     .then(r => { clearClientCache('/api/channels'); return r }),
   userAnalysis: (username: string, limit = 24) =>
     cachedGet<UserAnalysis>(`/api/users/${encodeURIComponent(username)}/analysis?limit=${limit}`, 60_000),
-  refineScript: (draft: any, usps: any[], reference_shortcode?: string) =>
-    post<any>('/api/script/refine', { draft, usps, reference_shortcode }),
+  refineScript: (draft: any, usps: any[], reference_shortcode?: string, skipOpts?: { skip_chunk_sections?: string[]; skip_sentence_starts?: number[] }, variant: 'default' | 'strong' = 'default') =>
+    post<any>('/api/script/refine', {
+      draft, usps, reference_shortcode,
+      skip_chunk_sections: skipOpts?.skip_chunk_sections,
+      skip_sentence_starts: skipOpts?.skip_sentence_starts,
+      variant,
+    }),
   extractPersonas: (usp: string, reviews: string[], pain_solved = '', product_id?: number, usp_index?: number) =>
     post<{ personas: PersonaCandidate[]; _cached?: boolean }>('/api/script/personas', { usp, reviews, pain_solved, product_id, usp_index }),
+  extractUnifiedPersonas: (usps: Array<{ usp: string; description?: string; reviews?: string[] }>, product_name = '') =>
+    post<{
+      common_pain: string
+      common_context: string
+      common_audience: string
+      shared_keywords: string[]
+      personas: PersonaCandidate[]
+    }>('/api/script/unified-personas', { usps, product_name }),
   updateUspPersonas: (pid: number, usp_index: number, personas: PersonaCandidate[]) =>
     patch<{ message: string; personas: PersonaCandidate[] }>(`/api/my-products/${pid}/usp-personas`, { usp_index, personas }),
   referenceInfo: (sc: string) =>
     get<ReferenceInfo>(`/api/script/reference-info/${sc}`),
+  getRefSentences: (sc: string, source: 'reels' | 'youtube' = 'reels') =>
+    get<{ shortcode: string; source: string; sentences: Array<{ start: number; end: number; text: string; section: string }> }>(`/api/script/ref-sentences/${sc}?source=${source}`),
   updateSectionChunks: (sc: string, chunks: any[], source: 'reels' | 'youtube' = 'reels') =>
     patch<{ shortcode: string; count: number }>(`/api/script/section-chunks/${sc}?source=${source}`, { chunks })
       .then(r => { clearClientCache(`/api/extra/${sc}`); return r }),
@@ -489,23 +513,29 @@ export const api = {
       '/api/usp/suggest-description',
       input,
     ),
+  generateUspReviews: (input: { product_name: string; usp_name: string; usp_description?: string; existing_reviews?: string[]; count?: number }) =>
+    post<{ reviews: string[] }>('/api/usp/generate-reviews', input),
   // 생성된 대본 저장·관리
   saveGenScript: (pid: number, input: { ref_shortcode?: string; source_type?: 'insta' | 'youtube' | 'fb_ads'; persona_name?: string; title?: string; sentences: any[]; meta?: any; caption?: string; pinned_comment?: string }) =>
     post<{ id: string; product_id: number; title: string }>(`/api/my-products/${pid}/scripts`, input),
-  updateGenScript: (pid: number, sid: string, input: { title?: string; caption?: string; pinned_comment?: string; sentences?: any[]; shooting_plan_url?: string }) =>
+  updateGenScript: (pid: number, sid: string, input: { title?: string; caption?: string; pinned_comment?: string; sentences?: any[]; shooting_plan_url?: string; status?: 'pending' | 'done'; group_name?: string; stages?: any[] }) =>
     patch<{ updated: boolean; row: any }>(`/api/my-products/${pid}/scripts/${sid}`, input),
+  refineSavedScript: (pid: number, sid: string, variant: 'default' | 'strong' = 'default') =>
+    post<{ refined: boolean; key: 'alt_a' | 'alt_b'; row: any }>(`/api/my-products/${pid}/scripts/${sid}/refine`, { variant }),
   listScriptShares: (pid: number, sid: string) =>
     get<Array<{ id: string; shared_with_id: string; shared_by: string; permission: 'view' | 'edit'; created_at: string; shared_with_email?: string; shared_with_name?: string; shared_by_email?: string }>>(`/api/my-products/${pid}/scripts/${sid}/shares`),
   addScriptShare: (pid: number, sid: string, input: { shared_with_id: string; permission: 'view' | 'edit' }) =>
     post<{ id: string }>(`/api/my-products/${pid}/scripts/${sid}/shares`, input),
   listColleagues: () =>
     get<Array<{ id: string; display_name: string | null; email: string }>>('/api/users/colleagues'),
+  adminScriptStats: (days = 30, metric: 'saved' | 'completed' = 'saved') =>
+    get<{ date_range: string[]; users: Array<{ user_id: string; display_name?: string; email?: string; total: number; by_date: Record<string, number> }>; metric: 'saved' | 'completed' }>(`/api/admin/script-stats?days=${days}&metric=${metric}`),
   // USP 그룹핑
   listUspGroups: (pid: number) =>
-    get<Array<{ id: string; product_id: number; name: string; color: string | null; order_idx: number; usp_indexes: number[] }>>(`/api/my-products/${pid}/usp-groups`),
-  createUspGroup: (pid: number, input: { name: string; color?: string; order_idx?: number }) =>
+    get<Array<{ id: string; product_id: number; name: string; color: string | null; order_idx: number; usp_indexes: number[]; capability_out?: string | null }>>(`/api/my-products/${pid}/usp-groups`),
+  createUspGroup: (pid: number, input: { name: string; color?: string; order_idx?: number; capability_out?: string }) =>
     post<{ id: string; name: string; color: string | null; order_idx: number }>(`/api/my-products/${pid}/usp-groups`, input),
-  updateUspGroup: (pid: number, gid: string, input: { name?: string; color?: string; order_idx?: number }) =>
+  updateUspGroup: (pid: number, gid: string, input: { name?: string; color?: string; order_idx?: number; capability_out?: string }) =>
     patch<{ updated: boolean }>(`/api/my-products/${pid}/usp-groups/${gid}`, input),
   deleteUspGroup: (pid: number, gid: string) =>
     del<{ deleted: boolean }>(`/api/my-products/${pid}/usp-groups/${gid}`),

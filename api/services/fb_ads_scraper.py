@@ -234,6 +234,7 @@ PARSE_ADS_JS = """
       page_name: '',
       media_type: '',
       start_date: '',
+      end_date: '',
       caption: '',
       video_thumbnail: '',
       video_url: '',
@@ -287,17 +288,29 @@ PARSE_ADS_JS = """
       }
     }
 
-    // 날짜: "2026. 2. 2.에 게재 시작함" 또는 "2024년 3월 15일"
-    const dateKo1 = fullText.match(/(\\d{4})\\. (\\d{1,2})\\. (\\d{1,2})\\.에 게재/);
+    // 시작일/종료일 추출
+    // 활성 광고: "2025. 10. 22.에 게재 시작함"
+    // 비활성 광고: "2025. 10. 28.~2025. 11. 1." (시작 ~ 종료)
+    // 영문: "Sep 29, 2025" / "Started running on Sep 29, 2025"
+    const dateKoActive = fullText.match(/(\\d{4})\\. (\\d{1,2})\\. (\\d{1,2})\\.에 게재/);
+    const dateKoInactive = fullText.match(/(\\d{4})\\. (\\d{1,2})\\. (\\d{1,2})\\.~(\\d{4})\\. (\\d{1,2})\\. (\\d{1,2})\\./);
+    const dateKoSimple = fullText.match(/(\\d{4})\\. (\\d{1,2})\\. (\\d{1,2})\\./);
     const dateKo2 = fullText.match(/(\\d{4})년\\s*(\\d{1,2})월\\s*(\\d{1,2})일/);
     const dateEn = fullText.match(/([A-Z][a-z]{2})\\s+(\\d{1,2}),?\\s*(\\d{4})/);
-    if (dateKo1) {
-      ad.start_date = dateKo1[1] + '-' + dateKo1[2].padStart(2,'0') + '-' + dateKo1[3].padStart(2,'0');
+    const months = {Jan:'01',Feb:'02',Mar:'03',Apr:'04',May:'05',Jun:'06',Jul:'07',Aug:'08',Sep:'09',Oct:'10',Nov:'11',Dec:'12'};
+    const pad = (n) => String(n).padStart(2,'0');
+    if (dateKoActive) {
+      ad.start_date = dateKoActive[1] + '-' + pad(dateKoActive[2]) + '-' + pad(dateKoActive[3]);
+    } else if (dateKoInactive) {
+      ad.start_date = dateKoInactive[1] + '-' + pad(dateKoInactive[2]) + '-' + pad(dateKoInactive[3]);
+      ad.end_date   = dateKoInactive[4] + '-' + pad(dateKoInactive[5]) + '-' + pad(dateKoInactive[6]);
+    } else if (dateKoSimple) {
+      // fallback: 첫 한국식 날짜 (활성/비활성 패턴 미일치 케이스)
+      ad.start_date = dateKoSimple[1] + '-' + pad(dateKoSimple[2]) + '-' + pad(dateKoSimple[3]);
     } else if (dateKo2) {
-      ad.start_date = dateKo2[1] + '-' + dateKo2[2].padStart(2,'0') + '-' + dateKo2[3].padStart(2,'0');
+      ad.start_date = dateKo2[1] + '-' + pad(dateKo2[2]) + '-' + pad(dateKo2[3]);
     } else if (dateEn) {
-      const months = {Jan:'01',Feb:'02',Mar:'03',Apr:'04',May:'05',Jun:'06',Jul:'07',Aug:'08',Sep:'09',Oct:'10',Nov:'11',Dec:'12'};
-      ad.start_date = dateEn[3] + '-' + (months[dateEn[1]]||'01') + '-' + dateEn[2].padStart(2,'0');
+      ad.start_date = dateEn[3] + '-' + (months[dateEn[1]]||'01') + '-' + pad(dateEn[2]);
     }
 
     // 캡션
@@ -536,6 +549,71 @@ class AdLibraryScraper:
 
         logger.info(f"수집 완료: 총 {len(ads)}개 (중복 제거됨)")
         return ads
+
+    async def scrape_single_by_id(self, ad_id: str) -> dict | None:
+        """단일 ad_id로 광고 1개 fetch — /ads/library/?id={ad_id} 페이지에서 추출."""
+        if not (ad_id or "").strip():
+            return None
+        url = f"https://www.facebook.com/ads/library/?id={ad_id}"
+
+        async with async_playwright() as p:
+            ua, ctx_headers, nav_headers = _pick_ua_and_headers()
+            launch_opts = {"headless": self.headless}
+            if self.proxy:
+                launch_opts["proxy"] = _parse_proxy(self.proxy)
+            browser = await p.chromium.launch(**launch_opts)
+            context = await browser.new_context(
+                viewport={"width": 1400, "height": 900},
+                locale="ko-KR",
+                user_agent=ua,
+                extra_http_headers=ctx_headers,
+            )
+            await context.add_init_script(STEALTH_JS)
+            nav_done = {"value": False}
+
+            async def _inject_nav_headers(route):
+                if not nav_done["value"]:
+                    nav_done["value"] = True
+                    await route.continue_(headers={**route.request.headers, **nav_headers})
+                else:
+                    await route.continue_()
+
+            page = await context.new_page()
+            await page.route("**/ads/library/**", _inject_nav_headers)
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                try:
+                    await page.wait_for_function(
+                        "() => document.body && (document.body.textContent.includes('게재 시작') || document.body.textContent.includes('Library ID'))",
+                        timeout=20000,
+                    )
+                except Exception:
+                    logger.warning("[scrape_single] 광고 카드 대기 타임아웃")
+                # 비디오 로드 대기
+                await page.wait_for_timeout(2000)
+                # 비디오 src 추출 위해 hover/play 시뮬레이션 (FB가 hover 시에만 video.src 설정하는 경우)
+                try:
+                    await page.evaluate("""
+                        () => {
+                            for (const v of document.querySelectorAll('video')) {
+                                try { v.play(); } catch(e) {}
+                            }
+                        }
+                    """)
+                    await page.wait_for_timeout(1500)
+                except Exception:
+                    pass
+                ads = await page.evaluate(PARSE_ADS_JS)
+            finally:
+                await browser.close()
+
+        if not ads:
+            return None
+        # ad_id로 정확 매칭, 없으면 첫 항목
+        match = next((a for a in ads if str(a.get("id")) == str(ad_id)), None)
+        ad = match or ads[0]
+        ad["collected_at"] = datetime.now().isoformat()
+        return ad
 
     async def _scroll_and_extract(self, page, max_ads: int, expected: int = 0):
         """스크롤하며 광고 추출"""

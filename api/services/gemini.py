@@ -219,20 +219,22 @@ def analyze_script_structure(transcript, caption=""):
 {{"hook":{{"text":"transcript에서 그대로","type":"유형","seconds":"0-3초","analysis":"효과 분석"}},"intro":{{"text":"transcript에서 그대로","seconds":"3-7초","analysis":"연결 분석"}},"body":{{"text":"transcript에서 그대로","seconds":"7-35초","key_points":["포인트1","포인트2"],"analysis":"전달 방식"}},"cta":{{"text":"transcript에서 그대로","type":"유형","seconds":"35-40초","analysis":"CTA 전략"}},"overall":{{"flow":"흐름 요약","strength":"강점","weakness":"개선점"}}}}
 ```"""
 
-    text = _call([{"text": prompt}], timeout=60)
-    if not text:
-        return None
-    try:
-        if "```json" in text:
-            json_str = text.split("```json")[1].split("```")[0].strip()
-        elif "```" in text:
-            json_str = text.split("```")[1].split("```")[0].strip()
-        else:
-            json_str = text.strip()
-        return json.loads(json_str)
-    except Exception as e:
-        logger.warning("Script structure parse error: %s", e)
-        return None
+    # Gemini 응답이 truncation/이스케이프 깨지는 경우가 종종 있어 최대 2회 재시도
+    for attempt in range(2):
+        text = _call([{"text": prompt}], timeout=60)
+        if not text:
+            continue
+        try:
+            if "```json" in text:
+                json_str = text.split("```json")[1].split("```")[0].strip()
+            elif "```" in text:
+                json_str = text.split("```")[1].split("```")[0].strip()
+            else:
+                json_str = text.strip()
+            return json.loads(json_str)
+        except Exception as e:
+            logger.warning("Script structure parse error (attempt %d/2): %s", attempt + 1, e)
+    return None
 
 
 # ── Category Classification (Gemini) ──

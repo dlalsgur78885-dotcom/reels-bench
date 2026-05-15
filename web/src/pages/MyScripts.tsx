@@ -36,6 +36,14 @@ export default function MyScripts() {
   const [error, setError] = useState('')
   const [productFilter, setProductFilter] = useState<number | 'all'>('all')
   const [sourceFilter, setSourceFilter] = useState<string>('all')
+  // 상태 필터: 전체 / 대기 / 완료
+  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'done'>('all')
+  // 그룹 필터: null=전체, '__unclassified__'=미분류, 그 외 group_name
+  const [groupFilter, setGroupFilter] = useState<string | null>(null)
+  const [savingMetaId, setSavingMetaId] = useState<string | null>(null)
+  // 그룹 picker: 클릭한 카드의 script id (열려있을 때만 set)
+  const [groupPickerSid, setGroupPickerSid] = useState<string | null>(null)
+  const [newGroupInput, setNewGroupInput] = useState('')
   const [selected, setSelected] = useState<{ pid: number; sid: string; data: any } | null>(null)
   const [caption, setCaption] = useState('')
   const [captionExpanded, setCaptionExpanded] = useState(false)
@@ -59,6 +67,20 @@ export default function MyScripts() {
   }, [])
 
   useEffect(() => {
+    if (!groupPickerSid) return
+    // setTimeout으로 한 tick 미루기 — 그렇지 않으면 picker를 여는 click이 곧바로 document 핸들러를 trigger해서 닫힘
+    const t = setTimeout(() => {
+      const onDocClick = () => setGroupPickerSid(null)
+      document.addEventListener('click', onDocClick)
+      ;(window as any).__gp_off = () => document.removeEventListener('click', onDocClick)
+    }, 0)
+    return () => {
+      clearTimeout(t)
+      ;(window as any).__gp_off?.()
+    }
+  }, [groupPickerSid])
+
+  useEffect(() => {
     setLoading(true)
     api.listAllMyScripts()
       .then(r => {
@@ -75,13 +97,63 @@ export default function MyScripts() {
     return m
   }, [products])
 
+  const getStatus = (s: Script): 'pending' | 'done' => {
+    const v = (s.meta?.status || 'pending').toString()
+    return v === 'done' ? 'done' : 'pending'
+  }
+  const getGroup = (s: Script): string => (s.meta?.group_name || '').toString().trim()
+
   const filtered = useMemo(() => {
     return scripts.filter(s => {
       if (productFilter !== 'all' && s.product_id !== productFilter) return false
       if (sourceFilter !== 'all' && s.source_type !== sourceFilter) return false
+      if (statusFilter !== 'all' && getStatus(s) !== statusFilter) return false
+      if (groupFilter !== null) {
+        const g = getGroup(s)
+        if (groupFilter === '__unclassified__' && g) return false
+        if (groupFilter !== '__unclassified__' && g !== groupFilter) return false
+      }
       return true
     })
+  }, [scripts, productFilter, sourceFilter, statusFilter, groupFilter])
+
+  // 카운트 계산
+  const counts = useMemo(() => {
+    const base = scripts.filter(s => {
+      if (productFilter !== 'all' && s.product_id !== productFilter) return false
+      if (sourceFilter !== 'all' && s.source_type !== sourceFilter) return false
+      return true
+    })
+    const pending = base.filter(s => getStatus(s) === 'pending').length
+    const done = base.filter(s => getStatus(s) === 'done').length
+    return { all: base.length, pending, done }
   }, [scripts, productFilter, sourceFilter])
+
+  // 사용자가 만든 그룹 (unique group_name)
+  const userGroups = useMemo(() => {
+    const set = new Set<string>()
+    scripts.forEach(s => {
+      const g = getGroup(s)
+      if (g) set.add(g)
+    })
+    return Array.from(set).sort()
+  }, [scripts])
+
+  const unclassifiedCount = useMemo(() => scripts.filter(s => !getGroup(s)).length, [scripts])
+  const groupCount = (gname: string) => scripts.filter(s => getGroup(s) === gname).length
+
+  const updateScriptMeta = async (s: Script, patch: { status?: 'pending' | 'done'; group_name?: string }) => {
+    setSavingMetaId(s.id)
+    try {
+      await api.updateGenScript(s.product_id, s.id, patch)
+      const newMeta = { ...(s.meta || {}), ...patch }
+      setScripts(prev => prev.map(x => x.id === s.id ? { ...x, meta: newMeta } : x))
+    } catch (e: any) {
+      alert('상태 저장 실패: ' + (e.message || e))
+    } finally {
+      setSavingMetaId(null)
+    }
+  }
 
   const openScript = async (s: Script) => {
     try {
@@ -200,7 +272,7 @@ export default function MyScripts() {
 
   return (
     <div style={{ maxWidth: 1200, margin: '0 auto', padding: 20 }}>
-      <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 14 }}>🎬 저장된 대본</h2>
+      <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 14 }}>저장된 대본</h2>
 
       <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
         <select value={productFilter === 'all' ? 'all' : String(productFilter)}
@@ -223,12 +295,84 @@ export default function MyScripts() {
         </div>
       </div>
 
+      {/* 상태 필터 */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginRight: 4 }}>상태:</span>
+        {([
+          ['all', '전체', counts.all],
+          ['pending', '대기', counts.pending],
+          ['done', '완료', counts.done],
+        ] as const).map(([k, label, n]) => (
+          <button key={k} type="button" onClick={() => setStatusFilter(k as any)}
+            style={{
+              padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+              borderRadius: 6, border: '1px solid var(--border)',
+              background: statusFilter === k ? 'var(--accent)' : 'var(--bg-surface)',
+              color: statusFilter === k ? '#fff' : 'var(--text-body)',
+            }}>
+            {label} ({n})
+          </button>
+        ))}
+      </div>
+
+      {/* 그룹 필터 */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginRight: 4 }}>그룹:</span>
+        <button type="button" onClick={() => setGroupFilter(null)}
+          style={{
+            padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+            borderRadius: 6, border: '1px solid var(--border)',
+            background: groupFilter === null ? 'var(--accent)' : 'var(--bg-surface)',
+            color: groupFilter === null ? '#fff' : 'var(--text-body)',
+          }}>
+          전체 ({scripts.length})
+        </button>
+        <button type="button" onClick={() => setGroupFilter('__unclassified__')}
+          style={{
+            padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+            borderRadius: 6, border: '1px dashed var(--border)',
+            background: groupFilter === '__unclassified__' ? 'var(--accent)' : 'var(--bg-surface)',
+            color: groupFilter === '__unclassified__' ? '#fff' : 'var(--text-body)',
+          }}>
+          미분류 ({unclassifiedCount})
+        </button>
+        {userGroups.map(g => {
+          const active = groupFilter === g
+          return (
+            <button key={g} type="button" onClick={() => setGroupFilter(active ? null : g)}
+              style={{
+                padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                borderRadius: 6, border: '1px solid var(--border)',
+                background: active ? 'var(--accent)' : 'var(--bg-surface)',
+                color: active ? '#fff' : 'var(--text-body)',
+              }}>
+              {g} ({groupCount(g)})
+            </button>
+          )
+        })}
+        <button type="button"
+          onClick={() => {
+            const name = prompt('새 그룹 이름:')?.trim()
+            if (!name) return
+            // 그룹은 script에 할당될 때 생성됨 — 빈 그룹은 만들 수 없음. 사용자가 카드 클릭 후 "그룹 지정"으로 적용.
+            setGroupFilter(name)
+            alert(`"${name}" 그룹 필터 활성화. 아래 대본 카드의 "그룹 지정" 버튼으로 할당하세요.`)
+          }}
+          style={{
+            padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+            borderRadius: 6, border: '1px dashed var(--accent)',
+            background: 'transparent', color: 'var(--accent)',
+          }}>
+          + 그룹 만들기
+        </button>
+      </div>
+
       {loading && <div style={{ color: 'var(--text-muted)' }}>불러오는 중…</div>}
       {error && <div style={{ color: 'var(--error)' }}>{error}</div>}
       {!loading && filtered.length === 0 && (
         <div style={{ color: 'var(--text-muted)', padding: 30, textAlign: 'center',
           background: 'var(--bg-surface)', borderRadius: 'var(--radius-md)', border: '1px dashed var(--border)' }}>
-          저장된 대본이 없습니다. 대본 생성 후 결과 페이지에서 💾 저장 클릭.
+          저장된 대본이 없습니다. 대본 생성 후 결과 페이지에서 저장 클릭.
         </div>
       )}
 
@@ -236,7 +380,7 @@ export default function MyScripts() {
         <div style={{ display: 'grid', gap: 8 }}>
           {filtered.map(s => (
             <div key={s.id}
-              onClick={() => openScript(s)}
+              onClick={() => navigate(`/my-scripts/${s.product_id}/${s.id}`)}
               style={{
                 background: selected?.sid === s.id ? 'var(--accent-light)' : 'var(--bg-surface)',
                 border: `1px solid ${selected?.sid === s.id ? 'var(--accent)' : 'var(--border)'}`,
@@ -247,12 +391,135 @@ export default function MyScripts() {
                 fontSize: 10, fontWeight: 700, padding: '2px 8px',
                 background: 'var(--bg-elevated)', borderRadius: 4, color: 'var(--text-secondary)',
               }}>{sourceLabel[s.source_type] || s.source_type}</span>
+              {/* 상태 토글 — 클릭 시 대기 ↔ 완료 */}
+              {(() => {
+                const st = getStatus(s)
+                const isDone = st === 'done'
+                return (
+                  <button type="button"
+                    disabled={savingMetaId === s.id}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      updateScriptMeta(s, { status: isDone ? 'pending' : 'done' })
+                    }}
+                    style={{
+                      fontSize: 10, fontWeight: 700, padding: '2px 8px',
+                      background: isDone ? 'var(--success, #10b981)' : 'var(--warning, #f59e0b)',
+                      color: '#fff', border: 'none', borderRadius: 4,
+                      cursor: 'pointer', opacity: savingMetaId === s.id ? 0.5 : 1,
+                    }}>
+                    {isDone ? '완료' : '대기'}
+                  </button>
+                )
+              })()}
+              {/* 그룹 라벨 + picker */}
+              {(() => {
+                const g = getGroup(s)
+                const isOpen = groupPickerSid === s.id
+                return (
+                  <div style={{ position: 'relative' }}>
+                    <button type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setGroupPickerSid(isOpen ? null : s.id)
+                        setNewGroupInput('')
+                      }}
+                      style={{
+                        fontSize: 10, fontWeight: 700, padding: '2px 8px',
+                        background: g ? 'var(--accent-light)' : 'transparent',
+                        color: g ? 'var(--accent)' : 'var(--text-muted)',
+                        border: `1px ${g ? 'solid' : 'dashed'} var(--border)`,
+                        borderRadius: 4, cursor: 'pointer',
+                      }}>
+                      {g || '+ 그룹'}
+                    </button>
+                    {isOpen && (
+                      <div onClick={e => e.stopPropagation()}
+                        style={{
+                          position: 'absolute', top: '100%', left: 0, marginTop: 4,
+                          minWidth: 200, zIndex: 100,
+                          background: 'var(--bg-surface)', border: '1px solid var(--border)',
+                          borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+                          padding: 6,
+                        }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)',
+                          padding: '4px 8px' }}>그룹 선택</div>
+                        <button type="button"
+                          onClick={() => {
+                            updateScriptMeta(s, { group_name: '' })
+                            setGroupPickerSid(null)
+                          }}
+                          style={{
+                            display: 'block', width: '100%', textAlign: 'left',
+                            padding: '6px 8px', fontSize: 11, fontWeight: g === '' ? 700 : 500,
+                            background: !g ? 'var(--accent-light)' : 'transparent',
+                            color: !g ? 'var(--accent)' : 'var(--text-body)',
+                            border: 'none', borderRadius: 4, cursor: 'pointer',
+                          }}>미분류</button>
+                        {userGroups.map(gn => (
+                          <button key={gn} type="button"
+                            onClick={() => {
+                              updateScriptMeta(s, { group_name: gn })
+                              setGroupPickerSid(null)
+                            }}
+                            style={{
+                              display: 'block', width: '100%', textAlign: 'left',
+                              padding: '6px 8px', fontSize: 11, fontWeight: g === gn ? 700 : 500,
+                              background: g === gn ? 'var(--accent-light)' : 'transparent',
+                              color: g === gn ? 'var(--accent)' : 'var(--text-body)',
+                              border: 'none', borderRadius: 4, cursor: 'pointer',
+                            }}>{gn}</button>
+                        ))}
+                        <div style={{ borderTop: '1px solid var(--border)', marginTop: 4, paddingTop: 4 }}>
+                          <div style={{ display: 'flex', gap: 4 }}>
+                            <input
+                              type="text"
+                              value={newGroupInput}
+                              onChange={e => setNewGroupInput(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') {
+                                  const v = newGroupInput.trim()
+                                  if (v) {
+                                    updateScriptMeta(s, { group_name: v })
+                                    setGroupPickerSid(null)
+                                  }
+                                }
+                              }}
+                              placeholder="새 그룹 이름"
+                              style={{
+                                flex: 1, padding: '4px 6px', fontSize: 11,
+                                border: '1px solid var(--border)', borderRadius: 4,
+                                background: 'var(--bg-base)', color: 'var(--text-body)',
+                              }}
+                            />
+                            <button type="button"
+                              onClick={() => {
+                                const v = newGroupInput.trim()
+                                if (v) {
+                                  updateScriptMeta(s, { group_name: v })
+                                  setGroupPickerSid(null)
+                                }
+                              }}
+                              disabled={!newGroupInput.trim()}
+                              style={{
+                                padding: '4px 10px', fontSize: 11, fontWeight: 600,
+                                background: 'var(--accent)', color: '#fff', border: 'none',
+                                borderRadius: 4, cursor: newGroupInput.trim() ? 'pointer' : 'not-allowed',
+                                opacity: newGroupInput.trim() ? 1 : 0.5,
+                              }}>+</button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
               {s._shared && (
                 <span style={{
                   fontSize: 10, fontWeight: 700, padding: '2px 8px',
                   background: 'var(--accent-light)', borderRadius: 4, color: 'var(--accent)',
                   border: '1px solid var(--accent)',
-                }}>🤝 공유받음 ({s._permission === 'edit' ? '편집' : '보기'})</span>
+                }}>공유받음 ({s._permission === 'edit' ? '편집' : '보기'})</span>
               )}
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 13, fontWeight: 600 }}>{s.title}</div>
@@ -265,7 +532,7 @@ export default function MyScripts() {
                   {s.ref_shortcode && <span>ref: {s.ref_shortcode} · </span>}
                   {s._shared && (s._creator_name || s._creator_email) && (
                     <span style={{ color: 'var(--accent)' }}>
-                      ✍ {s._creator_name || s._creator_email} ·{' '}
+                      {s._creator_name || s._creator_email} ·{' '}
                     </span>
                   )}
                   {new Date(s.created_at).toLocaleString('ko-KR', { dateStyle: 'short', timeStyle: 'short' })}
@@ -310,7 +577,7 @@ export default function MyScripts() {
                     style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600,
                       background: 'var(--accent)', color: '#fff', border: 'none',
                       borderRadius: 4, cursor: savingEdit ? 'wait' : 'pointer', opacity: savingEdit ? 0.7 : 1 }}>
-                    {savingEdit ? '저장 중…' : '✓ 저장'}
+                    {savingEdit ? '저장 중…' : '저장'}
                   </button>
                   <button onClick={cancelEdit}
                     style={{ padding: '4px 10px', fontSize: 11,
@@ -323,12 +590,12 @@ export default function MyScripts() {
                     style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600,
                       background: 'transparent', color: 'var(--accent)',
                       border: '1px solid var(--accent)', borderRadius: 4, cursor: 'pointer' }}>
-                    ✏ 수정
+                    수정
                   </button>
                 </>
               )}
               <button onClick={() => setSelected(null)}
-                style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>✕</button>
+                style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>닫기</button>
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
               <span style={{ color: 'var(--accent)', fontWeight: 600 }}>
@@ -337,7 +604,7 @@ export default function MyScripts() {
               {' · '}
               {(selected.data._creator_name || selected.data._creator_email) && (
                 <span style={{ color: 'var(--accent)' }}>
-                  ✍ 기획: {selected.data._creator_name || selected.data._creator_email} ·{' '}
+                  기획: {selected.data._creator_name || selected.data._creator_email} ·{' '}
                 </span>
               )}
               {selected.data.persona_name && <span>{selected.data.persona_name} · </span>}
@@ -376,7 +643,7 @@ export default function MyScripts() {
                       style={{ flexShrink: 0, padding: '2px 8px', fontSize: 11, fontWeight: 600,
                         background: 'transparent', color: 'var(--error)',
                         border: '1px solid var(--error)', borderRadius: 4, cursor: 'pointer' }}>
-                      ✕
+                      삭제
                     </button>
                   )}
                 </div>
@@ -385,7 +652,7 @@ export default function MyScripts() {
 
             <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
               <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 6 }}>
-                📝 캡션
+                캡션
               </label>
               <textarea
                 value={caption}
@@ -414,7 +681,7 @@ export default function MyScripts() {
               {caption.length <= 180 && <div style={{ marginBottom: 8 }} />}
 
               <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 6 }}>
-                📌 고정댓글
+                고정댓글
               </label>
               <textarea
                 value={pinned}
@@ -430,7 +697,7 @@ export default function MyScripts() {
               />
 
               <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 6 }}>
-                🎬 촬영기획안 링크
+                촬영기획안 링크
               </label>
               <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
                 <input
@@ -460,14 +727,14 @@ export default function MyScripts() {
                   borderRadius: 6, cursor: savingMeta ? 'wait' : 'pointer',
                   opacity: savingMeta ? 0.7 : 1,
                 }}>
-                {savingMeta ? '저장 중…' : '💾 캡션/고정댓글/촬영기획안 저장'}
+                {savingMeta ? '저장 중…' : '캡션/고정댓글/촬영기획안 저장'}
               </button>
             </div>
 
             {isMine && (
               <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 8 }}>
-                  🤝 공유 ({shares.length}명)
+                  공유 ({shares.length}명)
                 </div>
                 {shares.length > 0 && (
                   <div style={{ display: 'grid', gap: 4, marginBottom: 10 }}>
@@ -515,7 +782,7 @@ export default function MyScripts() {
                       background: 'var(--accent)', color: '#fff', border: 'none',
                       borderRadius: 4, cursor: shareBusy ? 'wait' : 'pointer',
                       opacity: shareBusy || !shareTarget ? 0.5 : 1 }}>
-                    ➕ 공유
+                    공유 추가
                   </button>
                 </div>
               </div>

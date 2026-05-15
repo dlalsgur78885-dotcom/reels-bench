@@ -15,6 +15,17 @@ export class ErrorBoundary extends Component<Props, State> {
     // eslint-disable-next-line no-console
     console.error('[ErrorBoundary]', error, info)
     this.setState({ info })
+    // 새 배포로 청크 hash 변경 → 옛 페이지에서 lazy import 실패 → 자동 reload
+    // 시간 기반: 마지막 reload로부터 30초 이내면 skip (무한 loop 방지), 30초 지나면 또 OK
+    const msg = String(error?.message || '')
+    if (/Failed to fetch dynamically imported module|Loading chunk \d+ failed|Importing a module script failed/i.test(msg)) {
+      const k = 'rb_chunk_reload'
+      const last = Number(sessionStorage.getItem(k) || 0)
+      if (Date.now() - last > 30_000) {
+        sessionStorage.setItem(k, String(Date.now()))
+        window.location.reload()
+      }
+    }
   }
 
   reset = () => this.setState({ error: null, info: null })

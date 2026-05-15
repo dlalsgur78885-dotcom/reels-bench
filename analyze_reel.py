@@ -1,15 +1,13 @@
 """릴스 1개 통합+병렬 분석 파이프라인 (표준).
 
-usage: python analyze_reel.py <shortcode> [--no-db] [--no-html]
+usage: python analyze_reel.py <shortcode> [--no-db] [--no-html] [--no-intent]
 
 구조:
   - _audio_oneshot.py (Whisper + Gemini Pro: TTS direction + emotion + audio_events 통합 단일 호출)
     ∥ _full_analysis_oneshot.py (Gemini Pro 비디오: BGM/SFX/cuts/hook/sync/viral)
   - merge → DB upsert → HTML 생성
-
-성능 (DXbvfmpiY2k 43.6s 릴스 실측):
-  - 약 52s / 릴스 1개 (이전 직렬 125s 대비 -58%)
-  - 약 $0.12 / 릴스 1개 (이전 $0.16 대비 -26%)
+  - _script_intent_analysis.py (Gemini Pro: script_structure + 문장 섹션 + USP layout + section chunks)
+    → reels_script_structure / reels_transcripts 갱신 (`--no-intent`로 끄기)
 
 이전 직렬 버전은 analyze_reel_legacy.py로 보존.
 """
@@ -29,6 +27,7 @@ if len(sys.argv) < 2:
 SHORTCODE = sys.argv[1]
 NO_DB = "--no-db" in sys.argv
 NO_HTML = "--no-html" in sys.argv
+NO_INTENT = "--no-intent" in sys.argv
 
 
 def run(script, label):
@@ -82,6 +81,12 @@ def main():
         run("_db_save_analysis.py", "DB upsert")
     if not NO_HTML:
         run("_gen_analysis_page.py", "Generate HTML")
+
+    # Stage 3: script_structure + USP layout + section chunks
+    # (DB save 필수 — reels_transcripts/reels_script_structure를 갱신)
+    if not NO_DB and not NO_INTENT:
+        print("\n=== Stage 3: Script structure / USP layout / Section chunks ===")
+        run("_script_intent_analysis.py", "Script intent")
 
     print(f"\n>>> DONE  total {time.time()-t_total:.1f}s")
     print(f"  data: analysis_{SHORTCODE}.json")

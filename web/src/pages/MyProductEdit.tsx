@@ -99,10 +99,14 @@ export default function MyProductEdit() {
   const [replaceTo, setReplaceTo] = useState('')
 
   // USP 그룹
-  type UspGroup = { id: string; name: string; color: string | null; order_idx: number; usp_indexes: number[] }
+  type UspGroup = { id: string; name: string; color: string | null; order_idx: number; usp_indexes: number[]; capability_out?: string | null }
   const [groups, setGroups] = useState<UspGroup[]>([])
   const [newGroupName, setNewGroupName] = useState('')
   const [groupsExpanded, setGroupsExpanded] = useState(true)
+  // 필터: null=전체, 'unclassified'=미분류, group.id=특정 그룹
+  const [activeGroupFilter, setActiveGroupFilter] = useState<string | null>(null)
+  // LLM 리뷰 생성 중인 USP idx (한 번에 하나만)
+  const [genReviewsIdx, setGenReviewsIdx] = useState<number | null>(null)
 
   const reloadGroups = async () => {
     if (!productId) return
@@ -176,6 +180,18 @@ export default function MyProductEdit() {
       await api.deleteUspGroup(productId, gid)
       await reloadGroups()
     } catch (e: any) { alert('삭제 실패: ' + (e.message || e)) }
+  }
+
+  // 그룹 capability_out (안 하는 것) 인라인 편집
+  const [editingCapGroupId, setEditingCapGroupId] = useState<string | null>(null)
+  const [editingCapDraft, setEditingCapDraft] = useState<string>('')
+  const saveCapabilityOut = async (gid: string, val: string) => {
+    if (!productId) return
+    try {
+      await api.updateUspGroup(productId, gid, { capability_out: val })
+      await reloadGroups()
+      setEditingCapGroupId(null)
+    } catch (e: any) { alert('저장 실패: ' + (e.message || e)) }
   }
 
   // 편집 시 데이터 로드 — 캐시 우선, 없으면 API
@@ -351,30 +367,122 @@ export default function MyProductEdit() {
               </div>
               {groupsExpanded && (
                 <>
-                  {groups.length > 0 && (
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-                      {groups.map(g => (
+                  {/* 필터 행: 전체 + 미분류 + 각 그룹 pill (클릭 = 필터 토글) */}
+                  {/* 카운트는 현재 usps 기준 — 필터 적용 결과와 항상 일치 (g.usp_indexes.length 사용 X — 삭제된 인덱스 포함 가능) */}
+                  {(() => {
+                    const allCount = usps.length
+                    const unclassifiedCount = usps.filter((_, i) => !groupByUspIdx.has(i + 1)).length
+                    const groupCount = (gid: string) => usps.filter((_, i) => groupByUspIdx.get(i + 1)?.id === gid).length
+                    return (
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginRight: 4 }}>FILTER:</span>
+                    {/* 전체 */}
+                    <button type="button" onClick={() => setActiveGroupFilter(null)}
+                      style={{
+                        padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700,
+                        cursor: 'pointer',
+                        background: activeGroupFilter === null ? 'var(--accent)' : 'var(--bg-elevated)',
+                        color: activeGroupFilter === null ? '#fff' : 'var(--text-body)',
+                        border: '1px solid var(--border)',
+                      }}>
+                      전체 ({allCount})
+                    </button>
+                    {/* 미분류 */}
+                    <button type="button" onClick={() => setActiveGroupFilter('unclassified')}
+                      style={{
+                        padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700,
+                        cursor: 'pointer',
+                        background: activeGroupFilter === 'unclassified' ? 'var(--accent)' : 'var(--bg-elevated)',
+                        color: activeGroupFilter === 'unclassified' ? '#fff' : 'var(--text-body)',
+                        border: '1px dashed var(--border)',
+                      }}>
+                      미분류 ({unclassifiedCount})
+                    </button>
+                    {groups.map(g => {
+                      const isActive = activeGroupFilter === g.id
+                      const cnt = groupCount(g.id)
+                      return (
                         <div key={g.id} style={{
                           display: 'flex', alignItems: 'center', gap: 4,
                           padding: '4px 8px', borderRadius: 6,
-                          background: g.color || 'var(--bg-elevated)',
-                          color: g.color ? '#fff' : 'var(--text-body)',
-                          border: '1px solid var(--border)', fontSize: 11,
+                          background: isActive ? (g.color || 'var(--accent)') : 'var(--bg-elevated)',
+                          color: isActive ? '#fff' : (g.color || 'var(--text-body)'),
+                          border: `1px solid ${isActive ? (g.color || 'var(--accent)') : 'var(--border)'}`,
+                          fontSize: 11,
+                          boxShadow: isActive ? '0 0 0 2px rgba(99,102,241,0.2)' : 'none',
                         }}>
-                          <span style={{ fontWeight: 700 }}>{g.name}</span>
-                          <span style={{ opacity: 0.7 }}>({g.usp_indexes.length})</span>
+                          <button type="button"
+                            onClick={() => setActiveGroupFilter(isActive ? null : g.id)}
+                            title={isActive ? '필터 해제 (전체 보기)' : '이 그룹의 USP만 보기'}
+                            style={{
+                              background: 'transparent', border: 'none', cursor: 'pointer',
+                              color: 'inherit', fontSize: 11, padding: 0, fontWeight: 700,
+                              display: 'inline-flex', gap: 4, alignItems: 'baseline',
+                            }}>
+                            <span>{g.name}</span>
+                            <span style={{ opacity: 0.7 }}>({cnt})</span>
+                          </button>
                           <button type="button" onClick={() => renameGroup(g.id, g.name)}
                             title="이름 수정"
                             style={{ background: 'transparent', border: 'none', cursor: 'pointer',
-                              color: 'inherit', fontSize: 11, padding: 0 }}>✏</button>
+                              color: 'inherit', fontSize: 11, padding: 0 }}>편집</button>
+                          <button type="button"
+                            onClick={() => {
+                              setEditingCapGroupId(editingCapGroupId === g.id ? null : g.id)
+                              setEditingCapDraft(g.capability_out || '')
+                            }}
+                            title={g.capability_out ? `안 하는 것: ${g.capability_out}` : '이 그룹이 안 하는 것 명시'}
+                            style={{ background: 'transparent', border: 'none', cursor: 'pointer',
+                              color: g.capability_out ? '#f59e0b' : 'inherit', fontSize: 11, padding: 0 }}>경계</button>
                           <button type="button" onClick={() => removeGroup(g.id)}
                             title="삭제"
                             style={{ background: 'transparent', border: 'none', cursor: 'pointer',
-                              color: 'inherit', fontSize: 11, padding: 0 }}>✕</button>
+                              color: 'inherit', fontSize: 11, padding: 0 }}>삭제</button>
                         </div>
-                      ))}
-                    </div>
-                  )}
+                      )
+                    })}
+                  </div>
+                    )
+                  })()}
+                  {/* capability_out 편집 폼 (경계 클릭 시 펼쳐짐) */}
+                  {editingCapGroupId && (() => {
+                    const g = groups.find(x => x.id === editingCapGroupId)
+                    if (!g) return null
+                    return (
+                      <div style={{
+                        marginBottom: 10, padding: 10,
+                        background: 'rgba(245,158,11,0.08)',
+                        border: '1px solid rgba(245,158,11,0.4)',
+                        borderRadius: 'var(--radius-sm)',
+                      }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b', marginBottom: 6 }}>
+                          "{g.name}" 그룹이 안 하는 것 (writer의 false claim 방지)
+                        </div>
+                        <textarea value={editingCapDraft}
+                          onChange={e => setEditingCapDraft(e.target.value)}
+                          placeholder="예: 실제 예약 (제휴 사이트 이동), 결제 (외부 처리)"
+                          rows={2}
+                          style={{ width: '100%', padding: '6px 10px', fontSize: 12, marginBottom: 6,
+                            border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                            background: 'var(--bg-surface)', resize: 'vertical', fontFamily: 'inherit' }} />
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button type="button"
+                            onClick={() => saveCapabilityOut(g.id, editingCapDraft)}
+                            style={{ padding: '4px 12px', fontSize: 11, fontWeight: 600,
+                              background: '#f59e0b', color: '#fff', border: 'none',
+                              borderRadius: 4, cursor: 'pointer' }}>저장</button>
+                          <button type="button"
+                            onClick={() => { setEditingCapGroupId(null); setEditingCapDraft('') }}
+                            style={{ padding: '4px 12px', fontSize: 11,
+                              background: 'transparent', border: '1px solid var(--border)',
+                              borderRadius: 4, cursor: 'pointer', color: 'var(--text-body)' }}>취소</button>
+                          <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-muted)' }}>
+                            description의 어휘여도 이 항목은 functionality로 안 박힘
+                          </span>
+                        </div>
+                      </div>
+                    )
+                  })()}
                   <div style={{ display: 'flex', gap: 6 }}>
                     <input value={newGroupName} onChange={e => setNewGroupName(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addGroup() } }}
@@ -397,6 +505,9 @@ export default function MyProductEdit() {
           {usps.map((u, i) => {
             const uspIdx = i + 1
             const curGroup = groupByUspIdx.get(uspIdx)
+            // 필터 적용: null=전체, 'unclassified'=그룹 없음만, groupId=해당 그룹만
+            if (activeGroupFilter === 'unclassified' && curGroup) return null
+            if (activeGroupFilter && activeGroupFilter !== 'unclassified' && curGroup?.id !== activeGroupFilter) return null
             return (
             <div key={i} style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: 12, marginBottom: 10 }}>
               <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
@@ -421,7 +532,9 @@ export default function MyProductEdit() {
                 )}
               </div>
               <div style={{ display: 'flex', gap: 6, marginBottom: 4, alignItems: 'center' }}>
-                <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1 }}>USP 설명 (writer가 어휘 source로 사용)</span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1 }}>
+                  USP 설명 (writer가 어휘 source로 사용) — ⚠️ <strong>1 USP = 1 feature</strong>. 여러 기능 묶지 말고 별도 USP로 분리.
+                </span>
                 <button
                   type="button"
                   disabled={!u.usp.trim()}
@@ -453,7 +566,18 @@ export default function MyProductEdit() {
               <textarea style={{ ...textareaSt, marginBottom: 8, minHeight: 60, fontSize: 12 }}
                 value={u.description || ''}
                 onChange={e => setUsps(usps.map((x, idx) => idx === i ? { ...x, description: e.target.value } : x))}
-                placeholder="기능 설명 + 어디서 좋은지 (선택, 앱·서비스 추천) — 예: '사용자가 설정한 가격대로 떨어지면 푸시로 즉시 알려줘서, 평소 가격 모니터링 안 해도 자동 절약 가능'\n\n또는 위 🪄 LLM 추천 클릭" />
+                placeholder={`기능 설명 — 권장 4 섹션:
+문제: 사용자 일상 불편 (구체 scene)
+해결: 우리 제품이 하는 것 (구체 동작)
+혜택: 사용 후 변화 (감정·결과)
+앱이 하는 것: 검색, 비교, 알림 (실제 capability)
+앱이 안 하는 것: 실제 예약 (외부 사이트), 결제 (외부 처리)
+핵심 명사:
+- 문제 측: ...
+- 해결 측: ...
+- 혜택 측: ...
+
+또는 위 🪄 LLM 추천 클릭 → 자동 생성`} />
               <div style={{ paddingLeft: 10, borderLeft: '2px solid var(--border)' }}>
                 {u.reviews.map((r, j) => (
                   <div key={j} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
@@ -466,13 +590,99 @@ export default function MyProductEdit() {
                     )}
                   </div>
                 ))}
-                <button type="button" onClick={() => setUsps(usps.map((x, idx) => idx === i ? { ...x, reviews: [...x.reviews, ''] } : x))}
-                  style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600, border: '1px solid var(--accent)', borderRadius: 4, background: 'var(--accent-light)', color: 'var(--accent)', cursor: 'pointer' }}>+ 리뷰 추가</button>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button type="button" onClick={() => setUsps(usps.map((x, idx) => idx === i ? { ...x, reviews: [...x.reviews, ''] } : x))}
+                    style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600, border: '1px solid var(--accent)', borderRadius: 4, background: 'var(--accent-light)', color: 'var(--accent)', cursor: 'pointer' }}>+ 리뷰 추가</button>
+                  <button type="button"
+                    disabled={!u.usp.trim() || (genReviewsIdx === i)}
+                    title={u.usp.trim() ? 'USP 이름 + description 기반 소비자 언어 리뷰 5개 LLM 생성' : 'USP 이름 먼저 입력'}
+                    onClick={async () => {
+                      if (!u.usp.trim() || genReviewsIdx !== null) return
+                      setGenReviewsIdx(i)
+                      try {
+                        const existing = (u.reviews || []).filter(r => r.trim())
+                        const r = await api.generateUspReviews({
+                          product_name: name,
+                          usp_name: u.usp,
+                          usp_description: u.description || '',
+                          existing_reviews: existing,
+                          count: 5,
+                        })
+                        const newReviews = Array.isArray(r.reviews) ? r.reviews.filter((x: string) => (x || '').trim()) : []
+                        if (newReviews.length === 0) {
+                          alert('생성된 리뷰가 없습니다.')
+                          return
+                        }
+                        // 기존 빈 리뷰 제거 + 새 리뷰 append
+                        setUsps(usps.map((x, idx) => idx === i ? {
+                          ...x,
+                          reviews: [...x.reviews.filter(r => r.trim()), ...newReviews],
+                        } : x))
+                      } catch (e: any) {
+                        alert('리뷰 생성 실패: ' + (e?.message || e))
+                      } finally {
+                        setGenReviewsIdx(null)
+                      }
+                    }}
+                    style={{
+                      padding: '4px 10px', fontSize: 11, fontWeight: 600,
+                      border: '1px solid var(--accent)', borderRadius: 4,
+                      background: (u.usp.trim() && genReviewsIdx === null) ? 'var(--accent)' : 'var(--bg-elevated)',
+                      color: (u.usp.trim() && genReviewsIdx === null) ? '#fff' : 'var(--text-muted)',
+                      cursor: (u.usp.trim() && genReviewsIdx === null) ? 'pointer' : 'not-allowed',
+                      opacity: genReviewsIdx === i ? 0.6 : 1,
+                    }}>
+                    {genReviewsIdx === i ? '생성 중…' : 'LLM 리뷰 5개 생성'}
+                  </button>
+                </div>
               </div>
             </div>
             )
           })}
-          <button type="button" onClick={() => setUsps([...usps, { usp: '', description: '', reviews: [''] }])}
+          {/* 필터링 후 결과 없을 때 빈 상태 */}
+          {(() => {
+            if (!activeGroupFilter) return null
+            const visible = usps.filter((_, i) => {
+              const cg = groupByUspIdx.get(i + 1)
+              if (activeGroupFilter === 'unclassified') return !cg
+              return cg?.id === activeGroupFilter
+            }).length
+            if (visible > 0) return null
+            const label = activeGroupFilter === 'unclassified'
+              ? '미분류'
+              : groups.find(g => g.id === activeGroupFilter)?.name || '?'
+            return (
+              <div style={{
+                padding: 20, textAlign: 'center', fontSize: 12,
+                color: 'var(--text-muted)', background: 'var(--bg-elevated)',
+                border: '1px dashed var(--border)', borderRadius: 'var(--radius-md)',
+                marginBottom: 10,
+              }}>
+                "{label}"에 속한 USP 없음 — <button type="button"
+                  onClick={() => setActiveGroupFilter(null)}
+                  style={{ background: 'transparent', border: 'none',
+                    color: 'var(--accent)', cursor: 'pointer', fontSize: 12,
+                    fontWeight: 600, textDecoration: 'underline' }}>전체 보기</button>
+              </div>
+            )
+          })()}
+          <button type="button" onClick={async () => {
+            // 그룹 필터 활성 상태면 새 USP는 미분류라 필터에 의해 숨겨짐 → 필터 자동 해제
+            const isSpecificGroupFilter = activeGroupFilter && activeGroupFilter !== 'unclassified'
+            const targetGroupId = isSpecificGroupFilter ? activeGroupFilter : null
+            const newUsps = [...usps, { usp: '', description: '', reviews: [''] }]
+            const newUspIdx = newUsps.length  // 1-based
+            setUsps(newUsps)
+            // 특정 그룹 필터면 새 USP를 자동으로 그 그룹에 할당 (productId 있을 때만)
+            if (targetGroupId && productId) {
+              try {
+                await setUspGroup(newUspIdx, targetGroupId)
+              } catch {}
+            } else if (activeGroupFilter) {
+              // productId 없거나 'unclassified' 필터면 필터 해제로 새 USP 보이게
+              setActiveGroupFilter(null)
+            }
+          }}
             style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, border: '1px solid var(--accent)', borderRadius: 'var(--radius-sm)', background: 'var(--accent-light)', color: 'var(--accent)', cursor: 'pointer' }}>+ USP 추가</button>
         </section>
 

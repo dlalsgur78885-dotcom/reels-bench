@@ -115,6 +115,18 @@ export default function MyProducts() {
         </div>
       )}
 
+      {loading && items.length === 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12, marginBottom: 16 }}>
+          {[0, 1, 2].map(i => (
+            <div key={i} className="skeleton-card" style={{ padding: 14 }}>
+              <div className="skeleton-line" style={{ width: '62%', marginBottom: 14 }} />
+              <div className="skeleton-line" style={{ width: '88%', marginBottom: 8 }} />
+              <div className="skeleton-line" style={{ width: '40%' }} />
+            </div>
+          ))}
+        </div>
+      )}
+
       {items.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12, marginBottom: 16 }}>
           {items.map(p => {
@@ -131,6 +143,7 @@ export default function MyProducts() {
                     {isOwner && (
                       <button onClick={() => startShare(p)} title="다른 직원에게 공유" style={{ padding: '3px 8px', fontSize: 11, border: '1px solid var(--accent)', borderRadius: 4, background: 'var(--accent-light)', color: 'var(--accent)', cursor: 'pointer' }}>공유</button>
                     )}
+                    <button onClick={() => navigate(`/my-products/${p.id}/scripts`)} title="저장된 대본" style={{ padding: '3px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg-base)', cursor: 'pointer' }}>🎬 대본</button>
                     {canEdit && (
                       <button onClick={() => navigate(`/my-products/${p.id}/edit`)} style={{ padding: '3px 8px', fontSize: 11, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg-base)', cursor: 'pointer' }}>수정</button>
                     )}

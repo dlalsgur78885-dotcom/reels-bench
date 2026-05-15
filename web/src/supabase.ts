@@ -26,3 +26,28 @@ export async function getAccessToken(): Promise<string | null> {
   cachedAccessTokenUntil = cachedAccessToken ? Date.now() + 30_000 : 0
   return cachedAccessToken
 }
+
+// 401 받으면 강제로 refreshSession 호출해서 새 토큰 받기
+export async function forceRefreshToken(): Promise<string | null> {
+  try {
+    const { data, error } = await supabase.auth.refreshSession()
+    if (error || !data.session) return null
+    cachedAccessToken = data.session.access_token
+    cachedAccessTokenUntil = Date.now() + 30_000
+    return cachedAccessToken
+  } catch {
+    return null
+  }
+}
+
+// 탭 활성화 시 토큰 강제 갱신 — 단, 60초 throttle (잦은 refreshSession 호출이 세션 무효화 원인이 될 수 있음)
+let lastRefreshAt = 0
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return
+    if (Date.now() - lastRefreshAt < 60_000) return
+    lastRefreshAt = Date.now()
+    cachedAccessTokenUntil = 0
+    supabase.auth.refreshSession().catch(() => {})
+  })
+}

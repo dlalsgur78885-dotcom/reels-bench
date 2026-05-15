@@ -11,18 +11,41 @@ interface Item {
   logo_url: string | null
 }
 
+const CACHE_PREFIX = 'fb_search_advertisers:'
+function readCache(query: string): Item[] | null {
+  try {
+    const raw = sessionStorage.getItem(CACHE_PREFIX + query)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+function writeCache(query: string, items: Item[]) {
+  try { sessionStorage.setItem(CACHE_PREFIX + query, JSON.stringify(items)) } catch {}
+}
+
 export default function FbSearchAdvertisers() {
   const [q, setQ] = useState('')
   const [items, setItems] = useState<Item[]>([])
   const [loading, setLoading] = useState(false)
   const [scraping, setScraping] = useState(false)
+  const [error, setError] = useState('')
 
   const search = (query: string) => {
-    setLoading(true)
+    const key = query.trim()
+    const cached = readCache(key)
+    setError('')
+    if (cached) setItems(cached)
+    setLoading(!cached)
     authedFetch(`/api/fb/search/advertisers?q=${encodeURIComponent(query)}`)
       .then(r => r.json())
-      .then(d => setItems(d.items || []))
-      .catch(() => setItems([]))
+      .then(d => {
+        const next = d.items || []
+        setItems(next)
+        writeCache(key, next)
+      })
+      .catch(() => {
+        if (!cached) setItems([])
+        setError('광고주 검색 결과를 불러오지 못했습니다.')
+      })
       .finally(() => setLoading(false))
   }
   useEffect(() => { search('') }, [])
@@ -76,7 +99,22 @@ export default function FbSearchAdvertisers() {
         💡 캐시된 광고에서 검색 / "Live 수집"은 fb_ads_worker로 새 키워드 스크래핑 트리거
       </div>
 
-      {loading ? <div style={{ padding: 40, color: 'var(--text-muted)' }}>로딩...</div> : (
+      {error && <div className="error-banner">{error}</div>}
+
+      {loading && items.length === 0 ? (
+        <div className="section-card section-card--block" style={{ padding: 14 }}>
+          {[0, 1, 2, 3, 4, 5].map(i => (
+            <div key={i} style={{ display: 'grid', gridTemplateColumns: '40px 1fr 80px 90px 1.8fr 60px', gap: 14, alignItems: 'center', padding: '10px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+              <div className="skeleton-line" style={{ width: 32, height: 32, borderRadius: 999 }} />
+              <div className="skeleton-line" />
+              <div className="skeleton-line" />
+              <div className="skeleton-line" />
+              <div className="skeleton-line" />
+              <div className="skeleton-line" />
+            </div>
+          ))}
+        </div>
+      ) : (
         <div className="section-card section-card--block" style={{ padding: 0, overflow: 'hidden' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>

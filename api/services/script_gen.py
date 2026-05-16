@@ -74,41 +74,58 @@ def clear_progress(session_id: str) -> None:
 def summarize_cost() -> dict:
     """현재까지 집계된 토큰·비용 합산.
 
-    Gemini implicit cache: cached input × 0.25x, non-cached × 1.0x.
-    Gemini thoughts: output 가격으로 청구.
+    가격 모델 (Anthropic 공식 / Gemini 정책):
+      - Anthropic: cache_read = 0.10x input, cache_write = 1.25x input
+      - Gemini implicit cache: cache_read = 0.25x input (write 비용 없음)
+      - Gemini thoughts: output 가격으로 청구
     """
     by_model: dict[str, dict] = {}
     total_in = 0
     total_out = 0
     total_cached = 0
+    total_cache_create = 0
     total_thoughts = 0
     total_cost = 0.0
     for c in _cost_meter:
         m = c["model"]
         if m not in by_model:
-            by_model[m] = {"calls": 0, "in": 0, "out": 0, "cached": 0, "thoughts": 0, "cost_usd": 0.0}
+            by_model[m] = {"calls": 0, "in": 0, "out": 0, "cached": 0,
+                           "cache_create": 0, "thoughts": 0, "cost_usd": 0.0}
         p = _PRICING.get(m, {"in": 2.0, "out": 12.0})
         in_tok = c["in_tokens"]
         out_tok = c["out_tokens"]
         cached = c.get("cached_tokens", 0) or 0
+        cache_create = c.get("cache_create_tokens", 0) or 0
         thoughts = c.get("thoughts_tokens", 0) or 0
-        # Gemini: in_tok에 cached 포함 → non-cached = in - cached
-        non_cached = max(0, in_tok - cached)
-        # 비용 = non_cached × in_price + cached × in_price × 0.25 + (out + thoughts) × out_price
-        cost = (
-            non_cached * p["in"]
-            + cached * p["in"] * 0.25
-            + (out_tok + thoughts) * p["out"]
-        ) / 1_000_000
+        is_anthropic = m.startswith("anthropic/")
+        # in_tok 구성: Anthropic은 (uncached + cache_read + cache_create), Gemini는 (uncached + cache_read)
+        uncached = max(0, in_tok - cached - cache_create)
+        if is_anthropic:
+            # Anthropic 공식: cache_read 0.10x, cache_write 1.25x
+            cost = (
+                uncached * p["in"]
+                + cached * p["in"] * 0.10
+                + cache_create * p["in"] * 1.25
+                + out_tok * p["out"]
+            ) / 1_000_000
+        else:
+            # Gemini implicit cache: read 0.25x, write 없음. thoughts는 output 가격.
+            cost = (
+                uncached * p["in"]
+                + cached * p["in"] * 0.25
+                + (out_tok + thoughts) * p["out"]
+            ) / 1_000_000
         by_model[m]["calls"] += 1
         by_model[m]["in"] += in_tok
         by_model[m]["out"] += out_tok
         by_model[m]["cached"] += cached
+        by_model[m]["cache_create"] += cache_create
         by_model[m]["thoughts"] += thoughts
         by_model[m]["cost_usd"] += cost
         total_in += in_tok
         total_out += out_tok
         total_cached += cached
+        total_cache_create += cache_create
         total_thoughts += thoughts
         total_cost += cost
     return {
@@ -117,6 +134,7 @@ def summarize_cost() -> dict:
         "total_in_tokens": total_in,
         "total_out_tokens": total_out,
         "total_cached_tokens": total_cached,
+        "total_cache_create_tokens": total_cache_create,
         "total_thoughts_tokens": total_thoughts,
         "total_cost_usd": round(total_cost, 4),
     }

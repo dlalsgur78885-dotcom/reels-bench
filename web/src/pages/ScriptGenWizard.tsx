@@ -418,6 +418,8 @@ export default function ScriptGenWizard() {
     setStep('generating')
     setGenError('')
     setGenResult({})
+    // 이전 세션의 stagesByTab(다듬기 A/B 잔존) 클리어 — 같은 reel 재생성 시 stale 상태 방지
+    try { sessionStorage.removeItem(`rb_wizard_stepdone:${shortcode}`) } catch {}
     // USP 1-based index → group capability_out 매핑 (그룹별 boundary)
     const uspIdxToCapOut = new Map<number, string>()
     for (const g of uspGroups) {
@@ -621,7 +623,7 @@ export default function ScriptGenWizard() {
         )}
       </div>
 
-      <Stepper step={step} onJump={(target) => {
+      <Stepper step={step} hasGenResult={Object.keys(genResult).length > 0} onJump={(target) => {
         // 가능한 곳만 점프 (mapping 미로드면 mapping/persona/done 잠금)
         if (target === 'product') {
           setStep('product')
@@ -911,7 +913,7 @@ export default function ScriptGenWizard() {
   )
 }
 
-function Stepper({ step, onJump }: { step: Step; onJump?: (target: Step) => void }) {
+function Stepper({ step, hasGenResult, onJump }: { step: Step; hasGenResult?: boolean; onJump?: (target: Step) => void }) {
   const items: [Step | 'all', string][] = [
     ['product', '상품'],
     ['mapping', '매핑 리뷰'],
@@ -926,7 +928,9 @@ function Stepper({ step, onJump }: { step: Step; onJump?: (target: Step) => void
         const idx = order.indexOf(s as Step)
         const active = idx === stepIdx
         const done = idx < stepIdx
-        const clickable = !!onJump && (done || active)
+        // genResult 있을 때 '결과' 단계는 앞으로도 점프 허용 (재생성 없이 결과 복귀)
+        const forwardJumpAllowed = s === 'done' && !!hasGenResult
+        const clickable = !!onJump && (done || active || forwardJumpAllowed)
         const handle = clickable ? () => onJump!(s as Step) : undefined
         return (
           <div key={s} style={{ display: 'flex', alignItems: 'center', flex: 1 }}>
@@ -2343,15 +2347,25 @@ function StepDone({
       return s
     } catch { return null }
   })()
-  const [active, setActive] = useState(stepDoneSaved?.active || tabs[0] || '')
+  // 현재 result의 tab 이름과 일치하는 saved state만 채택 — 다른 페르소나로 재생성 시 stale 잔존 방지
+  const pruneByTabs = <T,>(obj: Record<string, T> | undefined): Record<string, T> => {
+    if (!obj) return {}
+    const out: Record<string, T> = {}
+    for (const k of Object.keys(obj)) {
+      if (tabs.includes(k)) out[k] = obj[k]
+    }
+    return out
+  }
+  const savedActive = stepDoneSaved?.active && tabs.includes(stepDoneSaved.active) ? stepDoneSaved.active : (tabs[0] || '')
+  const [active, setActive] = useState(savedActive)
   const [editingTab, setEditingTab] = useState<string | null>(null)
   const [refiningTab, setRefiningTab] = useState<string | null>(null)
-  const [editedResult, setEditedResult] = useState<Record<string, GeneratedScript>>(stepDoneSaved?.editedResult || {})
+  const [editedResult, setEditedResult] = useState<Record<string, GeneratedScript>>(pruneByTabs(stepDoneSaved?.editedResult))
   const [draftSentences, setDraftSentences] = useState<{ start: number; end: number; text: string }[] | null>(null)
   type StageKey = 'base' | 'alt_a' | 'alt_b'
   type RefineStage = { key: StageKey; sentences: any[]; created_at: string }
-  const [stagesByTab, setStagesByTab] = useState<Record<string, RefineStage[]>>(stepDoneSaved?.stagesByTab || {})
-  const [stageViewByTab, setStageViewByTab] = useState<Record<string, StageKey | null>>(stepDoneSaved?.stageViewByTab || {})
+  const [stagesByTab, setStagesByTab] = useState<Record<string, RefineStage[]>>(pruneByTabs(stepDoneSaved?.stagesByTab))
+  const [stageViewByTab, setStageViewByTab] = useState<Record<string, StageKey | null>>(pruneByTabs(stepDoneSaved?.stageViewByTab))
   const stageLabel = (k: StageKey) => k === 'base' ? '기본' : k === 'alt_a' ? 'A원고' : 'B원고'
 
   // StepDone 자동 영속화

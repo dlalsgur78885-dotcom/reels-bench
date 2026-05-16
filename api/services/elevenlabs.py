@@ -350,6 +350,71 @@ def _build_synth_input(s, sent_idx, tag_map):
     return s["text"], tag_map.get((sent_idx, None), "")
 
 
+def _build_full_script_text(sentences, tag_map):
+    """전체 스크립트를 단일 호출용 텍스트로 합침.
+    문장마다 outer tag(+text) 혹은 인라인 태그 조립된 text를 공백으로 연결.
+    voice 일관성 — eleven_v3가 호출마다 미세하게 voice가 흔들리는 문제 회피."""
+    parts = []
+    for i, s in enumerate(sentences):
+        text, outer_tag = _build_synth_input(s, i, tag_map)
+        parts.append(f"{outer_tag} {text}".strip() if outer_tag else text)
+    return " ".join(parts)
+
+
+def _rebuild_full_text_from_meta(sentences):
+    """저장된 meta의 sentences에서 full text 재조립 (각 segment의 현재 tag 사용).
+    regenerate 시 strength_level 반영된 tag를 그대로 활용."""
+    parts = []
+    for s in sentences:
+        if s.get("phrases"):
+            phrase_parts = []
+            for p in s["phrases"]:
+                tag = p.get("tag", "")
+                phrase_parts.append(f"{tag} {p['text']}".strip() if tag else p["text"])
+            text = " ".join(phrase_parts)
+        else:
+            tag = s.get("tag", "")
+            text = f"{tag} {s['text']}".strip() if tag else s["text"]
+        parts.append(text)
+    return " ".join(parts)
+
+
+def _full_synth(text, voice_id, model_id, out_path, voice_settings):
+    """단일 호출로 전체 스크립트 합성. final.mp3 한 파일.
+    eleven_v3는 호출 간 voice가 흔들려서 segment별 호출 불가 → 항상 단일 호출."""
+    r = requests.post(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+        headers={"xi-api-key": _eleven_key(), "Content-Type": "application/json"},
+        json={
+            "text": text,
+            "model_id": model_id,
+            "voice_settings": voice_settings,
+        },
+        timeout=600,  # 긴 스크립트 대비
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"ElevenLabs error {r.status_code}: {r.text[:500]}")
+    out_path.write_bytes(r.content)
+
+
+def _approx_segment_timings(sentences, total_duration):
+    """문장 길이 비례로 segment start/end 분배 (단일 호출 → segment별 정확 위치 알 수 없음).
+    UI 타임라인용 근사값. 어절 모드는 phrases 합산 길이로."""
+    def sent_len(s):
+        if s.get("phrases"):
+            return sum(len(p.get("text", "")) for p in s["phrases"])
+        return len(s.get("text", ""))
+    lens = [max(1, sent_len(s)) for s in sentences]
+    total = sum(lens)
+    timings = []
+    cum = 0.0
+    for L in lens:
+        dur = total_duration * (L / total)
+        timings.append((round(cum, 2), round(cum + dur, 2)))
+        cum += dur
+    return timings
+
+
 def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
                      emotion_strength=DEFAULT_EMOTION):
     """전체 합성. job 폴더 생성하고 meta.json + 모든 seg + final.mp3 저장.
@@ -379,28 +444,14 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
             tag_variants.append(["", "", t, "", ""])
     voice_settings = emotion_to_voice_settings(emotion_strength)
 
-    # 다음 segment 텍스트 미리 계산 (next_text용)
-    texts_and_tags = [_build_synth_input(s, i, tag_map) for i, s in enumerate(sentences)]
+    # 단일 호출용 full text 조립 (voice 일관성 — v3는 호출마다 voice 흔들림)
+    full_text = _build_full_script_text(sentences, tag_map)
 
+    # 문장별 메타 (UI 표시용; per-segment mp3는 없음)
     sent_meta = []
-    seg_paths = []
-    total_chars = 0
-    prev_req_ids = []   # 직전 호출들의 request-id (voice 일관성용)
-    prev_text_buf = ""  # 이전 텍스트 컨텍스트
+    total_chars = len(full_text)
     for i, s in enumerate(sentences):
-        out = job_dir / f"seg_{i:03d}.mp3"
-        text, outer_tag = texts_and_tags[i]
-        next_text = texts_and_tags[i + 1][0] if i + 1 < len(texts_and_tags) else None
-        req_id = synth_segment(
-            text, outer_tag, voice_id, model_id, out, voice_settings,
-            previous_request_ids=prev_req_ids[-3:] or None,
-            previous_text=prev_text_buf or None,
-            next_text=next_text,
-        )
-        if req_id:
-            prev_req_ids.append(req_id)
-        prev_text_buf = (prev_text_buf + " " + text).strip()[-500:]
-        total_chars += len(f"{outer_tag} {text}".strip())
+        text, outer_tag = _build_synth_input(s, i, tag_map)
         phrases_meta = None
         if s.get("phrases"):
             phrases_meta = [
@@ -417,21 +468,21 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
             "text": s["text"],
             "direction": s.get("direction", ""),
             "tag": outer_tag,
-            "strength_level": 0,  # -2 ~ +2 (phrase 모드는 무시됨)
-            "request_id": req_id,
+            "strength_level": 0,
         }
         if phrases_meta is not None:
             sm["phrases"] = phrases_meta
         sent_meta.append(sm)
-        seg_paths.append({"path": out, "start": float(s["start"]), "end": float(s["end"])})
 
     final_path = job_dir / "final.mp3"
-    total_duration, tempos, new_starts, new_durs = merge_segments(seg_paths, final_path)
-    # 자연 길이로 재할당된 start/end를 sent_meta에 반영
+    _full_synth(full_text, voice_id, model_id, final_path, voice_settings)
+    total_duration = probe_duration(final_path)
+
+    # 문장 길이 비례로 start/end 근사 분배 (UI 타임라인용)
+    timings = _approx_segment_timings(sentences, total_duration)
     for i, sm in enumerate(sent_meta):
-        if i < len(new_starts):
-            sm["start"] = round(new_starts[i], 3)
-            sm["end"] = round(new_starts[i] + new_durs[i], 3)
+        if i < len(timings):
+            sm["start"], sm["end"] = timings[i]
 
     # Supabase Storage 업로드 → public URL
     supabase_url = _upload_final_to_supabase(job_id, final_path)
@@ -445,7 +496,7 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
         "sentences": sent_meta,
         "tag_variants": tag_variants,
         "base_emotion_strength": emotion_strength,
-        "tempos": [round(t, 3) for t in tempos],
+        "tempos": [1.0] * len(sentences),  # 단일 호출이라 atempo 의미 없음
         "total_duration": round(total_duration, 2),
         "char_count": total_chars,
         "supabase_url": supabase_url,
@@ -475,7 +526,7 @@ def _ensure_variants_for_segment(meta, idx):
 
 
 def regenerate_segment(job_id: str, idx: int, strength_level: int):
-    """한 segment를 새 강도(level) tag로 재합성 + final.mp3 재합치기.
+    """한 segment 강도 변경 → 전체 스크립트 재합성 (단일 호출이라 부분 재합성 불가).
     strength_level: -2 (매우 약) ~ +2 (매우 강).
     base 외 강도 처음 호출 시 해당 segment의 5단계 variants를 lazy로 Gemini가 채움."""
     if not isinstance(strength_level, int) or strength_level < -2 or strength_level > 2:
@@ -494,51 +545,27 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
     row = variants[idx] if idx < len(variants) else ["", "", sentences[idx].get("tag", ""), "", ""]
     new_tag = row[strength_level + 2] or row[2] or sentences[idx].get("tag", "")
 
-    s = sentences[idx]
-    voice_settings = emotion_to_voice_settings(meta.get("base_emotion_strength", DEFAULT_EMOTION))
-    seg_path = _job_dir(job_id) / f"seg_{idx:03d}.mp3"
-
-    # 이전 segment의 request_id를 체이닝 (voice 일관성)
-    prev_ids = []
-    for k in range(max(0, idx - 3), idx):
-        rid = sentences[k].get("request_id")
-        if rid:
-            prev_ids.append(rid)
-    prev_text = " ".join(sentences[k].get("text", "") for k in range(max(0, idx - 2), idx))
-    next_text = sentences[idx + 1].get("text") if idx + 1 < len(sentences) else None
-
-    new_req_id = synth_segment(
-        s["text"], new_tag, meta["voice_id"], meta["model_id"],
-        seg_path, voice_settings,
-        previous_request_ids=prev_ids or None,
-        previous_text=prev_text or None,
-        next_text=next_text,
-    )
     sentences[idx]["strength_level"] = strength_level
     sentences[idx]["tag"] = new_tag
-    sentences[idx]["request_id"] = new_req_id
 
-    seg_paths = []
-    for i, sm in enumerate(sentences):
-        seg_paths.append({
-            "path": _job_dir(job_id) / f"seg_{i:03d}.mp3",
-            "start": float(sm["start"]),
-            "end": float(sm["end"]),
-        })
+    # 전체 재합성 (voice 일관성 위해 단일 호출 고수)
+    full_text = _rebuild_full_text_from_meta(sentences)
+    voice_settings = emotion_to_voice_settings(meta.get("base_emotion_strength", DEFAULT_EMOTION))
     final_path = _job_dir(job_id) / "final.mp3"
-    total_duration, tempos, new_starts, new_durs = merge_segments(seg_paths, final_path)
-    # 자연 길이로 재할당
-    for i, sm in enumerate(sentences):
-        if i < len(new_starts):
-            sm["start"] = round(new_starts[i], 3)
-            sm["end"] = round(new_starts[i] + new_durs[i], 3)
+    _full_synth(full_text, meta["voice_id"], meta["model_id"], final_path, voice_settings)
+    total_duration = probe_duration(final_path)
 
-    # Supabase Storage에 새 final.mp3 업로드 (overwrite)
+    timings = _approx_segment_timings(sentences, total_duration)
+    for i, sm in enumerate(sentences):
+        if i < len(timings):
+            sm["start"], sm["end"] = timings[i]
+
     supabase_url = _upload_final_to_supabase(job_id, final_path)
 
     meta["sentences"] = sentences
-    meta["tempos"] = [round(t, 3) for t in tempos]
+    meta["tempos"] = [1.0] * len(sentences)
     meta["total_duration"] = round(total_duration, 2)
+    meta["char_count"] = len(full_text)
     meta["supabase_url"] = supabase_url
     meta["updated_at"] = int(time.time())
     _save_meta(job_id, meta)

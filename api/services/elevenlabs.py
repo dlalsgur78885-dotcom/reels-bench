@@ -100,16 +100,17 @@ def _gemini_key():
 
 def emotion_to_voice_settings(strength: float) -> dict:
     """슬라이더 0.0~1.0 → voice_settings.
-    v3 voice drift(성별 흔들림) 방어 — stability 하한 0.5, similarity_boost 0.85 고정.
-    표현력은 audio tag([excited][shouting] 등)으로 살리고 voice 일관성은 settings로 락.
-    strength=0.0 → 담백 (style=0,   stab=0.7)
-    strength=0.5 → 기본 (style=0.35, stab=0.6)
-    strength=1.0 → 격앙 (style=0.7,  stab=0.5)"""
+    v3 alpha는 segment 간 voice 일관성을 chaining(request_ids/prev_text)으로 잡을 수 없어서
+    voice_settings로만 락해야 함 → stability/similarity_boost를 강하게 고정.
+    표현력은 audio tag([excited][shouting] 등)으로 살림.
+    strength=0.0 → 담백 (style=0.05, stab=0.8)
+    strength=0.5 → 기본 (style=0.30, stab=0.7)
+    strength=1.0 → 격앙 (style=0.55, stab=0.6)"""
     s = max(0.0, min(1.0, strength))
     return {
-        "stability": round(0.7 - s * 0.2, 4),
-        "similarity_boost": 0.85,
-        "style": round(s * 0.7, 4),
+        "stability": round(0.8 - s * 0.2, 4),
+        "similarity_boost": 0.95,
+        "style": round(0.05 + s * 0.5, 4),
         "use_speaker_boost": True,
     }
 
@@ -210,12 +211,14 @@ def synth_segment(text, tag, voice_id, model_id, out_path, voice_settings=None,
         "voice_settings": voice_settings,
     }
     is_v3 = "v3" in (model_id or "")
-    if previous_request_ids:
-        payload["previous_request_ids"] = list(previous_request_ids)[-3:]  # 최근 3개
-    if previous_text and not is_v3:
-        payload["previous_text"] = previous_text[-500:]
-    if next_text and not is_v3:
-        payload["next_text"] = next_text[:500]
+    # eleven_v3는 previous_request_ids / previous_text / next_text 전부 미지원 (alpha)
+    if not is_v3:
+        if previous_request_ids:
+            payload["previous_request_ids"] = list(previous_request_ids)[-3:]
+        if previous_text:
+            payload["previous_text"] = previous_text[-500:]
+        if next_text:
+            payload["next_text"] = next_text[:500]
     r = requests.post(
         f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
         headers={"xi-api-key": _eleven_key(), "Content-Type": "application/json"},

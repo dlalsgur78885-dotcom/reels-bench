@@ -297,9 +297,46 @@ def _state_response(meta):
     }
 
 
+def _collect_directions(sentences):
+    """문장+어절(phrases) 모든 direction 수집 → [(sent_idx, phrase_idx_or_None, direction)].
+    어절 모드(phrases 있음)면 어절별 direction만 수집 (문장 전체 direction은 무시).
+    어절 모드가 아니면 문장 전체 direction 수집."""
+    collected = []
+    for i, s in enumerate(sentences):
+        phrases = s.get("phrases") or []
+        if phrases:
+            for j, p in enumerate(phrases):
+                d = (p.get("direction") or "").strip()
+                if d:
+                    collected.append((i, j, d))
+        else:
+            d = (s.get("direction") or "").strip()
+            if d:
+                collected.append((i, None, d))
+    return collected
+
+
+def _build_synth_input(s, sent_idx, tag_map):
+    """phrases가 있으면 inline-tagged text 조립, 없으면 plain text + outer tag.
+    ElevenLabs v3는 텍스트 중간에 [tag] 삽입 시 그 시점부터 적용됨.
+    Returns (text, outer_tag)."""
+    phrases = s.get("phrases") or []
+    if phrases:
+        parts = []
+        for j, p in enumerate(phrases):
+            tag = tag_map.get((sent_idx, j), "")
+            if tag:
+                parts.append(f"{tag} {p['text']}")
+            else:
+                parts.append(p["text"])
+        return " ".join(parts), ""  # outer는 비움 — 인라인이 다 핸들
+    return s["text"], tag_map.get((sent_idx, None), "")
+
+
 def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
                      emotion_strength=DEFAULT_EMOTION):
-    """전체 합성. job 폴더 생성하고 meta.json + 모든 seg + final.mp3 저장."""
+    """전체 합성. job 폴더 생성하고 meta.json + 모든 seg + final.mp3 저장.
+    어절별 감정: sentence.phrases = [{text, direction}] 형태일 때 inline tag로 합성."""
     if voice_name not in PRESETS:
         raise ValueError(f"unknown voice preset: {voice_name}. choices: {list(PRESETS.keys())}")
     voice_id = PRESETS[voice_name]["id"]
@@ -308,10 +345,21 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
     job_dir = _job_dir(job_id)
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    directions = [s.get("direction", "") for s in sentences]
-    base_tags = map_directions(directions)  # 단일 tag per direction (Gemini 1회)
-    # tag_variants는 base만 채우고 나머지는 lazy로 채움 — 비용 절감
-    tag_variants = [["", "", t, "", ""] for t in base_tags]
+    # 문장 + 어절 direction 모두 한 번에 Gemini batch
+    collected = _collect_directions(sentences)
+    all_dirs = [d for _, _, d in collected]
+    all_tags = map_directions(all_dirs) if all_dirs else []
+    tag_map = {(si, pi): all_tags[k] for k, (si, pi, _) in enumerate(collected)}
+
+    # tag_variants는 phrase 없는 문장에만 의미 있음 (외부 tag 5단계 변환용)
+    # phrase 모드는 strength 조절 불가 → variants=None 마커
+    tag_variants = []
+    for i, s in enumerate(sentences):
+        if s.get("phrases"):
+            tag_variants.append(None)
+        else:
+            t = tag_map.get((i, None), "")
+            tag_variants.append(["", "", t, "", ""])
     voice_settings = emotion_to_voice_settings(emotion_strength)
 
     sent_meta = []
@@ -319,17 +367,30 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
     total_chars = 0
     for i, s in enumerate(sentences):
         out = job_dir / f"seg_{i:03d}.mp3"
-        tag = base_tags[i]
-        synth_segment(s["text"], tag, voice_id, model_id, out, voice_settings)
-        total_chars += len(f"{tag} {s['text']}".strip())
-        sent_meta.append({
+        text, outer_tag = _build_synth_input(s, i, tag_map)
+        synth_segment(text, outer_tag, voice_id, model_id, out, voice_settings)
+        total_chars += len(f"{outer_tag} {text}".strip())
+        phrases_meta = None
+        if s.get("phrases"):
+            phrases_meta = [
+                {
+                    "text": p["text"],
+                    "direction": p.get("direction", ""),
+                    "tag": tag_map.get((i, j), ""),
+                }
+                for j, p in enumerate(s["phrases"])
+            ]
+        sm = {
             "start": float(s["start"]),
             "end": float(s["end"]),
             "text": s["text"],
             "direction": s.get("direction", ""),
-            "tag": tag,
-            "strength_level": 0,  # -2 ~ +2
-        })
+            "tag": outer_tag,
+            "strength_level": 0,  # -2 ~ +2 (phrase 모드는 무시됨)
+        }
+        if phrases_meta is not None:
+            sm["phrases"] = phrases_meta
+        sent_meta.append(sm)
         seg_paths.append({"path": out, "start": float(s["start"]), "end": float(s["end"])})
 
     final_path = job_dir / "final.mp3"
@@ -391,6 +452,8 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
     sentences = meta["sentences"]
     if idx < 0 or idx >= len(sentences):
         raise ValueError(f"idx out of range: {idx} (총 {len(sentences)}개)")
+    if sentences[idx].get("phrases"):
+        raise ValueError("어절 모드 문장은 강도 조절 미지원 — 어절별 direction을 직접 수정하세요")
 
     if strength_level != 0:
         _ensure_variants_for_segment(meta, idx)

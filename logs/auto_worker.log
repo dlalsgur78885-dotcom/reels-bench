@@ -10829,3 +10829,10 @@ requests.exceptions.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
 
 [00:57:27] processing 3K7dTgd-2Hw
 [00:57:30] [FAIL] metadata fetch
+[13:30:32] auto_worker started (polling every 10s)
+
+[19:32:56] processing DTci2T1gYX4
+Gemini call error: ('Connection aborted.', ConnectionResetError(10054, '현재 연결은 원격 호스트에 의해 강제로 끊겼습니다', None, 10054, None))
+Gemini response truncated (MAX_TOKENS, 60 chars)
+[classify_hook_archetype] failed: Expecting property name enclosed in double quotes: line 3 column 30 (char 60) \u2014 fallback to surface classify
+[19:37:32] [done] DTci2T1gYX4 in 276s

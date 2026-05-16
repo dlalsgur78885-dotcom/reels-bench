@@ -100,13 +100,15 @@ def _gemini_key():
 
 def emotion_to_voice_settings(strength: float) -> dict:
     """슬라이더 0.0~1.0 → voice_settings.
-    strength=0.0 → 담백 (style=0, stab=0.7)
-    strength=0.5 → 기본 (style=0.3, stab=0.35)
-    strength=1.0 → 격앙 (style=0.7, stab=0.15)"""
+    v3 voice drift(성별 흔들림) 방어 — stability 하한 0.5, similarity_boost 0.85 고정.
+    표현력은 audio tag([excited][shouting] 등)으로 살리고 voice 일관성은 settings로 락.
+    strength=0.0 → 담백 (style=0,   stab=0.7)
+    strength=0.5 → 기본 (style=0.35, stab=0.6)
+    strength=1.0 → 격앙 (style=0.7,  stab=0.5)"""
     s = max(0.0, min(1.0, strength))
     return {
-        "stability": round(0.7 - s * 0.55, 4),
-        "similarity_boost": 0.75,
+        "stability": round(0.7 - s * 0.2, 4),
+        "similarity_boost": 0.85,
         "style": round(s * 0.7, 4),
         "use_speaker_boost": True,
     }

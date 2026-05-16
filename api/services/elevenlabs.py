@@ -199,6 +199,7 @@ def synth_segment(text, tag, voice_id, model_id, out_path, voice_settings=None,
                   previous_request_ids=None, previous_text=None, next_text=None):
     """단일 segment 합성. voice 일관성을 위해 이전 segment의 request_id를 chain 가능.
     ElevenLabs 공식: 동일 voice라도 호출마다 미세하게 다름 → previous_request_ids로 연결.
+    주의: eleven_v3는 previous_text/next_text 미지원 → request_ids만 사용.
     Returns: 응답의 request-id (있으면, 다음 호출 chain용)"""
     if voice_settings is None:
         voice_settings = emotion_to_voice_settings(DEFAULT_EMOTION)
@@ -208,11 +209,12 @@ def synth_segment(text, tag, voice_id, model_id, out_path, voice_settings=None,
         "model_id": model_id,
         "voice_settings": voice_settings,
     }
+    is_v3 = "v3" in (model_id or "")
     if previous_request_ids:
         payload["previous_request_ids"] = list(previous_request_ids)[-3:]  # 최근 3개
-    if previous_text:
+    if previous_text and not is_v3:
         payload["previous_text"] = previous_text[-500:]
-    if next_text:
+    if next_text and not is_v3:
         payload["next_text"] = next_text[:500]
     r = requests.post(
         f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",

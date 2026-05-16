@@ -315,22 +315,33 @@ def _state_response(meta):
 
 
 def _collect_directions(sentences):
-    """문장+어절(phrases) 모든 direction 수집 → [(sent_idx, phrase_idx_or_None, direction)].
-    어절 모드(phrases 있음)면 어절별 direction만 수집 (문장 전체 direction은 무시).
-    어절 모드가 아니면 문장 전체 direction 수집."""
+    """Gemini로 매핑할 free-text direction만 수집 (explicit tag가 있으면 skip).
+    Returns [(sent_idx, phrase_idx_or_None, direction)]."""
     collected = []
     for i, s in enumerate(sentences):
         phrases = s.get("phrases") or []
         if phrases:
             for j, p in enumerate(phrases):
+                if (p.get("tag") or "").strip():
+                    continue  # 명시적 tag 있으면 Gemini 패스
                 d = (p.get("direction") or "").strip()
                 if d:
                     collected.append((i, j, d))
         else:
+            if (s.get("tag") or "").strip():
+                continue
             d = (s.get("direction") or "").strip()
             if d:
                 collected.append((i, None, d))
     return collected
+
+
+def _resolve_tag(item, sent_idx, phrase_idx, tag_map):
+    """phrase 또는 sentence의 effective tag — explicit tag 우선, 없으면 tag_map."""
+    explicit = (item.get("tag") or "").strip()
+    if explicit:
+        return explicit
+    return tag_map.get((sent_idx, phrase_idx), "")
 
 
 def _build_synth_input(s, sent_idx, tag_map):
@@ -341,13 +352,13 @@ def _build_synth_input(s, sent_idx, tag_map):
     if phrases:
         parts = []
         for j, p in enumerate(phrases):
-            tag = tag_map.get((sent_idx, j), "")
+            tag = _resolve_tag(p, sent_idx, j, tag_map)
             if tag:
                 parts.append(f"{tag} {p['text']}")
             else:
                 parts.append(p["text"])
         return " ".join(parts), ""  # outer는 비움 — 인라인이 다 핸들
-    return s["text"], tag_map.get((sent_idx, None), "")
+    return s["text"], _resolve_tag(s, sent_idx, None, tag_map)
 
 
 def _build_full_script_text(sentences, tag_map):
@@ -458,7 +469,7 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
                 {
                     "text": p["text"],
                     "direction": p.get("direction", ""),
-                    "tag": tag_map.get((i, j), ""),
+                    "tag": _resolve_tag(p, i, j, tag_map),
                 }
                 for j, p in enumerate(s["phrases"])
             ]

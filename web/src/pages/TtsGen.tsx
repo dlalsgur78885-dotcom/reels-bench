@@ -2,7 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { ttsAuthedFetch, TTS_BASE } from '../api'
 
-interface InputSentence { start: number; end: number; text: string; direction?: string }
+interface Phrase { text: string; direction?: string }
+interface InputSentence {
+  start: number; end: number; text: string;
+  direction?: string;
+  phrases?: Phrase[]  // 어절 모드 (선택) — 있으면 백엔드가 inline tag로 합성
+}
 
 interface VoicePreset { value: string; label: string }
 
@@ -13,6 +18,7 @@ interface SegmentMeta {
   direction: string
   tag: string
   strength_level: number  // -2 ~ +2
+  phrases?: { text: string; direction: string; tag: string }[]  // 어절 모드 결과
 }
 
 interface JobState {
@@ -90,6 +96,28 @@ export default function TtsGen() {
 
   const updateSentence = (idx: number, patch: Partial<InputSentence>) => {
     setSentences(prev => prev.map((s, i) => i === idx ? { ...s, ...patch } : s))
+  }
+  const splitToPhrases = (idx: number) => {
+    setSentences(prev => prev.map((s, i) => {
+      if (i !== idx) return s
+      const tokens = (s.text || '').split(/\s+/).filter(t => t.trim())
+      if (!tokens.length) return s
+      return { ...s, phrases: tokens.map(t => ({ text: t, direction: '' })) }
+    }))
+  }
+  const mergePhrases = (idx: number) => {
+    setSentences(prev => prev.map((s, i) => {
+      if (i !== idx || !s.phrases) return s
+      const text = s.phrases.map(p => p.text).join(' ')
+      const { phrases: _drop, ...rest } = s  // eslint-disable-line @typescript-eslint/no-unused-vars
+      return { ...rest, text }
+    }))
+  }
+  const updatePhrase = (sentIdx: number, phraseIdx: number, patch: Partial<Phrase>) => {
+    setSentences(prev => prev.map((s, i) => {
+      if (i !== sentIdx || !s.phrases) return s
+      return { ...s, phrases: s.phrases.map((p, j) => j === phraseIdx ? { ...p, ...patch } : p) }
+    }))
   }
   const resetEdits = () => {
     setSentences(initialSentences)
@@ -235,23 +263,72 @@ export default function TtsGen() {
             )}
 
             <div style={{ marginBottom: 14 }}>
-              {sentences.map((s, i) => (
+              {sentences.map((s, i) => {
+                const inPhraseMode = !!(s.phrases && s.phrases.length)
+                const canEdit = !job && !synthLoading
+                return (
                 <div key={i} style={{
                   padding: '10px 0',
                   borderTop: i > 0 ? '1px solid var(--border-subtle)' : 'none',
                 }}>
-                  {s.direction && (
-                    <div style={{
-                      display: 'inline-block', fontSize: 10, fontWeight: 700,
-                      color: 'var(--accent)', background: 'rgba(99,102,241,0.10)',
-                      padding: '2px 8px', borderRadius: 10, marginBottom: 4, marginRight: 6,
-                    }}>
-                      🎭 {s.direction}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+                    {s.direction && !inPhraseMode && (
+                      <div style={{
+                        display: 'inline-block', fontSize: 10, fontWeight: 700,
+                        color: 'var(--accent)', background: 'rgba(99,102,241,0.10)',
+                        padding: '2px 8px', borderRadius: 10,
+                      }}>🎭 {s.direction}</div>
+                    )}
+                    {inPhraseMode && (
+                      <div style={{
+                        display: 'inline-block', fontSize: 10, fontWeight: 700,
+                        color: '#a16207', background: 'rgba(234,179,8,0.10)',
+                        padding: '2px 8px', borderRadius: 10,
+                      }}>🪄 어절 모드 ({s.phrases!.length}개)</div>
+                    )}
+                    {canEdit && (
+                      <button
+                        onClick={() => inPhraseMode ? mergePhrases(i) : splitToPhrases(i)}
+                        style={{
+                          fontSize: 10, padding: '2px 8px',
+                          background: 'var(--bg-elevated)', color: 'var(--text-body)',
+                          border: '1px solid var(--border)', borderRadius: 10, cursor: 'pointer',
+                        }}>
+                        {inPhraseMode ? '🔗 합치기' : '✂ 어절 나누기'}
+                      </button>
+                    )}
+                  </div>
+                  {inPhraseMode ? (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {s.phrases!.map((p, j) => (
+                        <div key={j} style={{
+                          display: 'flex', flexDirection: 'column', gap: 2,
+                          padding: '4px 8px',
+                          border: '1px solid', borderColor: p.direction?.trim() ? 'var(--accent)' : 'var(--border)',
+                          borderRadius: 6,
+                          background: p.direction?.trim() ? 'rgba(99,102,241,0.06)' : 'var(--bg-base)',
+                        }}>
+                          <span style={{ fontSize: 13, color: 'var(--text-body)' }}>{p.text}</span>
+                          <input
+                            type="text"
+                            value={p.direction || ''}
+                            onChange={e => updatePhrase(i, j, { direction: e.target.value })}
+                            placeholder="감정 (예: 놀라움)"
+                            disabled={!canEdit}
+                            style={{
+                              fontSize: 10, padding: '2px 4px', width: 100,
+                              border: 'none', borderBottom: '1px dashed var(--border)',
+                              background: 'transparent', color: 'var(--accent)', outline: 'none',
+                            }}
+                          />
+                        </div>
+                      ))}
                     </div>
+                  ) : (
+                    <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--text-body)' }}>{s.text}</div>
                   )}
-                  <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--text-body)' }}>{s.text}</div>
                 </div>
-              ))}
+              )})}
             </div>
             <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>목소리</label>
             <select value={voice} onChange={e => setVoice(e.target.value)} disabled={synthLoading}
@@ -317,6 +394,7 @@ export default function TtsGen() {
                   const tempo = job.tempos?.[i]
                   const expandedTag = variants[sel + 2] || ''  // 빈 문자열 = lazy 미생성
                   const hasPreview = !!expandedTag
+                  const phraseMode = !!(s.phrases && s.phrases.length)
                   return (
                     <div key={i} style={{
                       padding: '12px 0',
@@ -332,8 +410,30 @@ export default function TtsGen() {
                             (×{tempo.toFixed(2)} 압축)
                           </span>
                         )}
+                        {phraseMode && (
+                          <span style={{
+                            marginLeft: 8, fontSize: 10, fontWeight: 700,
+                            color: '#a16207', background: 'rgba(234,179,8,0.10)',
+                            padding: '1px 6px', borderRadius: 8,
+                          }}>🪄 어절 모드</span>
+                        )}
                       </div>
 
+                      {phraseMode ? (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+                          {s.phrases!.map((p, j) => (
+                            <span key={j} style={{
+                              fontSize: 11, padding: '2px 6px',
+                              border: '1px solid', borderColor: p.tag ? 'var(--accent)' : 'var(--border)',
+                              background: p.tag ? 'rgba(99,102,241,0.06)' : 'var(--bg-base)',
+                              borderRadius: 4,
+                            }}>
+                              <span style={{ color: 'var(--text-body)' }}>{p.text}</span>
+                              {p.tag && <span style={{ color: 'var(--accent)', marginLeft: 4, fontFamily: 'monospace', fontSize: 10 }}>{p.tag}</span>}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (<>
                       <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
                         {LEVELS.map((lv, j) => {
                           const active = sel === lv
@@ -389,6 +489,7 @@ export default function TtsGen() {
                           <span>{s.tag || '(no tag)'}</span>
                         )}
                       </div>
+                      </>)}
                     </div>
                   )
                 })}

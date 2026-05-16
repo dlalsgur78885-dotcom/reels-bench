@@ -540,7 +540,9 @@ export default function ScriptGenWizard() {
         const baseName = persona ? persona.name : '기본'
         // 동일 이름 충돌 방지: idx로 unique 보장
         const key = personas.length > 1 ? `${baseName} #${idx + 1}` : baseName
-        return [key, await r.json()]
+        // 페르소나 dict을 result에 임베드 — 후속 refine(다듬기 A/B)에서 anchor로 활용
+        const body = await r.json()
+        return [key, { ...body, _target_persona: persona }]
       })
       const settled = await Promise.allSettled(calls)
       clearInterval(pollInterval)
@@ -579,7 +581,8 @@ export default function ScriptGenWizard() {
         const refinedOut: Record<string, GeneratedScript> = { ...out }
         await Promise.all(Object.entries(out).map(async ([name, draft]) => {
           try {
-            const refined = await api.refineScript(draft, cleanUsps, shortcode, skipOpts)
+            const persona = (draft as any)._target_persona || null
+            const refined = await api.refineScript(draft, cleanUsps, shortcode, skipOpts, 'default', persona)
             if (refined && refined.sentences) {
               refinedOut[name] = {
                 ...draft,
@@ -2477,6 +2480,8 @@ function StepDone({
           _cost: (draft as any)._cost,
           _usp_mapping: draft._usp_mapping,
           stages: stagesByTab[active] || [],
+          // 저장된 대본에서도 다듬기 시 페르소나 anchor 보존 가능하도록 persona dict 통째 저장
+          target_persona: (draft as any)._target_persona || null,
         },
       })
       if (confirm(`"${active}" 대본 저장 완료! 저장된 대본 목록으로 이동할까요?`)) {
@@ -2583,7 +2588,9 @@ function StepDone({
                         try {
                           // 입력은 항상 base (있으면) 또는 현재 cur.sentences
                           const baseSents = stages.find(s => s.key === 'base')?.sentences || cur.sentences || []
-                          const refined = await api.refineScript({ ...cur, sentences: baseSents }, usps, shortcode || undefined, skipOpts, v)
+                          // 페르소나 anchor 전달 (variant=strong humanize 시 페르소나 시그널 보존용)
+                          const persona = (cur as any)._target_persona || null
+                          const refined = await api.refineScript({ ...cur, sentences: baseSents }, usps, shortcode || undefined, skipOpts, v, persona)
                           if (refined && refined.sentences) {
                             // direction/emotion/delivery 같은 TTS 메타를 base에서 1:1 merge (LLM 응답에 빠지면 base 유지)
                             // — rs.direction이 빈 문자열("")일 때도 base로 fallback (??는 null/undefined만 fallback)

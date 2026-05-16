@@ -2948,12 +2948,13 @@ JSON만. 설명 X."""
     return []
 
 
-def build_refine_prompt(draft: dict, unified_city: str | None, ref_info: dict | None = None, usps: list[dict] | None = None, awkward_info: list[dict] | None = None, vocab_repeats: dict[str, list[int]] | None = None) -> str:
+def build_refine_prompt(draft: dict, unified_city: str | None, ref_info: dict | None = None, usps: list[dict] | None = None, awkward_info: list[dict] | None = None, vocab_repeats: dict[str, list[int]] | None = None, target_persona: dict | None = None) -> str:
     """1차 결과를 다듬기 위한 검토 프롬프트.
 
     ref_info가 있으면 길이 매칭 + 리뷰 내용 조정 추가.
     awkward_info가 있으면 어색 문장 명시 + 강제 수정 지시.
     vocab_repeats가 있으면 어휘 중복 문장 pinpoint 교체 지시.
+    target_persona가 있으면 페르소나 시그널 보존 anchor 추가 — variant=strong(humanize)에서 페르소나 희석 방지.
     """
     sentences = draft.get("sentences", [])
     sent_text = "\n".join(
@@ -3053,9 +3054,47 @@ def build_refine_prompt(draft: dict, unified_city: str | None, ref_info: dict | 
 {ref_lines}
 """
 
+    # 페르소나 anchor block — variant=strong(humanize) 적용 시 페르소나 시그널 희석 방지
+    persona_block = ""
+    if target_persona:
+        p_name = (target_persona.get("name") or "").strip()
+        p_scenario = (target_persona.get("scenario") or "").strip()
+        p_pain_scene = (target_persona.get("pain_scene") or target_persona.get("pain") or "").strip()
+        p_desire_scene = (target_persona.get("desire_scene") or target_persona.get("desire") or "").strip()
+        p_identity = (target_persona.get("identity") or "").strip()
+        p_tone = (target_persona.get("tone_hint") or "").strip()
+        p_job = (target_persona.get("job_statement") or "").strip()
+        p_lf8_label = (target_persona.get("lf8_label") or "").strip()
+        p_signals = target_persona.get("signals") or []
+        lines = []
+        if p_name or p_scenario:
+            lines.append(f"- 페르소나: **{p_name}** ({p_scenario})")
+        if p_identity:
+            lines.append(f"- identity: \"{p_identity}\"")
+        if p_pain_scene:
+            lines.append(f"- pain_scene: \"{p_pain_scene}\"")
+        if p_desire_scene:
+            lines.append(f"- desire_scene: \"{p_desire_scene}\"")
+        if p_job:
+            lines.append(f"- JTBD: \"{p_job}\"")
+        if p_lf8_label:
+            lines.append(f"- LF8 동인: {p_lf8_label}")
+        if p_tone:
+            lines.append(f"- 톤 힌트: {p_tone}")
+        if p_signals:
+            sig_str = ", ".join(str(s) for s in p_signals[:8])
+            lines.append(f"- signals: {sig_str}")
+        if lines:
+            persona_block = (
+                "\n## 🎯 페르소나 anchor (humanize·다듬기 적용 후에도 시그널 식별 가능해야 함)\n"
+                + "\n".join(lines)
+                + "\n→ 위 pain_scene/desire_scene/identity 어휘 또는 그 동의어가 출력에 최소 1개 이상 유지될 것.\n"
+                + "→ tone_hint 어조 보존 (humanize 룰이 이를 덮어쓰지 않게 함).\n"
+            )
+
     target_n = (ref_info or {}).get("sentence_count") or len(sentences)
     return f"""당신은 한국어 광고 카피 에디터입니다. 아래 1차 카피를 검토하고 다듬어 최종본을 만드세요.
-
+{persona_block}
 ## 1차 카피
 {sent_text}
 
@@ -3066,7 +3105,7 @@ def build_refine_prompt(draft: dict, unified_city: str | None, ref_info: dict | 
 - **각 문장 음절 = 참고 ±15% 이내** — 위치별로 참고 음절수에 맞춰 다듬기
 - **마케터 톤 어휘 제거** ("최고잖아요/딱이죠/찾거든요/어때요/도와줘요/줍니다/입니다" → 자연 일상 어휘)
 - **참고 시그니처(끝 어구)는 같은 카테고리 punchy 어미면 OK** — 정확 매칭 X. 카테고리: 존댓말 punchy(잖아요/거든요/예요/네요/라요/더라구요/죠) / 반말 punchy(있지/이지/지롱/잖아) / 약속(보여줄게/알려줄게). 카테고리 외로 빠지면 원복
-- emotion·delivery·direction은 1차 값 유지 (텍스트만 다듬기)
+- emotion·delivery·direction은 1차 값 유지 (텍스트만 다듬기){"" if not persona_block else chr(10) + "- **페르소나 시그널 보존** — 위 anchor의 pain_scene/desire_scene/identity 어휘가 humanize 후에도 식별 가능해야 함"}
 {awkward_block}{vocab_block}
 ## 검토·다듬기 규칙
 {city_rule}- 어색한 한국어 어미·동사 조합 교체

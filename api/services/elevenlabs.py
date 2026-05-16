@@ -195,23 +195,35 @@ def expand_direction_to_variants(direction, base_tag):
     return row
 
 
-def synth_segment(text, tag, voice_id, model_id, out_path, voice_settings=None):
+def synth_segment(text, tag, voice_id, model_id, out_path, voice_settings=None,
+                  previous_request_ids=None, previous_text=None, next_text=None):
+    """단일 segment 합성. voice 일관성을 위해 이전 segment의 request_id를 chain 가능.
+    ElevenLabs 공식: 동일 voice라도 호출마다 미세하게 다름 → previous_request_ids로 연결.
+    Returns: 응답의 request-id (있으면, 다음 호출 chain용)"""
     if voice_settings is None:
         voice_settings = emotion_to_voice_settings(DEFAULT_EMOTION)
     tagged = f"{tag} {text}".strip()
+    payload = {
+        "text": tagged,
+        "model_id": model_id,
+        "voice_settings": voice_settings,
+    }
+    if previous_request_ids:
+        payload["previous_request_ids"] = list(previous_request_ids)[-3:]  # 최근 3개
+    if previous_text:
+        payload["previous_text"] = previous_text[-500:]
+    if next_text:
+        payload["next_text"] = next_text[:500]
     r = requests.post(
         f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
         headers={"xi-api-key": _eleven_key(), "Content-Type": "application/json"},
-        json={
-            "text": tagged,
-            "model_id": model_id,
-            "voice_settings": voice_settings,
-        },
+        json=payload,
         timeout=180,
     )
     if r.status_code != 200:
         raise RuntimeError(f"ElevenLabs error {r.status_code}: {r.text[:500]}")
     out_path.write_bytes(r.content)
+    return r.headers.get("Request-Id") or r.headers.get("request-id")
 
 
 def probe_duration(path):
@@ -362,13 +374,27 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
             tag_variants.append(["", "", t, "", ""])
     voice_settings = emotion_to_voice_settings(emotion_strength)
 
+    # 다음 segment 텍스트 미리 계산 (next_text용)
+    texts_and_tags = [_build_synth_input(s, i, tag_map) for i, s in enumerate(sentences)]
+
     sent_meta = []
     seg_paths = []
     total_chars = 0
+    prev_req_ids = []   # 직전 호출들의 request-id (voice 일관성용)
+    prev_text_buf = ""  # 이전 텍스트 컨텍스트
     for i, s in enumerate(sentences):
         out = job_dir / f"seg_{i:03d}.mp3"
-        text, outer_tag = _build_synth_input(s, i, tag_map)
-        synth_segment(text, outer_tag, voice_id, model_id, out, voice_settings)
+        text, outer_tag = texts_and_tags[i]
+        next_text = texts_and_tags[i + 1][0] if i + 1 < len(texts_and_tags) else None
+        req_id = synth_segment(
+            text, outer_tag, voice_id, model_id, out, voice_settings,
+            previous_request_ids=prev_req_ids[-3:] or None,
+            previous_text=prev_text_buf or None,
+            next_text=next_text,
+        )
+        if req_id:
+            prev_req_ids.append(req_id)
+        prev_text_buf = (prev_text_buf + " " + text).strip()[-500:]
         total_chars += len(f"{outer_tag} {text}".strip())
         phrases_meta = None
         if s.get("phrases"):
@@ -387,6 +413,7 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
             "direction": s.get("direction", ""),
             "tag": outer_tag,
             "strength_level": 0,  # -2 ~ +2 (phrase 모드는 무시됨)
+            "request_id": req_id,
         }
         if phrases_meta is not None:
             sm["phrases"] = phrases_meta
@@ -466,10 +493,25 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
     voice_settings = emotion_to_voice_settings(meta.get("base_emotion_strength", DEFAULT_EMOTION))
     seg_path = _job_dir(job_id) / f"seg_{idx:03d}.mp3"
 
-    synth_segment(s["text"], new_tag, meta["voice_id"], meta["model_id"],
-                  seg_path, voice_settings)
+    # 이전 segment의 request_id를 체이닝 (voice 일관성)
+    prev_ids = []
+    for k in range(max(0, idx - 3), idx):
+        rid = sentences[k].get("request_id")
+        if rid:
+            prev_ids.append(rid)
+    prev_text = " ".join(sentences[k].get("text", "") for k in range(max(0, idx - 2), idx))
+    next_text = sentences[idx + 1].get("text") if idx + 1 < len(sentences) else None
+
+    new_req_id = synth_segment(
+        s["text"], new_tag, meta["voice_id"], meta["model_id"],
+        seg_path, voice_settings,
+        previous_request_ids=prev_ids or None,
+        previous_text=prev_text or None,
+        next_text=next_text,
+    )
     sentences[idx]["strength_level"] = strength_level
     sentences[idx]["tag"] = new_tag
+    sentences[idx]["request_id"] = new_req_id
 
     seg_paths = []
     for i, sm in enumerate(sentences):

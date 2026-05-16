@@ -480,12 +480,13 @@ export const api = {
     .then(r => { clearClientCache('/api/channels'); return r }),
   userAnalysis: (username: string, limit = 24) =>
     cachedGet<UserAnalysis>(`/api/users/${encodeURIComponent(username)}/analysis?limit=${limit}`, 60_000),
-  refineScript: (draft: any, usps: any[], reference_shortcode?: string, skipOpts?: { skip_chunk_sections?: string[]; skip_sentence_starts?: number[] }, variant: 'default' | 'strong' = 'default') =>
+  refineScript: (draft: any, usps: any[], reference_shortcode?: string, skipOpts?: { skip_chunk_sections?: string[]; skip_sentence_starts?: number[] }, variant: 'default' | 'strong' = 'default', target_persona?: any) =>
     post<any>('/api/script/refine', {
       draft, usps, reference_shortcode,
       skip_chunk_sections: skipOpts?.skip_chunk_sections,
       skip_sentence_starts: skipOpts?.skip_sentence_starts,
       variant,
+      target_persona,
     }),
   extractPersonas: (usp: string, reviews: string[], pain_solved = '', product_id?: number, usp_index?: number) =>
     post<{ personas: PersonaCandidate[]; _cached?: boolean }>('/api/script/personas', { usp, reviews, pain_solved, product_id, usp_index }),

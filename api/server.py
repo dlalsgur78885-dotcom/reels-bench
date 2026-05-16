@@ -1512,6 +1512,8 @@ class ScriptRefineRequest(BaseModel):
     skip_chunk_sections: list[str] | None = None
     skip_sentence_starts: list[float] | None = None
     variant: str = "default"  # 'default' (기본 다듬기) | 'strong' (강한 변주 — 어휘 더 크게 변경)
+    # 페르소나 anchor — variant=strong(humanize) 적용 시 페르소나 시그널 보존용
+    target_persona: dict | None = None
 
 
 @app.post("/api/script/refine")
@@ -1566,7 +1568,7 @@ def refine_script(req: ScriptRefineRequest):
                 logger.info("[refine] vocab repeats: %s", {k: v for k, v in list(vocab_repeats.items())[:5]})
         except Exception as e:
             logger.warning("[refine] vocab repeat detection failed: %s", e)
-        prompt = script_gen.build_refine_prompt(req.draft, unified.get("city"), ref_info=ref_info, usps=req.usps, awkward_info=awkward_info, vocab_repeats=vocab_repeats)
+        prompt = script_gen.build_refine_prompt(req.draft, unified.get("city"), ref_info=ref_info, usps=req.usps, awkward_info=awkward_info, vocab_repeats=vocab_repeats, target_persona=req.target_persona)
         # variant: strong = 기본 refine + humanize-korean 룰 추가 (AI 티 제거)
         variant = req.variant if req.variant in ("default", "strong") else "default"
         if variant == "strong":
@@ -1574,6 +1576,11 @@ def refine_script(req: ScriptRefineRequest):
 
 ## ⚡ humanize 후처리 (variant=strong — im-not-ai 스타일)
 기본 다듬기 룰에 더해 **AI가 쓴 한글 티**를 자연스러운 사람말투로 교정.
+
+### 0. 페르소나 시그널 우선 (다른 humanize 룰보다 먼저)
+- 위 페르소나 anchor의 pain_scene·desire_scene·identity 어휘 중 **1개 이상** 출력에 명시
+- tone_hint 어조(반말/존댓말/인플루언서 톤 등) 유지
+- 아래 humanize 룰이 페르소나 어휘·톤을 덮어쓰지 않게 함 (페르소나 vocab은 추상명사·광고 클리셰 검열에서 제외)
 
 ### 1. 번역투 제거 (강제)
 - ❌ "~을 통해 / ~에 있어 / ~로 인해 / ~에 대해 / ~로서의"
@@ -2114,12 +2121,15 @@ def refine_saved_script(pid: int, sid: str, body: SavedRefineRequest, request: R
         except Exception as e:
             logger.warning("[saved-refine] vocab repeat detection failed: %s", e)
         draft = {"sentences": cur_sents}
-        prompt = script_gen.build_refine_prompt(draft, unified.get("city"), ref_info=ref_info, usps=usps, awkward_info=awkward_info, vocab_repeats=vocab_repeats)
+        # 저장된 대본 meta에 target_persona 저장돼 있으면 활용 (페르소나 anchor 보존용)
+        saved_persona = ((row.get("meta") or {}).get("target_persona")) or None
+        prompt = script_gen.build_refine_prompt(draft, unified.get("city"), ref_info=ref_info, usps=usps, awkward_info=awkward_info, vocab_repeats=vocab_repeats, target_persona=saved_persona)
         if variant == "strong":
             prompt += """
 
 ## ⚡ humanize 후처리 (variant=strong — im-not-ai 스타일)
-번역투/추상명사/균일 종결/접속사 남발/직역구/광고 클리셰 제거.
+페르소나 시그널(pain_scene·desire_scene·identity·tone_hint) 보존 우선.
+그 위에 번역투/추상명사/균일 종결/접속사 남발/직역구/광고 클리셰 제거.
 어절·음절·종결 룰은 보존, 어휘·톤만 humanize. 1차와 동일하면 실패.
 """
         target_n = ref_info["sentence_count"] if ref_info else len(cur_sents)

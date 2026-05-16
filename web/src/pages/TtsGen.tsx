@@ -2,12 +2,28 @@ import { useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { ttsAuthedFetch, TTS_BASE } from '../api'
 
-interface Phrase { text: string; direction?: string }
+interface Phrase {
+  text: string;
+  direction?: string;  // 자유 텍스트 (Gemini → tag 변환)
+  tag?: string;         // 명시적 tag (프리셋 — Gemini 안 거침)
+}
 interface InputSentence {
   start: number; end: number; text: string;
   direction?: string;
   phrases?: Phrase[]  // 어절 모드 (선택) — 있으면 백엔드가 inline tag로 합성
 }
+
+// 프리셋 — 클릭 한 번으로 phrase.tag 직접 셋팅 (Gemini 호출 없음)
+const PHRASE_PRESETS: { emoji: string; label: string; tag: string }[] = [
+  { emoji: '💪', label: '강조',   tag: '[emphatic]' },
+  { emoji: '🔥', label: '격앙',   tag: '[shouting][passionate]' },
+  { emoji: '😱', label: '놀람',   tag: '[surprised]' },
+  { emoji: '😨', label: '충격',   tag: '[gasping][surprised]' },
+  { emoji: '🤫', label: '속삭임', tag: '[whispers]' },
+  { emoji: '😌', label: '차분',   tag: '[calm]' },
+  { emoji: '🧐', label: '진지',   tag: '[serious][confident]' },
+  { emoji: '😊', label: '신남',   tag: '[excited][happy]' },
+]
 
 interface VoicePreset { value: string; label: string }
 
@@ -222,9 +238,18 @@ export default function TtsGen() {
         <>
           <div style={cardSt}>
             <div style={labelSt}>입력 스크립트</div>
-            <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>
               {sentences.length}문장 • 약 {totalChars}자
             </div>
+            {!job && !synthLoading && !sentences.some(s => s.phrases?.length) && (
+              <div style={{
+                fontSize: 11, color: 'var(--text-muted)', marginBottom: 12,
+                padding: '6px 10px', background: 'rgba(234,179,8,0.06)',
+                border: '1px solid rgba(234,179,8,0.3)', borderRadius: 6,
+              }}>
+                💡 특정 어절에 감정·강조 원하시면 문장 옆 <strong>"✂ 어절별 감정 추가"</strong> 버튼을 눌러보세요.
+              </div>
+            )}
 
             {/* 🎭 감정선 (TTS 안내) — 직접 direction 흐름 시각화 */}
             {sentences.some(s => (s.direction || '').trim()) && (
@@ -271,7 +296,7 @@ export default function TtsGen() {
                   padding: '10px 0',
                   borderTop: i > 0 ? '1px solid var(--border-subtle)' : 'none',
                 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
                     {s.direction && !inPhraseMode && (
                       <div style={{
                         display: 'inline-block', fontSize: 10, fontWeight: 700,
@@ -281,48 +306,99 @@ export default function TtsGen() {
                     )}
                     {inPhraseMode && (
                       <div style={{
-                        display: 'inline-block', fontSize: 10, fontWeight: 700,
-                        color: '#a16207', background: 'rgba(234,179,8,0.10)',
-                        padding: '2px 8px', borderRadius: 10,
+                        display: 'inline-block', fontSize: 11, fontWeight: 700,
+                        color: '#a16207', background: 'rgba(234,179,8,0.12)',
+                        padding: '3px 10px', borderRadius: 12,
                       }}>🪄 어절 모드 ({s.phrases!.length}개)</div>
                     )}
                     {canEdit && (
                       <button
                         onClick={() => inPhraseMode ? mergePhrases(i) : splitToPhrases(i)}
                         style={{
-                          fontSize: 10, padding: '2px 8px',
-                          background: 'var(--bg-elevated)', color: 'var(--text-body)',
-                          border: '1px solid var(--border)', borderRadius: 10, cursor: 'pointer',
-                        }}>
-                        {inPhraseMode ? '🔗 합치기' : '✂ 어절 나누기'}
+                          fontSize: 12, fontWeight: 600, padding: '5px 12px',
+                          background: inPhraseMode ? 'var(--bg-elevated)' : 'var(--accent)',
+                          color: inPhraseMode ? 'var(--text-body)' : '#fff',
+                          border: '1px solid', borderColor: inPhraseMode ? 'var(--border)' : 'var(--accent)',
+                          borderRadius: 6, cursor: 'pointer',
+                        }}
+                        title={inPhraseMode ? '어절 모드 해제' : '어절별 감정 적용 가능'}>
+                        {inPhraseMode ? '🔗 합치기' : '✂ 어절별 감정 추가'}
                       </button>
                     )}
                   </div>
                   {inPhraseMode ? (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                      {s.phrases!.map((p, j) => (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      {s.phrases!.map((p, j) => {
+                        const activePreset = PHRASE_PRESETS.find(pr => pr.tag === p.tag)
+                        const hasCustom = !!(p.direction && p.direction.trim())
+                        const hasEmotion = !!(p.tag || hasCustom)
+                        return (
                         <div key={j} style={{
-                          display: 'flex', flexDirection: 'column', gap: 2,
-                          padding: '4px 8px',
-                          border: '1px solid', borderColor: p.direction?.trim() ? 'var(--accent)' : 'var(--border)',
-                          borderRadius: 6,
-                          background: p.direction?.trim() ? 'rgba(99,102,241,0.06)' : 'var(--bg-base)',
+                          display: 'flex', flexDirection: 'column', gap: 4,
+                          padding: '6px 8px',
+                          border: '2px solid', borderColor: hasEmotion ? 'var(--accent)' : 'var(--border)',
+                          borderRadius: 8,
+                          background: hasEmotion ? 'rgba(99,102,241,0.06)' : 'var(--bg-base)',
                         }}>
-                          <span style={{ fontSize: 13, color: 'var(--text-body)' }}>{p.text}</span>
-                          <input
-                            type="text"
-                            value={p.direction || ''}
-                            onChange={e => updatePhrase(i, j, { direction: e.target.value })}
-                            placeholder="감정 (예: 놀라움)"
-                            disabled={!canEdit}
-                            style={{
-                              fontSize: 10, padding: '2px 4px', width: 100,
-                              border: 'none', borderBottom: '1px dashed var(--border)',
-                              background: 'transparent', color: 'var(--accent)', outline: 'none',
-                            }}
-                          />
+                          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-body)' }}>{p.text}</div>
+                          {/* 프리셋 버튼 row */}
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+                            {PHRASE_PRESETS.map(pr => {
+                              const active = activePreset?.tag === pr.tag
+                              return (
+                                <button
+                                  key={pr.tag}
+                                  onClick={() => {
+                                    if (active) updatePhrase(i, j, { tag: undefined })
+                                    else updatePhrase(i, j, { tag: pr.tag, direction: undefined })
+                                  }}
+                                  disabled={!canEdit}
+                                  title={`${pr.label} (${pr.tag})`}
+                                  style={{
+                                    fontSize: 11, padding: '2px 6px',
+                                    background: active ? 'var(--accent)' : 'transparent',
+                                    color: active ? '#fff' : 'var(--text-body)',
+                                    border: '1px solid', borderColor: active ? 'var(--accent)' : 'var(--border)',
+                                    borderRadius: 12, cursor: canEdit ? 'pointer' : 'not-allowed',
+                                  }}>
+                                  {pr.emoji}{active ? ` ${pr.label}` : ''}
+                                </button>
+                              )
+                            })}
+                            {/* 커스텀 toggle */}
+                            <button
+                              onClick={() => {
+                                if (hasCustom) updatePhrase(i, j, { direction: undefined })
+                                else updatePhrase(i, j, { direction: '', tag: undefined })
+                              }}
+                              disabled={!canEdit}
+                              title="직접 입력"
+                              style={{
+                                fontSize: 11, padding: '2px 6px',
+                                background: hasCustom ? 'var(--accent)' : 'transparent',
+                                color: hasCustom ? '#fff' : 'var(--text-body)',
+                                border: '1px solid', borderColor: hasCustom ? 'var(--accent)' : 'var(--border)',
+                                borderRadius: 12, cursor: canEdit ? 'pointer' : 'not-allowed',
+                              }}>✏</button>
+                          </div>
+                          {/* 직접 입력 활성 시 input */}
+                          {hasCustom && (
+                            <input
+                              type="text"
+                              value={p.direction || ''}
+                              onChange={e => updatePhrase(i, j, { direction: e.target.value })}
+                              placeholder="자유 표현 (예: 약간 떨리는)"
+                              disabled={!canEdit}
+                              autoFocus
+                              style={{
+                                fontSize: 11, padding: '3px 6px',
+                                border: '1px solid var(--accent)', borderRadius: 4,
+                                background: 'var(--bg-base)', color: 'var(--accent)', outline: 'none',
+                              }}
+                            />
+                          )}
                         </div>
-                      ))}
+                      )})}
                     </div>
                   ) : (
                     <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--text-body)' }}>{s.text}</div>

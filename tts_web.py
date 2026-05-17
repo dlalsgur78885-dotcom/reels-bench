@@ -56,7 +56,8 @@ def health():
 def voices():
     return {
         "presets": [
-            {"value": k, "label": v["label"]} for k, v in tts_svc.PRESETS.items()
+            {"value": k, "label": v["label"], "accepts": v.get("accepts", "any")}
+            for k, v in tts_svc.PRESETS.items()
         ],
         "ttl_sec": tts_svc.DEFAULT_TTL_SEC,
     }

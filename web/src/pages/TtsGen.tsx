@@ -25,7 +25,7 @@ const PHRASE_PRESETS: { emoji: string; label: string; tag: string }[] = [
   { emoji: '😊', label: '신남',   tag: '[excited][happy]' },
 ]
 
-interface VoicePreset { value: string; label: string }
+interface VoicePreset { value: string; label: string; accepts?: 'male' | 'female' | 'any' }
 
 interface SegmentMeta {
   start: number
@@ -78,13 +78,15 @@ const primaryBtnSt: React.CSSProperties = {
 }
 
 export default function TtsGen() {
-  const { state } = useLocation() as { state?: { sentences?: InputSentence[]; title?: string; voice?: string; from?: { path: string; label: string } } }
+  const { state } = useLocation() as { state?: { sentences?: InputSentence[]; title?: string; voice?: string; personaGender?: 'male' | 'female' | 'unknown'; from?: { path: string; label: string } } }
   const navigate = useNavigate()
   const initialSentences: InputSentence[] = state?.sentences || []
   const title = state?.title || ''
   const from = state?.from
   // 페르소나에서 voice 전달받으면 그걸 기본값 (없으면 joonpark)
   const initialVoice = state?.voice || 'joonpark'
+  // 페르소나 성별 — dropdown 필터링용 (male/female만 필터, unknown은 전부 표시)
+  const personaGender = state?.personaGender
 
   const [sentences, setSentences] = useState<InputSentence[]>(initialSentences)
   const [savedSentences, setSavedSentences] = useState<InputSentence[] | null>(null)
@@ -421,13 +423,28 @@ export default function TtsGen() {
                 </div>
               )})}
             </div>
-            <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>목소리</label>
-            <select value={voice} onChange={e => setVoice(e.target.value)} disabled={synthLoading}
-              style={{ width: '100%', padding: '8px 10px', fontSize: 13, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-base)' }}>
-              {(presets.length ? presets : [{ value: 'joonpark', label: 'JoonPark (기본)' }]).map(p => (
-                <option key={p.value} value={p.value}>{p.label}</option>
-              ))}
-            </select>
+            <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
+              목소리
+              {personaGender && personaGender !== 'unknown' && (
+                <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 500, color: 'var(--accent)' }}>
+                  · 페르소나 성별({personaGender === 'female' ? '여성' : '남성'})에 맞는 voice만 표시
+                </span>
+              )}
+            </label>
+            {(() => {
+              const all: VoicePreset[] = presets.length ? presets : [{ value: 'joonpark', label: 'JoonPark (기본)', accepts: 'any' }]
+              const filtered = personaGender && personaGender !== 'unknown'
+                ? all.filter(p => !p.accepts || p.accepts === 'any' || p.accepts === personaGender)
+                : all
+              return (
+                <select value={voice} onChange={e => setVoice(e.target.value)} disabled={synthLoading}
+                  style={{ width: '100%', padding: '8px 10px', fontSize: 13, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-base)' }}>
+                  {filtered.map(p => (
+                    <option key={p.value} value={p.value}>{p.label}</option>
+                  ))}
+                </select>
+              )
+            })()}
           </div>
 
           <button onClick={synthAll} disabled={synthLoading || !sentences.length} style={{

@@ -2661,7 +2661,8 @@ function StepDone({
                       navigate('/tts', { state: {
                         sentences: cur.sentences,
                         title: active,
-                        voice: persona?.voice,  // 페르소나가 voice 가지고 있으면 기본값으로
+                        voice: persona?.voice,            // 페르소나가 voice 가지고 있으면 기본값
+                        personaGender: persona?.gender,    // 'male'|'female'|'unknown' — dropdown 필터링용
                         from: { path: '__back__', label: '대본 생성 결과' },
                       } })
                     }}

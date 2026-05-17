@@ -5178,7 +5178,7 @@ class TtsSegmentRequest(BaseModel):
 def tts_voices():
     return {
         "presets": [
-            {"value": k, "label": v["label"]}
+            {"value": k, "label": v["label"], "accepts": v.get("accepts", "any")}
             for k, v in tts_svc.PRESETS.items()
         ],
         "ttl_sec": tts_svc.DEFAULT_TTL_SEC,

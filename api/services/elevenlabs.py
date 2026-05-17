@@ -521,20 +521,32 @@ def _ensure_sentence_end(text):
 
 def _build_full_script_text(sentences, tag_map):
     """전체 스크립트를 단일 호출용 텍스트로 합침.
-    각 sentence 끝에 마침표 강제 + 빈 줄(\\n\\n)로 join → 명확한 sentence boundary 호흡.
-    빈 줄은 ElevenLabs v3에서 마침표 단독보다 더 긴 호흡 (~400-500ms) 신호."""
+    각 sentence 사이는 ', ' (콤마+공백) — ElevenLabs가 짧은 호흡(~150ms) 일관 적용.
+    중간 sentence의 trailing '.'는 strip (', '로 대체). 마지막 sentence의 ./?/! 는 유지."""
     parts = []
     for i, s in enumerate(sentences):
         text, outer_tag = _build_synth_input(s, i, tag_map)
         combined = f"{outer_tag} {text}".strip() if outer_tag else text
         combined = _ensure_sentence_end(combined)
         parts.append(combined)
-    return "\n\n".join(parts)
+    if not parts:
+        return ""
+    out = []
+    for i, p in enumerate(parts):
+        if i < len(parts) - 1:
+            # 중간 문장의 trailing period 제거 (?, ! 는 유지)
+            s = p.rstrip()
+            while s and s[-1] == ".":
+                s = s[:-1].rstrip()
+            out.append(s)
+        else:
+            out.append(p)
+    return ", ".join(out)
 
 
 def _rebuild_full_text_from_meta(sentences):
-    """저장된 meta의 sentences에서 full text 재조립 (각 segment의 현재 tag 사용).
-    감정 전환 어절 사이 콤마 / 문장 사이 빈 줄 — _build_full_script_text와 동일 호흡 가이드."""
+    """저장된 meta의 sentences에서 full text 재조립 — _build_full_script_text와 동일 호흡 가이드.
+    감정 전환 어절 사이 콤마 / 문장 사이도 콤마(짧은 호흡)."""
     parts = []
     for s in sentences:
         if s.get("phrases"):
@@ -558,7 +570,18 @@ def _rebuild_full_text_from_meta(sentences):
             tag = s.get("tag", "")
             text = f"{tag} {s['text']}".strip() if tag else s["text"]
         parts.append(_ensure_sentence_end(text))
-    return "\n\n".join(parts)
+    if not parts:
+        return ""
+    out = []
+    for i, p in enumerate(parts):
+        if i < len(parts) - 1:
+            t = p.rstrip()
+            while t and t[-1] == ".":
+                t = t[:-1].rstrip()
+            out.append(t)
+        else:
+            out.append(p)
+    return ", ".join(out)
 
 
 def _chunk_sentences_for_v3(sentences, tag_map, max_chars):

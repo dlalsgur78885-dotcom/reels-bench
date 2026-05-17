@@ -51,9 +51,25 @@ export function normalizeDirection(raw: string | undefined | null): string {
   return EMO_KO[word] || word
 }
 
-export function buildTtsText(sentences: Array<{ text?: string; direction?: string }>, fallback?: string): string {
+type PhraseLike = { text?: string; tag?: string; direction?: string }
+type SentenceLike = { text?: string; direction?: string; phrases?: PhraseLike[] }
+
+export function buildTtsText(sentences: Array<SentenceLike>, fallback?: string): string {
   if (!sentences || !sentences.length) return fallback || ''
   return sentences.map(s => {
+    const phrases = s.phrases || []
+    if (phrases.length) {
+      // 어절 모드 — phrase마다 tag/direction inline 박음
+      // ElevenLabs로 전송될 형태와 동일하게: '(tag) text (tag) text ...'
+      return phrases.map(p => {
+        const pTag = (p.tag || '').trim()  // 이미 '(...)' 형식
+        const pDir = normalizeDirection(p.direction)
+        const cue = pTag || (pDir ? `(${pDir})` : '')
+        const pTxt = (p.text || '').trim()
+        return cue ? `${cue} ${pTxt}` : pTxt
+      }).join(' ')
+    }
+    // 일반 모드 — sentence direction만
     const dir = normalizeDirection(s.direction)
     const txt = (s.text || '').trim()
     return dir ? `(${dir}) ${txt}` : txt

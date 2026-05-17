@@ -57,11 +57,12 @@ except OSError:
 GEMINI_MODEL = "gemini-3-flash-preview"
 
 PRESETS = {
-    "yuna":     {"id": "xi3rF0t7dg7uN2M0WUhr", "label": "Yuna (여성, 부드러움)"},
-    "han_aim":  {"id": "8jHHF8rMqMlg8if2mOUe", "label": "Han Aim (여성, 캐주얼)"},
-    "jennie":   {"id": "z6Kj0hecH20CdetSElRT", "label": "Jennie (여성, 자신감)"},
-    "male":     {"id": "oezp1w0IATNLah6Gnq1W", "label": "숏폼 남성"},
-    "joonpark": {"id": "7Nah3cbXKVmGX7gQUuwz", "label": "JoonPark (남녀 공용, professional)"},
+    # accepts: voice가 자연스럽게 들리는 페르소나 성별 — female / male / any
+    "yuna":     {"id": "xi3rF0t7dg7uN2M0WUhr", "label": "Yuna (여성, 부드러움)",       "accepts": "female"},
+    "han_aim":  {"id": "8jHHF8rMqMlg8if2mOUe", "label": "Han Aim (여성, 캐주얼)",      "accepts": "female"},
+    "jennie":   {"id": "z6Kj0hecH20CdetSElRT", "label": "Jennie (여성, 자신감)",       "accepts": "female"},
+    "male":     {"id": "oezp1w0IATNLah6Gnq1W", "label": "숏폼 남성",                    "accepts": "male"},
+    "joonpark": {"id": "7Nah3cbXKVmGX7gQUuwz", "label": "JoonPark (남녀 공용, professional)", "accepts": "any"},
 }
 
 DEFAULT_TTL_SEC = 7200  # 2시간 (로컬 임시 캐시 — 결과는 Supabase에 영구 보관)

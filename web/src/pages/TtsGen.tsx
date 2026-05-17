@@ -78,7 +78,7 @@ const primaryBtnSt: React.CSSProperties = {
 }
 
 export default function TtsGen() {
-  const { state } = useLocation() as { state?: { sentences?: InputSentence[]; title?: string; voice?: string; personaGender?: 'male' | 'female' | 'unknown'; from?: { path: string; label: string } } }
+  const { state } = useLocation() as { state?: { sentences?: InputSentence[]; title?: string; voice?: string; personaGender?: 'male' | 'female' | 'unknown'; persona?: any; from?: { path: string; label: string } } }
   const navigate = useNavigate()
   const initialSentences: InputSentence[] = state?.sentences || []
   const title = state?.title || ''
@@ -87,6 +87,8 @@ export default function TtsGen() {
   const initialVoice = state?.voice || 'joonpark'
   // 페르소나 성별 — dropdown 필터링용 (male/female만 필터, unknown은 전부 표시)
   const personaGender = state?.personaGender
+  // 페르소나 dict — 합성 시 인라인 cue로 변환됨 (백엔드)
+  const persona = state?.persona
 
   const [sentences, setSentences] = useState<InputSentence[]>(initialSentences)
   const [savedSentences, setSavedSentences] = useState<InputSentence[] | null>(null)
@@ -206,7 +208,7 @@ export default function TtsGen() {
       const r = await ttsAuthedFetch('/api/tts/synthesize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sentences: useSentences, voice_name: voice }),
+        body: JSON.stringify({ sentences: useSentences, voice_name: voice, persona }),
       })
       if (!r.ok) {
         const data = await r.json().catch(() => ({}))
@@ -472,6 +474,19 @@ export default function TtsGen() {
                     <option key={p.value} value={p.value}>{p.label}</option>
                   ))}
                 </select>
+              )
+            })()}
+            {/* 페르소나 cue 미리보기 (실제 합성 시 첫 문장 앞에 인라인 prepend됨) */}
+            {persona?.name && (() => {
+              const cleanName = (persona.name as string).replace(/\s*#\d+\s*$/, '').trim()
+              const g = (persona.gender || '').toLowerCase()
+              const cue = g === 'female' ? `(${cleanName}, 여성)`
+                : g === 'male' ? `(${cleanName}, 남성)`
+                : `(${cleanName})`
+              return (
+                <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+                  🎭 페르소나 cue (voice 톤 가이드): <span style={{ color: 'var(--accent)', fontFamily: 'monospace' }}>{cue}</span>
+                </div>
               )
             })()}
           </div>

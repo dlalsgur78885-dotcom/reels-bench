@@ -545,6 +545,27 @@ def _approx_segment_timings(sentences, total_duration):
 MIN_TOTAL_CHARS = 5  # ElevenLabs v3 hallucination 방어 — 짧은 입력은 환각으로 다른 단어 생성
 
 
+def build_persona_cue(persona):
+    """페르소나 dict → ElevenLabs v3 voice 톤 가이드용 인라인 cue.
+    첫 문장 앞에 prepend되며 모델은 cue를 발화 안 하고 톤만 조정.
+    예: '(알뜰살뜰 대학생 지수, 여성)' → joonpark voice가 여성 톤으로 시프트.
+
+    형식: '(name 정리, 성별)' — name에서 '#숫자' suffix 제거.
+    성별 unknown이면 name만."""
+    if not persona:
+        return None
+    name = (persona.get("name") or "").strip()
+    name = re.sub(r"\s*#\d+\s*$", "", name).strip()
+    if not name:
+        return None
+    gender = (persona.get("gender") or "").lower()
+    if gender == "female":
+        return f"({name}, 여성)"
+    if gender == "male":
+        return f"({name}, 남성)"
+    return f"({name})"
+
+
 def _sanitize_sentences(sentences):
     """입력 정리:
     1) sentence.text strip — 빈/공백 only면 제거 안 함 (sentence 자체 제거는 의도 위험)
@@ -573,9 +594,10 @@ def _sanitize_sentences(sentences):
 
 
 def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
-                     emotion_strength=DEFAULT_EMOTION):
+                     emotion_strength=DEFAULT_EMOTION, persona=None):
     """전체 합성. job 폴더 생성하고 meta.json + 모든 seg + final.mp3 저장.
-    어절별 감정: sentence.phrases = [{text, direction}] 형태일 때 inline tag로 합성."""
+    어절별 감정: sentence.phrases = [{text, direction}] 형태일 때 inline tag로 합성.
+    persona 전달 시 build_persona_cue로 인라인 cue 첫 문장 앞에 prepend — voice 톤 시프트."""
     if voice_name not in PRESETS:
         raise ValueError(f"unknown voice preset: {voice_name}. choices: {list(PRESETS.keys())}")
     voice_id = PRESETS[voice_name]["id"]
@@ -612,6 +634,10 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
 
     # 단일 호출용 full text 조립 (voice 일관성 — v3는 호출마다 voice 흔들림)
     full_text = _build_full_script_text(sentences, tag_map)
+    # 페르소나 cue 인라인 prepend — voice 톤을 페르소나에 맞게 시프트 (joonpark도 여성 가능)
+    persona_cue = build_persona_cue(persona)
+    if persona_cue:
+        full_text = f"{persona_cue} {full_text}"
 
     # 문장별 메타 (UI 표시용; per-segment mp3는 없음)
     sent_meta = []
@@ -666,6 +692,7 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
         "total_duration": round(total_duration, 2),
         "char_count": total_chars,
         "supabase_url": supabase_url,
+        "persona_cue": persona_cue,  # regenerate_segment에서 재사용
     }
     _save_meta(job_id, meta)
     return _state_response(meta)
@@ -716,6 +743,10 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
 
     # 전체 재합성 (voice 일관성 위해 단일 호출 고수)
     full_text = _rebuild_full_text_from_meta(sentences)
+    # 페르소나 cue 동일하게 유지
+    persona_cue = meta.get("persona_cue")
+    if persona_cue:
+        full_text = f"{persona_cue} {full_text}"
     voice_settings = emotion_to_voice_settings(meta.get("base_emotion_strength", DEFAULT_EMOTION))
     final_path = _job_dir(job_id) / "final.mp3"
     _full_synth(full_text, meta["voice_id"], meta["model_id"], final_path, voice_settings)

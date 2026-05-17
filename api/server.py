@@ -5122,6 +5122,7 @@ class TtsSynthRequest(BaseModel):
     voice_name: str = "joonpark"
     model_id: str = "eleven_v3"
     emotion_strength: float = 0.5  # 0.0~1.0 (전체 base)
+    persona: dict | None = None  # name, gender → 인라인 cue로 voice 톤 시프트
 
 
 class TtsSegmentRequest(BaseModel):
@@ -5175,6 +5176,7 @@ def tts_synthesize(req: TtsSynthRequest):
             voice_name=req.voice_name,
             model_id=req.model_id,
             emotion_strength=req.emotion_strength,
+            persona=req.persona,
         )
         logger.info("[tts/synth] OK job=%s voice=%s segs=%d chars=%d dur=%.1fs",
                     result["job_id"], req.voice_name, result["segment_count"],

@@ -321,6 +321,7 @@ export default function MyScriptDetail() {
                   title: data?.title || '',
                   voice: data?.meta?.target_persona?.voice,
                   personaGender: data?.meta?.target_persona?.gender,
+                  persona: data?.meta?.target_persona,  // 합성 시 인라인 cue
                   from: { path: `/my-scripts/${pid}/${sid}`, label: '저장된 대본' },
                 } })}
                 disabled={!displayedSents.length}

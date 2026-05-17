@@ -813,21 +813,21 @@ V3_MAX_CHARS = 250   # v3 alpha는 ~250자 넘으면 환각/반복 — 청크 �
 def build_persona_cue(persona):
     """페르소나 dict → ElevenLabs v3 voice 톤 가이드용 인라인 cue.
     첫 문장 맨 앞에 prepend되며 모델은 cue를 발화 안 하고 톤만 조정.
-    예: '(여성 인플루언서)' → joonpark voice가 그 톤으로 시프트.
+    예: '(인플루언서 여성 목소리로)' → joonpark voice가 그 톤으로 시프트.
 
-    형식: '({gender} 인플루언서)' — 광고 reel 화자가 대부분 인플루언서 톤이라는 가정.
-    gender 없으면 '({name})' fallback."""
+    형식: '(인플루언서 {gender} 목소리로)' — 광고 reel 화자가 대부분 인플루언서 톤이라는 가정.
+    gender 없으면 '({name} 목소리로)' fallback."""
     if not persona:
         return None
     name = (persona.get("name") or "").strip()
     name = re.sub(r"\s*#\d+\s*$", "", name).strip()
     gender = (persona.get("gender") or "").lower()
     if gender == "female":
-        return "(여성 인플루언서)"
+        return "(인플루언서 여성 목소리로)"
     if gender == "male":
-        return "(남성 인플루언서)"
+        return "(인플루언서 남성 목소리로)"
     if name:
-        return f"({name})"
+        return f"({name} 목소리로)"
     return None
 
 

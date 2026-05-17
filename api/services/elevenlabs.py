@@ -812,39 +812,23 @@ V3_MAX_CHARS = 250   # v3 alpha는 ~250자 넘으면 환각/반복 — 청크 �
 
 def build_persona_cue(persona):
     """페르소나 dict → ElevenLabs v3 voice 톤 가이드용 인라인 cue.
-    첫 문장 앞에 prepend되며 모델은 cue를 발화 안 하고 톤만 조정.
-    예: '(인플루언서 여성, 알뜰살뜰 대학생 지수 목소리로)' → joonpark voice가 그 톤으로 시프트.
+    첫 문장 맨 앞에 prepend되며 모델은 cue를 발화 안 하고 톤만 조정.
+    예: '(여성 인플루언서)' → joonpark voice가 그 톤으로 시프트.
 
-    형식: '(타입 + 성별, name 목소리로)' 또는 fallback '(name)'.
-    name에서 '#숫자' suffix 제거."""
+    형식: '({gender} 인플루언서)' — 광고 reel 화자가 대부분 인플루언서 톤이라는 가정.
+    gender 없으면 '({name})' fallback."""
     if not persona:
         return None
     name = (persona.get("name") or "").strip()
     name = re.sub(r"\s*#\d+\s*$", "", name).strip()
-    if not name:
-        return None
-
     gender = (persona.get("gender") or "").lower()
-    gender_str = "여성" if gender == "female" else ("남성" if gender == "male" else "")
-
-    # 캐릭터 유형 추출 — identity > job_statement 첫 키워드 > scenario 첫 명사
-    identity = (persona.get("identity") or "").strip()
-    job = (persona.get("job_statement") or "").strip()
-    char_hint = ""
-    if identity and len(identity) <= 30:
-        char_hint = identity
-    elif job:
-        # JTBD에서 핵심 캐릭터만 (앞 20자)
-        char_hint = job[:20].strip()
-
-    # 조합: 캐릭터+성별 우선, 없으면 성별만, 없으면 name만
-    if char_hint and gender_str:
-        return f"({char_hint} {gender_str}, {name} 목소리로)"
-    if char_hint:
-        return f"({char_hint}, {name} 목소리로)"
-    if gender_str:
-        return f"({gender_str}, {name} 목소리로)"
-    return f"({name} 목소리로)"
+    if gender == "female":
+        return "(여성 인플루언서)"
+    if gender == "male":
+        return "(남성 인플루언서)"
+    if name:
+        return f"({name})"
+    return None
 
 
 def _sanitize_sentences(sentences):

@@ -106,21 +106,34 @@ def storage_upload(bucket, path, file_bytes, content_type="application/octet-str
     return False, f"{r.status_code}: {r.text[:200]}"
 
 
+_BUCKETS_KNOWN = set()  # 프로세스 메모리 — 이미 생성 확인된 버킷
+
+
 def storage_create_bucket(name, public=True):
-    """버킷 생성 (이미 있으면 409 → OK 처리). idempotent."""
+    """버킷 생성 (이미 있으면 409 → OK 처리). idempotent.
+    같은 프로세스에서 한 번 성공한 버킷은 재호출 안 함 (timeout 회피)."""
+    if name in _BUCKETS_KNOWN:
+        return True
     sk = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip() or SUPABASE_ANON_KEY
     h = {
         "apikey": sk,
         "Authorization": f"Bearer {sk}",
         "Content-Type": "application/json",
     }
-    r = _session.post(
-        f"{SUPABASE_URL}/storage/v1/bucket",
-        headers=h,
-        json={"id": name, "name": name, "public": public},
-        timeout=10,
-    )
-    return r.status_code in (200, 201, 409, 400)  # 400 = duplicate (Supabase 메시지 다름)
+    try:
+        r = _session.post(
+            f"{SUPABASE_URL}/storage/v1/bucket",
+            headers=h,
+            json={"id": name, "name": name, "public": public},
+            timeout=30,  # 10→30 (느린 Supabase 대응)
+        )
+        ok = r.status_code in (200, 201, 409, 400)  # 400 = duplicate
+    except Exception:
+        # 네트워크/timeout — 버킷이 있다고 가정하고 upload 시도
+        ok = True
+    if ok:
+        _BUCKETS_KNOWN.add(name)
+    return ok
 
 
 def storage_public_url(bucket, path):

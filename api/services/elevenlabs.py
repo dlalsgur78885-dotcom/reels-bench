@@ -477,20 +477,43 @@ def _build_synth_input(s, sent_idx, tag_map):
     return s["text"], _resolve_tag(s, sent_idx, None, tag_map)
 
 
+_SENT_END_CHARS = set(".!?…")
+
+
+def _ensure_sentence_end(text):
+    """문장 끝에 종결부호 없으면 마침표 추가 — v2/v3가 호흡 위치를 sentence boundary로 고정.
+    원본 끝에 ?나 !가 있으면 그대로. 없으면 . 추가."""
+    if not text:
+        return text
+    t = text.rstrip()
+    if not t:
+        return text
+    if t[-1] in _SENT_END_CHARS:
+        return t
+    # 한국어 ',' 로 끝나면 그대로 (의도된 이어짐)
+    if t[-1] == ",":
+        return t
+    return t + "."
+
+
 def _build_full_script_text(sentences, tag_map):
     """전체 스크립트를 단일 호출용 텍스트로 합침.
     문장마다 outer tag(+text) 혹은 인라인 태그 조립된 text를 공백으로 연결.
-    voice 일관성 — eleven_v3가 호출마다 미세하게 voice가 흔들리는 문제 회피."""
+    voice 일관성 — eleven_v3가 호출마다 미세하게 voice가 흔들리는 문제 회피.
+    각 sentence 끝에 마침표 강제 — v2가 한 문장 중간에 호흡 두고 다른 문장과 합치는 문제 방지."""
     parts = []
     for i, s in enumerate(sentences):
         text, outer_tag = _build_synth_input(s, i, tag_map)
-        parts.append(f"{outer_tag} {text}".strip() if outer_tag else text)
+        combined = f"{outer_tag} {text}".strip() if outer_tag else text
+        combined = _ensure_sentence_end(combined)
+        parts.append(combined)
     return " ".join(parts)
 
 
 def _rebuild_full_text_from_meta(sentences):
     """저장된 meta의 sentences에서 full text 재조립 (각 segment의 현재 tag 사용).
-    regenerate 시 strength_level 반영된 tag를 그대로 활용."""
+    regenerate 시 strength_level 반영된 tag를 그대로 활용.
+    각 sentence 끝에 마침표 강제 — _build_full_script_text와 동일 호흡 가이드."""
     parts = []
     for s in sentences:
         if s.get("phrases"):
@@ -502,7 +525,7 @@ def _rebuild_full_text_from_meta(sentences):
         else:
             tag = s.get("tag", "")
             text = f"{tag} {s['text']}".strip() if tag else s["text"]
-        parts.append(text)
+        parts.append(_ensure_sentence_end(text))
     return " ".join(parts)
 
 

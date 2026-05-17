@@ -474,22 +474,25 @@ def _resolve_tag(item, sent_idx, phrase_idx, tag_map):
 
 
 def _build_synth_input(s, sent_idx, tag_map):
-    """phrases가 있으면 inline-tagged text 조립, 없으면 plain text + outer tag.
-    ElevenLabs v3는 텍스트 중간에 [tag] 삽입 시 그 시점부터 적용됨.
-    phrase(어절) 사이는 공백만 — 한 문장 안 자연 흐름 유지 (콤마 호흡 X).
-    호흡은 sentence boundary에서만.
+    """phrases가 있어도 inline tag는 사용하지 않음.
+    이유: ElevenLabs v3가 inline [tag] 마커마다 짧은 pause를 자동 삽입 →
+    한 문장 안에서도 어절 단위로 뚝뚝 끊겨 들림.
+    대신 phrase의 첫 번째 비어있지 않은 tag를 sentence-level outer tag로 채택,
+    텍스트는 plain join (어절 사이 공백만).
     Returns (text, outer_tag)."""
     phrases = s.get("phrases") or []
     if phrases:
-        result = ""
+        plain_text = " ".join(p.get("text", "") for p in phrases if p.get("text"))
+        # phrase의 첫 비어있지 않은 tag를 outer로. 없으면 _resolve_tag 폴백 (sentence-level).
+        outer = ""
         for j, p in enumerate(phrases):
-            tag = _resolve_tag(p, sent_idx, j, tag_map)
-            piece = f"{tag} {p['text']}" if tag else p["text"]
-            if j == 0:
-                result = piece
-            else:
-                result += " " + piece
-        return result, ""  # outer는 비움 — 인라인이 다 핸들
+            t = _resolve_tag(p, sent_idx, j, tag_map)
+            if t:
+                outer = t
+                break
+        if not outer:
+            outer = _resolve_tag(s, sent_idx, None, tag_map)
+        return plain_text, outer
     return s["text"], _resolve_tag(s, sent_idx, None, tag_map)
 
 
@@ -538,20 +541,22 @@ def _build_full_script_text(sentences, tag_map):
 
 
 def _rebuild_full_text_from_meta(sentences):
-    """저장된 meta의 sentences에서 full text 재조립 — _build_full_script_text와 동일 호흡 가이드.
-    phrase 사이는 공백만 (한 문장 안 자연 흐름). 호흡은 문장 사이 콤마에서만."""
+    """저장된 meta의 sentences에서 full text 재조립.
+    inline tag는 제외 (v3가 [tag]마다 pause 삽입) — 첫 비어있지 않은 tag만 sentence 앞 outer로.
+    호흡은 문장 사이 콤마에서만."""
     parts = []
     for s in sentences:
         if s.get("phrases"):
-            result = ""
-            for j, p in enumerate(s["phrases"]):
-                tag = p.get("tag", "")
-                piece = f"{tag} {p['text']}".strip() if tag else p["text"]
-                if j == 0:
-                    result = piece
-                else:
-                    result += " " + piece
-            text = result
+            plain = " ".join(p.get("text", "") for p in s["phrases"] if p.get("text"))
+            outer = ""
+            for p in s["phrases"]:
+                pt = p.get("tag", "")
+                if pt:
+                    outer = pt
+                    break
+            if not outer:
+                outer = s.get("tag", "")
+            text = f"{outer} {plain}".strip() if outer else plain
         else:
             tag = s.get("tag", "")
             text = f"{tag} {s['text']}".strip() if tag else s["text"]

@@ -476,17 +476,27 @@ def _resolve_tag(item, sent_idx, phrase_idx, tag_map):
 def _build_synth_input(s, sent_idx, tag_map):
     """phrases가 있으면 inline-tagged text 조립, 없으면 plain text + outer tag.
     ElevenLabs v3는 텍스트 중간에 [tag] 삽입 시 그 시점부터 적용됨.
+    감정 태그 전환 시 콤마 삽입 → 짧은 호흡 (~150ms) 주어 자연스러운 감정 전환.
     Returns (text, outer_tag)."""
     phrases = s.get("phrases") or []
     if phrases:
-        parts = []
+        result = ""
+        prev_tag = None
         for j, p in enumerate(phrases):
             tag = _resolve_tag(p, sent_idx, j, tag_map)
-            if tag:
-                parts.append(f"{tag} {p['text']}")
+            piece = f"{tag} {p['text']}" if tag else p["text"]
+            if j == 0:
+                result = piece
             else:
-                parts.append(p["text"])
-        return " ".join(parts), ""  # outer는 비움 — 인라인이 다 핸들
+                # 태그 전환(이전과 다르면) → 콤마로 짧은 pause. 단 이전이 이미 구두점으로 끝나면 안 추가
+                tag_changed = tag != prev_tag and (tag or prev_tag)
+                last_ch = result.rstrip()[-1:] if result.rstrip() else ""
+                if tag_changed and last_ch not in ",.!?…":
+                    result += ", " + piece
+                else:
+                    result += " " + piece
+            prev_tag = tag
+        return result, ""  # outer는 비움 — 인라인이 다 핸들
     return s["text"], _resolve_tag(s, sent_idx, None, tag_map)
 
 
@@ -526,15 +536,27 @@ def _build_full_script_text(sentences, tag_map):
 def _rebuild_full_text_from_meta(sentences):
     """저장된 meta의 sentences에서 full text 재조립 (각 segment의 현재 tag 사용).
     regenerate 시 strength_level 반영된 tag를 그대로 활용.
-    각 sentence 끝에 마침표 강제 — _build_full_script_text와 동일 호흡 가이드."""
+    각 sentence 끝에 마침표 강제 — _build_full_script_text와 동일 호흡 가이드.
+    감정 전환 어절 사이 콤마 — _build_synth_input과 동일."""
     parts = []
     for s in sentences:
         if s.get("phrases"):
-            phrase_parts = []
-            for p in s["phrases"]:
+            result = ""
+            prev_tag = None
+            for j, p in enumerate(s["phrases"]):
                 tag = p.get("tag", "")
-                phrase_parts.append(f"{tag} {p['text']}".strip() if tag else p["text"])
-            text = " ".join(phrase_parts)
+                piece = f"{tag} {p['text']}".strip() if tag else p["text"]
+                if j == 0:
+                    result = piece
+                else:
+                    tag_changed = tag != prev_tag and (tag or prev_tag)
+                    last_ch = result.rstrip()[-1:] if result.rstrip() else ""
+                    if tag_changed and last_ch not in ",.!?…":
+                        result += ", " + piece
+                    else:
+                        result += " " + piece
+                prev_tag = tag
+            text = result
         else:
             tag = s.get("tag", "")
             text = f"{tag} {s['text']}".strip() if tag else s["text"]

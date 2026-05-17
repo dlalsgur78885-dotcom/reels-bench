@@ -1909,8 +1909,14 @@ def _allocate_usp_to_slots(usps: list[dict], body_slots: list[tuple], total_body
 def extract_personas(usp: str, reviews: list[str], pain_solved: str = "") -> list[dict]:
     """USP의 리뷰를 분석해 1-3개 페르소나 후보를 추출한다.
 
-    각 페르소나 = { name, scenario, signals, review_count, sample_reviews, tone_hint }
+    각 페르소나 = { name, scenario, signals, review_count, sample_reviews, tone_hint, ... }
+    + gender ("male"|"female"|"unknown") — TTS voice 결정용 메타필드.
     Gemini 2.5 Flash 사용 — 단순 분류라 Pro 안 써도 되고 5배 빠름.
+
+    ⚠️ gender는 TTS voice 매핑 전용. 글쓰기 단계의 어떤 prompt에도 절대 포함하지 말 것.
+    (build_prompt / build_refine_prompt / _build_planner_prompt / _build_section_writer_prompt
+     모두 target_persona.get("필드명") 식 명시 접근만 하므로 자동으로 격리됨.
+     향후 ** spread나 json.dumps(persona) 같은 패턴 추가 금지.)
     """
     if not reviews:
         return []
@@ -1964,6 +1970,7 @@ def extract_personas(usp: str, reviews: list[str], pain_solved: str = "") -> lis
   "personas": [
     {{
       "name": "한 줄 정의 (인구통계 + 라이프스타일 키워드)",
+      "gender": "male | female | unknown",
       "scenario": "이 페르소나가 이 USP를 사용·체감하는 구체 상황 (리뷰 발견 실제 맥락)",
       "job_statement": "When ~, I want to ~, so I can ~",
       "lf8": 4,
@@ -1982,6 +1989,12 @@ def extract_personas(usp: str, reviews: list[str], pain_solved: str = "") -> lis
   ]
 }}
 
+## gender 추출 규칙
+- 리뷰/시그널에서 화자 성별 단서를 보고 명시: "여친", "워킹맘", "오빠/형" 등
+- name·scenario 종합해 male / female / unknown (성별 불명 시) 중 하나
+- "남편", "와이프" 같은 상대 호칭은 본인 성별 반대로 추정
+- 명확하지 않으면 unknown
+
 JSON만 출력. 설명 금지.
 """
     try:
@@ -1992,10 +2005,24 @@ JSON만 출력. 설명 금지.
         if isinstance(result, dict):
             personas = result.get("personas", [])
             if isinstance(personas, list):
+                # gender → voice 매핑 (TTS 메타) — 글쓰기에는 미사용
+                for p in personas:
+                    if isinstance(p, dict):
+                        p["voice"] = gender_to_default_voice(p.get("gender"))
                 return personas
     except Exception as e:
         logger.warning("extract_personas failed: %s", e)
     return []
+
+
+def gender_to_default_voice(gender: str | None) -> str:
+    """페르소나 gender → 기본 TTS voice 매핑.
+    female → yuna (여성 부드러움), male → joonpark (남성 professional).
+    unknown/None → joonpark (안전 기본값)."""
+    g = (gender or "").strip().lower()
+    if g == "female":
+        return "yuna"
+    return "joonpark"
 
 
 def extract_unified_personas(usps: list[dict], product_name: str = "") -> dict:

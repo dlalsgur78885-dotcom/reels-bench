@@ -2656,11 +2656,15 @@ function StepDone({
                     await navigator.clipboard.writeText(text)
                   }} style={ghostBtnSt}>TTS 복사</button>
                   <button
-                    onClick={() => navigate('/tts', { state: {
-                      sentences: cur.sentences,
-                      title: active,
-                      from: { path: '__back__', label: '대본 생성 결과' },
-                    } })}
+                    onClick={() => {
+                      const persona = (cur as any)._target_persona || null
+                      navigate('/tts', { state: {
+                        sentences: cur.sentences,
+                        title: active,
+                        voice: persona?.voice,  // 페르소나가 voice 가지고 있으면 기본값으로
+                        from: { path: '__back__', label: '대본 생성 결과' },
+                      } })
+                    }}
                     disabled={!cur.sentences?.length}
                     style={{
                       ...ghostBtnSt,

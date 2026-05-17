@@ -664,6 +664,9 @@ export interface PersonaCandidate {
   review_count: number
   sample_reviews: string[]
   tone_hint: string
+  // ▼ TTS 메타필드 (글쓰기에는 절대 미사용 — 백엔드/프론트 writer code에서 접근 금지)
+  gender?: 'male' | 'female' | 'unknown'
+  voice?: string  // yuna | han_aim | jennie | male | joonpark
 }
 
 export interface MyProduct {

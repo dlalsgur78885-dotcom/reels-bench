@@ -544,7 +544,8 @@ def _full_synth(text, voice_id, model_id, out_path, voice_settings, speed_factor
 
 def _approx_segment_timings(sentences, total_duration):
     """문장 길이 비례로 segment start/end 분배 (단일 호출 → segment별 정확 위치 알 수 없음).
-    UI 타임라인용 근사값. 어절 모드는 phrases 합산 길이로."""
+    UI 타임라인용 근사값. 어절 모드는 phrases 합산 길이로.
+    Whisper alignment 실패 시 폴백."""
     def sent_len(s):
         if s.get("phrases"):
             return sum(len(p.get("text", "")) for p in s["phrases"])
@@ -557,6 +558,70 @@ def _approx_segment_timings(sentences, total_duration):
         dur = total_duration * (L / total)
         timings.append((round(cum, 2), round(cum + dur, 2)))
         cum += dur
+    return timings
+
+
+def _align_sentences_to_audio(sentences, audio_path):
+    """합성된 mp3를 Whisper STT 돌려서 각 sentence의 정확한 start/end 계산.
+    원본 sentences 텍스트 ↔ Whisper transcript char-by-char 순차 매칭.
+    Whisper 실패 또는 매칭 실패 시 None → 호출자가 _approx_segment_timings 폴백.
+    Returns: [(start, end), ...] 또는 None."""
+    try:
+        from . import whisper as whisper_svc
+    except Exception as e:
+        return None
+    try:
+        result = whisper_svc.transcribe(str(audio_path))
+    except Exception:
+        return None
+    if not result:
+        return None
+    segments = result.get("segments") or []
+    if not segments:
+        return None
+
+    # 1) Whisper segments → flat (char, time) list — 공백 char는 skip, 시간만 segment 끝으로 표시
+    char_time_pairs = []  # [(char, time)] — char는 공백 제외 글자
+    for seg in segments:
+        seg_text = (seg.get("text") or "").strip()
+        if not seg_text:
+            continue
+        seg_start = float(seg.get("start") or 0)
+        seg_end = float(seg.get("end") or seg_start)
+        # 공백 제거 char count로 linear interp
+        chars_no_space = [c for c in seg_text if c.strip()]
+        n = len(chars_no_space)
+        if n == 0:
+            continue
+        for i, ch in enumerate(chars_no_space):
+            t = seg_start + (seg_end - seg_start) * (i / max(1, n - 1)) if n > 1 else seg_start
+            char_time_pairs.append((ch, t))
+
+    if not char_time_pairs:
+        return None
+
+    # 2) 원본 sentences 순차 매칭 — 공백 제거 char count 기준
+    timings = []
+    cursor = 0
+    total_chars = len(char_time_pairs)
+    for s in sentences:
+        text = (s.get("text") or "").strip()
+        if s.get("phrases"):
+            # 어절 모드: phrases 합쳐서 text 만듦
+            text = " ".join(p.get("text", "") for p in s["phrases"])
+        chars_no_space = [c for c in text if c.strip()]
+        n = len(chars_no_space)
+        if n == 0 or cursor >= total_chars:
+            # 빈 문장 또는 transcript 끝 — 이전 end 위치 사용
+            last_t = char_time_pairs[min(cursor, total_chars - 1)][1] if char_time_pairs else 0
+            timings.append((round(last_t, 2), round(last_t, 2)))
+            continue
+        start_t = char_time_pairs[cursor][1]
+        end_idx = min(cursor + n - 1, total_chars - 1)
+        end_t = char_time_pairs[end_idx][1]
+        timings.append((round(start_t, 2), round(end_t, 2)))
+        cursor = end_idx + 1
+
     return timings
 
 
@@ -701,6 +766,8 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
         sm = {
             "start": float(s["start"]),
             "end": float(s["end"]),
+            "ref_start": float(s["start"]),  # REF 원본 (Whisper alignment 전 보존)
+            "ref_end": float(s["end"]),
             "text": s["text"],
             "direction": s.get("direction", ""),
             "tag": outer_tag,
@@ -738,8 +805,12 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
         _full_synth(full_text, voice_id, effective_model, final_path, voice_settings, speed_factor=effective_speed)
     total_duration = probe_duration(final_path)
 
-    # 문장 길이 비례로 start/end 근사 분배 (UI 타임라인용)
-    timings = _approx_segment_timings(sentences, total_duration)
+    # Whisper 후처리로 정확한 segment timing 추출 (실패 시 텍스트 길이 비례 폴백)
+    timings = _align_sentences_to_audio(sentences, final_path)
+    alignment_method = "whisper"
+    if not timings:
+        timings = _approx_segment_timings(sentences, total_duration)
+        alignment_method = "approx"
     for i, sm in enumerate(sent_meta):
         if i < len(timings):
             sm["start"], sm["end"] = timings[i]
@@ -764,6 +835,7 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
         "persona_cue": persona_cue,  # regenerate_segment에서 재사용
         "speed_factor": round(effective_speed, 3),
         "target_duration": target_duration,
+        "alignment_method": alignment_method,
     }
     _save_meta(job_id, meta)
     return _state_response(meta)
@@ -831,7 +903,12 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
     _full_synth(full_text, meta["voice_id"], effective_model, final_path, voice_settings, speed_factor=sf)
     total_duration = probe_duration(final_path)
 
-    timings = _approx_segment_timings(sentences, total_duration)
+    # Whisper alignment (실패 시 폴백)
+    timings = _align_sentences_to_audio(sentences, final_path)
+    alignment_method = "whisper"
+    if not timings:
+        timings = _approx_segment_timings(sentences, total_duration)
+        alignment_method = "approx"
     for i, sm in enumerate(sentences):
         if i < len(timings):
             sm["start"], sm["end"] = timings[i]
@@ -843,6 +920,7 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
     meta["total_duration"] = round(total_duration, 2)
     meta["char_count"] = len(full_text)
     meta["supabase_url"] = supabase_url
+    meta["alignment_method"] = alignment_method
     meta["updated_at"] = int(time.time())
     _save_meta(job_id, meta)
     return _state_response(meta)

@@ -98,6 +98,8 @@ export default function TtsGen() {
   const [autoEmotionLoading, setAutoEmotionLoading] = useState(false)
   const [autoEmotionIntensity, setAutoEmotionIntensity] = useState<'low' | 'medium' | 'high'>('medium')
   const [error, setError] = useState('')
+  // 속도 모드: 'natural' = 자연 속도(1.0x) / 'match_ref' = REF 길이 자동 매칭 / '1.2' / '1.4'
+  const [speedMode, setSpeedMode] = useState<'natural' | 'match_ref' | '1.2' | '1.4'>('match_ref')
   const [job, setJob] = useState<JobState | null>(null)
   // 문장별 임시 선택 강도 (재생성 누르기 전)
   const [draftLevels, setDraftLevels] = useState<Record<number, number>>({})
@@ -205,10 +207,20 @@ export default function TtsGen() {
     if (!useSentences.length) { setError('스크립트 데이터 없음'); return }
     setSynthLoading(true); setError(''); setJob(null); setDraftLevels({})
     try {
+      // 속도 옵션 변환 → speed_factor / target_duration
+      let speedBody: { speed_factor?: number; target_duration?: number } = {}
+      if (speedMode === 'match_ref') {
+        const refDur = useSentences.length ? useSentences[useSentences.length - 1].end : 0
+        if (refDur > 0) speedBody.target_duration = refDur
+      } else if (speedMode === '1.2') {
+        speedBody.speed_factor = 1.2
+      } else if (speedMode === '1.4') {
+        speedBody.speed_factor = 1.4
+      }
       const r = await ttsAuthedFetch('/api/tts/synthesize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sentences: useSentences, voice_name: voice, persona }),
+        body: JSON.stringify({ sentences: useSentences, voice_name: voice, persona, ...speedBody }),
       })
       if (!r.ok) {
         const data = await r.json().catch(() => ({}))
@@ -489,6 +501,21 @@ export default function TtsGen() {
                 </div>
               )
             })()}
+            {/* 속도 모드 — ElevenLabs v3 자연 속도는 6~7자/초로 느린 편. REF 인플루언서는 보통 10+자/초.  */}
+            <label style={{ marginTop: 10, fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
+              발화 속도 {sentences.length > 0 && (
+                <span style={{ fontSize: 10, fontWeight: 500, color: 'var(--accent)', marginLeft: 6 }}>
+                  · REF 길이 {sentences[sentences.length - 1].end?.toFixed(1)}초
+                </span>
+              )}
+            </label>
+            <select value={speedMode} onChange={e => setSpeedMode(e.target.value as any)} disabled={synthLoading}
+              style={{ width: '100%', padding: '8px 10px', fontSize: 13, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-base)' }}>
+              <option value="match_ref">🎯 REF 길이 자동 매칭 (권장)</option>
+              <option value="natural">🐢 자연 속도 (v3 기본, 늘어질 수 있음)</option>
+              <option value="1.2">🚶 1.2x 가속</option>
+              <option value="1.4">🏃 1.4x 가속</option>
+            </select>
           </div>
 
           {/* 🪄 자동 감정 분석 — 클릭 한 번으로 어절 분리 + 강조 자동 적용 */}

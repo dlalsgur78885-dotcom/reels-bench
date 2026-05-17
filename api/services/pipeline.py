@@ -131,7 +131,23 @@ def _extract_audio(video_path, output_path):
 
 
 def _get_video_url(shortcode, username=None):
-    """Get fresh video URL: GramSnap first, HikerAPI fallback"""
+    """Get fresh video URL: FB Ads Library for fb_*, otherwise GramSnap → HikerAPI"""
+    # FB 광고 — Ad Library 페이지를 다시 열어서 video_url 재발급
+    if shortcode.startswith("fb_"):
+        ad_id = shortcode[3:]
+        if not ad_id:
+            return None
+        try:
+            from api.services.fb_ads_scraper import AdLibraryScraper
+            import asyncio as _asyncio
+            ad = _asyncio.run(AdLibraryScraper(headless=True).scrape_single_by_id(ad_id))
+            v = (ad or {}).get("video_url")
+            if v:
+                return v
+        except Exception as e:
+            logger.warning("FB Ads re-scrape error: %s", e)
+        return None
+
     # GramSnap (always fresh URLs)
     try:
         import sys

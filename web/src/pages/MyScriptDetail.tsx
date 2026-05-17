@@ -353,6 +353,10 @@ export default function MyScriptDetail() {
           {data.persona_name && <span>{data.persona_name} · </span>}
           {data.ref_shortcode && <span>ref: {data.ref_shortcode} · </span>}
           {meta?.duration_target_sec && <span>{meta.duration_target_sec}초 · </span>}
+          <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
+            📺 ref {refSents.length}문장 / ✍ 우리 {displayedSents.length}문장
+          </span>
+          {' · '}
           {new Date(data.created_at).toLocaleString('ko-KR', { dateStyle: 'short', timeStyle: 'short' })}
         </div>
 

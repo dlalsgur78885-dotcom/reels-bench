@@ -2017,8 +2017,9 @@ JSON만 출력. 설명 금지.
 
 def gender_to_default_voice(gender: str | None) -> str:
     """페르소나 gender → 기본 TTS voice 매핑.
-    female → yuna (여성 부드러움), male → joonpark (남성 professional).
-    unknown/None → joonpark (안전 기본값)."""
+    female → yuna (여성 부드러움).
+    male/unknown/None → joonpark (남녀 공용 voice — universal 안전 기본값).
+    사용자는 TTS 페이지에서 언제든 변경 가능."""
     g = (gender or "").strip().lower()
     if g == "female":
         return "yuna"

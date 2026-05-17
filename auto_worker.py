@@ -42,7 +42,8 @@ def main():
 
     while True:
         try:
-            pending = [sc for sc in get_unanalyzed(5) if sc not in blocklist and not sc.startswith("fb_")]
+            # fb_ shortcode 포함 — pipeline.py가 _get_video_url에서 AdLibraryScraper로 video_url 재발급 지원
+            pending = [sc for sc in get_unanalyzed(5) if sc not in blocklist]
             if not pending:
                 time.sleep(args.interval)
                 continue

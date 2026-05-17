@@ -61,7 +61,7 @@ PRESETS = {
     "han_aim":  {"id": "8jHHF8rMqMlg8if2mOUe", "label": "Han Aim (여성, 캐주얼)"},
     "jennie":   {"id": "z6Kj0hecH20CdetSElRT", "label": "Jennie (여성, 자신감)"},
     "male":     {"id": "oezp1w0IATNLah6Gnq1W", "label": "숏폼 남성"},
-    "joonpark": {"id": "7Nah3cbXKVmGX7gQUuwz", "label": "JoonPark (남성, professional)"},
+    "joonpark": {"id": "7Nah3cbXKVmGX7gQUuwz", "label": "JoonPark (남녀 공용, professional)"},
 }
 
 DEFAULT_TTL_SEC = 7200  # 2시간 (로컬 임시 캐시 — 결과는 Supabase에 영구 보관)

@@ -561,6 +561,21 @@ def _approx_segment_timings(sentences, total_duration):
 
 
 MIN_TOTAL_CHARS = 5  # ElevenLabs v3 hallucination 방어 — 짧은 입력은 환각으로 다른 단어 생성
+V3_MAX_CHARS = 250   # v3 alpha는 ~250자 넘으면 환각/반복 → multilingual_v2로 자동 스위칭
+
+# v3 inline audio tag 패턴 — v2로 스위칭 시 발화되지 않도록 제거
+import re as _re
+_AUDIO_TAG_RE = _re.compile(r"\[(?:emphatic|shouting|passionate|surprised|gasping|whispers|calm|serious|confident|excited|happy)\]")
+
+
+def _strip_audio_tags(text):
+    """v2 (multilingual)는 audio tag 미지원 → 텍스트에서 제거.
+    여러 공백은 하나로 축소."""
+    if not text:
+        return text
+    cleaned = _AUDIO_TAG_RE.sub("", text)
+    cleaned = _re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
 
 
 def build_persona_cue(persona):
@@ -660,6 +675,12 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
     if persona_cue:
         full_text = f"{persona_cue} {full_text}"
 
+    # 긴 텍스트는 v3 환각 위험 → multilingual_v2로 자동 스위칭 (audio tag은 제거 — v2 미지원)
+    effective_model = model_id
+    if model_id == "eleven_v3" and len(full_text) > V3_MAX_CHARS:
+        effective_model = "eleven_multilingual_v2"
+        full_text = _strip_audio_tags(full_text)
+
     # 문장별 메타 (UI 표시용; per-segment mp3는 없음)
     sent_meta = []
     total_chars = len(full_text)
@@ -693,7 +714,7 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
     if target_duration and target_duration > 0:
         # 자연 속도 먼저 합성 → 비율 보고 atempo 적용
         tmp_natural = job_dir / "natural.mp3"
-        _full_synth(full_text, voice_id, model_id, tmp_natural, voice_settings, speed_factor=1.0)
+        _full_synth(full_text, voice_id, effective_model, tmp_natural, voice_settings, speed_factor=1.0)
         natural_dur = probe_duration(tmp_natural)
         if natural_dur > target_duration * 1.05:
             # 5% 여유 두고 atempo 비율 산출, 최대 1.5x로 clamp (음질 보존)
@@ -712,7 +733,7 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
         except OSError:
             pass
     else:
-        _full_synth(full_text, voice_id, model_id, final_path, voice_settings, speed_factor=effective_speed)
+        _full_synth(full_text, voice_id, effective_model, final_path, voice_settings, speed_factor=effective_speed)
     total_duration = probe_duration(final_path)
 
     # 문장 길이 비례로 start/end 근사 분배 (UI 타임라인용)
@@ -729,6 +750,7 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
         "voice_id": voice_id,
         "voice_name": voice_name,
         "model_id": model_id,
+        "effective_model": effective_model,  # v3 → v2 자동 스위칭 시 기록
         "created_at": int(time.time()),
         "sentences": sent_meta,
         "tag_variants": tag_variants,
@@ -794,11 +816,17 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
     persona_cue = meta.get("persona_cue")
     if persona_cue:
         full_text = f"{persona_cue} {full_text}"
+    # 긴 텍스트 자동 v2 스위칭 (synthesize_script와 동일 로직)
+    model_id = meta.get("model_id", "eleven_v3")
+    effective_model = model_id
+    if model_id == "eleven_v3" and len(full_text) > V3_MAX_CHARS:
+        effective_model = "eleven_multilingual_v2"
+        full_text = _strip_audio_tags(full_text)
     voice_settings = emotion_to_voice_settings(meta.get("base_emotion_strength", DEFAULT_EMOTION))
     final_path = _job_dir(job_id) / "final.mp3"
     # 동일한 speed_factor 유지
     sf = meta.get("speed_factor") or 1.0
-    _full_synth(full_text, meta["voice_id"], meta["model_id"], final_path, voice_settings, speed_factor=sf)
+    _full_synth(full_text, meta["voice_id"], effective_model, final_path, voice_settings, speed_factor=sf)
     total_duration = probe_duration(final_path)
 
     timings = _approx_segment_timings(sentences, total_duration)

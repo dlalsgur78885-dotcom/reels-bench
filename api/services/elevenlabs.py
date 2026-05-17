@@ -840,13 +840,11 @@ def build_persona_cue(persona):
     if not info:
         info = "인플루언서"
 
-    # 성별
+    # 성별 — 항상 명시 (없으면 여성 default. 광고 reel 화자 대부분 여성 인플루언서)
     gender = (persona.get("gender") or "").lower() if persona else ""
-    gender_str = "여성" if gender == "female" else ("남성" if gender == "male" else "")
+    gender_str = "남성" if gender == "male" else "여성"
 
-    if gender_str:
-        return f"({info} {gender_str} 목소리로)"
-    return f"({info} 목소리로)"
+    return f"({info} {gender_str} 목소리로)"
 
 
 def _sanitize_sentences(sentences):

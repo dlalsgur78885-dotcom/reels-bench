@@ -109,17 +109,17 @@ def _gemini_key():
 
 def emotion_to_voice_settings(strength: float) -> dict:
     """슬라이더 0.0~1.0 → voice_settings.
-    v3 alpha는 segment 간 voice 일관성을 chaining(request_ids/prev_text)으로 잡을 수 없어서
-    voice_settings로만 락해야 함 → stability/similarity_boost를 강하게 고정.
-    표현력은 audio tag([excited][shouting] 등)으로 살림.
-    strength=0.0 → 담백 (style=0.05, stab=0.8)
-    strength=0.5 → 기본 (style=0.30, stab=0.7)
-    strength=1.0 → 격앙 (style=0.55, stab=0.6)"""
+    실측 sweet spot: stability=0.85 (565자 단일 호출에서 환각 0, voice 일관성 유지).
+    stability 0.95 이상은 looping 폭주, 0.7 이하는 환각 발생.
+    표현력은 audio tag([excited][shouting] 등) + persona cue로 살림.
+    strength=0.0 → 담백 (style=0.05, stab=0.9)
+    strength=0.5 → 기본 (style=0.15, stab=0.85)
+    strength=1.0 → 활기 (style=0.25, stab=0.8)"""
     s = max(0.0, min(1.0, strength))
     return {
-        "stability": round(0.8 - s * 0.2, 4),
+        "stability": round(0.9 - s * 0.1, 4),
         "similarity_boost": 0.95,
-        "style": round(0.05 + s * 0.5, 4),
+        "style": round(0.05 + s * 0.2, 4),
         "use_speaker_boost": True,
     }
 
@@ -852,25 +852,12 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
             tag_variants.append(["", "", t, "", ""])
     voice_settings = emotion_to_voice_settings(emotion_strength)
 
-    # 항상 v3 사용 (audio tag + persona cue 표현력 보존)
-    # 긴 텍스트는 청크 분할로 환각 방지 — 각 청크는 v3 단일 호출, 페르소나 cue가 voice 일관성 유지
+    # 항상 v3 단일 호출 (audio tag + persona cue + voice 일관성)
+    # 실측: stability=0.85 + cue prefix로 600자+에서도 환각 0, voice 일관 유지
     effective_model = "eleven_v3"
     base_text = _build_full_script_text(sentences, tag_map)
     persona_cue = build_persona_cue(persona)
-    cue_overhead = (len(persona_cue) + 1) if persona_cue else 0
-
-    if len(base_text) + cue_overhead <= V3_MAX_CHARS:
-        # 단일 호출 합성
-        full_text = f"{persona_cue} {base_text}" if persona_cue else base_text
-        chunk_texts = [full_text]
-    else:
-        # 청크 분할 — 각 청크 앞에 cue 동일하게 prepend (voice 일관성)
-        chunk_sents_list = _chunk_sentences_for_v3(sentences, tag_map, V3_MAX_CHARS - cue_overhead)
-        chunk_texts = []
-        for chunk_sents in chunk_sents_list:
-            ct = _build_full_script_text(chunk_sents, tag_map)
-            chunk_texts.append(f"{persona_cue} {ct}" if persona_cue else ct)
-    full_text = " ".join(chunk_texts)  # 메타 char_count용
+    full_text = f"{persona_cue} {base_text}" if persona_cue else base_text
 
     # 문장별 메타 (UI 표시용; per-segment mp3는 없음)
     sent_meta = []
@@ -905,9 +892,8 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
     # target_duration 주어지면: 일단 자연 속도 합성 후 길이 측정해서 비율 산출
     effective_speed = float(speed_factor or 1.0)
     if target_duration and target_duration > 0:
-        # 자연 속도 먼저 합성 → 비율 보고 atempo 적용
         tmp_natural = job_dir / "natural.mp3"
-        _synth_text_chunks_v3(chunk_texts, voice_id, tmp_natural, voice_settings, job_dir, speed_factor=1.0)
+        _full_synth(full_text, voice_id, "eleven_v3", tmp_natural, voice_settings, speed_factor=1.0)
         natural_dur = probe_duration(tmp_natural)
         if natural_dur > target_duration * 1.05:
             auto_sf = min(1.5, natural_dur / target_duration)
@@ -924,7 +910,7 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
         except OSError:
             pass
     else:
-        _synth_text_chunks_v3(chunk_texts, voice_id, final_path, voice_settings, job_dir, speed_factor=effective_speed)
+        _full_synth(full_text, voice_id, "eleven_v3", final_path, voice_settings, speed_factor=effective_speed)
     total_duration = probe_duration(final_path)
 
     # Whisper 후처리로 정확한 segment timing 추출 (실패 시 텍스트 길이 비례 폴백)
@@ -1028,49 +1014,14 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
     sentences[idx]["strength_level"] = strength_level
     sentences[idx]["tag"] = new_tag
 
-    # 전체 재합성 — 항상 v3, 긴 텍스트는 청크 분할
+    # 전체 재합성 — v3 단일 호출 (stab=0.85로 600자+ 안정)
     base_text = _rebuild_full_text_from_meta(sentences)
     persona_cue = meta.get("persona_cue")
-    cue_overhead = (len(persona_cue) + 1) if persona_cue else 0
-    # 청크 분할 (synthesize_script와 동일 — sentences 기준)
-    job_dir = _job_dir(job_id)
-    if len(base_text) + cue_overhead <= V3_MAX_CHARS:
-        full_text = f"{persona_cue} {base_text}" if persona_cue else base_text
-        chunk_texts = [full_text]
-    else:
-        # tag_map 재구성 필요 — sentences 안에 이미 tag 들어있음. 빈 tag_map으로 _build_full_script_text 호출하면
-        # outer_tag를 못 가져오므로 직접 청크 만들기
-        chunks = []
-        current = []
-        current_len = 0
-        for s in sentences:
-            if s.get("phrases"):
-                text = " ".join(
-                    (f"{p.get('tag','')} {p['text']}".strip() if p.get("tag") else p["text"])
-                    for p in s["phrases"]
-                )
-            else:
-                tag = s.get("tag", "")
-                text = f"{tag} {s['text']}".strip() if tag else s["text"]
-            text = _ensure_sentence_end(text)
-            s_len = len(text) + 1
-            if current and current_len + s_len > V3_MAX_CHARS - cue_overhead:
-                chunks.append(current)
-                current = [text]
-                current_len = s_len
-            else:
-                current.append(text)
-                current_len += s_len
-        if current:
-            chunks.append(current)
-        chunk_texts = []
-        for chunk_texts_list in chunks:
-            ct = " ".join(chunk_texts_list)
-            chunk_texts.append(f"{persona_cue} {ct}" if persona_cue else ct)
+    full_text = f"{persona_cue} {base_text}" if persona_cue else base_text
     voice_settings = emotion_to_voice_settings(meta.get("base_emotion_strength", DEFAULT_EMOTION))
-    final_path = job_dir / "final.mp3"
+    final_path = _job_dir(job_id) / "final.mp3"
     sf = meta.get("speed_factor") or 1.0
-    _synth_text_chunks_v3(chunk_texts, meta["voice_id"], final_path, voice_settings, job_dir, speed_factor=sf)
+    _full_synth(full_text, meta["voice_id"], "eleven_v3", final_path, voice_settings, speed_factor=sf)
     total_duration = probe_duration(final_path)
 
     # Whisper alignment (실패 시 폴백)

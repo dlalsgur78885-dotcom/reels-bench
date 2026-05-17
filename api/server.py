@@ -5174,6 +5174,11 @@ class TtsSegmentRequest(BaseModel):
     strength_level: int  # -2 (매우 약) ~ +2 (매우 강)
 
 
+class TtsAutoEmotionRequest(BaseModel):
+    sentences: list[dict]
+    intensity: str = "medium"  # low / medium / high
+
+
 @app.get("/api/tts/voices")
 def tts_voices():
     return {
@@ -5183,6 +5188,22 @@ def tts_voices():
         ],
         "ttl_sec": tts_svc.DEFAULT_TTL_SEC,
     }
+
+
+@app.post("/api/tts/auto-emotion")
+def tts_auto_emotion(req: TtsAutoEmotionRequest):
+    """입력 문장들에 LLM으로 어절 감정 자동 할당 (TTS 합성 전 단계)."""
+    if not req.sentences:
+        raise HTTPException(400, "sentences 비어있음")
+    try:
+        result = tts_svc.analyze_phrase_emotion(req.sentences, req.intensity)
+        logger.info("[tts/auto-emotion] OK count=%d intensity=%s", len(result), req.intensity)
+        return {"sentences": result}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error("[tts/auto-emotion] FAILED: %s", e)
+        raise HTTPException(500, f"감정 분석 실패: {e}")
 
 
 @app.post("/api/tts/synthesize")

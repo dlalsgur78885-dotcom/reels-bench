@@ -93,6 +93,8 @@ export default function TtsGen() {
   const [presets, setPresets] = useState<VoicePreset[]>([])
   const [voice, setVoice] = useState(initialVoice)
   const [synthLoading, setSynthLoading] = useState(false)
+  const [autoEmotionLoading, setAutoEmotionLoading] = useState(false)
+  const [autoEmotionIntensity, setAutoEmotionIntensity] = useState<'low' | 'medium' | 'high'>('medium')
   const [error, setError] = useState('')
   const [job, setJob] = useState<JobState | null>(null)
   // 문장별 임시 선택 강도 (재생성 누르기 전)
@@ -144,6 +146,33 @@ export default function TtsGen() {
       if (i !== sentIdx || !s.phrases) return s
       return { ...s, phrases: s.phrases.map((p, j) => j === phraseIdx ? { ...p, ...patch } : p) }
     }))
+  }
+  const runAutoEmotion = async () => {
+    if (!sentences.length) return
+    const hasExistingPhrases = sentences.some(s => s.phrases?.length)
+    if (hasExistingPhrases) {
+      if (!confirm('이미 어절 설정된 문장이 있어요. 자동 분석 결과로 덮어쓸까요?')) return
+    }
+    setAutoEmotionLoading(true); setError('')
+    try {
+      const r = await ttsAuthedFetch('/api/tts/auto-emotion', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sentences, intensity: autoEmotionIntensity }),
+      })
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}))
+        throw new Error(d.detail || `API ${r.status}`)
+      }
+      const data = await r.json()
+      if (Array.isArray(data.sentences)) {
+        setSentences(data.sentences)
+      }
+    } catch (e: any) {
+      setError(e.message || String(e))
+    } finally {
+      setAutoEmotionLoading(false)
+    }
   }
   const resetEdits = () => {
     setSentences(initialSentences)
@@ -446,6 +475,35 @@ export default function TtsGen() {
               )
             })()}
           </div>
+
+          {/* 🪄 자동 감정 분석 — 클릭 한 번으로 어절 분리 + 강조 자동 적용 */}
+          {!job && !synthLoading && (
+            <div style={{ ...cardSt, padding: 12, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ flex: '1 1 auto', minWidth: 200 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-body)' }}>🪄 자동 감정 분석</div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
+                  Gemini가 어절 분리 + 강조 포인트 자동 할당 (~3초)
+                </div>
+              </div>
+              <select value={autoEmotionIntensity} onChange={e => setAutoEmotionIntensity(e.target.value as any)}
+                disabled={autoEmotionLoading}
+                style={{ fontSize: 12, padding: '6px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-base)' }}>
+                <option value="low">강도: 약 (포인트만)</option>
+                <option value="medium">강도: 보통</option>
+                <option value="high">강도: 강 (풍부하게)</option>
+              </select>
+              <button onClick={runAutoEmotion} disabled={autoEmotionLoading || !sentences.length}
+                style={{
+                  padding: '8px 14px', fontSize: 12, fontWeight: 700,
+                  background: autoEmotionLoading ? 'var(--bg-elevated)' : 'var(--accent)',
+                  color: autoEmotionLoading ? 'var(--text-muted)' : '#fff',
+                  border: '1px solid var(--accent)', borderRadius: 6,
+                  cursor: autoEmotionLoading ? 'wait' : 'pointer',
+                }}>
+                {autoEmotionLoading ? '분석 중…' : '🪄 자동 분석'}
+              </button>
+            </div>
+          )}
 
           <button onClick={synthAll} disabled={synthLoading || !sentences.length} style={{
             ...primaryBtnSt,

@@ -426,6 +426,36 @@ def _approx_segment_timings(sentences, total_duration):
     return timings
 
 
+MIN_TOTAL_CHARS = 5  # ElevenLabs v3 hallucination 방어 — 짧은 입력은 환각으로 다른 단어 생성
+
+
+def _sanitize_sentences(sentences):
+    """입력 정리:
+    1) sentence.text strip — 빈/공백 only면 제거 안 함 (sentence 자체 제거는 의도 위험)
+    2) phrase.text strip + 빈 phrase 자동 제거 — 빈 phrase가 audio tag 누수시킴
+    3) phrases 다 비면 phrase 모드 해제 (plain text로 폴백)"""
+    cleaned = []
+    for s in sentences:
+        s2 = dict(s)
+        s2["text"] = (s2.get("text") or "").strip()
+        phrases = s2.get("phrases") or []
+        if phrases:
+            filtered = []
+            for p in phrases:
+                pt = (p.get("text") or "").strip()
+                if not pt:
+                    continue
+                p2 = dict(p)
+                p2["text"] = pt
+                filtered.append(p2)
+            if filtered:
+                s2["phrases"] = filtered
+            else:
+                s2.pop("phrases", None)  # 모든 phrase가 빈 거였음 → 일반 모드
+        cleaned.append(s2)
+    return cleaned
+
+
 def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
                      emotion_strength=DEFAULT_EMOTION):
     """전체 합성. job 폴더 생성하고 meta.json + 모든 seg + final.mp3 저장.
@@ -433,6 +463,15 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
     if voice_name not in PRESETS:
         raise ValueError(f"unknown voice preset: {voice_name}. choices: {list(PRESETS.keys())}")
     voice_id = PRESETS[voice_name]["id"]
+
+    # 입력 정리 + 최소 길이 검증 (v3 hallucination 방어)
+    sentences = _sanitize_sentences(sentences)
+    total_chars = sum(len(s["text"]) for s in sentences)
+    if total_chars < MIN_TOTAL_CHARS:
+        raise ValueError(
+            f"텍스트 너무 짧음 ({total_chars}자) — 최소 {MIN_TOTAL_CHARS}자 이상 필요. "
+            f"ElevenLabs v3는 짧은 입력에서 환각으로 다른 단어 생성함."
+        )
 
     job_id = f"job_{int(time.time())}_{voice_name}"
     job_dir = _job_dir(job_id)

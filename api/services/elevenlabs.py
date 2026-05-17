@@ -529,6 +529,72 @@ def _rebuild_full_text_from_meta(sentences):
     return " ".join(parts)
 
 
+def _chunk_sentences_for_v3(sentences, tag_map, max_chars):
+    """sentences를 max_chars 이내 청크로 분할 — sentence boundary 유지.
+    각 청크는 v3 single call로 합성 가능한 크기.
+    Returns: [chunk_sentences_list, ...]"""
+    chunks = []
+    current = []
+    current_len = 0
+    for i, s in enumerate(sentences):
+        text, outer_tag = _build_synth_input(s, i, tag_map)
+        combined = f"{outer_tag} {text}".strip() if outer_tag else text
+        combined = _ensure_sentence_end(combined)
+        s_len = len(combined) + 1
+        if current and current_len + s_len > max_chars:
+            chunks.append(current)
+            current = [s]
+            current_len = s_len
+        else:
+            current.append(s)
+            current_len += s_len
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _synth_text_chunks_v3(chunk_texts, voice_id, out_path, voice_settings, work_dir, speed_factor=1.0):
+    """청크별 v3 합성 후 ffmpeg concat. 단일 청크면 그냥 _full_synth.
+    각 청크는 동일 voice_id + voice_settings (v3 chaining 미지원, 페르소나 cue로 일관성 유지).
+    speed_factor는 최종 concat 결과에 한 번에 적용."""
+    if not chunk_texts:
+        raise RuntimeError("청크 비어있음")
+    if len(chunk_texts) == 1:
+        _full_synth(chunk_texts[0], voice_id, "eleven_v3", out_path, voice_settings, speed_factor=speed_factor)
+        return
+    chunk_files = []
+    for i, text in enumerate(chunk_texts):
+        cp = work_dir / f"chunk_{i:03d}.mp3"
+        _full_synth(text, voice_id, "eleven_v3", cp, voice_settings, speed_factor=1.0)
+        chunk_files.append(cp)
+    # ffmpeg concat
+    list_file = work_dir / "concat_list.txt"
+    list_file.write_text(
+        "\n".join(f"file '{cp.as_posix()}'" for cp in chunk_files),
+        encoding="utf-8",
+    )
+    if abs(speed_factor - 1.0) > 0.01:
+        cmd = [FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
+               "-filter:a", f"atempo={speed_factor:.3f}",
+               "-c:a", "libmp3lame", "-b:a", "128k", str(out_path)]
+    else:
+        cmd = [FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
+               "-c:a", "libmp3lame", "-b:a", "128k", str(out_path)]
+    proc = subprocess.run(cmd, capture_output=True)
+    for cp in chunk_files:
+        try:
+            cp.unlink()
+        except OSError:
+            pass
+    try:
+        list_file.unlink()
+    except OSError:
+        pass
+    if proc.returncode != 0:
+        err = proc.stderr.decode("utf-8", errors="replace")
+        raise RuntimeError(f"chunk concat 실패: {err[-500:]}")
+
+
 def _full_synth(text, voice_id, model_id, out_path, voice_settings, speed_factor=1.0):
     """단일 호출로 전체 스크립트 합성. final.mp3 한 파일.
     eleven_v3는 호출 간 voice가 흔들려서 segment별 호출 불가 → 항상 단일 호출.
@@ -692,23 +758,7 @@ def _align_sentences_to_audio(sentences, audio_path):
 
 
 MIN_TOTAL_CHARS = 5  # ElevenLabs v3 hallucination 방어 — 짧은 입력은 환각으로 다른 단어 생성
-V3_MAX_CHARS = 250   # v3 alpha는 ~250자 넘으면 환각/반복 → multilingual_v2로 자동 스위칭
-
-# v3 inline audio tag 패턴 — v2로 스위칭 시 발화되지 않도록 제거
-# LLM(map_directions / expand_direction_to_variants)이 생성하는 모든 가능한 영문 태그 망라
-# 예: [curious], [angry][intense], [thunderous][shouting] 등 → v2에선 "츄리우스 앵리인텐스" 식으로 발화됨
-import re as _re
-_AUDIO_TAG_RE = _re.compile(r"\[[A-Za-z][A-Za-z_\- ]{0,30}\]")
-
-
-def _strip_audio_tags(text):
-    """v2 (multilingual)는 audio tag 미지원 → 텍스트에서 제거.
-    [영문] 형태 대괄호 전부 제거 (한글 괄호 cue '(자기관리인...)' 은 보존)."""
-    if not text:
-        return text
-    cleaned = _AUDIO_TAG_RE.sub("", text)
-    cleaned = _re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned
+V3_MAX_CHARS = 250   # v3 alpha는 ~250자 넘으면 환각/반복 — 청크 분할로 회피
 
 
 def build_persona_cue(persona):
@@ -802,18 +852,25 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
             tag_variants.append(["", "", t, "", ""])
     voice_settings = emotion_to_voice_settings(emotion_strength)
 
-    # 단일 호출용 full text 조립 (voice 일관성 — v3는 호출마다 voice 흔들림)
+    # 항상 v3 사용 (audio tag + persona cue 표현력 보존)
+    # 긴 텍스트는 청크 분할로 환각 방지 — 각 청크는 v3 단일 호출, 페르소나 cue가 voice 일관성 유지
+    effective_model = "eleven_v3"
     base_text = _build_full_script_text(sentences, tag_map)
-    # 모델 선택: base_text 길이 기준 (cue는 v3만 적용되니까 cue 길이 제외하고 판단)
-    effective_model = model_id
-    if model_id == "eleven_v3" and len(base_text) > V3_MAX_CHARS:
-        effective_model = "eleven_multilingual_v2"
-    # 페르소나 cue 인라인 prepend — v3에서만 의미 있음 (v2는 그대로 발화해버림)
-    persona_cue = build_persona_cue(persona) if effective_model == "eleven_v3" else None
-    full_text = f"{persona_cue} {base_text}" if persona_cue else base_text
-    # v2 스위칭 시 audio tag 제거 (v2 미지원이라 그대로 발화 위험)
-    if effective_model != "eleven_v3":
-        full_text = _strip_audio_tags(full_text)
+    persona_cue = build_persona_cue(persona)
+    cue_overhead = (len(persona_cue) + 1) if persona_cue else 0
+
+    if len(base_text) + cue_overhead <= V3_MAX_CHARS:
+        # 단일 호출 합성
+        full_text = f"{persona_cue} {base_text}" if persona_cue else base_text
+        chunk_texts = [full_text]
+    else:
+        # 청크 분할 — 각 청크 앞에 cue 동일하게 prepend (voice 일관성)
+        chunk_sents_list = _chunk_sentences_for_v3(sentences, tag_map, V3_MAX_CHARS - cue_overhead)
+        chunk_texts = []
+        for chunk_sents in chunk_sents_list:
+            ct = _build_full_script_text(chunk_sents, tag_map)
+            chunk_texts.append(f"{persona_cue} {ct}" if persona_cue else ct)
+    full_text = " ".join(chunk_texts)  # 메타 char_count용
 
     # 문장별 메타 (UI 표시용; per-segment mp3는 없음)
     sent_meta = []
@@ -850,17 +907,15 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
     if target_duration and target_duration > 0:
         # 자연 속도 먼저 합성 → 비율 보고 atempo 적용
         tmp_natural = job_dir / "natural.mp3"
-        _full_synth(full_text, voice_id, effective_model, tmp_natural, voice_settings, speed_factor=1.0)
+        _synth_text_chunks_v3(chunk_texts, voice_id, tmp_natural, voice_settings, job_dir, speed_factor=1.0)
         natural_dur = probe_duration(tmp_natural)
         if natural_dur > target_duration * 1.05:
-            # 5% 여유 두고 atempo 비율 산출, 최대 1.5x로 clamp (음질 보존)
             auto_sf = min(1.5, natural_dur / target_duration)
             effective_speed = max(effective_speed, auto_sf)
-            cmd = [FFMPEG, "-y", "-i", str(tmp_natural), "-filter:a", f"atempo={effective_speed}",
+            cmd = [FFMPEG, "-y", "-i", str(tmp_natural), "-filter:a", f"atempo={effective_speed:.3f}",
                    "-c:a", "libmp3lame", "-b:a", "128k", str(final_path)]
             proc = subprocess.run(cmd, capture_output=True)
             if proc.returncode != 0:
-                # 실패 시 자연 원본 그대로
                 final_path.write_bytes(tmp_natural.read_bytes())
         else:
             final_path.write_bytes(tmp_natural.read_bytes())
@@ -869,7 +924,7 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
         except OSError:
             pass
     else:
-        _full_synth(full_text, voice_id, effective_model, final_path, voice_settings, speed_factor=effective_speed)
+        _synth_text_chunks_v3(chunk_texts, voice_id, final_path, voice_settings, job_dir, speed_factor=effective_speed)
     total_duration = probe_duration(final_path)
 
     # Whisper 후처리로 정확한 segment timing 추출 (실패 시 텍스트 길이 비례 폴백)
@@ -973,23 +1028,49 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
     sentences[idx]["strength_level"] = strength_level
     sentences[idx]["tag"] = new_tag
 
-    # 전체 재합성 (voice 일관성 위해 단일 호출 고수)
+    # 전체 재합성 — 항상 v3, 긴 텍스트는 청크 분할
     base_text = _rebuild_full_text_from_meta(sentences)
-    # 긴 텍스트 자동 v2 스위칭 (synthesize_script와 동일 로직)
-    model_id = meta.get("model_id", "eleven_v3")
-    effective_model = model_id
-    if model_id == "eleven_v3" and len(base_text) > V3_MAX_CHARS:
-        effective_model = "eleven_multilingual_v2"
-    # cue는 v3에서만
-    persona_cue = meta.get("persona_cue") if effective_model == "eleven_v3" else None
-    full_text = f"{persona_cue} {base_text}" if persona_cue else base_text
-    if effective_model != "eleven_v3":
-        full_text = _strip_audio_tags(full_text)
+    persona_cue = meta.get("persona_cue")
+    cue_overhead = (len(persona_cue) + 1) if persona_cue else 0
+    # 청크 분할 (synthesize_script와 동일 — sentences 기준)
+    job_dir = _job_dir(job_id)
+    if len(base_text) + cue_overhead <= V3_MAX_CHARS:
+        full_text = f"{persona_cue} {base_text}" if persona_cue else base_text
+        chunk_texts = [full_text]
+    else:
+        # tag_map 재구성 필요 — sentences 안에 이미 tag 들어있음. 빈 tag_map으로 _build_full_script_text 호출하면
+        # outer_tag를 못 가져오므로 직접 청크 만들기
+        chunks = []
+        current = []
+        current_len = 0
+        for s in sentences:
+            if s.get("phrases"):
+                text = " ".join(
+                    (f"{p.get('tag','')} {p['text']}".strip() if p.get("tag") else p["text"])
+                    for p in s["phrases"]
+                )
+            else:
+                tag = s.get("tag", "")
+                text = f"{tag} {s['text']}".strip() if tag else s["text"]
+            text = _ensure_sentence_end(text)
+            s_len = len(text) + 1
+            if current and current_len + s_len > V3_MAX_CHARS - cue_overhead:
+                chunks.append(current)
+                current = [text]
+                current_len = s_len
+            else:
+                current.append(text)
+                current_len += s_len
+        if current:
+            chunks.append(current)
+        chunk_texts = []
+        for chunk_texts_list in chunks:
+            ct = " ".join(chunk_texts_list)
+            chunk_texts.append(f"{persona_cue} {ct}" if persona_cue else ct)
     voice_settings = emotion_to_voice_settings(meta.get("base_emotion_strength", DEFAULT_EMOTION))
-    final_path = _job_dir(job_id) / "final.mp3"
-    # 동일한 speed_factor 유지
+    final_path = job_dir / "final.mp3"
     sf = meta.get("speed_factor") or 1.0
-    _full_synth(full_text, meta["voice_id"], effective_model, final_path, voice_settings, speed_factor=sf)
+    _synth_text_chunks_v3(chunk_texts, meta["voice_id"], final_path, voice_settings, job_dir, speed_factor=sf)
     total_duration = probe_duration(final_path)
 
     # Whisper alignment (실패 시 폴백)

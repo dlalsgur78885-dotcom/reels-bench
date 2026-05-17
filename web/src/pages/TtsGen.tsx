@@ -56,6 +56,11 @@ interface JobState {
   is_supabase: boolean
   expires_in_sec: number
   created_at: number
+  // ElevenLabs API 호출 디버그 표시
+  persona_cue?: string | null
+  prompt_text?: string
+  voice_settings?: { stability: number; similarity_boost: number; style: number; use_speaker_boost: boolean }
+  voice_id?: string
 }
 
 function resolveAudioUrl(url: string, bust: number): string {
@@ -619,6 +624,58 @@ export default function TtsGen() {
                     : <>⏱ 약 {Math.floor(job.expires_in_sec / 60)}분 후 자동 삭제 ({job.job_id})</>}
                 </div>
               </div>
+
+              {(job.prompt_text || job.persona_cue || job.voice_settings) && (
+                <details style={cardSt}>
+                  <summary style={{ fontSize: 13, fontWeight: 700, cursor: 'pointer', color: 'var(--text-primary)' }}>
+                    🔍 ElevenLabs API 호출 정보 (debug)
+                  </summary>
+                  <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {job.persona_cue && (
+                      <div>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 4 }}>
+                          PERSONA CUE (맨 앞에 prepend — 전체 톤 지배)
+                        </div>
+                        <div style={{ fontSize: 13, padding: '6px 10px', background: 'var(--bg-elevated)',
+                          borderRadius: 4, fontFamily: 'monospace', color: 'var(--accent)' }}>
+                          {job.persona_cue}
+                        </div>
+                      </div>
+                    )}
+                    {job.prompt_text && (
+                      <div>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 4 }}>
+                          PROMPT TEXT (실제 ElevenLabs로 보낸 전체 텍스트, {job.prompt_text.length}자)
+                        </div>
+                        <div style={{ fontSize: 12, padding: '8px 12px', background: 'var(--bg-elevated)',
+                          borderRadius: 4, lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                          maxHeight: 240, overflowY: 'auto', fontFamily: 'monospace' }}>
+                          {job.prompt_text}
+                        </div>
+                      </div>
+                    )}
+                    {job.voice_settings && (
+                      <div>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 4 }}>
+                          REQUEST BODY
+                        </div>
+                        <pre style={{ fontSize: 11, padding: '8px 12px', background: 'var(--bg-elevated)',
+                          borderRadius: 4, margin: 0, overflowX: 'auto' }}>
+{`POST https://api.elevenlabs.io/v1/text-to-speech/${job.voice_id || ''}
+Content-Type: application/json
+xi-api-key: ***
+
+${JSON.stringify({
+  text: (job.prompt_text || '').slice(0, 80) + ((job.prompt_text || '').length > 80 ? '...' : ''),
+  model_id: job.model_id,
+  voice_settings: job.voice_settings,
+}, null, 2)}`}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                </details>
+              )}
 
               <div style={cardSt}>
                 <div style={labelSt}>문장별 감정 단어</div>

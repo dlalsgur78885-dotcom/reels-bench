@@ -447,6 +447,11 @@ def _state_response(meta):
         "is_supabase": bool(meta.get("supabase_url")),
         "expires_in_sec": DEFAULT_TTL_SEC,
         "created_at": meta.get("created_at"),
+        # Debug: ElevenLabs에 실제 보낸 prompt 표시용
+        "persona_cue": meta.get("persona_cue"),
+        "prompt_text": meta.get("prompt_text"),
+        "voice_settings": meta.get("voice_settings"),
+        "voice_id": meta.get("voice_id"),
     }
 
 
@@ -1020,6 +1025,8 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
         "prompt_char_count": prompt_chars,    # ElevenLabs 입력 prompt 글자수 (tag 포함, 참고)
         "supabase_url": supabase_url,
         "persona_cue": persona_cue,  # regenerate_segment에서 재사용
+        "prompt_text": full_text,    # ElevenLabs에 보낸 전체 텍스트 (UI 디버그용)
+        "voice_settings": voice_settings,  # 실제 호출 시 사용한 voice_settings
         "speed_factor": round(effective_speed, 3),
         "target_duration": target_duration,
         "alignment_method": alignment_method,
@@ -1102,6 +1109,8 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
     meta["total_duration"] = round(total_duration, 2)
     meta["char_count"] = sum(_speakable_len(s) for s in sentences)
     meta["prompt_char_count"] = len(full_text)
+    meta["prompt_text"] = full_text  # UI 디버그 표시용
+    meta["voice_settings"] = voice_settings  # 갱신된 voice_settings 기록
     meta["supabase_url"] = supabase_url
     meta["alignment_method"] = alignment_method
     meta["updated_at"] = int(time.time())

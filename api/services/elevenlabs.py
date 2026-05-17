@@ -272,13 +272,26 @@ def analyze_phrase_emotion(sentences, intensity="medium"):
         f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={_gemini_key()}",
         json={
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": 8192},
+            "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": 16384},
         },
-        timeout=120,
+        timeout=180,
     )
     if r.status_code != 200:
         raise RuntimeError(f"Gemini error {r.status_code}: {r.text[:400]}")
-    data = json.loads(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+    # parts가 여러 개로 쪼개질 수 있어서 전부 concat. 응답 끝에 trailing 데이터가 있어도 첫 JSON만 추출.
+    parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+    raw_text = "".join(p.get("text", "") for p in parts).strip()
+    if not raw_text:
+        raise RuntimeError("Gemini 빈 응답")
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError as e:
+        if "Extra data" in str(e):
+            # 첫 완전한 JSON 객체만 추출 (이후 trailing 데이터 무시)
+            decoder = json.JSONDecoder()
+            data, _ = decoder.raw_decode(raw_text)
+        else:
+            raise
     raw_sents = data.get("sentences") or []
 
     out = []

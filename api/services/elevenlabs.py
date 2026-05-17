@@ -812,23 +812,24 @@ V3_MAX_CHARS = 250   # v3 alpha는 ~250자 넘으면 환각/반복 — 청크 �
 
 def build_persona_cue(persona):
     """페르소나 dict → ElevenLabs v3 voice 톤 가이드용 인라인 cue.
-    첫 문장 맨 앞에 prepend되며 모델은 cue를 발화 안 하고 톤만 조정.
-    예: '(인플루언서 여성 목소리로)' → joonpark voice가 그 톤으로 시프트.
+    첫 문장 맨 앞에 항상 prepend (모델 발화 안 함, 전체 톤 지배).
+    v3는 맨 앞 cue를 전체 발화 톤으로 적용 → 이게 빠지면 첫 inline directive가
+    전체를 지배해버려 톤이 의도 밖으로 흐름.
 
-    형식: '(인플루언서 {gender} 목소리로)' — 광고 reel 화자가 대부분 인플루언서 톤이라는 가정.
-    gender 없으면 '({name} 목소리로)' fallback."""
-    if not persona:
-        return None
-    name = (persona.get("name") or "").strip()
-    name = re.sub(r"\s*#\d+\s*$", "", name).strip()
+    형식 우선순위:
+    - gender 있으면: '(인플루언서 {여성|남성} 목소리로)'
+    - gender 없으면: '(인플루언서 목소리로)' (광고 reel context — 항상 인플루언서 가정)
+    persona가 아예 None일 때만 cue 생략."""
+    if persona is None:
+        # persona 자체가 없으면 광고 default 톤
+        return "(인플루언서 목소리로)"
     gender = (persona.get("gender") or "").lower()
     if gender == "female":
         return "(인플루언서 여성 목소리로)"
     if gender == "male":
         return "(인플루언서 남성 목소리로)"
-    if name:
-        return f"({name} 목소리로)"
-    return None
+    # gender unknown — ref-derived persona 등. 광고 default로 항상 cue 박음.
+    return "(인플루언서 목소리로)"
 
 
 def _sanitize_sentences(sentences):

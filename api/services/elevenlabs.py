@@ -128,22 +128,22 @@ STRENGTH_LABELS = ["매우약", "약", "기본", "강", "매우강"]
 
 
 def map_directions(directions):
-    """direction list → base tag list (1 Gemini call, N → N).
-    초기 합성에만 사용. 비-base 단계는 lazy(`expand_direction_to_variants`)로 채움."""
+    """direction list → 한국어 괄호 directive list (1 Gemini call, N → N).
+    초기 합성에만 사용. 비-base 단계는 lazy(`expand_direction_to_variants`)로 채움.
+    괄호 directive는 v3가 톤만 조정 + pause 안 생김 (vs [bracket]은 pause 발생)."""
     if not directions:
         return []
     if not any(directions):
         return [""] * len(directions)
     prompt = (
-        "아래 한국어 발화 지시(direction)들을 ElevenLabs v3 audio tag로 변환해.\n"
-        "각 direction에 가장 적합한 2~3개 tag을 [a][b] 형식으로 조합 (보통 강도, level 0).\n\n"
-        "사용 가능 tag:\n"
-        "- 감정: [calm][happy][sad][angry][excited][whispers][surprised]\n"
-        "- 톤: [confident][emphatic][serious][curious][passionate][intense]\n"
-        "- 강조: [commanding][shouting]\n\n"
+        "아래 한국어 발화 지시(direction)들을 ElevenLabs v3 voice directive로 변환해.\n"
+        "각 direction에 가장 적합한 한국어 괄호 directive (예: (당당하게), (밝게))로 변환.\n\n"
+        "사용 가능 directive (이 외엔 금지):\n"
+        "- (당당하게) / (격앙되게) / (놀라며) / (충격받은 듯) / (비밀스럽게)\n"
+        "- (차분하게) / (진지하게) / (밝게) / (발랄하게) / (웃으며)\n\n"
         f"입력: {json.dumps(directions, ensure_ascii=False)}\n\n"
         "JSON 배열만 (입력과 동일 길이).\n"
-        '예: ["[confident][emphatic]", "[excited][passionate]", "[calm][serious]"]'
+        '예: ["(당당하게)", "(밝게)", "(차분하게)"]'
     )
     r = requests.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={_gemini_key()}",
@@ -164,23 +164,22 @@ def map_directions(directions):
 
 
 def expand_direction_to_variants(direction, base_tag):
-    """1 direction → 5단계 variants (Gemini 1회). 사용자가 비-base 강도를 처음 선택했을 때만 호출."""
+    """1 direction → 5단계 variants (Gemini 1회). 사용자가 비-base 강도를 처음 선택했을 때만 호출.
+    한국어 괄호 directive로 출력 — v3가 톤만 조정 + pause 안 생김."""
     if not direction:
         return [base_tag] * 5
     prompt = (
         f"한국어 발화 지시: \"{direction}\"\n"
-        f"기본 tag (level 0): {base_tag}\n\n"
-        "이 direction에 대해 ElevenLabs v3 audio tag을 5단계 강도로 생성:\n"
-        "- 매우 약 (담백): 1개 tag (예: [calm], [neutral], [whispers])\n"
-        "- 약 (살짝): 1~2개 부드러운 tag\n"
+        f"기본 directive (level 0): {base_tag}\n\n"
+        "이 direction에 대해 한국어 괄호 directive를 5단계 강도로 생성:\n"
+        "- 매우 약 (담백): (차분하게) / (조용히) / (잔잔하게)\n"
+        "- 약 (살짝): (부드럽게) / (편안하게)\n"
         "- 기본 (보통): 위 base와 비슷하거나 동일\n"
-        "- 강 (강한 감정): 2~3개, 강한 단어 ([commanding][intense] 등)\n"
-        "- 매우 강 (격앙): 3개, 가장 센 단어 ([shouting][ecstatic][thunderous] 등)\n\n"
-        "사용 가능 tag:\n"
-        "- 감정: [calm][neutral][happy][sad][angry][surprised][excited][whispers][ecstatic][overjoyed][devastated][furious][weeping][cackling][gasping]\n"
-        "- 톤: [confident][emphatic][serious][curious][commanding][passionate][intense][thunderous][trembling][shouting]\n\n"
+        "- 강 (강한 감정): (당당하게) / (단호하게) / (확신에 차서)\n"
+        "- 매우 강 (격앙): (격앙되게) / (외치듯) / (강하게 강조하며)\n\n"
+        "표현 자유롭게 한국어 부사·연결어. 모두 (괄호) 형태 필수.\n"
         "JSON 배열 5개 (낮음→높음 순).\n"
-        '예: ["[calm]", "[confident][calm]", "[confident][emphatic]", "[commanding][intense][emphatic]", "[shouting][thunderous][commanding]"]'
+        '예: ["(조용히)", "(부드럽게)", "(차분히 확신있게)", "(당당하게)", "(격앙되게)"]'
     )
     r = requests.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={_gemini_key()}",
@@ -207,14 +206,16 @@ def expand_direction_to_variants(direction, base_tag):
 
 # 자동 감정 분석 — phrase 단위 emotion tag 자동 할당 (Gemini Flash 1회 호출)
 EMOTION_PRESETS_FOR_LLM = [
-    ("[emphatic]",                "강조 (핵심 단어/단언)"),
-    ("[shouting][passionate]",    "격앙/외침 (감탄·놀라움 절정)"),
-    ("[surprised]",               "놀람 (예상 밖)"),
-    ("[gasping][surprised]",      "충격 (강한 놀람)"),
-    ("[whispers]",                "속삭임 (비밀스러움)"),
-    ("[calm]",                    "차분 (안정)"),
-    ("[serious][confident]",      "진지 (전문성)"),
-    ("[excited][happy]",          "신남 (밝음·즐거움)"),
+    ("(당당하게)",      "강조 (핵심 단어/단언)"),
+    ("(격앙되게)",      "격앙/외침 (감탄·놀라움 절정)"),
+    ("(놀라며)",        "놀람 (예상 밖)"),
+    ("(충격받은 듯)",   "충격 (강한 놀람)"),
+    ("(비밀스럽게)",    "속삭임 (비밀스러움)"),
+    ("(차분하게)",      "차분 (안정)"),
+    ("(진지하게)",      "진지 (전문성)"),
+    ("(밝게)",          "신남 (밝음·즐거움)"),
+    ("(발랄하게)",      "발랄 (가볍게 톡톡)"),
+    ("(웃으며)",        "미소 (자연스러운 웃음)"),
 ]
 
 INTENSITY_GUIDES = {
@@ -237,11 +238,12 @@ def analyze_phrase_emotion(sentences, intensity="medium"):
 
     prompt = (
         "당신은 한국어 숏폼 영상의 음성 합성 감정 디렉터입니다.\n"
-        "입력 문장들을 자연스러운 발화 단위(어절)로 나누고, 강조·감정이 필요한 부분에 audio tag을 할당하세요.\n\n"
+        "입력 문장들을 자연스러운 발화 단위(어절)로 나누고, 강조·감정이 필요한 부분에 한국어 directive를 할당하세요.\n"
+        "directive는 ElevenLabs v3가 텍스트 앞에 prepend해 톤만 조정 (발화 안 함). 괄호 형태라 pause 없음.\n\n"
         f"## 입력 문장 ({len(texts)}개)\n"
         f"{json.dumps(texts, ensure_ascii=False, indent=2)}\n\n"
-        "## 사용 가능 tag (이 외엔 금지)\n"
-        '- "" (tag 없음 — 평범한 발화)\n'
+        "## 사용 가능 directive (이 외엔 금지)\n"
+        '- "" (directive 없음 — 평범한 발화)\n'
         f"{tag_list}\n\n"
         "## 어절 분리 규칙\n"
         '- 공백 1:1 분리 ❌ — 의미 묶음으로 (예: "신기한 거" 한 덩어리)\n'
@@ -250,7 +252,7 @@ def analyze_phrase_emotion(sentences, intensity="medium"):
         "## 강조 규칙\n"
         f"- 강도={intensity}: {INTENSITY_GUIDES[intensity]}\n"
         "- 강조는 의미 핵심 (감탄사, 숫자, 핵심 형용사·동사, 결정적 단어)\n"
-        "- 같은 문장 내 동일 tag 연속 X (단조로움 방지)\n"
+        "- 같은 문장 내 동일 directive 연속 X (단조로움 방지)\n"
         "- 후킹/결론 문장은 강조 비중↑, 설명 문장은 ↓\n"
         "- 평범한 phrase 대다수, 강조는 포인트만\n\n"
         "## 출력 JSON (sentences 배열 길이 입력과 동일)\n"
@@ -259,8 +261,8 @@ def analyze_phrase_emotion(sentences, intensity="medium"):
         "    {\n"
         '      "phrases": [\n'
         '        {"text": "저는", "tag": ""},\n'
-        '        {"text": "이거 정말", "tag": "[emphatic]"},\n'
-        '        {"text": "좋아해요", "tag": ""}\n'
+        '        {"text": "이거 정말", "tag": "(당당하게)"},\n'
+        '        {"text": "좋아해요", "tag": "(밝게)"}\n'
         "      ]\n"
         "    }\n"
         "  ]\n"
@@ -305,10 +307,15 @@ def analyze_phrase_emotion(sentences, intensity="medium"):
                 if not pt:
                     continue
                 tag = (p.get("tag") or "").strip()
-                # 허용된 tag만 통과 (LLM이 임의 tag 만들면 거름)
-                allowed = {t for t, _ in EMOTION_PRESETS_FOR_LLM}
-                if tag and tag not in allowed:
-                    tag = ""
+                # preset 또는 (한국어) 괄호 형식이면 통과. [bracket] tag은 거름 (v3 pause 회피).
+                allowed_presets = {t for t, _ in EMOTION_PRESETS_FOR_LLM}
+                if tag:
+                    if tag in allowed_presets:
+                        pass  # preset OK
+                    elif tag.startswith("(") and tag.endswith(")") and len(tag) <= 30:
+                        pass  # 자유 한국어 directive OK (괄호 형태 + 길이 제한)
+                    else:
+                        tag = ""
                 phrases_clean.append({"text": pt, "tag": tag} if tag else {"text": pt})
             if phrases_clean:
                 # 입력 텍스트와 phrases 합본 비교 — 글자 손실 체크 (의미 안 맞으면 폴백)
@@ -474,25 +481,22 @@ def _resolve_tag(item, sent_idx, phrase_idx, tag_map):
 
 
 def _build_synth_input(s, sent_idx, tag_map):
-    """phrases가 있어도 inline tag는 사용하지 않음.
-    이유: ElevenLabs v3가 inline [tag] 마커마다 짧은 pause를 자동 삽입 →
-    한 문장 안에서도 어절 단위로 뚝뚝 끊겨 들림.
-    대신 phrase의 첫 번째 비어있지 않은 tag를 sentence-level outer tag로 채택,
-    텍스트는 plain join (어절 사이 공백만).
+    """phrases가 있으면 inline-tagged text 조립 (한국어 괄호 directive 사용).
+    괄호 directive `(밝게)` / `(당당하게)` 등은 v3가 톤 가이드로 해석 + pause 안 생김
+    (vs [bracket] audio tag은 pause 자동 삽입).
+    phrase 앞에 directive prepend, phrase 사이는 공백만.
     Returns (text, outer_tag)."""
     phrases = s.get("phrases") or []
     if phrases:
-        plain_text = " ".join(p.get("text", "") for p in phrases if p.get("text"))
-        # phrase의 첫 비어있지 않은 tag를 outer로. 없으면 _resolve_tag 폴백 (sentence-level).
-        outer = ""
+        result = ""
         for j, p in enumerate(phrases):
-            t = _resolve_tag(p, sent_idx, j, tag_map)
-            if t:
-                outer = t
-                break
-        if not outer:
-            outer = _resolve_tag(s, sent_idx, None, tag_map)
-        return plain_text, outer
+            tag = _resolve_tag(p, sent_idx, j, tag_map)
+            piece = f"{tag} {p['text']}" if tag else p["text"]
+            if j == 0:
+                result = piece
+            else:
+                result += " " + piece
+        return result, ""  # outer는 비움 — 인라인이 다 핸들
     return s["text"], _resolve_tag(s, sent_idx, None, tag_map)
 
 
@@ -541,22 +545,21 @@ def _build_full_script_text(sentences, tag_map):
 
 
 def _rebuild_full_text_from_meta(sentences):
-    """저장된 meta의 sentences에서 full text 재조립.
-    inline tag는 제외 (v3가 [tag]마다 pause 삽입) — 첫 비어있지 않은 tag만 sentence 앞 outer로.
+    """저장된 meta의 sentences에서 full text 재조립 — _build_full_script_text와 동일 호흡 가이드.
+    한국어 괄호 directive `(밝게)` 등은 inline 박아도 pause 안 생김 → phrase별 가중 유지.
     호흡은 문장 사이 콤마에서만."""
     parts = []
     for s in sentences:
         if s.get("phrases"):
-            plain = " ".join(p.get("text", "") for p in s["phrases"] if p.get("text"))
-            outer = ""
-            for p in s["phrases"]:
-                pt = p.get("tag", "")
-                if pt:
-                    outer = pt
-                    break
-            if not outer:
-                outer = s.get("tag", "")
-            text = f"{outer} {plain}".strip() if outer else plain
+            result = ""
+            for j, p in enumerate(s["phrases"]):
+                tag = p.get("tag", "")
+                piece = f"{tag} {p['text']}".strip() if tag else p["text"]
+                if j == 0:
+                    result = piece
+                else:
+                    result += " " + piece
+            text = result
         else:
             tag = s.get("tag", "")
             text = f"{tag} {s['text']}".strip() if tag else s["text"]
@@ -810,22 +813,38 @@ V3_MAX_CHARS = 250   # v3 alpha는 ~250자 넘으면 환각/반복 — 청크 �
 def build_persona_cue(persona):
     """페르소나 dict → ElevenLabs v3 voice 톤 가이드용 인라인 cue.
     첫 문장 앞에 prepend되며 모델은 cue를 발화 안 하고 톤만 조정.
-    예: '(알뜰살뜰 대학생 지수, 여성)' → joonpark voice가 여성 톤으로 시프트.
+    예: '(인플루언서 여성, 알뜰살뜰 대학생 지수 목소리로)' → joonpark voice가 그 톤으로 시프트.
 
-    형식: '(name 정리, 성별)' — name에서 '#숫자' suffix 제거.
-    성별 unknown이면 name만."""
+    형식: '(타입 + 성별, name 목소리로)' 또는 fallback '(name)'.
+    name에서 '#숫자' suffix 제거."""
     if not persona:
         return None
     name = (persona.get("name") or "").strip()
     name = re.sub(r"\s*#\d+\s*$", "", name).strip()
     if not name:
         return None
+
     gender = (persona.get("gender") or "").lower()
-    if gender == "female":
-        return f"({name}, 여성)"
-    if gender == "male":
-        return f"({name}, 남성)"
-    return f"({name})"
+    gender_str = "여성" if gender == "female" else ("남성" if gender == "male" else "")
+
+    # 캐릭터 유형 추출 — identity > job_statement 첫 키워드 > scenario 첫 명사
+    identity = (persona.get("identity") or "").strip()
+    job = (persona.get("job_statement") or "").strip()
+    char_hint = ""
+    if identity and len(identity) <= 30:
+        char_hint = identity
+    elif job:
+        # JTBD에서 핵심 캐릭터만 (앞 20자)
+        char_hint = job[:20].strip()
+
+    # 조합: 캐릭터+성별 우선, 없으면 성별만, 없으면 name만
+    if char_hint and gender_str:
+        return f"({char_hint} {gender_str}, {name} 목소리로)"
+    if char_hint:
+        return f"({char_hint}, {name} 목소리로)"
+    if gender_str:
+        return f"({gender_str}, {name} 목소리로)"
+    return f"({name} 목소리로)"
 
 
 def _sanitize_sentences(sentences):

@@ -861,7 +861,13 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
 
     # 문장별 메타 (UI 표시용; per-segment mp3는 없음)
     sent_meta = []
-    total_chars = len(full_text)
+    # char_count는 "실제 발화 글자수" — audio tag / persona cue 제외
+    def _speakable_len(s):
+        if s.get("phrases"):
+            return sum(len((p.get("text") or "")) for p in s["phrases"])
+        return len(s.get("text") or "")
+    total_chars = sum(_speakable_len(s) for s in sentences)
+    prompt_chars = len(full_text)  # ElevenLabs API 입력 길이 (참고용)
     for i, s in enumerate(sentences):
         text, outer_tag = _build_synth_input(s, i, tag_map)
         phrases_meta = None
@@ -960,7 +966,8 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
         "base_emotion_strength": emotion_strength,
         "tempos": [1.0] * len(sentences),  # 단일 호출이라 atempo 의미 없음
         "total_duration": round(total_duration, 2),
-        "char_count": total_chars,
+        "char_count": total_chars,           # 실제 발화 글자수 (audio tag 제외)
+        "prompt_char_count": prompt_chars,    # ElevenLabs 입력 prompt 글자수 (tag 포함, 참고)
         "supabase_url": supabase_url,
         "persona_cue": persona_cue,  # regenerate_segment에서 재사용
         "speed_factor": round(effective_speed, 3),
@@ -1036,10 +1043,15 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
 
     supabase_url = _upload_final_to_supabase(job_id, final_path)
 
+    def _speakable_len(s):
+        if s.get("phrases"):
+            return sum(len((p.get("text") or "")) for p in s["phrases"])
+        return len(s.get("text") or "")
     meta["sentences"] = sentences
     meta["tempos"] = [1.0] * len(sentences)
     meta["total_duration"] = round(total_duration, 2)
-    meta["char_count"] = len(full_text)
+    meta["char_count"] = sum(_speakable_len(s) for s in sentences)
+    meta["prompt_char_count"] = len(full_text)
     meta["supabase_url"] = supabase_url
     meta["alignment_method"] = alignment_method
     meta["updated_at"] = int(time.time())

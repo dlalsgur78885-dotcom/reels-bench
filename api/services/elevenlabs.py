@@ -521,23 +521,20 @@ def _ensure_sentence_end(text):
 
 def _build_full_script_text(sentences, tag_map):
     """전체 스크립트를 단일 호출용 텍스트로 합침.
-    문장마다 outer tag(+text) 혹은 인라인 태그 조립된 text를 공백으로 연결.
-    voice 일관성 — eleven_v3가 호출마다 미세하게 voice가 흔들리는 문제 회피.
-    각 sentence 끝에 마침표 강제 — v2가 한 문장 중간에 호흡 두고 다른 문장과 합치는 문제 방지."""
+    각 sentence 끝에 마침표 강제 + 빈 줄(\\n\\n)로 join → 명확한 sentence boundary 호흡.
+    빈 줄은 ElevenLabs v3에서 마침표 단독보다 더 긴 호흡 (~400-500ms) 신호."""
     parts = []
     for i, s in enumerate(sentences):
         text, outer_tag = _build_synth_input(s, i, tag_map)
         combined = f"{outer_tag} {text}".strip() if outer_tag else text
         combined = _ensure_sentence_end(combined)
         parts.append(combined)
-    return " ".join(parts)
+    return "\n\n".join(parts)
 
 
 def _rebuild_full_text_from_meta(sentences):
     """저장된 meta의 sentences에서 full text 재조립 (각 segment의 현재 tag 사용).
-    regenerate 시 strength_level 반영된 tag를 그대로 활용.
-    각 sentence 끝에 마침표 강제 — _build_full_script_text와 동일 호흡 가이드.
-    감정 전환 어절 사이 콤마 — _build_synth_input과 동일."""
+    감정 전환 어절 사이 콤마 / 문장 사이 빈 줄 — _build_full_script_text와 동일 호흡 가이드."""
     parts = []
     for s in sentences:
         if s.get("phrases"):
@@ -561,7 +558,7 @@ def _rebuild_full_text_from_meta(sentences):
             tag = s.get("tag", "")
             text = f"{tag} {s['text']}".strip() if tag else s["text"]
         parts.append(_ensure_sentence_end(text))
-    return " ".join(parts)
+    return "\n\n".join(parts)
 
 
 def _chunk_sentences_for_v3(sentences, tag_map, max_chars):

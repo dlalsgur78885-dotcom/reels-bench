@@ -30,6 +30,8 @@ interface VoicePreset { value: string; label: string; accepts?: 'male' | 'female
 interface SegmentMeta {
   start: number
   end: number
+  ref_start?: number  // REF (원본) start (Whisper alignment 전 보존)
+  ref_end?: number
   text: string
   direction: string
   tag: string
@@ -98,8 +100,12 @@ export default function TtsGen() {
   const [autoEmotionLoading, setAutoEmotionLoading] = useState(false)
   const [autoEmotionIntensity, setAutoEmotionIntensity] = useState<'low' | 'medium' | 'high'>('medium')
   const [error, setError] = useState('')
-  // 속도 모드: 'natural' = 자연 속도(1.0x) / 'match_ref' = REF 길이 자동 매칭 / '1.2' / '1.4'
-  const [speedMode, setSpeedMode] = useState<'natural' | 'match_ref' | '1.2' | '1.4'>('match_ref')
+  // 속도 모드:
+  // 'natural' — 자연 속도(1.0x)
+  // 'match_ref' — 전체 길이만 REF에 맞춤 (1.5x clamp atempo)
+  // 'segment_match' — 문장별 atempo로 REF 정밀 매칭 (음질 트레이드오프)
+  // '1.2' / '1.4' — 고정 가속
+  const [speedMode, setSpeedMode] = useState<'natural' | 'match_ref' | 'segment_match' | '1.2' | '1.4'>('match_ref')
   const [job, setJob] = useState<JobState | null>(null)
   // 문장별 임시 선택 강도 (재생성 누르기 전)
   const [draftLevels, setDraftLevels] = useState<Record<number, number>>({})
@@ -207,11 +213,13 @@ export default function TtsGen() {
     if (!useSentences.length) { setError('스크립트 데이터 없음'); return }
     setSynthLoading(true); setError(''); setJob(null); setDraftLevels({})
     try {
-      // 속도 옵션 변환 → speed_factor / target_duration
-      let speedBody: { speed_factor?: number; target_duration?: number } = {}
+      // 속도 옵션 변환 → speed_factor / target_duration / segment_match
+      let speedBody: { speed_factor?: number; target_duration?: number; segment_match?: boolean } = {}
       if (speedMode === 'match_ref') {
         const refDur = useSentences.length ? useSentences[useSentences.length - 1].end : 0
         if (refDur > 0) speedBody.target_duration = refDur
+      } else if (speedMode === 'segment_match') {
+        speedBody.segment_match = true
       } else if (speedMode === '1.2') {
         speedBody.speed_factor = 1.2
       } else if (speedMode === '1.4') {
@@ -511,7 +519,8 @@ export default function TtsGen() {
             </label>
             <select value={speedMode} onChange={e => setSpeedMode(e.target.value as any)} disabled={synthLoading}
               style={{ width: '100%', padding: '8px 10px', fontSize: 13, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-base)' }}>
-              <option value="match_ref">🎯 REF 길이 자동 매칭 (권장)</option>
+              <option value="match_ref">🎯 REF 길이 자동 매칭 (권장 — 전체 길이만)</option>
+              <option value="segment_match">🎯🎯 문장별 정밀 매칭 (자막 sync용, 음질 약간↓)</option>
               <option value="natural">🐢 자연 속도 (v3 기본, 늘어질 수 있음)</option>
               <option value="1.2">🚶 1.2x 가속</option>
               <option value="1.4">🏃 1.4x 가속</option>
@@ -608,24 +617,52 @@ export default function TtsGen() {
                       padding: '12px 0',
                       borderTop: i > 0 ? '1px solid var(--border-subtle)' : 'none',
                     }}>
-                      <div style={{ fontSize: 12, marginBottom: 8 }}>
-                        <span style={{ color: 'var(--text-muted)', marginRight: 6 }}>
-                          [{s.start.toFixed(1)}–{s.end.toFixed(1)}s]
-                        </span>
-                        <span style={{ color: 'var(--text-body)' }}>{s.text}</span>
-                        {tempo !== undefined && tempo > 1.001 && (
-                          <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--text-muted)' }}>
-                            (×{tempo.toFixed(2)} 압축)
-                          </span>
-                        )}
-                        {phraseMode && (
-                          <span style={{
-                            marginLeft: 8, fontSize: 10, fontWeight: 700,
-                            color: '#a16207', background: 'rgba(234,179,8,0.10)',
-                            padding: '1px 6px', borderRadius: 8,
-                          }}>🪄 어절 모드</span>
-                        )}
-                      </div>
+                      {(() => {
+                        const actualDur = s.end - s.start
+                        const hasRef = s.ref_start !== undefined && s.ref_end !== undefined
+                        const refDur = hasRef ? (s.ref_end! - s.ref_start!) : 0
+                        const diff = hasRef ? actualDur - refDur : 0
+                        const drift = Math.abs(diff)
+                        const isMisaligned = drift >= 0.5  // ±0.5s 이상 차이
+                        const diffColor = drift < 0.3 ? '#16a34a'  // 녹: 정확
+                          : drift < 0.5 ? '#a16207'                // 노: 약간
+                          : '#dc2626'                              // 빨: 큰 차이
+                        return (
+                          <div style={{ fontSize: 12, marginBottom: 8 }}>
+                            <span style={{
+                              color: isMisaligned ? diffColor : 'var(--text-muted)',
+                              marginRight: 6, fontWeight: isMisaligned ? 700 : 400,
+                              fontFamily: 'monospace',
+                            }}>
+                              [{s.start.toFixed(1)}–{s.end.toFixed(1)}s]
+                            </span>
+                            {hasRef && (
+                              <span style={{
+                                fontSize: 10, marginRight: 8, color: diffColor,
+                                fontFamily: 'monospace',
+                              }}>
+                                REF {refDur.toFixed(1)}s vs 합성 {actualDur.toFixed(1)}s
+                                <span style={{ marginLeft: 4, fontWeight: 700 }}>
+                                  ({diff >= 0 ? '+' : ''}{diff.toFixed(1)}s)
+                                </span>
+                              </span>
+                            )}
+                            <span style={{ color: 'var(--text-body)' }}>{s.text}</span>
+                            {tempo !== undefined && tempo > 1.001 && (
+                              <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--text-muted)' }}>
+                                (×{tempo.toFixed(2)} 압축)
+                              </span>
+                            )}
+                            {phraseMode && (
+                              <span style={{
+                                marginLeft: 8, fontSize: 10, fontWeight: 700,
+                                color: '#a16207', background: 'rgba(234,179,8,0.10)',
+                                padding: '1px 6px', borderRadius: 8,
+                              }}>🪄 어절 모드</span>
+                            )}
+                          </div>
+                        )
+                      })()}
 
                       {phraseMode ? (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>

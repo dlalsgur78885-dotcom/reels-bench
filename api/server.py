@@ -5123,6 +5123,8 @@ class TtsSynthRequest(BaseModel):
     model_id: str = "eleven_v3"
     emotion_strength: float = 0.5  # 0.0~1.0 (전체 base)
     persona: dict | None = None  # name, gender → 인라인 cue로 voice 톤 시프트
+    speed_factor: float = 1.0  # atempo 후처리 (1.0=자연, >1.0=가속)
+    target_duration: float | None = None  # 주어지면 자동 speed_factor 계산 (REF 길이 매칭)
 
 
 class TtsSegmentRequest(BaseModel):
@@ -5177,6 +5179,8 @@ def tts_synthesize(req: TtsSynthRequest):
             model_id=req.model_id,
             emotion_strength=req.emotion_strength,
             persona=req.persona,
+            speed_factor=req.speed_factor,
+            target_duration=req.target_duration,
         )
         logger.info("[tts/synth] OK job=%s voice=%s segs=%d chars=%d dur=%.1fs",
                     result["job_id"], req.voice_name, result["segment_count"],

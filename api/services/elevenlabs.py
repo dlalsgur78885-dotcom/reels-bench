@@ -506,9 +506,10 @@ def _rebuild_full_text_from_meta(sentences):
     return " ".join(parts)
 
 
-def _full_synth(text, voice_id, model_id, out_path, voice_settings):
+def _full_synth(text, voice_id, model_id, out_path, voice_settings, speed_factor=1.0):
     """단일 호출로 전체 스크립트 합성. final.mp3 한 파일.
-    eleven_v3는 호출 간 voice가 흔들려서 segment별 호출 불가 → 항상 단일 호출."""
+    eleven_v3는 호출 간 voice가 흔들려서 segment별 호출 불가 → 항상 단일 호출.
+    speed_factor > 1.0 시 ffmpeg atempo로 후처리 가속 (v3 자체 speed 파라미터 미지원)."""
     r = requests.post(
         f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
         headers={"xi-api-key": _eleven_key(), "Content-Type": "application/json"},
@@ -521,7 +522,24 @@ def _full_synth(text, voice_id, model_id, out_path, voice_settings):
     )
     if r.status_code != 200:
         raise RuntimeError(f"ElevenLabs error {r.status_code}: {r.text[:500]}")
-    out_path.write_bytes(r.content)
+    if speed_factor and abs(speed_factor - 1.0) > 0.01:
+        # ffmpeg atempo는 0.5~2.0 범위 1단 처리. 그 밖은 체이닝.
+        sf = max(0.5, min(2.0, float(speed_factor)))
+        # 원본 임시 저장 후 atempo 처리
+        tmp_in = out_path.with_suffix(".raw.mp3")
+        tmp_in.write_bytes(r.content)
+        cmd = [FFMPEG, "-y", "-i", str(tmp_in), "-filter:a", f"atempo={sf}",
+               "-c:a", "libmp3lame", "-b:a", "128k", str(out_path)]
+        proc = subprocess.run(cmd, capture_output=True)
+        try:
+            tmp_in.unlink()
+        except OSError:
+            pass
+        if proc.returncode != 0:
+            # atempo 실패 시 원본 그대로 저장
+            out_path.write_bytes(r.content)
+    else:
+        out_path.write_bytes(r.content)
 
 
 def _approx_segment_timings(sentences, total_duration):
@@ -594,10 +612,13 @@ def _sanitize_sentences(sentences):
 
 
 def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
-                     emotion_strength=DEFAULT_EMOTION, persona=None):
+                     emotion_strength=DEFAULT_EMOTION, persona=None,
+                     speed_factor=1.0, target_duration=None):
     """전체 합성. job 폴더 생성하고 meta.json + 모든 seg + final.mp3 저장.
     어절별 감정: sentence.phrases = [{text, direction}] 형태일 때 inline tag로 합성.
-    persona 전달 시 build_persona_cue로 인라인 cue 첫 문장 앞에 prepend — voice 톤 시프트."""
+    persona 전달 시 build_persona_cue로 인라인 cue 첫 문장 앞에 prepend — voice 톤 시프트.
+    speed_factor: ffmpeg atempo 후처리 (1.0=자연, >1.0=빠르게). v3 자체 speed 미지원이라 후처리만 가능.
+    target_duration: 주어지면 합성 후 실제 길이/타겟 비율로 speed_factor 자동 계산 (~1.5까지 clamp)."""
     if voice_name not in PRESETS:
         raise ValueError(f"unknown voice preset: {voice_name}. choices: {list(PRESETS.keys())}")
     voice_id = PRESETS[voice_name]["id"]
@@ -667,7 +688,31 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
         sent_meta.append(sm)
 
     final_path = job_dir / "final.mp3"
-    _full_synth(full_text, voice_id, model_id, final_path, voice_settings)
+    # target_duration 주어지면: 일단 자연 속도 합성 후 길이 측정해서 비율 산출
+    effective_speed = float(speed_factor or 1.0)
+    if target_duration and target_duration > 0:
+        # 자연 속도 먼저 합성 → 비율 보고 atempo 적용
+        tmp_natural = job_dir / "natural.mp3"
+        _full_synth(full_text, voice_id, model_id, tmp_natural, voice_settings, speed_factor=1.0)
+        natural_dur = probe_duration(tmp_natural)
+        if natural_dur > target_duration * 1.05:
+            # 5% 여유 두고 atempo 비율 산출, 최대 1.5x로 clamp (음질 보존)
+            auto_sf = min(1.5, natural_dur / target_duration)
+            effective_speed = max(effective_speed, auto_sf)
+            cmd = [FFMPEG, "-y", "-i", str(tmp_natural), "-filter:a", f"atempo={effective_speed}",
+                   "-c:a", "libmp3lame", "-b:a", "128k", str(final_path)]
+            proc = subprocess.run(cmd, capture_output=True)
+            if proc.returncode != 0:
+                # 실패 시 자연 원본 그대로
+                final_path.write_bytes(tmp_natural.read_bytes())
+        else:
+            final_path.write_bytes(tmp_natural.read_bytes())
+        try:
+            tmp_natural.unlink()
+        except OSError:
+            pass
+    else:
+        _full_synth(full_text, voice_id, model_id, final_path, voice_settings, speed_factor=effective_speed)
     total_duration = probe_duration(final_path)
 
     # 문장 길이 비례로 start/end 근사 분배 (UI 타임라인용)
@@ -693,6 +738,8 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
         "char_count": total_chars,
         "supabase_url": supabase_url,
         "persona_cue": persona_cue,  # regenerate_segment에서 재사용
+        "speed_factor": round(effective_speed, 3),
+        "target_duration": target_duration,
     }
     _save_meta(job_id, meta)
     return _state_response(meta)
@@ -749,7 +796,9 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
         full_text = f"{persona_cue} {full_text}"
     voice_settings = emotion_to_voice_settings(meta.get("base_emotion_strength", DEFAULT_EMOTION))
     final_path = _job_dir(job_id) / "final.mp3"
-    _full_synth(full_text, meta["voice_id"], meta["model_id"], final_path, voice_settings)
+    # 동일한 speed_factor 유지
+    sf = meta.get("speed_factor") or 1.0
+    _full_synth(full_text, meta["voice_id"], meta["model_id"], final_path, voice_settings, speed_factor=sf)
     total_duration = probe_duration(final_path)
 
     timings = _approx_segment_timings(sentences, total_duration)

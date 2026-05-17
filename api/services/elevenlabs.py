@@ -818,23 +818,35 @@ V3_MAX_CHARS = 250   # v3 alpha는 ~250자 넘으면 환각/반복 — 청크 �
 def build_persona_cue(persona):
     """페르소나 dict → ElevenLabs v3 voice 톤 가이드용 인라인 cue.
     첫 문장 맨 앞에 항상 prepend (모델 발화 안 함, 전체 톤 지배).
-    v3는 맨 앞 cue를 전체 발화 톤으로 적용 → 이게 빠지면 첫 inline directive가
-    전체를 지배해버려 톤이 의도 밖으로 흐름.
+    v3는 맨 앞 cue를 전체 발화 톤으로 적용.
 
-    형식 우선순위:
-    - gender 있으면: '(인플루언서 {여성|남성} 목소리로)'
-    - gender 없으면: '(인플루언서 목소리로)' (광고 reel context — 항상 인플루언서 가정)
-    persona가 아예 None일 때만 cue 생략."""
-    if persona is None:
-        # persona 자체가 없으면 광고 default 톤
-        return "(인플루언서 목소리로)"
-    gender = (persona.get("gender") or "").lower()
-    if gender == "female":
-        return "(인플루언서 여성 목소리로)"
-    if gender == "male":
-        return "(인플루언서 남성 목소리로)"
-    # gender unknown — ref-derived persona 등. 광고 default로 항상 cue 박음.
-    return "(인플루언서 목소리로)"
+    형식: '({페르소나 정보} {성별} 목소리로)'
+    - 페르소나 정보 우선순위: identity > name (cleaned) > '인플루언서' fallback
+    - 성별: 여성/남성 (unknown이면 생략)
+    - 항상 cue 반환 (None 폴백 X) — 누락 시 첫 inline directive가 전체 톤 지배"""
+    # 페르소나 정보 추출
+    info = ""
+    if persona:
+        identity = (persona.get("identity") or "").strip()
+        name = (persona.get("name") or "").strip()
+        # name 정리: '#숫자' suffix, '[참고 대본] ' prefix 제거
+        name = re.sub(r"\s*#\d+\s*$", "", name).strip()
+        name = re.sub(r"^\[참고 대본\]\s*", "", name).strip()
+        # identity 우선 (짧고 캐릭터 명확), 너무 길면 name 사용
+        if identity and len(identity) <= 25:
+            info = identity
+        elif name:
+            info = name
+    if not info:
+        info = "인플루언서"
+
+    # 성별
+    gender = (persona.get("gender") or "").lower() if persona else ""
+    gender_str = "여성" if gender == "female" else ("남성" if gender == "male" else "")
+
+    if gender_str:
+        return f"({info} {gender_str} 목소리로)"
+    return f"({info} 목소리로)"
 
 
 def _sanitize_sentences(sentences):

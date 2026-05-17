@@ -669,16 +669,16 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
     voice_settings = emotion_to_voice_settings(emotion_strength)
 
     # 단일 호출용 full text 조립 (voice 일관성 — v3는 호출마다 voice 흔들림)
-    full_text = _build_full_script_text(sentences, tag_map)
-    # 페르소나 cue 인라인 prepend — voice 톤을 페르소나에 맞게 시프트 (joonpark도 여성 가능)
-    persona_cue = build_persona_cue(persona)
-    if persona_cue:
-        full_text = f"{persona_cue} {full_text}"
-
-    # 긴 텍스트는 v3 환각 위험 → multilingual_v2로 자동 스위칭 (audio tag은 제거 — v2 미지원)
+    base_text = _build_full_script_text(sentences, tag_map)
+    # 모델 선택: base_text 길이 기준 (cue는 v3만 적용되니까 cue 길이 제외하고 판단)
     effective_model = model_id
-    if model_id == "eleven_v3" and len(full_text) > V3_MAX_CHARS:
+    if model_id == "eleven_v3" and len(base_text) > V3_MAX_CHARS:
         effective_model = "eleven_multilingual_v2"
+    # 페르소나 cue 인라인 prepend — v3에서만 의미 있음 (v2는 그대로 발화해버림)
+    persona_cue = build_persona_cue(persona) if effective_model == "eleven_v3" else None
+    full_text = f"{persona_cue} {base_text}" if persona_cue else base_text
+    # v2 스위칭 시 audio tag 제거 (v2 미지원이라 그대로 발화 위험)
+    if effective_model != "eleven_v3":
         full_text = _strip_audio_tags(full_text)
 
     # 문장별 메타 (UI 표시용; per-segment mp3는 없음)
@@ -811,16 +811,16 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
     sentences[idx]["tag"] = new_tag
 
     # 전체 재합성 (voice 일관성 위해 단일 호출 고수)
-    full_text = _rebuild_full_text_from_meta(sentences)
-    # 페르소나 cue 동일하게 유지
-    persona_cue = meta.get("persona_cue")
-    if persona_cue:
-        full_text = f"{persona_cue} {full_text}"
+    base_text = _rebuild_full_text_from_meta(sentences)
     # 긴 텍스트 자동 v2 스위칭 (synthesize_script와 동일 로직)
     model_id = meta.get("model_id", "eleven_v3")
     effective_model = model_id
-    if model_id == "eleven_v3" and len(full_text) > V3_MAX_CHARS:
+    if model_id == "eleven_v3" and len(base_text) > V3_MAX_CHARS:
         effective_model = "eleven_multilingual_v2"
+    # cue는 v3에서만
+    persona_cue = meta.get("persona_cue") if effective_model == "eleven_v3" else None
+    full_text = f"{persona_cue} {base_text}" if persona_cue else base_text
+    if effective_model != "eleven_v3":
         full_text = _strip_audio_tags(full_text)
     voice_settings = emotion_to_voice_settings(meta.get("base_emotion_strength", DEFAULT_EMOTION))
     final_path = _job_dir(job_id) / "final.mp3"

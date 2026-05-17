@@ -561,6 +561,49 @@ def _approx_segment_timings(sentences, total_duration):
     return timings
 
 
+def _resegment_to_ref_timing(audio_path, alignment_timings, ref_sentences, out_path):
+    """각 segment를 ref 길이에 맞게 atempo 가속/감속 후 concat.
+    alignment_timings: [(actual_start, actual_end), ...] — Whisper로 잡힌 합성 위치
+    ref_sentences: [{start, end}, ...] — REF 원본 timing
+    atempo는 [0.7, 1.5] 범위로 clamp (음질 보존)."""
+    import tempfile
+    segs_dir = tempfile.mkdtemp(prefix="ttsalign_")
+    seg_files = []
+    for i, ((a_st, a_en), ref) in enumerate(zip(alignment_timings, ref_sentences)):
+        a_dur = max(0.05, a_en - a_st)
+        r_dur = max(0.05, float(ref.get("end", 0)) - float(ref.get("start", 0)))
+        # atempo = actual / ref (>1 = 가속 → 짧아짐, <1 = 감속 → 길어짐)
+        tempo = max(0.7, min(1.5, a_dur / r_dur))
+        out_seg = f"{segs_dir}/seg_{i:03d}.mp3"
+        # 잘라내기 + atempo
+        cmd = [
+            FFMPEG, "-y", "-ss", f"{a_st:.3f}", "-to", f"{a_en:.3f}", "-i", str(audio_path),
+            "-filter:a", f"atempo={tempo:.3f}",
+            "-c:a", "libmp3lame", "-b:a", "128k", out_seg,
+        ]
+        proc = subprocess.run(cmd, capture_output=True)
+        if proc.returncode != 0:
+            return False
+        seg_files.append(out_seg)
+    if not seg_files:
+        return False
+    # concat
+    list_file = f"{segs_dir}/list.txt"
+    with open(list_file, "w", encoding="utf-8") as f:
+        for sf in seg_files:
+            f.write(f"file '{sf}'\n")
+    cmd = [FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", list_file,
+           "-c:a", "libmp3lame", "-b:a", "128k", str(out_path)]
+    proc = subprocess.run(cmd, capture_output=True)
+    # cleanup
+    try:
+        import shutil
+        shutil.rmtree(segs_dir, ignore_errors=True)
+    except Exception:
+        pass
+    return proc.returncode == 0
+
+
 def _align_sentences_to_audio(sentences, audio_path):
     """합성된 mp3를 Whisper STT 돌려서 각 sentence의 정확한 start/end 계산.
     원본 sentences 텍스트 ↔ Whisper transcript char-by-char 순차 매칭.
@@ -695,12 +738,13 @@ def _sanitize_sentences(sentences):
 
 def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
                      emotion_strength=DEFAULT_EMOTION, persona=None,
-                     speed_factor=1.0, target_duration=None):
+                     speed_factor=1.0, target_duration=None, segment_match=False):
     """전체 합성. job 폴더 생성하고 meta.json + 모든 seg + final.mp3 저장.
     어절별 감정: sentence.phrases = [{text, direction}] 형태일 때 inline tag로 합성.
     persona 전달 시 build_persona_cue로 인라인 cue 첫 문장 앞에 prepend — voice 톤 시프트.
     speed_factor: ffmpeg atempo 후처리 (1.0=자연, >1.0=빠르게). v3 자체 speed 미지원이라 후처리만 가능.
-    target_duration: 주어지면 합성 후 실제 길이/타겟 비율로 speed_factor 자동 계산 (~1.5까지 clamp)."""
+    target_duration: 주어지면 합성 후 실제 길이/타겟 비율로 speed_factor 자동 계산 (~1.5까지 clamp).
+    segment_match: True면 Whisper alignment 후 segment별 atempo로 ref start/end 정밀 매칭."""
     if voice_name not in PRESETS:
         raise ValueError(f"unknown voice preset: {voice_name}. choices: {list(PRESETS.keys())}")
     voice_id = PRESETS[voice_name]["id"]
@@ -811,6 +855,28 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
     if not timings:
         timings = _approx_segment_timings(sentences, total_duration)
         alignment_method = "approx"
+
+    # segment_match=True면 segment별 atempo로 REF timing에 정밀 매칭
+    if segment_match and alignment_method == "whisper":
+        tmp_matched = job_dir / "matched.mp3"
+        ok = _resegment_to_ref_timing(final_path, timings, sentences, tmp_matched)
+        if ok and tmp_matched.exists():
+            final_path.write_bytes(tmp_matched.read_bytes())
+            try:
+                tmp_matched.unlink()
+            except OSError:
+                pass
+            total_duration = probe_duration(final_path)
+            # 재정렬 후 다시 Whisper alignment 한 번 더 (선택적, 비용↑ 정확도↑)
+            new_timings = _align_sentences_to_audio(sentences, final_path)
+            if new_timings:
+                timings = new_timings
+                alignment_method = "whisper+match"
+            else:
+                # 재정렬은 됐지만 align 실패 → 새 timing은 REF 그대로 사용
+                timings = [(float(s.get("start", 0)), float(s.get("end", 0))) for s in sentences]
+                alignment_method = "match_approx"
+
     for i, sm in enumerate(sent_meta):
         if i < len(timings):
             sm["start"], sm["end"] = timings[i]

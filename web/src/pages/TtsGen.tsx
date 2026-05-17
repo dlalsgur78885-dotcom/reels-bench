@@ -15,14 +15,16 @@ interface InputSentence {
 
 // 프리셋 — 클릭 한 번으로 phrase.tag 직접 셋팅 (Gemini 호출 없음)
 const PHRASE_PRESETS: { emoji: string; label: string; tag: string }[] = [
-  { emoji: '💪', label: '강조',   tag: '[emphatic]' },
-  { emoji: '🔥', label: '격앙',   tag: '[shouting][passionate]' },
-  { emoji: '😱', label: '놀람',   tag: '[surprised]' },
-  { emoji: '😨', label: '충격',   tag: '[gasping][surprised]' },
-  { emoji: '🤫', label: '속삭임', tag: '[whispers]' },
-  { emoji: '😌', label: '차분',   tag: '[calm]' },
-  { emoji: '🧐', label: '진지',   tag: '[serious][confident]' },
-  { emoji: '😊', label: '신남',   tag: '[excited][happy]' },
+  { emoji: '💪', label: '강조',   tag: '(당당하게)' },
+  { emoji: '🔥', label: '격앙',   tag: '(격앙되게)' },
+  { emoji: '😱', label: '놀람',   tag: '(놀라며)' },
+  { emoji: '😨', label: '충격',   tag: '(충격받은 듯)' },
+  { emoji: '🤫', label: '속삭임', tag: '(비밀스럽게)' },
+  { emoji: '😌', label: '차분',   tag: '(차분하게)' },
+  { emoji: '🧐', label: '진지',   tag: '(진지하게)' },
+  { emoji: '😊', label: '신남',   tag: '(밝게)' },
+  { emoji: '✨', label: '발랄',   tag: '(발랄하게)' },
+  { emoji: '🙂', label: '웃음',   tag: '(웃으며)' },
 ]
 
 interface VoicePreset { value: string; label: string; accepts?: 'male' | 'female' | 'any' }

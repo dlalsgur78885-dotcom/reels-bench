@@ -205,6 +205,113 @@ def expand_direction_to_variants(direction, base_tag):
     return row
 
 
+# 자동 감정 분석 — phrase 단위 emotion tag 자동 할당 (Gemini Flash 1회 호출)
+EMOTION_PRESETS_FOR_LLM = [
+    ("[emphatic]",                "강조 (핵심 단어/단언)"),
+    ("[shouting][passionate]",    "격앙/외침 (감탄·놀라움 절정)"),
+    ("[surprised]",               "놀람 (예상 밖)"),
+    ("[gasping][surprised]",      "충격 (강한 놀람)"),
+    ("[whispers]",                "속삭임 (비밀스러움)"),
+    ("[calm]",                    "차분 (안정)"),
+    ("[serious][confident]",      "진지 (전문성)"),
+    ("[excited][happy]",          "신남 (밝음·즐거움)"),
+]
+
+INTENSITY_GUIDES = {
+    "low":    "문장당 강조 어절 0~1개 (꼭 필요한 곳만)",
+    "medium": "문장당 강조 어절 1~2개 (자연스러운 흐름)",
+    "high":   "문장당 강조 어절 2~4개 (감정 풍부하게)",
+}
+
+
+def analyze_phrase_emotion(sentences, intensity="medium"):
+    """문장들을 LLM이 자연 어절 단위로 분리하고 강조 포인트에 emotion tag 자동 할당.
+    Input: [{start, end, text, ...}]
+    Output: same shape + phrases=[{text, tag}] 가 채워진 sentences
+    intensity: low / medium / high — 강조 빈도 조절."""
+    if not sentences:
+        return []
+    intensity = intensity if intensity in INTENSITY_GUIDES else "medium"
+    tag_list = "\n".join(f"- {t} ({l})" for t, l in EMOTION_PRESETS_FOR_LLM)
+    texts = [s.get("text", "") for s in sentences]
+
+    prompt = (
+        "당신은 한국어 숏폼 영상의 음성 합성 감정 디렉터입니다.\n"
+        "입력 문장들을 자연스러운 발화 단위(어절)로 나누고, 강조·감정이 필요한 부분에 audio tag을 할당하세요.\n\n"
+        f"## 입력 문장 ({len(texts)}개)\n"
+        f"{json.dumps(texts, ensure_ascii=False, indent=2)}\n\n"
+        "## 사용 가능 tag (이 외엔 금지)\n"
+        '- "" (tag 없음 — 평범한 발화)\n'
+        f"{tag_list}\n\n"
+        "## 어절 분리 규칙\n"
+        '- 공백 1:1 분리 ❌ — 의미 묶음으로 (예: "신기한 거" 한 덩어리)\n'
+        "- 한 phrase는 보통 1~3 어절, 5어절 넘지 말 것\n"
+        '- 조사·연결어미는 앞 단어와 묶음 ("저는 / 이거 정말 / 좋아해요")\n\n'
+        "## 강조 규칙\n"
+        f"- 강도={intensity}: {INTENSITY_GUIDES[intensity]}\n"
+        "- 강조는 의미 핵심 (감탄사, 숫자, 핵심 형용사·동사, 결정적 단어)\n"
+        "- 같은 문장 내 동일 tag 연속 X (단조로움 방지)\n"
+        "- 후킹/결론 문장은 강조 비중↑, 설명 문장은 ↓\n"
+        "- 평범한 phrase 대다수, 강조는 포인트만\n\n"
+        "## 출력 JSON (sentences 배열 길이 입력과 동일)\n"
+        "{\n"
+        '  "sentences": [\n'
+        "    {\n"
+        '      "phrases": [\n'
+        '        {"text": "저는", "tag": ""},\n'
+        '        {"text": "이거 정말", "tag": "[emphatic]"},\n'
+        '        {"text": "좋아해요", "tag": ""}\n'
+        "      ]\n"
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "JSON만 출력. 설명 금지. 입력 텍스트의 모든 글자가 phrases.text를 합친 결과에 빠짐없이 들어가야 함."
+    )
+
+    r = requests.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={_gemini_key()}",
+        json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": 8192},
+        },
+        timeout=120,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"Gemini error {r.status_code}: {r.text[:400]}")
+    data = json.loads(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+    raw_sents = data.get("sentences") or []
+
+    out = []
+    for i, s in enumerate(sentences):
+        new_s = dict(s)
+        if i < len(raw_sents):
+            phrases_raw = raw_sents[i].get("phrases") or []
+            phrases_clean = []
+            for p in phrases_raw:
+                pt = (p.get("text") or "").strip()
+                if not pt:
+                    continue
+                tag = (p.get("tag") or "").strip()
+                # 허용된 tag만 통과 (LLM이 임의 tag 만들면 거름)
+                allowed = {t for t, _ in EMOTION_PRESETS_FOR_LLM}
+                if tag and tag not in allowed:
+                    tag = ""
+                phrases_clean.append({"text": pt, "tag": tag} if tag else {"text": pt})
+            if phrases_clean:
+                # 입력 텍스트와 phrases 합본 비교 — 글자 손실 체크 (의미 안 맞으면 폴백)
+                joined = "".join(p["text"] for p in phrases_clean).replace(" ", "")
+                orig = (s.get("text") or "").replace(" ", "")
+                if joined == orig or abs(len(joined) - len(orig)) <= 2:
+                    new_s["phrases"] = phrases_clean
+                # 글자 차이 크면 자동 split 폴백 (공백 분리)
+                else:
+                    tokens = (s.get("text") or "").split()
+                    if tokens:
+                        new_s["phrases"] = [{"text": t} for t in tokens]
+        out.append(new_s)
+    return out
+
+
 def synth_segment(text, tag, voice_id, model_id, out_path, voice_settings=None,
                   previous_request_ids=None, previous_text=None, next_text=None):
     """단일 segment 합성. voice 일관성을 위해 이전 segment의 request_id를 chain 가능.

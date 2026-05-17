@@ -326,14 +326,25 @@ export default function BenchDetail() {
           style={{ marginRight: 10 }}>
           🔄 전체 재분석
         </button>
-        <a
-          href={`https://www.instagram.com/reel/${shortcode}/`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="external-link"
-        >
-          Instagram ↗
-        </a>
+        {shortcode?.startsWith('fb_') ? (
+          <a
+            href={`https://www.facebook.com/ads/library/?id=${shortcode.slice(3)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="external-link"
+          >
+            Ad Library ↗
+          </a>
+        ) : (
+          <a
+            href={`https://www.instagram.com/reel/${shortcode}/`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="external-link"
+          >
+            Instagram ↗
+          </a>
+        )}
         {canDelete && (
           <button
             onClick={onDelete}

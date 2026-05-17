@@ -1,14 +1,16 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { api } from '../api'
+import { useSearchParams, useNavigate } from 'react-router-dom'
+import { api, thumbUrl } from '../api'
 import type { AdItem, AdsFilters } from '../api'
 import { fmtNum } from '../utils'
 import Pagination from '../components/Pagination'
+import Thumb from '../components/Thumb'
 
 const PAGE_SIZE = 30
 
 export default function Ads() {
   const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
   const initialQ = searchParams.get('q') || ''
   const [items, setItems] = useState<AdItem[]>([])
   const [total, setTotal] = useState(0)
@@ -165,74 +167,55 @@ export default function Ads() {
       {items.length > 0 && (
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-          gap: 14,
+          gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+          gap: 12,
         }}>
           {items.map(ad => (
-            <article key={ad.shortcode} style={{
-              background: 'var(--bg-surface)', border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-md)', overflow: 'hidden',
-              display: 'flex', flexDirection: 'column',
-            }}>
-              {ad.thumbnail_url || ad.video_url ? (
-                <div style={{ position: 'relative', aspectRatio: '4/5', background: 'var(--bg-elevated)' }}>
-                  {ad.video_url ? (
-                    <video src={ad.video_url} poster={ad.thumbnail_url || undefined}
-                      controls preload="metadata" muted
-                      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', background: '#000' }}
-                    />
-                  ) : (
-                    <img src={ad.thumbnail_url} alt="" loading="lazy" decoding="async"
-                      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                    />
-                  )}
+            <button
+              key={ad.shortcode}
+              type="button"
+              className="reel-card"
+              onClick={() => navigate(`/bench/${ad.shortcode}`)}
+              aria-label={`${ad.page_name || '광고주 미상'} 광고 분석 보기`}
+            >
+              <div style={{ position: 'relative' }}>
+                <Thumb
+                  src={ad.shortcode ? thumbUrl(ad.shortcode) : undefined}
+                  shortcode={ad.shortcode}
+                  style={{ width: '100%', aspectRatio: '4/5', objectFit: 'cover', display: 'block', background: 'var(--bg-elevated)' }}
+                />
+                <span style={{
+                  position: 'absolute', top: 6, left: 6, fontSize: 10, padding: '2px 6px',
+                  background: '#3b82f6', color: '#fff', borderRadius: 3, fontWeight: 700,
+                }}>FB</span>
+                {ad.video_duration > 0 && (
                   <span style={{
-                    position: 'absolute', top: 8, left: 8,
-                    fontSize: 10, fontWeight: 700, padding: '2px 8px',
-                    background: 'rgba(0,0,0,0.7)', color: '#fff', borderRadius: 999,
-                    textTransform: 'uppercase', letterSpacing: '.04em',
-                  }}>{ad.media_type}</span>
-                </div>
-              ) : (
-                <div style={{ aspectRatio: '4/5', background: 'var(--bg-elevated)', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>
-                  미디어 없음
-                </div>
-              )}
-
-              <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {ad.page_name || '광고주 미상'}
-                </div>
-                <div style={{ display: 'flex', gap: 6, fontSize: 11, color: 'var(--text-muted)', flexWrap: 'wrap' }}>
-                  <span>가동 {ad.start_date || '미상'}</span>
-                  <span>·</span>
-                  <span>수집 {fmtDate(ad.collected_at)}</span>
-                  {ad.video_duration > 0 && <><span>·</span><span>{Math.round(ad.video_duration)}초</span></>}
+                    position: 'absolute', bottom: 6, right: 6, fontSize: 10, padding: '2px 5px',
+                    background: 'rgba(0,0,0,0.6)', color: '#fff', borderRadius: 3,
+                  }}>{Math.round(ad.video_duration)}s</span>
+                )}
+              </div>
+              <div className="card-info">
+                <div className="card-author">{ad.page_name || '광고주 미상'}</div>
+                <div className="card-stats">
+                  <span className="stat-pill">가동 {ad.start_date || '미상'}</span>
+                  <span className="stat-pill">수집 {fmtDate(ad.collected_at)}</span>
                 </div>
                 {ad.caption && (
-                  <p style={{
-                    fontSize: 12, color: 'var(--text-secondary)',
-                    margin: 0, lineHeight: 1.45,
-                    display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical',
-                    overflow: 'hidden',
-                  }}>{ad.caption}</p>
+                  <div style={{
+                    fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.4, marginTop: 4,
+                    display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                  }}>{ad.caption}</div>
                 )}
                 {ad.platforms && ad.platforms.length > 0 && (
-                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
                     {ad.platforms.map(pf => (
                       <span key={pf} className="tag-pill tag-pill--small">{pf}</span>
                     ))}
                   </div>
                 )}
-                {ad.url && (
-                  <a href={ad.url} target="_blank" rel="noopener noreferrer"
-                    className="external-link"
-                    style={{ fontSize: 11, marginTop: 'auto' }}>
-                    Ad Library ↗
-                  </a>
-                )}
               </div>
-            </article>
+            </button>
           ))}
         </div>
       )}

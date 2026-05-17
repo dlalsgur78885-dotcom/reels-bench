@@ -122,10 +122,16 @@ export default function TtsGen() {
     }))
   }
   const mergePhrases = (idx: number) => {
-    setSentences(prev => prev.map((s, i) => {
-      if (i !== idx || !s.phrases) return s
-      const text = s.phrases.map(p => p.text).join(' ')
-      const { phrases: _drop, ...rest } = s  // eslint-disable-line @typescript-eslint/no-unused-vars
+    const s = sentences[idx]
+    if (!s?.phrases) return
+    const hasEmotions = s.phrases.some(p => (p.tag || '').trim() || (p.direction || '').trim())
+    if (hasEmotions) {
+      if (!confirm('어절 모드를 해제하면 설정한 감정이 모두 사라집니다. 진행할까요?\n\n(감정을 적용하려면 "음성 생성" 버튼을 누르세요)')) return
+    }
+    setSentences(prev => prev.map((s2, i) => {
+      if (i !== idx || !s2.phrases) return s2
+      const text = s2.phrases.map(p => p.text).join(' ')
+      const { phrases: _drop, ...rest } = s2  // eslint-disable-line @typescript-eslint/no-unused-vars
       return { ...rest, text }
     }))
   }
@@ -317,13 +323,20 @@ export default function TtsGen() {
                         style={{
                           fontSize: 12, fontWeight: 600, padding: '5px 12px',
                           background: inPhraseMode ? 'var(--bg-elevated)' : 'var(--accent)',
-                          color: inPhraseMode ? 'var(--text-body)' : '#fff',
+                          color: inPhraseMode ? 'var(--text-muted)' : '#fff',
                           border: '1px solid', borderColor: inPhraseMode ? 'var(--border)' : 'var(--accent)',
                           borderRadius: 6, cursor: 'pointer',
                         }}
-                        title={inPhraseMode ? '어절 모드 해제' : '어절별 감정 적용 가능'}>
-                        {inPhraseMode ? '🔗 합치기' : '✂ 어절별 감정 추가'}
+                        title={inPhraseMode ? '어절 모드 해제 (감정 설정 사라짐)' : '어절별 감정 적용 가능'}>
+                        {inPhraseMode ? '✖ 어절 모드 해제' : '✂ 어절별 감정 추가'}
                       </button>
+                    )}
+                    {inPhraseMode && s.phrases!.some(p => (p.tag||'').trim() || (p.direction||'').trim()) && (
+                      <span style={{
+                        fontSize: 10, fontWeight: 600, color: '#16a34a',
+                        background: 'rgba(34,197,94,0.10)',
+                        padding: '3px 8px', borderRadius: 10,
+                      }}>👇 "🎙 음성 생성"으로 적용</span>
                     )}
                   </div>
                   {inPhraseMode ? (

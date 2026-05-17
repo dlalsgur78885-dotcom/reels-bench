@@ -100,6 +100,8 @@ export default function TtsGen() {
   const [autoEmotionLoading, setAutoEmotionLoading] = useState(false)
   const [autoEmotionIntensity, setAutoEmotionIntensity] = useState<'low' | 'medium' | 'high'>('medium')
   const [error, setError] = useState('')
+  // 마지막 합성 시점 sentences snapshot — 합성 후 변경 감지용
+  const [lastSynthSnapshot, setLastSynthSnapshot] = useState<string>('')
   // 속도 모드:
   // 'natural' — 자연 속도(1.0x)
   // 'match_ref' — 전체 길이만 REF에 맞춤 (1.5x clamp atempo)
@@ -237,12 +239,17 @@ export default function TtsGen() {
       const data: JobState = await r.json()
       setJob(data)
       setAudioBust(Date.now())
+      // 합성 시점 snapshot — 이후 변경 감지용
+      setLastSynthSnapshot(JSON.stringify(useSentences))
     } catch (e: any) {
       setError(e.message || String(e))
     } finally {
       setSynthLoading(false)
     }
   }
+
+  // 합성 이후 sentences 변경 여부
+  const dirtyAfterSynth = !!(job && lastSynthSnapshot && JSON.stringify(sentences) !== lastSynthSnapshot)
 
   const regenSegment = async (idx: number) => {
     if (!job) return
@@ -351,7 +358,7 @@ export default function TtsGen() {
             <div style={{ marginBottom: 14 }}>
               {sentences.map((s, i) => {
                 const inPhraseMode = !!(s.phrases && s.phrases.length)
-                const canEdit = !job && !synthLoading
+                const canEdit = !synthLoading  // 합성 후에도 편집 가능 (재합성 버튼으로 반영)
                 return (
                 <div key={i} style={{
                   padding: '10px 0',
@@ -558,11 +565,15 @@ export default function TtsGen() {
 
           <button onClick={synthAll} disabled={synthLoading || !sentences.length} style={{
             ...primaryBtnSt,
-            background: synthLoading ? 'var(--bg-elevated)' : 'var(--accent)',
+            background: synthLoading ? 'var(--bg-elevated)'
+              : dirtyAfterSynth ? '#16a34a'  // 변경됨 → 녹색 강조
+              : 'var(--accent)',
             color: synthLoading ? 'var(--text-muted)' : '#fff',
             cursor: synthLoading ? 'wait' : 'pointer', marginBottom: 14,
           }}>
-            {synthLoading ? '생성 중… (수십초)' : (job ? '🔄 다시 생성 (전체)' : '🎙 음성 생성')}
+            {synthLoading ? '생성 중… (수십초)'
+              : dirtyAfterSynth ? '🔄 변경 사항 재합성 (감정 수정됨)'
+              : (job ? '🔄 다시 생성 (전체)' : '🎙 음성 생성')}
           </button>
 
           {error && (
@@ -599,6 +610,15 @@ export default function TtsGen() {
                 <div style={labelSt}>문장별 감정 단어</div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
                   강도 단계 변경 → "재생성"으로 그 문장만 새 단어로 재합성
+                </div>
+                {/* 합성 후에도 위 입력 영역에서 어절/감정 수정 가능 → '🔄 변경 사항 재합성' 버튼으로 적용 */}
+                <div style={{
+                  fontSize: 11, color: 'var(--accent)',
+                  padding: '8px 10px', marginBottom: 12, borderRadius: 6,
+                  background: 'rgba(99,102,241,0.06)', border: '1px dashed var(--accent)',
+                }}>
+                  💡 음성 결과 듣고 어절/감정 바꾸고 싶으면 <strong>위 입력 영역</strong>에서 chip 클릭 →
+                  아래 <strong>"🔄 변경 사항 재합성"</strong> 녹색 버튼으로 적용
                 </div>
                 {job.sentences.map((s, i) => {
                   const labels = job.strength_labels?.length === 5 ? job.strength_labels : DEFAULT_LABELS

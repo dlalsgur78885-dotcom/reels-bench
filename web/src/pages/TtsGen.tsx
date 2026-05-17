@@ -478,6 +478,18 @@ export default function TtsGen() {
                   ) : (
                     <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--text-body)' }}>{s.text}</div>
                   )}
+                  {/* sentence 끝 표시 — 마지막은 안 표시 (마침표만) */}
+                  {i < sentences.length - 1 && (
+                    <div style={{
+                      marginTop: 6, fontSize: 10, color: 'var(--text-muted)',
+                      display: 'flex', alignItems: 'center', gap: 4,
+                    }}>
+                      <span style={{
+                        display: 'inline-block', padding: '1px 6px', borderRadius: 8,
+                        background: 'rgba(99,102,241,0.06)', color: 'var(--accent)', fontWeight: 600,
+                      }}>⏸ 짧은 호흡 (~150ms)</span>
+                    </div>
+                  )}
                 </div>
               )})}
             </div>

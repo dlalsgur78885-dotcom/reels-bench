@@ -70,17 +70,25 @@ TTS_BUCKET = "tts-files"  # Supabase Storage bucket (public)
 
 
 def _upload_final_to_supabase(job_id, local_path):
-    """final.mp3를 Supabase Storage에 업로드 → public URL 반환. 실패 시 None."""
+    """final.mp3를 Supabase Storage에 업로드 → public URL 반환.
+    실패해도 raise 안 함 — local fallback (TTS 자체는 성공)."""
     from services import supabase as sb
-    sb.storage_create_bucket(TTS_BUCKET, public=True)  # idempotent
+    try:
+        sb.storage_create_bucket(TTS_BUCKET, public=True)  # idempotent, in-process cached
+    except Exception:
+        pass  # 버킷 있다고 가정하고 upload 시도
     remote_path = f"{job_id}/final.mp3"
     try:
         data = local_path.read_bytes()
     except OSError as e:
         raise RuntimeError(f"final.mp3 read failed: {e}")
-    ok, err = sb.storage_upload(TTS_BUCKET, remote_path, data, content_type="audio/mpeg", upsert=True)
+    try:
+        ok, err = sb.storage_upload(TTS_BUCKET, remote_path, data, content_type="audio/mpeg", upsert=True)
+    except Exception as e:
+        # 업로드 자체에 네트워크 에러 — 로컬 fallback URL 반환 (TTS 합성 자체는 성공)
+        return None
     if not ok:
-        raise RuntimeError(f"Supabase Storage upload 실패: {err}")
+        return None  # 로컬 fallback (raise 안 함)
     return sb.storage_public_url(TTS_BUCKET, remote_path)
 
 

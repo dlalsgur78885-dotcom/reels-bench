@@ -78,16 +78,18 @@ const primaryBtnSt: React.CSSProperties = {
 }
 
 export default function TtsGen() {
-  const { state } = useLocation() as { state?: { sentences?: InputSentence[]; title?: string; from?: { path: string; label: string } } }
+  const { state } = useLocation() as { state?: { sentences?: InputSentence[]; title?: string; voice?: string; from?: { path: string; label: string } } }
   const navigate = useNavigate()
   const initialSentences: InputSentence[] = state?.sentences || []
   const title = state?.title || ''
   const from = state?.from
+  // 페르소나에서 voice 전달받으면 그걸 기본값 (없으면 joonpark)
+  const initialVoice = state?.voice || 'joonpark'
 
   const [sentences, setSentences] = useState<InputSentence[]>(initialSentences)
   const [savedSentences, setSavedSentences] = useState<InputSentence[] | null>(null)
   const [presets, setPresets] = useState<VoicePreset[]>([])
-  const [voice, setVoice] = useState('joonpark')
+  const [voice, setVoice] = useState(initialVoice)
   const [synthLoading, setSynthLoading] = useState(false)
   const [error, setError] = useState('')
   const [job, setJob] = useState<JobState | null>(null)

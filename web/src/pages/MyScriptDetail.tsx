@@ -319,6 +319,7 @@ export default function MyScriptDetail() {
                 onClick={() => navigate('/tts', { state: {
                   sentences: displayedSents,
                   title: data?.title || '',
+                  voice: data?.meta?.target_persona?.voice,  // 저장된 페르소나 voice (없으면 TTS 페이지에서 joonpark)
                   from: { path: `/my-scripts/${pid}/${sid}`, label: '저장된 대본' },
                 } })}
                 disabled={!displayedSents.length}

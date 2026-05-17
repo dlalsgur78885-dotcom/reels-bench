@@ -564,13 +564,15 @@ MIN_TOTAL_CHARS = 5  # ElevenLabs v3 hallucination 방어 — 짧은 입력은 �
 V3_MAX_CHARS = 250   # v3 alpha는 ~250자 넘으면 환각/반복 → multilingual_v2로 자동 스위칭
 
 # v3 inline audio tag 패턴 — v2로 스위칭 시 발화되지 않도록 제거
+# LLM(map_directions / expand_direction_to_variants)이 생성하는 모든 가능한 영문 태그 망라
+# 예: [curious], [angry][intense], [thunderous][shouting] 등 → v2에선 "츄리우스 앵리인텐스" 식으로 발화됨
 import re as _re
-_AUDIO_TAG_RE = _re.compile(r"\[(?:emphatic|shouting|passionate|surprised|gasping|whispers|calm|serious|confident|excited|happy)\]")
+_AUDIO_TAG_RE = _re.compile(r"\[[A-Za-z][A-Za-z_\- ]{0,30}\]")
 
 
 def _strip_audio_tags(text):
     """v2 (multilingual)는 audio tag 미지원 → 텍스트에서 제거.
-    여러 공백은 하나로 축소."""
+    [영문] 형태 대괄호 전부 제거 (한글 괄호 cue '(자기관리인...)' 은 보존)."""
     if not text:
         return text
     cleaned = _AUDIO_TAG_RE.sub("", text)

@@ -105,7 +105,7 @@ export default function TtsGen() {
   const [voice, setVoice] = useState(initialVoice)
   const [synthLoading, setSynthLoading] = useState(false)
   const [autoEmotionLoading, setAutoEmotionLoading] = useState(false)
-  const [autoEmotionIntensity, setAutoEmotionIntensity] = useState<'low' | 'medium' | 'high'>('medium')
+  const [autoEmotionIntensity, setAutoEmotionIntensity] = useState<'low' | 'medium' | 'high'>('low')
   const [error, setError] = useState('')
   // 마지막 합성 시점 sentences snapshot — 합성 후 변경 감지용
   const [lastSynthSnapshot, setLastSynthSnapshot] = useState<string>('')

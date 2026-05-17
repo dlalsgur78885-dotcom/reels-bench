@@ -219,20 +219,20 @@ EMOTION_PRESETS_FOR_LLM = [
 ]
 
 INTENSITY_GUIDES = {
-    "low":    "문장당 강조 어절 0~1개 (꼭 필요한 곳만)",
-    "medium": "문장당 강조 어절 1~2개 (자연스러운 흐름)",
-    "high":   "문장당 강조 어절 2~4개 (감정 풍부하게)",
+    "low":    "문장당 강조 어절 0~1개 (꼭 필요한 곳만 — 끊김 최소)",
+    "medium": "문장당 강조 어절 1~2개 (적당한 변화)",
+    "high":   "문장당 강조 어절 2~3개 (감정 풍부, 끊김 늘어남)",
 }
 
 
-def analyze_phrase_emotion(sentences, intensity="medium"):
+def analyze_phrase_emotion(sentences, intensity="low"):
     """문장들을 LLM이 자연 어절 단위로 분리하고 강조 포인트에 emotion tag 자동 할당.
     Input: [{start, end, text, ...}]
     Output: same shape + phrases=[{text, tag}] 가 채워진 sentences
     intensity: low / medium / high — 강조 빈도 조절."""
     if not sentences:
         return []
-    intensity = intensity if intensity in INTENSITY_GUIDES else "medium"
+    intensity = intensity if intensity in INTENSITY_GUIDES else "low"
     tag_list = "\n".join(f"- {t} ({l})" for t, l in EMOTION_PRESETS_FOR_LLM)
     texts = [s.get("text", "") for s in sentences]
 
@@ -249,12 +249,13 @@ def analyze_phrase_emotion(sentences, intensity="medium"):
         '- 공백 1:1 분리 ❌ — 의미 묶음으로 (예: "신기한 거" 한 덩어리)\n'
         "- 한 phrase는 보통 1~3 어절, 5어절 넘지 말 것\n"
         '- 조사·연결어미는 앞 단어와 묶음 ("저는 / 이거 정말 / 좋아해요")\n\n'
-        "## 강조 규칙\n"
+        "## 강조 규칙 (중요)\n"
         f"- 강도={intensity}: {INTENSITY_GUIDES[intensity]}\n"
         "- 강조는 의미 핵심 (감탄사, 숫자, 핵심 형용사·동사, 결정적 단어)\n"
+        "- ⚠️ ElevenLabs v3는 directive마다 미세 pause 발생 — 한 문장에 directive 많이 박으면 끊겨 들림\n"
         "- 같은 문장 내 동일 directive 연속 X (단조로움 방지)\n"
         "- 후킹/결론 문장은 강조 비중↑, 설명 문장은 ↓\n"
-        "- 평범한 phrase 대다수, 강조는 포인트만\n\n"
+        "- 평범한 phrase 대다수, 강조는 포인트만 (전체 phrase의 20~30%만 directive)\n\n"
         "## 출력 JSON (sentences 배열 길이 입력과 동일)\n"
         "{\n"
         '  "sentences": [\n'
@@ -487,16 +488,22 @@ def _resolve_tag(item, sent_idx, phrase_idx, tag_map):
 
 def _build_synth_input(s, sent_idx, tag_map):
     """phrases가 있으면 inline-tagged text 조립 (한국어 괄호 directive 사용).
-    괄호 directive `(밝게)` / `(당당하게)` 등은 v3가 톤 가이드로 해석 + pause 안 생김
-    (vs [bracket] audio tag은 pause 자동 삽입).
-    phrase 앞에 directive prepend, phrase 사이는 공백만.
+    v3는 directive 마커마다 미세 pause 삽입 → 가능한 한 directive 적게 박음:
+    - 연속 동일 tag는 두 번째부터 제거 (modal이라 이미 적용 중)
+    - 빈 tag(평범)는 directive 안 박음
+    phrase 사이는 공백만.
     Returns (text, outer_tag)."""
     phrases = s.get("phrases") or []
     if phrases:
         result = ""
+        last_active_tag = ""  # 이미 박은 directive (modal — 다음 다른 tag 나올 때까지 유지)
         for j, p in enumerate(phrases):
             tag = _resolve_tag(p, sent_idx, j, tag_map)
-            piece = f"{tag} {p['text']}" if tag else p["text"]
+            # 직전과 동일 tag면 skip (modal로 이미 적용 중)
+            emit_tag = tag if tag and tag != last_active_tag else ""
+            piece = f"{emit_tag} {p['text']}" if emit_tag else p["text"]
+            if tag:
+                last_active_tag = tag
             if j == 0:
                 result = piece
             else:
@@ -551,15 +558,18 @@ def _build_full_script_text(sentences, tag_map):
 
 def _rebuild_full_text_from_meta(sentences):
     """저장된 meta의 sentences에서 full text 재조립 — _build_full_script_text와 동일 호흡 가이드.
-    한국어 괄호 directive `(밝게)` 등은 inline 박아도 pause 안 생김 → phrase별 가중 유지.
-    호흡은 문장 사이 콤마에서만."""
+    연속 동일 directive 자동 dedup (v3 modal 동작 + pause 최소화)."""
     parts = []
     for s in sentences:
         if s.get("phrases"):
             result = ""
+            last_active_tag = ""
             for j, p in enumerate(s["phrases"]):
-                tag = p.get("tag", "")
-                piece = f"{tag} {p['text']}".strip() if tag else p["text"]
+                tag = (p.get("tag") or "").strip()
+                emit_tag = tag if tag and tag != last_active_tag else ""
+                piece = f"{emit_tag} {p['text']}".strip() if emit_tag else p["text"]
+                if tag:
+                    last_active_tag = tag
                 if j == 0:
                     result = piece
                 else:

@@ -1750,6 +1750,12 @@ _my_products_cache: dict[str, tuple[float, list]] = {}
 _shareable_users_cache: dict[str, tuple[float, list]] = {}
 _users_cache: dict[str, tuple[float, list]] = {}
 _USERS_CACHE_TTL = 60
+_MY_SCRIPTS_CACHE_TTL = 20
+_my_scripts_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _invalidate_my_scripts_cache():
+    _my_scripts_cache.clear()
 
 
 def _cache_get(cache: dict, key: str, ttl: int):
@@ -1992,6 +1998,7 @@ def create_gen_script(pid: int, body: GenScriptIn, request: Request):
     )
     if r.status_code not in (200, 201):
         raise HTTPException(r.status_code, r.text[:300])
+    _invalidate_my_scripts_cache()
     return r.json()[0] if r.json() else {}
 
 
@@ -2041,6 +2048,7 @@ def update_gen_script(pid: int, sid: str, body: GenScriptPatch, request: Request
     if r.status_code not in (200, 204):
         raise HTTPException(r.status_code, r.text[:300])
     rows = r.json() if r.status_code == 200 else []
+    _invalidate_my_scripts_cache()
     return {"updated": True, "row": rows[0] if rows else None}
 
 
@@ -2247,6 +2255,7 @@ def add_script_share(pid: int, sid: str, body: GenScriptShareIn, request: Reques
     )
     if r.status_code not in (200, 201):
         raise HTTPException(r.status_code, r.text[:300])
+    _invalidate_my_scripts_cache()
     return r.json()[0] if r.json() else {}
 
 
@@ -2264,6 +2273,7 @@ def delete_script_share(pid: int, sid: str, share_id: str, request: Request):
         headers={"apikey": SK, "Authorization": f"Bearer {SK}", "Prefer": "return=minimal"},
         timeout=10,
     )
+    _invalidate_my_scripts_cache()
     return {"deleted": True}
 
 
@@ -2318,37 +2328,61 @@ def list_gen_scripts(pid: int, request: Request):
 def list_all_my_scripts(request: Request):
     """내가 owner이거나 공유받은 모든 상품의 저장 대본 통합."""
     me = auth_svc.require_user(request)
+    cached = _cache_get(_my_scripts_cache, me["id"], _MY_SCRIPTS_CACHE_TTL)
+    if cached is not None:
+        return cached
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
     H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
 
+    # ── Phase 1: 독립 호출 병렬 ──
+    # admin: my_products(전체) + generated_script_shares
+    # 일반: my_products(own) + my_product_shares + generated_script_shares
     if me.get("role") == "admin":
-        prod = _r.get(f"{SUPA}/rest/v1/my_products?select=id,name", headers=H, timeout=10).json()
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_prod = ex.submit(
+                _r.get,
+                f"{SUPA}/rest/v1/my_products?select=id,name",
+                headers=H, timeout=10,
+            )
+            f_script_shares = ex.submit(
+                _r.get,
+                f"{SUPA}/rest/v1/generated_script_shares?shared_with_id=eq.{me['id']}&select=script_id,permission",
+                headers=H, timeout=10,
+            )
+        prod = f_prod.result().json() or []
+        shares = f_script_shares.result().json() or []
     else:
-        own = _r.get(
-            f"{SUPA}/rest/v1/my_products?owner_id=eq.{me['id']}&select=id,name",
-            headers=H, timeout=10,
-        ).json() or []
-        shared = _r.get(
-            f"{SUPA}/rest/v1/my_product_shares?shared_with_id=eq.{me['id']}&select=product_id",
-            headers=H, timeout=10,
-        ).json() or []
-        shared_ids = [s["product_id"] for s in shared]
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            f_own = ex.submit(
+                _r.get,
+                f"{SUPA}/rest/v1/my_products?owner_id=eq.{me['id']}&select=id,name",
+                headers=H, timeout=10,
+            )
+            f_prod_shares = ex.submit(
+                _r.get,
+                f"{SUPA}/rest/v1/my_product_shares?shared_with_id=eq.{me['id']}&select=product_id",
+                headers=H, timeout=10,
+            )
+            f_script_shares = ex.submit(
+                _r.get,
+                f"{SUPA}/rest/v1/generated_script_shares?shared_with_id=eq.{me['id']}&select=script_id,permission",
+                headers=H, timeout=10,
+            )
+        own = f_own.result().json() or []
+        shared = f_prod_shares.result().json() or []
+        shares = f_script_shares.result().json() or []
+        shared_pids = [s["product_id"] for s in shared]
         extras = []
-        if shared_ids:
-            ids_csv = ",".join(str(x) for x in shared_ids)
+        if shared_pids:
+            ids_csv = ",".join(str(x) for x in shared_pids)
             extras = _r.get(
                 f"{SUPA}/rest/v1/my_products?id=in.({ids_csv})&select=id,name",
                 headers=H, timeout=10,
             ).json() or []
         prod = list({p["id"]: p for p in (own + extras)}.values())
 
-    # 공유받은 대본 id (어느 product든)
-    shares = _r.get(
-        f"{SUPA}/rest/v1/generated_script_shares?shared_with_id=eq.{me['id']}&select=script_id,permission",
-        headers=H, timeout=10,
-    ).json() or []
     shared_ids = [s["script_id"] for s in shares]
     perm_by_sid = {s["script_id"]: s["permission"] for s in shares}
 
@@ -2372,26 +2406,34 @@ def list_all_my_scripts(request: Request):
     # 클라이언트 호환 위해 meta 객체 재조립
     for s in scripts:
         s["meta"] = {"status": s.pop("_status", None), "group_name": s.pop("_group_name", None)}
-    # 공유받은 대본의 product도 prod 목록에 보충 (이름 표기용)
+
+    # ── Phase 3: 보충 호출 병렬 (extra products + creator profiles) ──
     prod_id_set = {p["id"] for p in prod}
-    extra_pids = [s["product_id"] for s in scripts if s["product_id"] not in prod_id_set]
-    if extra_pids:
-        extra_csv = ",".join(str(x) for x in set(extra_pids))
-        extra_prod = _r.get(
-            f"{SUPA}/rest/v1/my_products?id=in.({extra_csv})&select=id,name",
-            headers=H, timeout=10,
-        ).json() or []
-        prod = list(prod) + extra_prod
-    # 작성자 정보 + 공유 플래그
+    extra_pids = list({s["product_id"] for s in scripts if s["product_id"] not in prod_id_set})
     creator_ids = list({s["created_by"] for s in scripts if s.get("created_by")})
+
+    extra_prod: list = []
     creator_by_id: dict[str, dict] = {}
-    if creator_ids:
-        cids_csv = ",".join(f'"{x}"' for x in creator_ids)
-        prof = _r.get(
-            f"{SUPA}/rest/v1/profiles?id=in.({cids_csv})&select=id,email,display_name",
-            headers=H, timeout=10,
-        ).json() or []
-        creator_by_id = {p["id"]: p for p in prof}
+
+    if extra_pids or creator_ids:
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_extra = ex.submit(
+                _r.get,
+                f"{SUPA}/rest/v1/my_products?id=in.({','.join(str(x) for x in extra_pids)})&select=id,name",
+                headers=H, timeout=10,
+            ) if extra_pids else None
+            f_prof = ex.submit(
+                _r.get,
+                f"{SUPA}/rest/v1/profiles?id=in.({','.join(chr(34)+x+chr(34) for x in creator_ids)})&select=id,email,display_name",
+                headers=H, timeout=10,
+            ) if creator_ids else None
+        if f_extra is not None:
+            extra_prod = f_extra.result().json() or []
+        if f_prof is not None:
+            creator_by_id = {p["id"]: p for p in (f_prof.result().json() or [])}
+
+    if extra_prod:
+        prod = list(prod) + extra_prod
     for s in scripts:
         cb = s.get("created_by")
         if cb and cb in creator_by_id:
@@ -2401,7 +2443,8 @@ def list_all_my_scripts(request: Request):
         if cb != me["id"]:
             s["_shared"] = True
             s["_permission"] = perm_by_sid.get(s["id"], "view")
-    return {"products": prod, "scripts": scripts}
+    result = {"products": prod, "scripts": scripts}
+    return _cache_set(_my_scripts_cache, me["id"], result)
 
 
 @app.get("/api/my-products/{pid}/scripts/{sid}")
@@ -2441,6 +2484,7 @@ def delete_gen_script(pid: int, sid: str, request: Request):
     )
     if r.status_code not in (200, 204):
         raise HTTPException(r.status_code, r.text[:300])
+    _invalidate_my_scripts_cache()
     return {"deleted": True}
 
 

@@ -5377,8 +5377,9 @@ def _extract_blog_images(url: str) -> list[dict]:
         if not src or src.startswith("data:"):
             return
         abs_url = urljoin(base, src)
-        # Naver 이미지 크기 파라미터 제거 (?type=w773 등) — 원본 받기
-        if "blogfiles.pstatic.net" in abs_url or "postfiles.pstatic.net" in abs_url:
+        # Naver 이미지 — `?type=wN` 으로 CDN이 리사이즈. 원본 받으려면 query 제거.
+        # 추출 단계에선 base URL로 통일 → import-image 시점에서 ?type=w3840 으로 재요청해 최대 해상도 받음.
+        if "pstatic.net" in abs_url:
             abs_url = abs_url.split("?")[0]
         if abs_url in seen:
             return
@@ -5439,14 +5440,56 @@ def seedance_import_image(body: SeedanceImportImageReq, request: Request):
         headers["Referer"] = body.referer
     elif "pstatic.net" in body.url:
         headers["Referer"] = "https://blog.naver.com/"
+    # Naver: CDN에서 max 해상도 명시 요청 (param 없으면 종종 작은 thumb 줌)
+    fetch_url = body.url
+    if "pstatic.net" in fetch_url and "?" not in fetch_url:
+        fetch_url = fetch_url + "?type=w3840"
     try:
-        rr = requests.get(body.url, headers=headers, timeout=20, stream=False)
+        rr = requests.get(fetch_url, headers=headers, timeout=20, stream=False)
         rr.raise_for_status()
     except Exception as e:
-        raise HTTPException(502, f"이미지 download 실패: {e}")
+        # max 사이즈 실패하면 원본 URL로 fallback
+        if fetch_url != body.url:
+            try:
+                rr = requests.get(body.url, headers=headers, timeout=20)
+                rr.raise_for_status()
+            except Exception as e2:
+                raise HTTPException(502, f"이미지 download 실패: {e2}")
+        else:
+            raise HTTPException(502, f"이미지 download 실패: {e}")
     content = rr.content
     if len(content) < 200:
         raise HTTPException(400, f"이미지 너무 작음 ({len(content)} bytes)")
+    # 입력 이미지 dimension 로깅 — 작으면 Seedance 출력 화질 저하 원인
+    try:
+        import struct
+        w_, h_ = None, None
+        if content.startswith(b"\xff\xd8"):  # JPEG
+            i = 2
+            while i < len(content) - 9:
+                if content[i] != 0xff: i += 1; continue
+                marker = content[i+1]
+                if marker in (0xc0, 0xc1, 0xc2, 0xc3):
+                    h_ = struct.unpack(">H", content[i+5:i+7])[0]
+                    w_ = struct.unpack(">H", content[i+7:i+9])[0]
+                    break
+                seg_len = struct.unpack(">H", content[i+2:i+4])[0]
+                i += 2 + seg_len
+        elif content.startswith(b"\x89PNG"):
+            w_, h_ = struct.unpack(">II", content[16:24])
+        elif content.startswith(b"RIFF") and b"WEBP" in content[:16]:
+            # VP8/VP8L/VP8X 헤더 — 단순화
+            if b"VP8L" in content[12:30]:
+                idx = content.index(b"VP8L") + 8
+                b = content[idx:idx+4]
+                w_ = (b[0] | ((b[1] & 0x3f) << 8)) + 1
+                h_ = (((b[1] & 0xc0) >> 6) | (b[2] << 2) | ((b[3] & 0x0f) << 10)) + 1
+        if w_ and h_:
+            logger.info("[seedance/import-image] %dx%d  %dKB  src=%s", w_, h_, len(content)//1024, fetch_url[:120])
+        else:
+            logger.info("[seedance/import-image] %dKB (dim unknown) src=%s", len(content)//1024, fetch_url[:120])
+    except Exception:
+        pass
     # fal upload
     import tempfile, mimetypes
     ext = mimetypes.guess_extension(rr.headers.get("Content-Type", "image/jpeg")) or ".jpg"
@@ -5536,7 +5579,7 @@ async def seedance_upload(request: Request):
 class SeedanceSubmitReq(BaseModel):
     prompt: str
     image_url: str
-    resolution: str = "720p"  # 480p / 720p / 1080p
+    resolution: str = "1080p"  # 480p / 720p / 1080p — 출력 해상도 (높을수록 비용↑)
     duration: str = "4"  # 4 ~ 15 (str) 또는 'auto'
     aspect_ratio: str = "9:16"  # 9:16 / 16:9 / 1:1 / 4:3 / 3:4 / 21:9 / auto
     generate_audio: bool = False

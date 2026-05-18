@@ -30,7 +30,7 @@ export default function Seedance() {
 
   // 공통 옵션
   const [prompt, setPrompt] = useState('자연스러운 카메라 무빙으로 첫 장면에서 두 번째 장면으로 부드럽게 전환')
-  const [resolution, setResolution] = useState<typeof RESOLUTIONS[number]>('720p')
+  const [resolution, setResolution] = useState<typeof RESOLUTIONS[number]>('1080p')
   const [duration, setDuration] = useState<typeof DURATIONS[number]>('5')
   const [aspectRatio, setAspectRatio] = useState<typeof ASPECTS[number]>('9:16')
   const [generateAudio, setGenerateAudio] = useState(false)
@@ -217,7 +217,7 @@ export default function Seedance() {
       <div style={{ marginBottom: 18 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Seedance 2.0 — 이미지 → 영상</h1>
         <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 0' }}>
-          이미지 2장으로 시작→끝 전환 영상 생성. 720p 4초 ≈ 3분.
+          이미지 2장으로 시작→끝 전환 영상 생성. 1080p 4초 ≈ 4–5분. 화질은 출력 해상도 + 입력 이미지 해상도에 비례.
         </p>
       </div>
 

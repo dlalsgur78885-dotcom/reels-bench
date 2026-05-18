@@ -40,6 +40,7 @@ interface SegmentMeta {
   direction: string
   tag: string
   strength_level: number  // -2 ~ +2
+  speed_factor?: number    // post-synth 문장별 속도 (1.0 기본)
   phrases?: { text: string; direction: string; tag: string }[]  // 어절 모드 결과
 }
 
@@ -120,6 +121,9 @@ export default function TtsGen() {
   const [job, setJob] = useState<JobState | null>(null)
   // 문장별 임시 선택 강도 (재생성 누르기 전)
   const [draftLevels, setDraftLevels] = useState<Record<number, number>>({})
+  // post-synth 문장별 속도 draft (변경 후 'speed 적용' 버튼으로 한 번에 ffmpeg 적용)
+  const [speedDrafts, setSpeedDrafts] = useState<Record<number, number>>({})
+  const [applyingSpeeds, setApplyingSpeeds] = useState(false)
   const [segLoading, setSegLoading] = useState<Record<number, boolean>>({})
   const [audioBust, setAudioBust] = useState(0)
 
@@ -222,7 +226,7 @@ export default function TtsGen() {
   const synthAll = async () => {
     const useSentences = savedSentences || sentences
     if (!useSentences.length) { setError('스크립트 데이터 없음'); return }
-    setSynthLoading(true); setError(''); setJob(null); setDraftLevels({})
+    setSynthLoading(true); setError(''); setJob(null); setDraftLevels({}); setSpeedDrafts({})
     try {
       // 속도 옵션 변환 → speed_factor / target_duration / segment_match
       let speedBody: { speed_factor?: number; target_duration?: number; segment_match?: boolean } = {}
@@ -282,6 +286,37 @@ export default function TtsGen() {
       setError(e.message || String(e))
     } finally {
       setSegLoading(s => ({ ...s, [idx]: false }))
+    }
+  }
+
+  // post-synth 문장별 속도 일괄 적용 — 재합성 X, ffmpeg atempo만
+  const applyAllSpeeds = async () => {
+    if (!job) return
+    // 현재 job sentences의 speed + draft override 머지
+    const speeds: Record<string, number> = {}
+    job.sentences.forEach((s, i) => {
+      const v = speedDrafts[i] ?? s.speed_factor ?? 1.0
+      if (Math.abs(v - 1.0) > 0.01) speeds[String(i)] = v
+    })
+    setApplyingSpeeds(true); setError('')
+    try {
+      const r = await ttsAuthedFetch('/api/tts/apply-speeds', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: job.job_id, speeds }),
+      })
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}))
+        throw new Error(d.detail || `API ${r.status}`)
+      }
+      const data: JobState = await r.json()
+      setJob(data)
+      setSpeedDrafts({})
+      setAudioBust(Date.now())
+    } catch (e: any) {
+      setError(e.message || String(e))
+    } finally {
+      setApplyingSpeeds(false)
     }
   }
 
@@ -410,9 +445,9 @@ export default function TtsGen() {
                       }}>👇 "🎙 음성 생성"으로 적용</span>
                     )}
                   </div>
-                  {/* sentence_emotion (전체감정) + speed picker */}
+                  {/* sentence_emotion (전체감정) picker — 문장 전체 톤 */}
                   {inPhraseMode && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
                       <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)' }}>🎬 전체 감정:</span>
                       <select
                         value={s.sentence_emotion || ''}
@@ -430,28 +465,11 @@ export default function TtsGen() {
                           <option key={pr.tag} value={pr.tag}>{pr.emoji} {pr.label} {pr.tag}</option>
                         ))}
                       </select>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', marginLeft: 8 }}>⏱ 속도:</span>
-                      <select
-                        value={String(s.speed_factor ?? 1.0)}
-                        onChange={e => {
-                          const v = parseFloat(e.target.value)
-                          updateSentence(i, { speed_factor: v === 1.0 ? undefined : v })
-                        }}
-                        disabled={!canEdit}
-                        style={{
-                          fontSize: 12, padding: '3px 8px',
-                          background: (s.speed_factor && s.speed_factor !== 1.0) ? 'rgba(245,158,11,0.12)' : 'var(--bg-base)',
-                          color: (s.speed_factor && s.speed_factor !== 1.0) ? '#a16207' : 'var(--text-body)',
-                          border: '1px solid', borderColor: (s.speed_factor && s.speed_factor !== 1.0) ? '#f59e0b' : 'var(--border)',
-                          borderRadius: 4, fontWeight: 600, cursor: canEdit ? 'pointer' : 'not-allowed',
-                        }}>
-                        <option value="0.7">0.7× (느림)</option>
-                        <option value="0.85">0.85×</option>
-                        <option value="1.0">1.0× (기본)</option>
-                        <option value="1.15">1.15×</option>
-                        <option value="1.3">1.3×</option>
-                        <option value="1.5">1.5× (빠름)</option>
-                      </select>
+                      {s.sentence_emotion && (
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                          ← 문장 맨 앞에 prepend (v3 전체 톤 지배)
+                        </span>
+                      )}
                     </div>
                   )}
                   {inPhraseMode ? (
@@ -726,8 +744,40 @@ ${JSON.stringify({
               <div style={cardSt}>
                 <div style={labelSt}>문장별 감정 단어</div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
-                  강도 단계 변경 → "재생성"으로 그 문장만 새 단어로 재합성
+                  강도 단계 변경 → "재생성"으로 그 문장만 새 단어로 재합성 · 속도 변경 → 아래 "속도 적용" 버튼 (재합성 없이 ffmpeg만)
                 </div>
+                {/* 속도 draft가 있으면 일괄 적용 버튼 */}
+                {(() => {
+                  const changedCount = job.sentences.reduce((acc, s, i) => {
+                    const v = speedDrafts[i] ?? s.speed_factor ?? 1.0
+                    const cur = s.speed_factor ?? 1.0
+                    return acc + (Math.abs(v - cur) > 0.01 ? 1 : 0)
+                  }, 0)
+                  if (changedCount === 0) return null
+                  return (
+                    <div style={{
+                      marginBottom: 12, padding: '8px 12px', borderRadius: 6,
+                      background: 'rgba(245,158,11,0.08)', border: '1px solid #f59e0b',
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+                    }}>
+                      <span style={{ fontSize: 12, color: '#a16207', fontWeight: 600 }}>
+                        ⏱ {changedCount}개 문장 속도 변경 대기 중 (재합성 없이 ffmpeg만, 빠름)
+                      </span>
+                      <button
+                        onClick={applyAllSpeeds}
+                        disabled={applyingSpeeds}
+                        style={{
+                          padding: '6px 14px', fontSize: 12, fontWeight: 700,
+                          background: applyingSpeeds ? 'var(--bg-elevated)' : '#f59e0b',
+                          color: applyingSpeeds ? 'var(--text-muted)' : '#fff',
+                          border: 'none', borderRadius: 4,
+                          cursor: applyingSpeeds ? 'wait' : 'pointer',
+                        }}>
+                        {applyingSpeeds ? '적용 중…' : '⏱ 속도 적용'}
+                      </button>
+                    </div>
+                  )
+                })()}
                 {/* 합성 후에도 위 입력 영역에서 어절/감정 수정 가능 → '🔄 변경 사항 재합성' 버튼으로 적용 */}
                 <div style={{
                   fontSize: 11, color: 'var(--accent)',
@@ -796,6 +846,47 @@ ${JSON.stringify({
                                 color: '#a16207', background: 'rgba(234,179,8,0.10)',
                                 padding: '1px 6px', borderRadius: 8,
                               }}>🪄 어절 모드</span>
+                            )}
+                          </div>
+                        )
+                      })()}
+
+                      {/* speed picker — post-synth ffmpeg atempo (재합성 없음) */}
+                      {(() => {
+                        const curSpeed = s.speed_factor ?? 1.0
+                        const draftSpeed = speedDrafts[i] ?? curSpeed
+                        const speedDirty = Math.abs(draftSpeed - curSpeed) > 0.01
+                        return (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '4px 0 8px' }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)' }}>⏱ 속도:</span>
+                            <select
+                              value={String(draftSpeed)}
+                              onChange={e => {
+                                const v = parseFloat(e.target.value)
+                                setSpeedDrafts(d => ({ ...d, [i]: v }))
+                              }}
+                              disabled={applyingSpeeds}
+                              style={{
+                                fontSize: 11, padding: '2px 6px',
+                                background: speedDirty ? 'rgba(245,158,11,0.15)' :
+                                  (draftSpeed !== 1.0 ? 'rgba(245,158,11,0.08)' : 'var(--bg-base)'),
+                                color: speedDirty || draftSpeed !== 1.0 ? '#a16207' : 'var(--text-body)',
+                                border: '1px solid',
+                                borderColor: speedDirty ? '#f59e0b' :
+                                  (draftSpeed !== 1.0 ? '#f59e0b' : 'var(--border)'),
+                                borderRadius: 4, fontWeight: 600,
+                              }}>
+                              <option value="0.7">0.7× 느림</option>
+                              <option value="0.85">0.85×</option>
+                              <option value="1.0">1.0× 기본</option>
+                              <option value="1.15">1.15×</option>
+                              <option value="1.3">1.3×</option>
+                              <option value="1.5">1.5× 빠름</option>
+                            </select>
+                            {speedDirty && (
+                              <span style={{ fontSize: 10, color: '#a16207', fontWeight: 600 }}>
+                                미적용 · 위 "속도 적용" 버튼
+                              </span>
                             )}
                           </div>
                         )

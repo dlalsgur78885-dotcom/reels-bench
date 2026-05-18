@@ -5257,6 +5257,29 @@ def tts_regenerate_segment(req: TtsSegmentRequest):
         raise HTTPException(500, f"문장 재합성 실패: {e}")
 
 
+class TtsApplySpeedsRequest(BaseModel):
+    job_id: str
+    speeds: dict[str, float]  # {idx_string: speed_factor} — JSON 안전한 str key
+
+
+@app.post("/api/tts/apply-speeds")
+def tts_apply_speeds(req: TtsApplySpeedsRequest):
+    """post-synth sentence별 speed 조절. 재합성 없이 ffmpeg atempo만 적용."""
+    try:
+        # str key → int 변환 (frontend가 str로 보냄)
+        speeds_int = {int(k): float(v) for k, v in (req.speeds or {}).items()}
+        result = tts_svc.apply_segment_speeds(req.job_id, speeds_int)
+        logger.info("[tts/apply-speeds] OK job=%s n=%d", req.job_id, len(speeds_int))
+        return result
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error("[tts/apply-speeds] FAILED: %s", e)
+        raise HTTPException(500, f"속도 적용 실패: {e}")
+
+
 @app.get("/api/tts/job/{job_id}")
 def tts_job_state(job_id: str):
     try:

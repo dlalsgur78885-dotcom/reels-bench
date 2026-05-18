@@ -1121,28 +1121,15 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
                 timings = [(float(s.get("start", 0)), float(s.get("end", 0))) for s in sentences]
                 alignment_method = "match_approx"
 
-    # per-sentence speed_factor 적용 — sentences[i].speed_factor가 1.0이 아니면 그 구간만 atempo
-    has_per_speed = any(abs(float(s.get("speed_factor") or 1.0) - 1.0) > 0.01 for s in sentences)
-    if has_per_speed and timings:
-        tmp_speed = job_dir / "speed.mp3"
-        ok = _apply_per_sentence_speed(final_path, timings, sentences, tmp_speed)
-        if ok and tmp_speed.exists():
-            final_path.write_bytes(tmp_speed.read_bytes())
-            try:
-                tmp_speed.unlink()
-            except OSError:
-                pass
-            total_duration = probe_duration(final_path)
-            new_timings = _align_sentences_to_audio(sentences, final_path)
-            if new_timings:
-                timings = new_timings
-                alignment_method = (alignment_method or "whisper") + "+per_speed"
+    # 원본 final.mp3 백업 (post-synth per-sentence speed 조절 시 source)
+    final_orig_path = job_dir / "final_orig.mp3"
+    final_orig_path.write_bytes(final_path.read_bytes())
 
     for i, sm in enumerate(sent_meta):
         if i < len(timings):
             sm["start"], sm["end"] = timings[i]
-        # per-sentence speed_factor 메타 저장 (UI 표시용)
-        sm["speed_factor"] = float(sentences[i].get("speed_factor") or 1.0)
+        # per-sentence speed_factor 메타 (기본 1.0) — post-synth에서 사용자가 조절
+        sm["speed_factor"] = 1.0
 
     # Supabase Storage 업로드 → public URL
     supabase_url = _upload_final_to_supabase(job_id, final_path)
@@ -1251,6 +1238,59 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
     meta["voice_settings"] = voice_settings  # 갱신된 voice_settings 기록
     meta["supabase_url"] = supabase_url
     meta["alignment_method"] = alignment_method
+    meta["updated_at"] = int(time.time())
+    _save_meta(job_id, meta)
+    return _state_response(meta)
+
+
+def apply_segment_speeds(job_id: str, speeds: dict[int, float]):
+    """post-synth에서 sentence별 speed_factor 변경 → final_orig.mp3 source로
+    slice + atempo + concat → final.mp3 재생성. 재합성(Anthropic 호출) 없이 ffmpeg만.
+    speeds: {sentence_idx: speed_factor} — 빠진 idx는 1.0(기본)으로.
+    """
+    meta = _load_meta(job_id)
+    sentences = meta["sentences"]
+    final_orig_path = _job_dir(job_id) / "final_orig.mp3"
+    final_path = _job_dir(job_id) / "final.mp3"
+    if not final_orig_path.exists():
+        # 옛 job — final_orig 없음. 현재 final.mp3로 복원 (그러면 그 위에 atempo 누적 가능 X 위험)
+        # 사용자에게 재합성 안내 필요
+        raise FileNotFoundError("이 job은 원본 mp3가 없어서 속도 조절 불가 (재합성 필요)")
+
+    # sentences에 speed_factor 적용 후 dict 형태로
+    for i, s in enumerate(sentences):
+        s["speed_factor"] = float(speeds.get(i, speeds.get(str(i), 1.0)))
+    # 현재 timing 사용 (이미 Whisper로 정렬됨)
+    timings = [(float(s.get("start", 0)), float(s.get("end", 0))) for s in sentences]
+    has_change = any(abs(s["speed_factor"] - 1.0) > 0.01 for s in sentences)
+    if has_change:
+        tmp_speed = _job_dir(job_id) / "speed.mp3"
+        ok = _apply_per_sentence_speed(final_orig_path, timings, sentences, tmp_speed)
+        if not ok:
+            raise RuntimeError("ffmpeg per-sentence speed 적용 실패")
+        final_path.write_bytes(tmp_speed.read_bytes())
+        try:
+            tmp_speed.unlink()
+        except OSError:
+            pass
+    else:
+        # 모두 1.0 → 원본 복원
+        final_path.write_bytes(final_orig_path.read_bytes())
+
+    total_duration = probe_duration(final_path)
+    # 재정렬 — atempo 결과 timing 변동
+    new_timings = _align_sentences_to_audio(sentences, final_path)
+    if not new_timings:
+        new_timings = _approx_segment_timings(sentences, total_duration)
+    for i, sm in enumerate(sentences):
+        if i < len(new_timings):
+            sm["start"], sm["end"] = new_timings[i]
+
+    # Supabase 재업로드
+    supabase_url = _upload_final_to_supabase(job_id, final_path)
+    meta["sentences"] = sentences
+    meta["total_duration"] = round(total_duration, 2)
+    meta["supabase_url"] = supabase_url
     meta["updated_at"] = int(time.time())
     _save_meta(job_id, meta)
     return _state_response(meta)

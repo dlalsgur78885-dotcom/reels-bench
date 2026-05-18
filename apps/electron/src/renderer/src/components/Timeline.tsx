@@ -357,6 +357,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const splitClipAt = useProjectStore((s) => s.splitClipAt)
   const duplicateClip = useProjectStore((s) => s.duplicateClip)
   const setClipSpeed = useProjectStore((s) => s.setClipSpeed)
+  const setClipTransitionIn = useProjectStore((s) => s.setClipTransitionIn)
+  const setClipFilter = useProjectStore((s) => s.setClipFilter)
   const addClip = useProjectStore((s) => s.addClip)
   const updateCaption = useProjectStore((s) => s.updateCaption)
   const setTrackMuted = useProjectStore((s) => s.setTrackMuted)
@@ -945,6 +947,62 @@ export function Timeline(props: TimelineProps): JSX.Element {
                         }
                       />
                     )}
+                    {/* Transition indicator (Phase 2.6) — shows when this clip
+                        has a transitionIn defined. Positioned at the LEFT edge
+                        because the transition borrows from both adjacent
+                        clips' edges, but is "owned" by the incoming clip. */}
+                    {isMediaClip(clip) && clip.transitionIn && clip.transitionIn.kind !== 'none' && (
+                      <div
+                        data-testid="transition-indicator"
+                        data-clip-id={clip.id}
+                        data-transition-kind={clip.transitionIn.kind}
+                        style={{
+                          position: 'absolute',
+                          left: -10,
+                          top: -8,
+                          width: 18,
+                          height: 18,
+                          borderRadius: '50%',
+                          background: '#10b981',
+                          border: '2px solid #0a0a0a',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: 10,
+                          color: '#04231a',
+                          fontWeight: 700,
+                          pointerEvents: 'none',
+                          zIndex: 4
+                        }}
+                        title={`전환: ${clip.transitionIn.kind} (${clip.transitionIn.durationMs}ms)`}
+                      >
+                        ⇆
+                      </div>
+                    )}
+                    {/* Filter preset indicator (Phase 2.6) — small tag if active. */}
+                    {isMediaClip(clip) && clip.filterPreset && clip.filterPreset !== 'none' && (
+                      <div
+                        data-testid="filter-indicator"
+                        data-clip-id={clip.id}
+                        data-filter-preset={clip.filterPreset}
+                        style={{
+                          position: 'absolute',
+                          right: 4,
+                          top: 4,
+                          padding: '1px 5px',
+                          borderRadius: 3,
+                          background: 'rgba(245, 158, 11, 0.85)',
+                          color: '#1a1a1a',
+                          fontSize: 9,
+                          fontWeight: 700,
+                          pointerEvents: 'none',
+                          zIndex: 4
+                        }}
+                        title={`필터: ${clip.filterPreset}`}
+                      >
+                        FX
+                      </div>
+                    )}
                   </div>
                 )
               })}
@@ -971,6 +1029,20 @@ export function Timeline(props: TimelineProps): JSX.Element {
             isMediaClip(ctxClip)
               ? (s: number): void => {
                   setClipSpeed(ctxClip.id, s)
+                }
+              : undefined
+          }
+          onTransitionChange={
+            isMediaClip(ctxClip)
+              ? (kind, durationMs): void => {
+                  setClipTransitionIn(ctxClip.id, kind, durationMs)
+                }
+              : undefined
+          }
+          onFilterChange={
+            isMediaClip(ctxClip)
+              ? (preset, intensity): void => {
+                  setClipFilter(ctxClip.id, preset, intensity)
                 }
               : undefined
           }

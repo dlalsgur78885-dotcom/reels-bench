@@ -32,6 +32,8 @@ export function installTestBridge(): void {
         setTrackSolo: Store['setTrackSolo']
         removeSilencesFromClip: Store['removeSilencesFromClip']
         updateMediaWaveform: Store['updateMediaWaveform']
+        setClipTransitionIn: Store['setClipTransitionIn']
+        setClipFilter: Store['setClipFilter']
         newId: () => string
       }
     }).__reelsStore = {
@@ -61,6 +63,10 @@ export function installTestBridge(): void {
         useProjectStore.getState().removeSilencesFromClip(id, ranges),
       updateMediaWaveform: (mid, p) =>
         useProjectStore.getState().updateMediaWaveform(mid, p),
+      setClipTransitionIn: (id, kind, dur) =>
+        useProjectStore.getState().setClipTransitionIn(id, kind, dur),
+      setClipFilter: (id, preset, intensity) =>
+        useProjectStore.getState().setClipFilter(id, preset, intensity),
       newId
     }
     ;(window as unknown as {

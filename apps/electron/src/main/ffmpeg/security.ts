@@ -92,10 +92,25 @@ export function assertPathAllowed(p: string, role: 'input' | 'output'): string {
   return resolved
 }
 
+// Filter graphs from the export pipeline need a broader character set than
+// the simple proxy-trim path (parens for if(...) expressions, semicolons to
+// separate chains, double quotes / single quotes for drawtext text args, `?`,
+// `#` for hex colors, `,` for chained filters, plus Korean / CJK characters
+// for caption drawtext).
+const FILTER_GRAPH_ALLOWED_RE =
+  /^[\p{L}\p{N}_\s=,:.()[\]\-+*@/\\%';|"?#<>!&^{}~`$]+$/u
 export function validateFilterGraph(g: string): string {
-  if (g.length > 4096) throw new Error('[ffmpeg] filterGraph too long')
-  if (!/^[\w\s=,:.[\]\-+*@/\\%']+$/.test(g)) {
+  // Increased ceiling: real multi-clip export graphs easily run 16~32KB.
+  if (g.length > 200_000) throw new Error('[ffmpeg] filterGraph too long')
+  if (!FILTER_GRAPH_ALLOWED_RE.test(g)) {
     throw new Error('[ffmpeg] filterGraph contains disallowed characters')
+  }
+  // Defense-in-depth: reject only NULs and most control bytes; allow tab /
+  // newline / carriage return since multiline filter graphs are fine for
+  // ffmpeg when passed via -filter_complex_script (we don't currently, but
+  // there's no security gain from rejecting whitespace).
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(g)) {
+    throw new Error('[ffmpeg] filterGraph contains control characters')
   }
   return g
 }

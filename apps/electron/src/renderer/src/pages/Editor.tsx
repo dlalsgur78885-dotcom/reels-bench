@@ -5,6 +5,7 @@ import { SilenceRemoveDialog } from '../components/SilenceRemoveDialog'
 import { Timeline } from '../components/Timeline'
 import { Transport } from '../components/Transport'
 import { CaptionEditor } from '../components/CaptionEditor'
+import { ExportDialog } from '../components/ExportDialog'
 import { getTotalDurationMs, useProjectStore } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import {
@@ -179,6 +180,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   const [silenceTargetClipId, setSilenceTargetClipId] = useState<string | null>(
     null
   )
+  const [exportOpen, setExportOpen] = useState(false)
 
   // Phase 2.5 — manual BPM + beat snap UI.
   const bpm = useTimelineUi((s) => s.bpm)
@@ -262,6 +264,13 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         if (e.ctrlKey || e.metaKey) return
         e.preventDefault()
         handleAddCaption()
+        return
+      }
+
+      // Ctrl/Cmd+E → open export dialog.
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'e' || e.key === 'E')) {
+        e.preventDefault()
+        setExportOpen(true)
         return
       }
 
@@ -443,6 +452,14 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         >
           SRT 가져오기
         </button>
+        <button
+          style={styles.primaryBtn}
+          onClick={() => setExportOpen(true)}
+          data-testid="open-export-dialog"
+          title="내보내기 (Ctrl+E)"
+        >
+          내보내기
+        </button>
 
         {!hydrated && (
           <div style={styles.hint}>프로젝트 로딩 중…</div>
@@ -532,6 +549,9 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           clipId={silenceTargetClipId}
           onClose={() => setSilenceTargetClipId(null)}
         />
+      )}
+      {exportOpen && (
+        <ExportDialog project={project} onClose={() => setExportOpen(false)} />
       )}
     </div>
   )

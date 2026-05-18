@@ -33,6 +33,34 @@ export type TrackKind = 'video' | 'audio' | 'caption'
  * Media-backed clip (video / audio / image). Phase 2.1~2.3 fields live here.
  * Discriminator: `kind === 'media'`.
  */
+// -----------------------------------------------------------------------------
+// Phase 2.6 — transitions + filter presets.
+// -----------------------------------------------------------------------------
+export type TransitionKind =
+  | 'none'
+  | 'crossfade'
+  | 'slide-left'
+  | 'slide-right'
+  | 'fade-to-black'
+  | 'zoom-in'
+  | 'glitch'
+
+export interface ClipTransition {
+  kind: TransitionKind
+  /** Overlap window in ms. Default 500. Must be < both adjacent clips' durations. */
+  durationMs: number
+}
+
+export type FilterPreset =
+  | 'none'
+  | 'cinematic'
+  | 'vibrant'
+  | 'bw'
+  | 'vintage'
+  | 'cool'
+  | 'warm'
+  | 'golden-hour'
+
 export interface VideoAudioClip {
   id: string
   kind: 'media'
@@ -60,6 +88,19 @@ export interface VideoAudioClip {
   fadeOutMs?: number
   /** Per-clip mute (overrides gain). Default false. */
   isMuted?: boolean
+  // -----------------------------------------------------------------
+  // Phase 2.6 — transitions + filter presets (optional, backwards-compatible).
+  // -----------------------------------------------------------------
+  /**
+   * Transition INTO this clip from the previous clip on the same track.
+   * Modeled on the incoming (right-hand) clip; outgoing tail plays normally.
+   * Default kind: 'none' (no transition).
+   */
+  transitionIn?: ClipTransition
+  /** 1-click LUT/filter preset applied at export. Preview uses CSS approximation. */
+  filterPreset?: FilterPreset
+  /** 0..1 intensity for the filter. Default 1 (full). */
+  filterIntensity?: number
 }
 
 /** Visual preset for a caption block. */
@@ -190,6 +231,32 @@ export const MIN_GAIN_DB = -60
 export const MAX_GAIN_DB = 12
 /** Default ducking attenuation for a BGM track when a voice clip plays. */
 export const DEFAULT_DUCKING_DB = -12
+
+// ---------------------------------------------------------------------------
+// Transition / filter constants (Phase 2.6).
+// ---------------------------------------------------------------------------
+export const DEFAULT_TRANSITION_MS = 500
+export const MIN_TRANSITION_MS = 100
+export const MAX_TRANSITION_MS = 3000
+export const TRANSITION_KINDS: readonly TransitionKind[] = [
+  'none',
+  'crossfade',
+  'slide-left',
+  'slide-right',
+  'fade-to-black',
+  'zoom-in',
+  'glitch'
+]
+export const FILTER_PRESETS: readonly FilterPreset[] = [
+  'none',
+  'cinematic',
+  'vibrant',
+  'bw',
+  'vintage',
+  'cool',
+  'warm',
+  'golden-hour'
+]
 
 export interface ProbeResult {
   durationMs: number

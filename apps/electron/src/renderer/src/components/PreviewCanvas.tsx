@@ -10,6 +10,7 @@ import {
   type Track,
   type VideoAudioClip
 } from '../../../shared/project'
+import { filterPresetToCss } from '../../../shared/filterPresets'
 import { useTimelineUi } from '../store/timelineUi'
 import { toMediaUrl } from '../lib/mediaUrl'
 
@@ -356,6 +357,12 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   const fitted = useFittedRect(containerRef, canvasAspect)
 
   const videoEl = useRef<HTMLVideoElement | null>(null)
+  /**
+   * Background video element — same source as foreground, but rendered as
+   * a blurred cover behind so non-matching aspect ratios show the iconic
+   * "vertical TikTok" blurred gutters instead of black bars.
+   */
+  const bgVideoEl = useRef<HTMLVideoElement | null>(null)
   const audioEl = useRef<HTMLAudioElement | null>(null)
   const loadedVideoId = useRef<string | null>(null)
   const loadedAudioId = useRef<string | null>(null)
@@ -397,12 +404,17 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
       swapRaf.current = null
       // ----- VIDEO TRACK -----
       const v = videoEl.current
+      const bg = bgVideoEl.current
       if (v) {
         if (activeVideo) {
           const media = project.media[activeVideo.mediaId]
           if (media && media.kind !== 'audio') {
             if (loadedVideoId.current !== media.id) {
               v.src = toMediaUrl(media.path)
+              if (bg) {
+                bg.src = toMediaUrl(media.path)
+                bg.muted = true
+              }
               loadedVideoId.current = media.id
             }
             if (media.kind !== 'image') {
@@ -415,8 +427,16 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                   // src may not be ready yet — ignored, will retry next tick.
                 }
               }
+              if (bg && Math.abs((bg.currentTime || 0) - target) > 0.05) {
+                try {
+                  bg.currentTime = Math.max(0, target)
+                } catch {
+                  // ignore
+                }
+              }
               const rate = clipPlaybackRate(activeVideo)
               if (Math.abs(v.playbackRate - rate) > 0.001) v.playbackRate = rate
+              if (bg && Math.abs(bg.playbackRate - rate) > 0.001) bg.playbackRate = rate
             }
             // Phase 2.5 audio shaping on the <video> element (video tracks
             // carry audio too — e.g. a clip with embedded VO).
@@ -428,12 +448,21 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           } else if (loadedVideoId.current !== null) {
             v.removeAttribute('src')
             v.load()
+            if (bg) {
+              bg.removeAttribute('src')
+              bg.load()
+            }
             loadedVideoId.current = null
           }
         } else if (loadedVideoId.current !== null) {
           v.pause()
           v.removeAttribute('src')
           v.load()
+          if (bg) {
+            bg.pause()
+            bg.removeAttribute('src')
+            bg.load()
+          }
           loadedVideoId.current = null
         }
       }
@@ -505,11 +534,17 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   // -----------------------------------------------------------------------
   useEffect(() => {
     const v = videoEl.current
+    const bg = bgVideoEl.current
     const a = audioEl.current
     if (playing) {
       if (v && loadedVideoId.current) {
         v.play().catch(() => {
           /* autoplay rejection / src not ready — silently ignored */
+        })
+      }
+      if (bg && loadedVideoId.current) {
+        bg.play().catch(() => {
+          /* ignore */
         })
       }
       if (a && loadedAudioId.current) {
@@ -519,6 +554,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
       }
     } else {
       v?.pause()
+      bg?.pause()
       a?.pause()
     }
   }, [playing])
@@ -563,6 +599,28 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
         data-fitted-width={fitted.width}
         data-fitted-height={fitted.height}
       >
+        {/* Blurred background <video> — fills (object-fit: cover), heavy blur
+            + dimmed brightness so the aspect-mismatched gutters get the
+            iconic "vertical TikTok" look instead of black bars. z-index: 0. */}
+        <video
+          ref={bgVideoEl}
+          data-testid="preview-video-bg"
+          aria-hidden="true"
+          playsInline
+          muted={true}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            filter: 'blur(40px) brightness(0.55)',
+            transform: 'scale(1.15)', // hide the blur ring at edges
+            zIndex: 0,
+            pointerEvents: 'none',
+            background: '#000'
+          }}
+        />
         {/* <video> for the active video-track media. object-fit: contain
             preserves the source aspect ratio inside the letterbox. z-index:1
             so the caption overlay sits on top. */}
@@ -570,6 +628,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           ref={videoEl}
           data-testid="preview-video"
           data-track-audible={videoAudible ? 'true' : 'false'}
+          data-filter-preset={activeVideo?.filterPreset ?? 'none'}
           playsInline
           muted={false}
           style={{
@@ -578,8 +637,14 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
             width: '100%',
             height: '100%',
             objectFit: 'contain',
-            background: '#000',
-            zIndex: 1
+            background: 'transparent',
+            zIndex: 1,
+            filter: activeVideo
+              ? filterPresetToCss(
+                  activeVideo.filterPreset,
+                  activeVideo.filterIntensity ?? 1
+                ) || 'none'
+              : 'none'
           }}
         />
         {/* <audio> for audio-only tracks (BGM / VO). No visual surface. */}

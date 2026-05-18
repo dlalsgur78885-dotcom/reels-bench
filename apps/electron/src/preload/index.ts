@@ -9,6 +9,10 @@ import {
   type BeatDetectOptions,
   type BeatMarker,
   type ElectronApi,
+  type ExportBuildPlanResult,
+  type ExportPresetKey,
+  type ExportRunOptions,
+  type ExportRunResult,
   type FfmpegCapabilities,
   type FfmpegRunSpec,
   type FilePickerFilter,
@@ -109,6 +113,25 @@ const api: ElectronApi = {
       ipcRenderer.invoke(IPC_CHANNELS.captions.importSrt, filePath),
     parseSrtString: (raw: string): Promise<ParsedCaptionCue[]> =>
       ipcRenderer.invoke(IPC_CHANNELS.captions.parseSrtString, raw)
+  },
+  exporter: {
+    run: (project, options: ExportRunOptions): Promise<ExportRunResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.exporter.run, project, options),
+    buildPlan: (
+      project,
+      presetKey: ExportPresetKey,
+      outputPath: string
+    ): Promise<ExportBuildPlanResult> =>
+      ipcRenderer.invoke(
+        IPC_CHANNELS.exporter.buildPlan,
+        project,
+        presetKey,
+        outputPath
+      ),
+    revealFile: (filePath: string): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.exporter.revealFile, filePath),
+    openFile: (filePath: string): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.exporter.openFile, filePath)
   }
 }
 

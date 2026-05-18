@@ -39,6 +39,12 @@ export const IPC_CHANNELS = {
   audio: {
     detectSilence: 'audio:detectSilence',
     detectBeats: 'audio:detectBeats'
+  },
+  exporter: {
+    run: 'exporter:run',
+    buildPlan: 'exporter:buildPlan',
+    revealFile: 'exporter:revealFile',
+    openFile: 'exporter:openFile'
   }
 } as const
 
@@ -217,6 +223,50 @@ export interface PickFileOptions {
   multi?: boolean
 }
 
+// ---------------------------------------------------------------------------
+// Export pipeline types (Phase 2.6).
+// ---------------------------------------------------------------------------
+export type ExportPresetKey =
+  | 'instagram-reels'
+  | 'tiktok'
+  | 'youtube-shorts'
+  | 'instagram-feed'
+  | 'high-quality'
+
+export interface ExportRunOptions {
+  /** Stable id for progress correlation. */
+  jobId: string
+  presetKey: ExportPresetKey
+  outputPath: string
+}
+
+export interface ExportRunResult {
+  jobId: string
+  ok: boolean
+  outputPath?: string
+  durationMs?: number
+  width?: number
+  height?: number
+  vBitrate?: number
+  aBitrate?: number
+  error?: string
+  /** Path to the persisted last-export-cmd.txt for diagnostics. */
+  debugLogPath?: string
+}
+
+export interface ExportBuildPlanResult {
+  ok: boolean
+  /** Final ffmpeg argv as a single string (debug-friendly). */
+  argvPreview?: string
+  /** Filter graph string (large; may be omitted from UI). */
+  filterGraph?: string
+  /** Input paths in order (input index = position in this array). */
+  inputs?: string[]
+  /** Number of media (video-track) clips on the timeline. */
+  videoSegmentCount?: number
+  error?: string
+}
+
 export interface ElectronApi {
   ffmpeg: {
     capabilities(): Promise<FfmpegCapabilities>
@@ -275,6 +325,26 @@ export interface ElectronApi {
     importSrt(filePath: string): Promise<ParsedCaptionCue[]>
     /** Parses an in-memory SRT/VTT payload (used for tests + paste flow). */
     parseSrtString(raw: string): Promise<ParsedCaptionCue[]>
+  }
+  exporter: {
+    /** Run a full export. Resolves when the underlying ffmpeg job exits. */
+    run(
+      project: Project,
+      options: ExportRunOptions
+    ): Promise<ExportRunResult>
+    /**
+     * Build & validate the filter graph + argv without running ffmpeg.
+     * Used by tests and the "what would happen" diagnostic in the UI.
+     */
+    buildPlan(
+      project: Project,
+      presetKey: ExportPresetKey,
+      outputPath: string
+    ): Promise<ExportBuildPlanResult>
+    /** Open the containing folder with the file selected. */
+    revealFile(filePath: string): Promise<void>
+    /** Open the file with the OS default player. */
+    openFile(filePath: string): Promise<void>
   }
 }
 

@@ -3,16 +3,21 @@ import { create } from 'zustand'
 import {
   ASPECT_RATIO_DIMENSIONS,
   DEFAULT_DUCKING_DB,
+  DEFAULT_TRANSITION_MS,
   MAX_CLIP_SPEED,
   MAX_GAIN_DB,
+  MAX_TRANSITION_MS,
   MIN_CLIP_MS,
   MIN_CLIP_SPEED,
   MIN_GAIN_DB,
+  MIN_TRANSITION_MS,
   type AspectRatio,
   type CaptionClip,
   type Clip,
+  type FilterPreset,
   type MediaAsset,
   type Project,
+  type TransitionKind,
   type VideoAudioClip,
   isCaptionClip,
   isMediaClip
@@ -179,6 +184,16 @@ export interface ProjectStore {
    * is not a media clip, or `ranges` is empty.
    */
   removeSilencesFromClip(clipId: string, ranges: SilenceRange[]): string[]
+
+  // --- Transitions + filters (Phase 2.6, media clips only) ---
+  /** Set the incoming transition on a media clip. kind='none' clears it. */
+  setClipTransitionIn(
+    clipId: string,
+    kind: TransitionKind,
+    durationMs?: number
+  ): void
+  /** Set the filter preset + intensity (0..1) on a media clip. */
+  setClipFilter(clipId: string, preset: FilterPreset, intensity?: number): void
 
   // --- Captions (Phase 2.4) ---
   /** Append a caption clip to the caption track. */
@@ -701,6 +716,63 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     set({ project: next })
     schedulePersist(next)
     return ids
+  },
+
+  // --------------------------------------------------------------------
+  // Transitions + filters (Phase 2.6) — media clips only.
+  // --------------------------------------------------------------------
+  setClipTransitionIn(clipId, kind, durationMs): void {
+    const project = get().project
+    const dur = Math.max(
+      MIN_TRANSITION_MS,
+      Math.min(
+        MAX_TRANSITION_MS,
+        Math.round(Number(durationMs ?? DEFAULT_TRANSITION_MS))
+      )
+    )
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const updated: VideoAudioClip =
+        kind === 'none'
+          ? { ...c, transitionIn: undefined }
+          : { ...c, transitionIn: { kind, durationMs: dur } }
+      const clips = [...t.clips]
+      clips[idx] = updated
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  setClipFilter(clipId, preset, intensity): void {
+    const project = get().project
+    const clamped = Math.max(0, Math.min(1, Number(intensity ?? 1)))
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const updated: VideoAudioClip =
+        preset === 'none'
+          ? { ...c, filterPreset: 'none', filterIntensity: 1 }
+          : { ...c, filterPreset: preset, filterIntensity: clamped }
+      const clips = [...t.clips]
+      clips[idx] = updated
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
   },
 
   addCaption(caption: CaptionClip): void {

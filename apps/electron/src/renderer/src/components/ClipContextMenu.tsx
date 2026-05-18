@@ -1,11 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Clip } from '../../../shared/project'
+import type {
+  Clip,
+  FilterPreset,
+  TransitionKind
+} from '../../../shared/project'
 import {
+  DEFAULT_TRANSITION_MS,
+  FILTER_PRESETS,
   isCaptionClip,
   isMediaClip,
   MAX_CLIP_SPEED,
-  MIN_CLIP_SPEED
+  MAX_TRANSITION_MS,
+  MIN_CLIP_SPEED,
+  MIN_TRANSITION_MS,
+  TRANSITION_KINDS
 } from '../../../shared/project'
+import {
+  FILTER_PRESET_LABELS,
+  TRANSITION_LABELS,
+  filterPresetToCss
+} from '../../../shared/filterPresets'
 
 interface ClipContextMenuProps {
   clip: Clip
@@ -22,6 +36,10 @@ interface ClipContextMenuProps {
    * Optional — only invoked for media clips.
    */
   onSpeedChange?: (speed: number) => void
+  /** Apply a transition-in (kind + duration). Media clips only. */
+  onTransitionChange?: (kind: TransitionKind, durationMs: number) => void
+  /** Apply a filter preset + intensity. Media clips only. */
+  onFilterChange?: (preset: FilterPreset, intensity: number) => void
   onClose: () => void
 }
 
@@ -151,15 +169,37 @@ function captionRows(): MenuRow[] {
 }
 
 export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
-  const { clip, x, y, playheadMs, onAction, onSpeedChange, onClose } = props
+  const {
+    clip,
+    x,
+    y,
+    playheadMs,
+    onAction,
+    onSpeedChange,
+    onTransitionChange,
+    onFilterChange,
+    onClose
+  } = props
   const ref = useRef<HTMLDivElement>(null)
   const [showSpeed, setShowSpeed] = useState(false)
+  const [showTransition, setShowTransition] = useState(false)
+  const [showFilter, setShowFilter] = useState(false)
 
   // Always recompute on each render so playhead/clip changes drive the gate.
   const rows = isCaptionClip(clip) ? captionRows() : mediaRows(clip, playheadMs)
 
   // Read current speed (default 1) from the media clip; captions don't have one.
   const speed = isMediaClip(clip) ? clip.speed ?? 1 : 1
+  const transitionKind: TransitionKind = isMediaClip(clip)
+    ? clip.transitionIn?.kind ?? 'none'
+    : 'none'
+  const transitionMs = isMediaClip(clip)
+    ? clip.transitionIn?.durationMs ?? DEFAULT_TRANSITION_MS
+    : DEFAULT_TRANSITION_MS
+  const filterPreset: FilterPreset = isMediaClip(clip)
+    ? clip.filterPreset ?? 'none'
+    : 'none'
+  const filterIntensity = isMediaClip(clip) ? clip.filterIntensity ?? 1 : 1
 
   useEffect(() => {
     const onDown = (e: MouseEvent): void => {
@@ -222,6 +262,182 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
           </div>
         )
       })}
+
+      {/* Transition sub-menu — media clips only. */}
+      {isMediaClip(clip) && onTransitionChange && (
+        <>
+          <div style={styles.separator} />
+          <div
+            role="menuitem"
+            data-testid="menu-transition"
+            style={styles.item}
+            onMouseEnter={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = '#2a2a2a'
+            }}
+            onMouseLeave={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = 'transparent'
+            }}
+            onClick={() => setShowTransition((v) => !v)}
+          >
+            <span>전환 효과{showTransition ? '' : '…'}</span>
+            <span style={styles.shortcut}>
+              {TRANSITION_LABELS[transitionKind] ?? transitionKind}
+            </span>
+          </div>
+          {showTransition && (
+            <div style={styles.speedPanel} data-testid="menu-transition-panel">
+              <div style={styles.presetRow}>
+                {TRANSITION_KINDS.map((k) => {
+                  const active = transitionKind === k
+                  return (
+                    <button
+                      key={k}
+                      type="button"
+                      style={{
+                        ...styles.preset,
+                        ...(active ? styles.presetActive : {})
+                      }}
+                      data-testid={`menu-transition-preset-${k}`}
+                      onClick={() => onTransitionChange(k, transitionMs)}
+                    >
+                      {TRANSITION_LABELS[k] ?? k}
+                    </button>
+                  )
+                })}
+              </div>
+              <div style={styles.speedRow}>
+                <input
+                  type="range"
+                  min={MIN_TRANSITION_MS}
+                  max={MAX_TRANSITION_MS}
+                  step={50}
+                  value={transitionMs}
+                  onChange={(e) =>
+                    onTransitionChange(transitionKind, parseInt(e.target.value, 10) || DEFAULT_TRANSITION_MS)
+                  }
+                  style={styles.slider}
+                  data-testid="menu-transition-slider"
+                  aria-label="전환 길이"
+                  disabled={transitionKind === 'none'}
+                />
+                <input
+                  type="number"
+                  min={MIN_TRANSITION_MS}
+                  max={MAX_TRANSITION_MS}
+                  step={50}
+                  value={transitionMs}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10)
+                    if (!Number.isFinite(v)) return
+                    onTransitionChange(transitionKind, v)
+                  }}
+                  style={styles.speedInput}
+                  data-testid="menu-transition-input"
+                  aria-label="전환 길이(ms)"
+                  disabled={transitionKind === 'none'}
+                />
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Filter (LUT) sub-menu — media clips only. */}
+      {isMediaClip(clip) && onFilterChange && (
+        <>
+          <div style={styles.separator} />
+          <div
+            role="menuitem"
+            data-testid="menu-filter"
+            style={styles.item}
+            onMouseEnter={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = '#2a2a2a'
+            }}
+            onMouseLeave={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = 'transparent'
+            }}
+            onClick={() => setShowFilter((v) => !v)}
+          >
+            <span>필터{showFilter ? '' : '…'}</span>
+            <span style={styles.shortcut}>
+              {FILTER_PRESET_LABELS[filterPreset] ?? filterPreset}
+            </span>
+          </div>
+          {showFilter && (
+            <div style={styles.speedPanel} data-testid="menu-filter-panel">
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(4, 1fr)',
+                  gap: 6,
+                  marginBottom: 8
+                }}
+              >
+                {FILTER_PRESETS.map((p) => {
+                  const active = filterPreset === p
+                  const css = filterPresetToCss(p, filterIntensity) || 'none'
+                  return (
+                    <button
+                      key={p}
+                      type="button"
+                      data-testid={`menu-filter-preset-${p}`}
+                      onClick={() => onFilterChange(p, filterIntensity)}
+                      style={{
+                        background: '#1f2937',
+                        border: active ? '2px solid #10b981' : '1px solid #374151',
+                        borderRadius: 4,
+                        padding: 4,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexDirection: 'column' as const,
+                        alignItems: 'center',
+                        gap: 2,
+                        fontSize: 10,
+                        color: '#f5f5f5'
+                      }}
+                    >
+                      <div
+                        aria-hidden
+                        style={{
+                          width: 48,
+                          height: 28,
+                          background:
+                            'linear-gradient(120deg, #4b5563, #9ca3af 50%, #f59e0b)',
+                          borderRadius: 2,
+                          filter: css === 'none' ? '' : css
+                        }}
+                      />
+                      <div>{FILTER_PRESET_LABELS[p] ?? p}</div>
+                    </button>
+                  )
+                })}
+              </div>
+              <div style={styles.speedRow}>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={Math.round(filterIntensity * 100)}
+                  onChange={(e) =>
+                    onFilterChange(
+                      filterPreset,
+                      Math.max(0, Math.min(1, parseInt(e.target.value, 10) / 100))
+                    )
+                  }
+                  style={styles.slider}
+                  data-testid="menu-filter-intensity-slider"
+                  aria-label="필터 강도"
+                  disabled={filterPreset === 'none'}
+                />
+                <span style={{ ...styles.shortcut, width: 36 }}>
+                  {Math.round(filterIntensity * 100)}%
+                </span>
+              </div>
+            </div>
+          )}
+        </>
+      )}
 
       {/* Speed sub-menu is media-only. */}
       {isMediaClip(clip) && onSpeedChange && (

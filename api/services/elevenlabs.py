@@ -1461,7 +1461,26 @@ def apply_segment_speeds(job_id: str, speeds: dict[int, float]):
         # 1회 적용 후 보존 (다음 apply부터 정확)
         meta["orig_timings"] = [(round(t[0], 3), round(t[1], 3)) for t in timings]
     has_change = any(abs(s["speed_factor"] - 1.0) > 0.01 for s in sentences)
-    if has_change:
+    # 모든 sentence가 동일 speed → 전체 atempo 한 번 (자연 호흡 유지)
+    speed_values = [s["speed_factor"] for s in sentences]
+    all_same = len(set(round(v, 3) for v in speed_values)) == 1
+    if has_change and all_same:
+        sf = max(0.5, min(2.0, speed_values[0]))
+        tmp_speed = _job_dir(job_id) / "speed.mp3"
+        cmd = [FFMPEG, "-y", "-i", str(final_orig_path),
+               "-filter:a", f"atempo={sf:.3f}",
+               "-c:a", "libmp3lame", "-b:a", "128k", str(tmp_speed)]
+        proc = subprocess.run(cmd, capture_output=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg 전체 atempo 실패: {proc.stderr[-300:].decode(errors='replace')}")
+        final_path.write_bytes(tmp_speed.read_bytes())
+        try:
+            tmp_speed.unlink()
+        except OSError:
+            pass
+        logger.info("[apply-speeds] 전체 atempo=%.3f 적용 (sentence 사이 자연 호흡 유지)", sf)
+    elif has_change:
+        # 문장별 다른 속도 → per-segment slice + atempo (silence 제거됨, 어쩔 수 없음)
         tmp_speed = _job_dir(job_id) / "speed.mp3"
         ok = _apply_per_sentence_speed(final_orig_path, timings, sentences, tmp_speed)
         if not ok:
@@ -1471,6 +1490,7 @@ def apply_segment_speeds(job_id: str, speeds: dict[int, float]):
             tmp_speed.unlink()
         except OSError:
             pass
+        logger.info("[apply-speeds] per-segment atempo 적용 (mixed speeds)")
     else:
         # 모두 1.0 → 원본 복원
         final_path.write_bytes(final_orig_path.read_bytes())

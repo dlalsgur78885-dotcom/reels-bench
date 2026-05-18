@@ -5,6 +5,8 @@ import type {
   FfmpegRunSpec,
   ProgressEvent
 } from '../../shared/ipc'
+import { Editor } from './pages/Editor'
+import { initProjectStore } from './store/project'
 
 const wrap: React.CSSProperties = {
   fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
@@ -236,13 +238,27 @@ function FfmpegSmokeTest(): JSX.Element {
   )
 }
 
+type View = 'home' | 'editor'
+
 export default function App(): JSX.Element {
+  const [view, setView] = useState<View>('home')
+
+  // Kick off project hydration once at mount. Safe to call multiple times —
+  // initProjectStore guards against duplicates internally.
+  useEffect(() => {
+    void initProjectStore()
+  }, [])
+
   const handleAnalysis = (): void => console.log('[App] Analysis clicked')
   const handleScript = (): void => console.log('[App] Script clicked')
-  const handleEditor = (): void => console.log('[App] Editor clicked')
+  const handleEditor = (): void => setView('editor')
 
   const hasBridge = typeof window !== 'undefined' && Boolean(window.electron)
   const isDev = import.meta.env.DEV
+
+  if (view === 'editor') {
+    return <Editor onBack={() => setView('home')} />
+  }
 
   return (
     <div style={wrap}>
@@ -257,7 +273,7 @@ export default function App(): JSX.Element {
         <button style={btn} onClick={handleScript}>
           Script
         </button>
-        <button style={btn} onClick={handleEditor}>
+        <button style={btn} onClick={handleEditor} data-testid="open-editor-button">
           Editor
         </button>
       </div>

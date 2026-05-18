@@ -33,7 +33,10 @@ test.describe('@phase-1-ipc-fs fs bridge surface', () => {
     })
     expect(shape.pickFileIsFn).toBe(true)
     expect(shape.saveFileIsFn).toBe(true)
-    expect(shape.keys).toEqual(['pickFile', 'saveFile'])
+    // Phase 2.1 expanded the fs surface (project persistence, drop-allowlist,
+    // multi-select). The two originals must still be present; we assert as
+    // superset rather than exact equality.
+    expect(shape.keys).toEqual(expect.arrayContaining(['pickFile', 'saveFile']))
   })
 
   test('fs.pickFile returns null when dialog is cancelled (mocked)', async () => {

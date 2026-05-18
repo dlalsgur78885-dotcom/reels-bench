@@ -1,5 +1,12 @@
 // Typed IPC channel contracts shared between main, preload, and renderer.
 
+import type {
+  Project,
+  ProbeResult,
+  ThumbnailOptions,
+  ThumbnailResult
+} from './project'
+
 export const IPC_CHANNELS = {
   ffmpeg: {
     capabilities: 'ffmpeg:capabilities',
@@ -9,7 +16,15 @@ export const IPC_CHANNELS = {
   },
   fs: {
     pickFile: 'fs:pickFile',
-    saveFile: 'fs:saveFile'
+    saveFile: 'fs:saveFile',
+    readProject: 'fs:readProject',
+    writeProject: 'fs:writeProject',
+    allowPath: 'fs:allowPath'
+  },
+  media: {
+    probe: 'media:probe',
+    generateThumbnail: 'media:generateThumbnail',
+    readThumbnail: 'media:readThumbnail'
   },
   auth: {
     startDeeplinkFlow: 'auth:startDeeplinkFlow',
@@ -127,6 +142,12 @@ export interface FilePickerFilter {
   extensions: string[]
 }
 
+export interface PickFileOptions {
+  filters?: FilePickerFilter[]
+  /** Allow multi-select; returns string[]. */
+  multi?: boolean
+}
+
 export interface ElectronApi {
   ffmpeg: {
     capabilities(): Promise<FfmpegCapabilities>
@@ -135,9 +156,32 @@ export interface ElectronApi {
     onProgress(cb: (e: ProgressEvent) => void): () => void
   }
   fs: {
+    /**
+     * Backward-compatible: a bare filter list returns a single path or null;
+     * passing `{ multi: true }` returns string[] (possibly empty).
+     */
     pickFile(filter?: FilePickerFilter[]): Promise<string | null>
+    pickFiles(options?: PickFileOptions): Promise<string[]>
     saveFile(defaultName?: string): Promise<string | null>
+    readProject(): Promise<Project | null>
+    writeProject(project: Project): Promise<void>
+    /** Register a path (from drag-drop) so ffmpeg/probe handlers accept it. */
+    allowPath(p: string): Promise<void>
   }
+  media: {
+    probe(filePath: string): Promise<ProbeResult>
+    generateThumbnail(
+      filePath: string,
+      options?: ThumbnailOptions
+    ): Promise<ThumbnailResult>
+    /** Read an existing thumbnail file into a data: URI (used on app restart). */
+    readThumbnail(thumbnailPath: string): Promise<string | null>
+  }
+  /**
+   * Electron 32+ — pull the real on-disk path out of a drag-and-drop File.
+   * Implemented in preload via `electron.webUtils.getPathForFile`.
+   */
+  getPathForFile(file: File): string
   auth: {
     startDeeplinkFlow(): Promise<void>
     onTokenReceived(cb: (token: string) => void): () => void

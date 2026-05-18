@@ -876,12 +876,18 @@ ${JSON.stringify({
                                   (draftSpeed !== 1.0 ? '#f59e0b' : 'var(--border)'),
                                 borderRadius: 4, fontWeight: 600,
                               }}>
-                              <option value="0.7">0.7× 느림</option>
+                              <option value="0.5">0.5× 매우 느림</option>
+                              <option value="0.65">0.65×</option>
+                              <option value="0.75">0.75×</option>
                               <option value="0.85">0.85×</option>
-                              <option value="1.0">1.0× 기본</option>
-                              <option value="1.15">1.15×</option>
+                              <option value="0.9">0.9×</option>
+                              <option value="1.0">1.0× 원본</option>
+                              <option value="1.1">1.1×</option>
+                              <option value="1.2">1.2×</option>
                               <option value="1.3">1.3×</option>
-                              <option value="1.5">1.5× 빠름</option>
+                              <option value="1.5">1.5×</option>
+                              <option value="1.75">1.75×</option>
+                              <option value="2.0">2.0× 매우 빠름</option>
                             </select>
                             {speedDirty && (
                               <span style={{ fontSize: 10, color: '#a16207', fontWeight: 600 }}>

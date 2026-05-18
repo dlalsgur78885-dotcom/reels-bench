@@ -5257,6 +5257,27 @@ def tts_regenerate_segment(req: TtsSegmentRequest):
         raise HTTPException(500, f"문장 재합성 실패: {e}")
 
 
+class TtsUpdatePersonaCueRequest(BaseModel):
+    job_id: str
+    persona_cue: str
+
+
+@app.post("/api/tts/update-persona-cue")
+def tts_update_persona_cue(req: TtsUpdatePersonaCueRequest):
+    """persona cue 변경 → 기존 sentences로 전체 v3 재합성. ElevenLabs 비용 발생 (재합성)."""
+    try:
+        result = tts_svc.update_persona_cue(req.job_id, req.persona_cue)
+        logger.info("[tts/update-persona-cue] OK job=%s cue=%r", req.job_id, req.persona_cue[:50])
+        return result
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error("[tts/update-persona-cue] FAILED: %s", e)
+        raise HTTPException(500, f"cue 변경 실패: {e}")
+
+
 class TtsApplySpeedsRequest(BaseModel):
     job_id: str
     speeds: dict[str, float]  # {idx_string: speed_factor} — JSON 안전한 str key

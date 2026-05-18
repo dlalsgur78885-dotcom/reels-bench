@@ -124,6 +124,10 @@ export default function TtsGen() {
   // post-synth 문장별 속도 draft (변경 후 'speed 적용' 버튼으로 한 번에 ffmpeg 적용)
   const [speedDrafts, setSpeedDrafts] = useState<Record<number, number>>({})
   const [applyingSpeeds, setApplyingSpeeds] = useState(false)
+  // post-synth persona cue 편집 — 변경 시 전체 재합성 필요 (ElevenLabs 비용)
+  const [editingCue, setEditingCue] = useState(false)
+  const [cueDraft, setCueDraft] = useState('')
+  const [updatingCue, setUpdatingCue] = useState(false)
   const [segLoading, setSegLoading] = useState<Record<number, boolean>>({})
   const [audioBust, setAudioBust] = useState(0)
 
@@ -286,6 +290,33 @@ export default function TtsGen() {
       setError(e.message || String(e))
     } finally {
       setSegLoading(s => ({ ...s, [idx]: false }))
+    }
+  }
+
+  // persona cue 변경 → 전체 재합성 (ElevenLabs 비용)
+  const updatePersonaCue = async () => {
+    if (!job) return
+    if (!confirm(`전체 음성을 새 cue로 재합성합니다 (~30s, ElevenLabs 비용 발생). 계속할까요?\n\n새 cue: ${cueDraft}`)) return
+    setUpdatingCue(true); setError('')
+    try {
+      const r = await ttsAuthedFetch('/api/tts/update-persona-cue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: job.job_id, persona_cue: cueDraft }),
+      })
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}))
+        throw new Error(d.detail || `API ${r.status}`)
+      }
+      const data: JobState = await r.json()
+      setJob(data)
+      setEditingCue(false)
+      setSpeedDrafts({})  // 재합성으로 timing 변동, draft reset
+      setAudioBust(Date.now())
+    } catch (e: any) {
+      setError(e.message || String(e))
+    } finally {
+      setUpdatingCue(false)
     }
   }
 
@@ -697,13 +728,70 @@ export default function TtsGen() {
                   <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
                     {job.persona_cue && (
                       <div>
-                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 4 }}>
-                          PERSONA CUE (맨 앞에 prepend — 전체 톤 지배)
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span>PERSONA CUE (맨 앞에 prepend — 전체 톤 지배)</span>
+                          {!editingCue && (
+                            <button
+                              onClick={() => { setCueDraft(job.persona_cue || ''); setEditingCue(true) }}
+                              disabled={updatingCue}
+                              style={{
+                                fontSize: 10, padding: '2px 8px',
+                                background: 'transparent', color: 'var(--accent)',
+                                border: '1px solid var(--accent)', borderRadius: 4,
+                                cursor: updatingCue ? 'wait' : 'pointer',
+                              }}>✏ 편집</button>
+                          )}
                         </div>
-                        <div style={{ fontSize: 13, padding: '6px 10px', background: 'var(--bg-elevated)',
-                          borderRadius: 4, fontFamily: 'monospace', color: 'var(--accent)' }}>
-                          {job.persona_cue}
-                        </div>
+                        {editingCue ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            <input
+                              type="text"
+                              value={cueDraft}
+                              onChange={e => setCueDraft(e.target.value)}
+                              placeholder="(20대 후반 직장인 여성 목소리로)"
+                              disabled={updatingCue}
+                              style={{
+                                fontSize: 13, padding: '6px 10px',
+                                background: 'var(--bg-base)', color: 'var(--accent)',
+                                border: '1px solid var(--accent)', borderRadius: 4,
+                                fontFamily: 'monospace',
+                              }}
+                            />
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              <button
+                                onClick={updatePersonaCue}
+                                disabled={updatingCue || !cueDraft.trim() || cueDraft === job.persona_cue}
+                                style={{
+                                  padding: '5px 12px', fontSize: 11, fontWeight: 700,
+                                  background: updatingCue || !cueDraft.trim() || cueDraft === job.persona_cue
+                                    ? 'var(--bg-elevated)' : 'var(--accent)',
+                                  color: updatingCue || !cueDraft.trim() || cueDraft === job.persona_cue
+                                    ? 'var(--text-muted)' : '#fff',
+                                  border: 'none', borderRadius: 4,
+                                  cursor: updatingCue ? 'wait' : 'pointer',
+                                }}>
+                                {updatingCue ? '재합성 중… (~30s)' : '🔄 적용 (전체 재합성)'}
+                              </button>
+                              <button
+                                onClick={() => { setEditingCue(false); setCueDraft('') }}
+                                disabled={updatingCue}
+                                style={{
+                                  padding: '5px 12px', fontSize: 11,
+                                  background: 'transparent', color: 'var(--text-muted)',
+                                  border: '1px solid var(--border)', borderRadius: 4,
+                                  cursor: updatingCue ? 'wait' : 'pointer',
+                                }}>취소</button>
+                              <span style={{ fontSize: 10, color: 'var(--text-muted)', alignSelf: 'center' }}>
+                                ⚠ ElevenLabs 비용 발생 (재합성)
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 13, padding: '6px 10px', background: 'var(--bg-elevated)',
+                            borderRadius: 4, fontFamily: 'monospace', color: 'var(--accent)' }}>
+                            {job.persona_cue}
+                          </div>
+                        )}
                       </div>
                     )}
                     {job.prompt_text && (

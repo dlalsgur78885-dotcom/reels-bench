@@ -1330,6 +1330,51 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
     return _state_response(meta)
 
 
+def update_persona_cue(job_id: str, new_cue: str):
+    """persona cue만 변경 → 기존 sentences로 전체 v3 재합성.
+    voice tone이 cue에 강하게 묶이므로 cue 바뀌면 전체 재합성 필요 (ffmpeg로 못 고침).
+    new_cue: '(20대 후반 직장인 여성 목소리로)' 같은 괄호 표현. 빈 문자열이면 cue 제거."""
+    meta = _load_meta(job_id)
+    sentences = meta["sentences"]
+    voice_id = meta["voice_id"]
+    cue = (new_cue or "").strip()
+
+    base_text = _rebuild_full_text_from_meta(sentences, persona_cue=cue or None)
+    full_text = f"{cue} {base_text}" if cue else base_text
+
+    voice_settings = meta.get("voice_settings") or emotion_to_voice_settings(meta.get("base_emotion_strength", DEFAULT_EMOTION))
+    final_path = _job_dir(job_id) / "final.mp3"
+    _full_synth(full_text, voice_id, "eleven_v3", final_path, voice_settings, speed_factor=1.0)
+    total_duration = probe_duration(final_path)
+
+    # 새 final_orig.mp3 (cue 바뀌었으니 reset)
+    final_orig_path = _job_dir(job_id) / "final_orig.mp3"
+    final_orig_path.write_bytes(final_path.read_bytes())
+
+    # Whisper alignment 재실행
+    timings = _align_sentences_to_audio(sentences, final_path)
+    alignment_method = "whisper"
+    if not timings:
+        timings = _approx_segment_timings(sentences, total_duration)
+        alignment_method = "approx"
+    for i, sm in enumerate(sentences):
+        if i < len(timings):
+            sm["start"], sm["end"] = timings[i]
+        sm["speed_factor"] = 1.0  # cue 변경 = 재합성 → speed reset
+
+    supabase_url = _upload_final_to_supabase(job_id, final_path)
+    meta["sentences"] = sentences
+    meta["persona_cue"] = cue
+    meta["prompt_text"] = full_text
+    meta["total_duration"] = round(total_duration, 2)
+    meta["supabase_url"] = supabase_url
+    meta["alignment_method"] = alignment_method
+    meta["orig_timings"] = [(round(t[0], 3), round(t[1], 3)) for t in timings]
+    meta["updated_at"] = int(time.time())
+    _save_meta(job_id, meta)
+    return _state_response(meta)
+
+
 def apply_segment_speeds(job_id: str, speeds: dict[int, float]):
     """post-synth에서 sentence별 speed_factor 변경 → final_orig.mp3 source로
     slice + atempo + concat → final.mp3 재생성. 재합성(Anthropic 호출) 없이 ffmpeg만.

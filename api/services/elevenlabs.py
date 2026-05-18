@@ -939,35 +939,102 @@ MIN_TOTAL_CHARS = 5  # ElevenLabs v3 hallucination 방어 — 짧은 입력은 �
 V3_MAX_CHARS = 250   # v3 alpha는 ~250자 넘으면 환각/반복 — 청크 분할로 회피
 
 
+def _generate_voice_descriptor(persona):
+    """LLM으로 페르소나 → '연령대 직업 성별' 인구통계학적 descriptor 변환 (Flash 1회).
+    추상 형용사·가치관 묘사 제거, 화자 이미지 즉시 떠오르는 demographic 표현으로 정제.
+    Returns: '20대 후반 직장인 여성' 같은 문자열 또는 빈 문자열(실패 시)."""
+    if not persona:
+        return ""
+    name = (persona.get("name") or "").strip()
+    name = re.sub(r"\s*#\d+\s*$", "", name).strip()
+    name = re.sub(r"^\[참고 대본\]\s*", "", name).strip()
+    gender = (persona.get("gender") or "").lower()
+    gender_hint = "female" if gender == "female" else ("male" if gender == "male" else "unknown")
+    fields = {
+        "name": name,
+        "gender": gender_hint,
+        "identity": (persona.get("identity") or "")[:200],
+        "scenario": (persona.get("scenario") or "")[:200],
+        "job_statement": (persona.get("job_statement") or "")[:200],
+        "pain_scene": (persona.get("pain_scene") or "")[:150],
+        "desire_scene": (persona.get("desire_scene") or "")[:150],
+    }
+    prompt = (
+        "당신은 한국어 광고 음성 캐스팅 디렉터입니다.\n"
+        "아래 페르소나를 ElevenLabs v3 voice cue용 **인구통계학적 화자 묘사**로 변환하세요.\n\n"
+        "## 페르소나 데이터\n"
+        f"{json.dumps(fields, ensure_ascii=False, indent=2)}\n\n"
+        "## 변환 규칙\n"
+        '- 형식: "{연령대} {직업·사회적 역할} {성별}"\n'
+        '- 연령대: "10대" / "20대 초반/중반/후반" / "30대 초반/후반" / "40대" / "50대" / "60대 이상"\n'
+        '- 직업·역할: "직장인" / "대학생" / "주부" / "엄마" / "사장님" / "프리랜서" / "신혼부부" / "임산부" / "워킹맘" / "은퇴자" / "고등학생" 등\n'
+        '- 성별: "여성" / "남성" (gender 입력 따라. unknown이면 "여성" default)\n'
+        '- ❌ 추상 형용사 금지 ("스마트한", "알뜰살뜰한", "감성적인", "꼼꼼한")\n'
+        '- ❌ 가치관/취향 묘사 금지 ("얼리어답터", "비건", "환경주의자")\n'
+        '- ✅ 간결한 1~3 단어. 들으면 화자 이미지가 즉시 그려져야 함\n\n'
+        "## 예시\n"
+        '입력: "스마트한 업무 환경을 구축하는 얼리어답터" (gender=female) → {"voice_descriptor": "20대 후반 직장인 여성"}\n'
+        '입력: "본전 뽑는 알뜰 여행자" (gender=female) → {"voice_descriptor": "30대 직장인 여성"}\n'
+        '입력: "잠 못 자는 만삭 임산부 지수" (gender=female) → {"voice_descriptor": "30대 초반 임산부 여성"}\n\n'
+        '## 출력 (JSON만)\n'
+        '{"voice_descriptor": "..."}'
+    )
+    try:
+        r = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={_gemini_key()}",
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": 256},
+            },
+            timeout=30,
+        )
+        if r.status_code != 200:
+            logger.warning("voice_descriptor gemini %s: %s", r.status_code, r.text[:200])
+            return ""
+        parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+        raw_text = "".join(p.get("text", "") for p in parts).strip()
+        data = json.loads(raw_text)
+        desc = (data.get("voice_descriptor") or "").strip()
+        if desc and 5 <= len(desc) <= 40:
+            return desc
+        return ""
+    except Exception as e:
+        logger.warning("voice_descriptor gen failed: %s", e)
+        return ""
+
+
 def build_persona_cue(persona):
     """페르소나 dict → ElevenLabs v3 voice 톤 가이드용 인라인 cue.
     첫 문장 맨 앞에 항상 prepend (모델 발화 안 함, 전체 톤 지배).
-    v3는 맨 앞 cue를 전체 발화 톤으로 적용.
 
-    형식: '({페르소나 정보} {성별} 목소리로)'
-    - 페르소나 정보 우선순위: identity > name (cleaned) > '인플루언서' fallback
-    - 성별: 여성/남성 (unknown이면 생략)
-    - 항상 cue 반환 (None 폴백 X) — 누락 시 첫 inline directive가 전체 톤 지배"""
-    # 페르소나 정보 추출
+    voice_descriptor 우선 (LLM lazy 생성, persona dict에 in-place 캐시).
+    없으면 identity/name fallback. 항상 cue 반환."""
+    if persona is None:
+        return "(인플루언서 여성 목소리로)"
+
+    # voice_descriptor (이미 캐시됐으면 그대로, 없으면 Gemini Flash lazy 생성)
+    desc = (persona.get("voice_descriptor") or "").strip()
+    if not desc:
+        desc = _generate_voice_descriptor(persona)
+        if desc:
+            persona["voice_descriptor"] = desc  # 같은 합성 세션 내 재사용
+    if desc:
+        return f"({desc} 목소리로)"
+
+    # fallback — LLM 실패 시 identity/name + gender
     info = ""
-    if persona:
-        identity = (persona.get("identity") or "").strip()
-        name = (persona.get("name") or "").strip()
-        # name 정리: '#숫자' suffix, '[참고 대본] ' prefix 제거
-        name = re.sub(r"\s*#\d+\s*$", "", name).strip()
-        name = re.sub(r"^\[참고 대본\]\s*", "", name).strip()
-        # identity 우선 (짧고 캐릭터 명확), 너무 길면 name 사용
-        if identity and len(identity) <= 25:
-            info = identity
-        elif name:
-            info = name
+    identity = (persona.get("identity") or "").strip()
+    name = (persona.get("name") or "").strip()
+    name = re.sub(r"\s*#\d+\s*$", "", name).strip()
+    name = re.sub(r"^\[참고 대본\]\s*", "", name).strip()
+    if identity and len(identity) <= 25:
+        info = identity
+    elif name:
+        info = name
     if not info:
         info = "인플루언서"
-
-    # 성별 — 항상 명시 (없으면 여성 default. 광고 reel 화자 대부분 여성 인플루언서)
-    gender = (persona.get("gender") or "").lower() if persona else ""
+    gender = (persona.get("gender") or "").lower()
     gender_str = "남성" if gender == "male" else "여성"
-
     return f"({info} {gender_str} 목소리로)"
 
 

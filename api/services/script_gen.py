@@ -4042,7 +4042,7 @@ def _detect_speech_level(texts: list[str]) -> str:
     return "혼합"
 
 
-def _build_section_writer_prompt(section: dict, product_name: str, target_persona: dict | None, usps: list[dict], pain: str, desire: str, speech_level: str = "혼합", section_chunks: list[dict] | None = None, section_roles: dict | None = None, prev_chunks: list[dict] | None = None, chunk_to_user_usps: dict[str, list[int]] | None = None, chunk_to_reason: dict[str, str] | None = None) -> str:
+def _build_section_writer_prompt(section: dict, product_name: str, target_persona: dict | None, usps: list[dict], pain: str, desire: str, speech_level: str = "혼합", section_chunks: list[dict] | None = None, section_roles: dict | None = None, prev_chunks: list[dict] | None = None, chunk_to_user_usps: dict[str, list[int]] | None = None, chunk_to_reason: dict[str, str] | None = None, product_capability_out: str | None = None) -> str:
     """섹션별 작성자 prompt — outline 받아 문장 N개 작성. 섹션 타입별 가이드 추가.
 
     v4-2: chunk 의도(role/topic/summary/relation_to_prev) + section_roles 주입.
@@ -4052,6 +4052,7 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
         Writer에게 직전 흐름 텍스트로 전달 (자연 연결).
     chunk_to_user_usps: chunk.section → user_usp_ids[] (multi). Writer가 multi-USP 통합 호소 인지.
     chunk_to_reason: chunk.section → 매핑 reason (Pre-Planner가 작성한 컨텍스트). Writer 의도 가이드.
+    product_capability_out: 상품 전체 fence — "절대 박지 말 것" 기능 목록. prompt 맨 앞에 강조 prepend.
     """
     section_name = section.get("name", "")
     sentences_spec = section.get("sentences") or []
@@ -4528,8 +4529,21 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
             if desc_parsed_all["raw"]:
                 all_usps_dict += f"  설명: {desc_parsed_all['raw'][:300]}\n"
 
-    return f"""당신은 한국어 광고 카피라이터입니다. 아래 outline에 따라 광고 카피를 작성.
+    # 상품 전체 capability fence — 최강 우선순위 (writer가 없는 기능 만들어내는 환각 차단)
+    product_cap_fence = ""
+    if (product_capability_out or "").strip():
+        product_cap_fence = f"""
+## ⛔⛔⛔ 상품 capability fence — **절대 박지 말 것** (모든 USP·섹션·문장에 적용)
+이 상품 "{product_name}"이 **하지 않는 기능**:
+{product_capability_out.strip()}
 
+→ 위 키워드와 관련된 멘트는 무조건 false claim. 출력에 등장하면 검수 fail.
+→ 이 기능들이 가능하다는 암시조차 금지 ("간편하게", "한 번에", "자동으로" 같은 모호 표현도 위 기능 함의면 금지).
+→ 의심되면 다른 USP 셀링 포인트로 우회.
+"""
+
+    return f"""당신은 한국어 광고 카피라이터입니다. 아래 outline에 따라 광고 카피를 작성.
+{product_cap_fence}
 ⚠️⚠️ **direction 필드는 TTS 연기 cue 한 줄 (6자 이내)** ⚠️⚠️
 - ✅ 허용: "자연스럽게", "친근하게 묻듯", "확신에 차서", "공감하듯", "장난스럽게", "단호하게", "속삭이듯"
 - ❌ 절대 금지: 마케팅 지시문 ("X를 강조하여 공감을 유도하세요", "USP를 부각시키고...", "도입부를 작성하세요" 등)
@@ -6028,6 +6042,7 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
             prev_chunks=prev_chunks or [],
             chunk_to_user_usps=chunk_to_user_usps,
             chunk_to_reason=chunk_to_reason,
+            product_capability_out=product_capability_out,
         )
         spec_list = sec.get("sentences") or []
         n_required = len(spec_list)
@@ -6249,7 +6264,7 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     return draft
 
 
-def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], reference_source: str = "reels", refine: bool = True, target_persona: dict | None = None, chunk_usp_override: dict[str, list[int] | int] | None = None, chunk_meta_override: dict[str, dict] | None = None, skip_chunk_sections: list[str] | None = None, skip_sentence_starts: list[float] | None = None, section_overrides: dict[str, dict] | None = None, cta_override: dict | None = None, hook_archetype_override: dict | None = None, session_id: str | None = None) -> dict:
+def generate(product_name: str, pain: str, desire: str, usps: list[dict], reference_shortcodes: list[str], reference_source: str = "reels", refine: bool = True, target_persona: dict | None = None, chunk_usp_override: dict[str, list[int] | int] | None = None, chunk_meta_override: dict[str, dict] | None = None, skip_chunk_sections: list[str] | None = None, skip_sentence_starts: list[float] | None = None, section_overrides: dict[str, dict] | None = None, cta_override: dict | None = None, hook_archetype_override: dict | None = None, session_id: str | None = None, product_capability_out: str | None = None) -> dict:
     """엔드투엔드 — 참고 릴스 fetch → 1차 생성 → (선택) 2차 다듬기 → 최종.
 
     chunk_usp_override: chunk.section → user_usp_id 수동 매핑 (chunk 단위).

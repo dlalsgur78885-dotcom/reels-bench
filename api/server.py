@@ -103,6 +103,7 @@ class ScriptGenRequest(BaseModel):
     cta_override: dict | None = None  # backward compat: section_overrides.cta와 동일
     hook_archetype_override: dict | None = None  # wizard에서 primary 변경 시 {archetype, pattern, core_word}
     session_id: str | None = None  # 진행률 polling용 식별자
+    product_capability_out: str | None = None  # 상품 전체 fence — "이 상품이 절대 안 하는 기능" (writer 환각 차단)
 
 
 @app.get("/api/script/progress/{session_id}")
@@ -199,6 +200,7 @@ def gen_script(req: ScriptGenRequest, request: Request):
             cta_override=req.cta_override,
             hook_archetype_override=req.hook_archetype_override,
             session_id=req.session_id,
+            product_capability_out=req.product_capability_out,
         )
         n_sentences = len(result.get("sentences") or [])
         cost = script_gen.summarize_cost()
@@ -1169,7 +1171,10 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
 
     return {
         "shortcode": shortcode,
-        "product": {"id": product["id"], "name": product.get("name", ""), "usps": user_usps},
+        "product": {
+            "id": product["id"], "name": product.get("name", ""), "usps": user_usps,
+            "capability_out": product.get("capability_out"),  # 상품 fence (writer 환각 차단)
+        },
         "section_chunks": section_chunks,
         "chunk_mapping": mapping_full,
         "unused_user_usps": unused_user,
@@ -1743,6 +1748,7 @@ class MyProductIn(BaseModel):
     persona: str | None = None
     usps: list[dict] = []
     social_proof: list[dict] = []
+    capability_out: str | None = None  # 상품 전체 fence — "이 상품이 절대 안 하는 기능" (writer 환각 차단)
 
 
 _MY_PRODUCTS_CACHE_TTL = 20
@@ -1851,7 +1857,8 @@ def create_my_product(req: MyProductIn, request: Request):
         f"{SUPA}/rest/v1/my_products",
         headers={"apikey": SK, "Authorization": f"Bearer {SK}",
                  "Content-Type": "application/json", "Prefer": "return=representation"},
-        json={"owner_id": me["id"], "name": req.name, "persona": req.persona, "usps": req.usps, "social_proof": req.social_proof},
+        json={"owner_id": me["id"], "name": req.name, "persona": req.persona, "usps": req.usps,
+              "social_proof": req.social_proof, "capability_out": req.capability_out},
         timeout=10,
     )
     if r.status_code not in (200, 201):
@@ -1884,7 +1891,8 @@ def update_my_product(pid: int, req: MyProductIn, request: Request):
         f"{SUPA}/rest/v1/my_products?id=eq.{pid}",
         headers={"apikey": SK, "Authorization": f"Bearer {SK}",
                  "Content-Type": "application/json", "Prefer": "return=representation"},
-        json={"name": req.name, "persona": req.persona, "usps": req.usps, "social_proof": req.social_proof},
+        json={"name": req.name, "persona": req.persona, "usps": req.usps,
+              "social_proof": req.social_proof, "capability_out": req.capability_out},
         timeout=10,
     )
     if r.status_code not in (200, 204):

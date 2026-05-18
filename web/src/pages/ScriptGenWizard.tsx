@@ -534,6 +534,8 @@ export default function ScriptGenWizard() {
                 ]))
               : undefined,
             hook_archetype_override: hookArchetypeOverride || undefined,
+            // 상품 capability fence — writer가 없는 기능 만들어내는 환각 차단
+            product_capability_out: (mapping.product as any).capability_out || undefined,
           }),
         })
         if (!r.ok) throw new Error(`${r.status} ${await r.text()}`)

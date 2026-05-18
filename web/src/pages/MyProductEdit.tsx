@@ -88,6 +88,7 @@ export default function MyProductEdit() {
   const [name, setName] = useState('')
   const [usps, setUsps] = useState<USPItem[]>([{ usp: '', reviews: [''] }])
   const [socialProof, setSocialProof] = useState<SocialProofItem[]>([])
+  const [capabilityOut, setCapabilityOut] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(!isNew)
@@ -204,6 +205,7 @@ export default function MyProductEdit() {
       setName(fromCache.name)
       setUsps(fromCache.usps?.length ? fromCache.usps : [{ usp: '', reviews: [''] }])
       setSocialProof((fromCache as any).social_proof || [])
+      setCapabilityOut((fromCache as any).capability_out || '')
       setReplaceTo(fromCache.name)
       setLoading(false)
       return
@@ -217,6 +219,7 @@ export default function MyProductEdit() {
         setName(p.name)
         setUsps(p.usps?.length ? p.usps : [{ usp: '', reviews: [''] }])
         setSocialProof((p as any).social_proof || [])
+        setCapabilityOut((p as any).capability_out || '')
         setReplaceTo(p.name)
       }
       setLoading(false)
@@ -242,7 +245,12 @@ export default function MyProductEdit() {
           evidence: (sp.evidence || '').trim() || undefined,
         }))
         .filter(sp => sp.label && sp.value)
-      const payload = { name: name.trim(), usps: cleanUsps(), social_proof: cleanSp }
+      const payload = {
+        name: name.trim(),
+        usps: cleanUsps(),
+        social_proof: cleanSp,
+        capability_out: capabilityOut.trim() || null,
+      } as any
       if (isNew) await api.createMyProduct(payload)
       else await api.updateMyProduct(productId!, payload)
       invalidateCache()
@@ -294,6 +302,19 @@ export default function MyProductEdit() {
         <section>
           <label style={labelSt}>제품명 / 서비스명</label>
           <input style={inputSt} value={name} onChange={e => setName(e.target.value)} placeholder="예: C멤버십" autoFocus />
+        </section>
+
+        <section>
+          <label style={labelSt}>⛔ 이 상품이 절대 안 하는 기능 (writer 환각 차단)</label>
+          <textarea
+            style={{ ...inputSt, minHeight: 80, fontFamily: 'inherit', resize: 'vertical' }}
+            value={capabilityOut}
+            onChange={e => setCapabilityOut(e.target.value)}
+            placeholder='콤마 또는 줄바꿈 구분. 예: "예약, 결제, 환불, 다국어, 그룹 공유"&#10;writer가 없는 기능 만들어내는 환각 방지용. 모든 USP·섹션에 강제 적용.'
+          />
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+            여기 적은 기능은 광고 대본에 절대 등장 안 함 (모든 USP·페르소나·섹션 무관). 비워두면 fence 없음.
+          </div>
         </section>
 
         <section>

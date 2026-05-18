@@ -606,9 +606,9 @@ export const api = {
     del<{ deleted: boolean }>(`/api/admin/secrets/${encodeURIComponent(name)}`),
   // My Products
   listMyProducts: () => cachedGet<MyProduct[]>('/api/my-products', 30_000),
-  createMyProduct: (data: { name: string; persona?: string; usps?: any[] }) =>
+  createMyProduct: (data: { name: string; persona?: string; usps?: any[]; capability_out?: string | null }) =>
     post<MyProduct>('/api/my-products', data).then(r => { clearClientCache('/api/my-products'); return r }),
-  updateMyProduct: (id: number, data: { name: string; persona?: string; usps?: any[] }) =>
+  updateMyProduct: (id: number, data: { name: string; persona?: string; usps?: any[]; capability_out?: string | null }) =>
     patch<MyProduct>(`/api/my-products/${id}`, data).then(r => { clearClientCache('/api/my-products'); return r }),
   deleteMyProduct: (id: number) => del<{ message: string }>(`/api/my-products/${id}`)
     .then(r => { clearClientCache('/api/my-products'); return r }),
@@ -675,6 +675,7 @@ export interface MyProduct {
   name: string
   persona: string | null
   usps: { usp: string; reviews: string[] }[]
+  capability_out?: string | null   // 상품 전체 fence — "절대 안 하는 기능" (writer 환각 차단)
   created_at: string
   updated_at: string
   is_shared?: boolean

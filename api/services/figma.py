@@ -241,24 +241,25 @@ def get_connection(user_id: str) -> Optional[dict]:
 
 # ── Figma API 호출 ────────────────────────────────────────────────────────
 
-_FIGMA_URL_RE = re.compile(
-    r"figma\.com/(?:file|design|proto)/([a-zA-Z0-9]+)(?:/[^?]*)?(?:\?[^#]*?(?:node-id=([\d%A-Za-z\-:]+)))?"
-)
+_FILE_KEY_RE = re.compile(r"figma\.com/(?:file|design|proto|board)/([a-zA-Z0-9]+)")
+_NODE_ID_RE  = re.compile(r"[?&]node-id=([^&#]+)")
 
 
 def parse_figma_url(url: str) -> dict:
     """Figma URL → {file_key, node_id (있을 때)}.
 
-    URL 예시:
+    URL 예시 (모든 형식 + 추가 파라미터 위치 무관):
       https://www.figma.com/file/ABC123/My-Design?node-id=12-34
-      https://www.figma.com/design/ABC123/My-Design?node-id=1%3A2
+      https://www.figma.com/design/ABC123/My-Design?node-id=1%3A2&t=xxx
+      https://www.figma.com/design/ABC/Name?t=xxx&node-id=12-34&type=design
     """
-    m = _FIGMA_URL_RE.search(url or "")
-    if not m:
+    if not url:
         return {"file_key": "", "node_id": ""}
-    file_key = m.group(1)
-    node_id_raw = m.group(2) or ""
-    # node-id는 URL에서 `12-34` (대시) 또는 `12%3A34` (콜론 인코딩) 양식. API는 `12:34` 요구.
+    fk = _FILE_KEY_RE.search(url)
+    nid = _NODE_ID_RE.search(url)
+    file_key = fk.group(1) if fk else ""
+    node_id_raw = nid.group(1) if nid else ""
+    # `12-34` (dash) or `12%3A34` (colon encoded) → API는 `12:34` 요구
     node_id = node_id_raw.replace("%3A", ":").replace("-", ":") if node_id_raw else ""
     return {"file_key": file_key, "node_id": node_id}
 

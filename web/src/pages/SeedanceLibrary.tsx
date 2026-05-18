@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { authedFetch } from '../api'
 
@@ -18,6 +18,8 @@ type Video = {
   meta: any
 }
 
+const UNCLASSIFIED = '__unclassified__'
+
 export default function SeedanceLibrary() {
   const navigate = useNavigate()
   const [videos, setVideos] = useState<Video[]>([])
@@ -26,10 +28,30 @@ export default function SeedanceLibrary() {
   const [selected, setSelected] = useState<Video | null>(null)
   const [editingName, setEditingName] = useState<string | null>(null)
   const [nameDraft, setNameDraft] = useState('')
+  // 그룹 필터: null = 전체, '__unclassified__' = 미분류, 그 외 = 그룹명
+  const [groupFilter, setGroupFilter] = useState<string | null>(null)
+  // 그룹 picker가 열린 카드 id
+  const [groupPickerVid, setGroupPickerVid] = useState<string | null>(null)
+  const [newGroupInput, setNewGroupInput] = useState('')
+  const [savingMetaId, setSavingMetaId] = useState<string | null>(null)
+  const pickerCloseRef = useRef<(() => void) | null>(null)
 
+  useEffect(() => { load() }, [])
+
+  // picker 열려있을 때 document 클릭으로 닫기
   useEffect(() => {
-    load()
-  }, [])
+    if (!groupPickerVid) return
+    const t = setTimeout(() => {
+      const close = () => setGroupPickerVid(null)
+      document.addEventListener('click', close)
+      pickerCloseRef.current = () => document.removeEventListener('click', close)
+    }, 0)
+    return () => {
+      clearTimeout(t)
+      pickerCloseRef.current?.()
+      pickerCloseRef.current = null
+    }
+  }, [groupPickerVid])
 
   const load = async () => {
     setLoading(true)
@@ -43,6 +65,46 @@ export default function SeedanceLibrary() {
       setError(e?.message || String(e))
     } finally {
       setLoading(false)
+    }
+  }
+
+  const getGroup = (v: Video): string => ((v.meta?.group_name || '') as string).trim()
+
+  const userGroups = useMemo(() => {
+    const s = new Set<string>()
+    videos.forEach(v => { const g = getGroup(v); if (g) s.add(g) })
+    return Array.from(s).sort()
+  }, [videos])
+
+  const unclassifiedCount = useMemo(
+    () => videos.filter(v => !getGroup(v)).length, [videos]
+  )
+  const groupCount = (g: string) => videos.filter(v => getGroup(v) === g).length
+
+  const filtered = useMemo(() => {
+    if (groupFilter === null) return videos
+    if (groupFilter === UNCLASSIFIED) return videos.filter(v => !getGroup(v))
+    return videos.filter(v => getGroup(v) === groupFilter)
+  }, [videos, groupFilter])
+
+  const updateGroup = async (v: Video, group_name: string) => {
+    setSavingMetaId(v.id)
+    try {
+      const r = await authedFetch(`/api/seedance/videos/${v.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ group_name }),
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const newMeta = { ...(v.meta || {}) }
+      const gn = group_name.trim()
+      if (gn) newMeta.group_name = gn
+      else delete newMeta.group_name
+      setVideos(prev => prev.map(x => x.id === v.id ? { ...x, meta: newMeta } : x))
+      if (selected?.id === v.id) setSelected({ ...selected, meta: newMeta })
+    } catch (e: any) {
+      alert('그룹 변경 실패: ' + (e?.message || e))
+    } finally {
+      setSavingMetaId(null)
     }
   }
 
@@ -75,11 +137,11 @@ export default function SeedanceLibrary() {
 
   return (
     <div style={{ maxWidth: 1300, margin: '0 auto', padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 18 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 14 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>영상 라이브러리</h1>
           <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 0' }}>
-            Seedance로 생성·저장한 영상 모음. {videos.length}개 보유.
+            Seedance로 생성·저장한 영상 모음. {videos.length}개 보유 · 현재 보기 {filtered.length}개.
           </p>
         </div>
         <button onClick={() => navigate('/seedance')}
@@ -90,6 +152,38 @@ export default function SeedanceLibrary() {
         </button>
       </div>
 
+      {/* 그룹 필터 */}
+      {videos.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginRight: 4 }}>그룹:</span>
+          <FilterBtn active={groupFilter === null} onClick={() => setGroupFilter(null)}>
+            전체 ({videos.length})
+          </FilterBtn>
+          <FilterBtn active={groupFilter === UNCLASSIFIED} dashed
+            onClick={() => setGroupFilter(UNCLASSIFIED)}>
+            미분류 ({unclassifiedCount})
+          </FilterBtn>
+          {userGroups.map(g => (
+            <FilterBtn key={g} active={groupFilter === g}
+              onClick={() => setGroupFilter(groupFilter === g ? null : g)}>
+              {g} ({groupCount(g)})
+            </FilterBtn>
+          ))}
+          <button type="button"
+            onClick={() => {
+              const name = prompt('새 그룹 이름:')?.trim()
+              if (!name) return
+              setGroupFilter(name)
+              alert(`"${name}" 그룹 필터 활성화. 영상 카드의 "+ 그룹" 버튼으로 할당하세요.`)
+            }}
+            style={{ padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+              borderRadius: 6, border: '1px dashed var(--accent)',
+              background: 'transparent', color: 'var(--accent)' }}>
+            + 그룹 만들기
+          </button>
+        </div>
+      )}
+
       {loading && <div style={{ color: 'var(--text-muted)' }}>불러오는 중…</div>}
       {error && <div style={{ color: 'var(--error)' }}>오류: {error}</div>}
       {!loading && videos.length === 0 && !error && (
@@ -98,41 +192,123 @@ export default function SeedanceLibrary() {
           저장된 영상이 없습니다. 생성 페이지에서 영상 만든 뒤 "라이브러리에 저장" 하세요.
         </div>
       )}
+      {!loading && videos.length > 0 && filtered.length === 0 && (
+        <div style={{ padding: 30, textAlign: 'center', fontSize: 13, color: 'var(--text-muted)',
+          background: 'var(--bg-surface)', border: '1px dashed var(--border)', borderRadius: 8 }}>
+          이 필터에 해당하는 영상이 없습니다.
+        </div>
+      )}
 
       <div style={{
         display: 'grid', gridTemplateColumns: selected ? '1fr 1.4fr' : '1fr', gap: 16,
       }}>
-        {videos.length > 0 && (
+        {filtered.length > 0 && (
           <div style={{
             display: 'grid',
             gridTemplateColumns: selected ? 'repeat(auto-fill, minmax(160px, 1fr))' : 'repeat(auto-fill, minmax(200px, 1fr))',
             gap: 10,
           }}>
-            {videos.map(v => (
-              <div key={v.id}
-                onClick={() => setSelected(v)}
-                style={{
-                  background: 'var(--bg-surface)',
-                  border: `1.5px solid ${selected?.id === v.id ? 'var(--accent)' : 'var(--border)'}`,
-                  borderRadius: 8, overflow: 'hidden', cursor: 'pointer',
-                }}>
-                <video src={v.video_url} muted loop
-                  onMouseEnter={e => (e.currentTarget as HTMLVideoElement).play().catch(() => {})}
-                  onMouseLeave={e => { const el = e.currentTarget as HTMLVideoElement; el.pause(); el.currentTime = 0 }}
-                  style={{ width: '100%', aspectRatio: aspectStyle(v.aspect_ratio), background: '#000',
-                    display: 'block', objectFit: 'cover' }}
-                  preload="metadata" />
-                <div style={{ padding: 8 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.3,
-                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {v.name || v.prompt?.slice(0, 40) || '제목 없음'}
-                  </div>
-                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
-                    {v.resolution || '?'} · {v.duration || '?'}s · {v.aspect_ratio || ''}
+            {filtered.map(v => {
+              const g = getGroup(v)
+              const isOpen = groupPickerVid === v.id
+              return (
+                <div key={v.id}
+                  style={{
+                    background: 'var(--bg-surface)',
+                    border: `1.5px solid ${selected?.id === v.id ? 'var(--accent)' : 'var(--border)'}`,
+                    borderRadius: 8, overflow: 'hidden',
+                  }}>
+                  <video src={v.video_url} muted loop
+                    onClick={() => setSelected(v)}
+                    onMouseEnter={e => (e.currentTarget as HTMLVideoElement).play().catch(() => {})}
+                    onMouseLeave={e => { const el = e.currentTarget as HTMLVideoElement; el.pause(); el.currentTime = 0 }}
+                    style={{ width: '100%', aspectRatio: aspectStyle(v.aspect_ratio), background: '#000',
+                      display: 'block', objectFit: 'cover', cursor: 'pointer' }}
+                    preload="metadata" />
+                  <div style={{ padding: 8 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.3,
+                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                      cursor: 'pointer' }}
+                      onClick={() => setSelected(v)}>
+                      {v.name || v.prompt?.slice(0, 40) || '제목 없음'}
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, marginBottom: 6 }}>
+                      {v.resolution || '?'} · {v.duration || '?'}s · {v.aspect_ratio || ''}
+                    </div>
+                    {/* 그룹 picker */}
+                    <div style={{ position: 'relative' }}>
+                      <button type="button"
+                        disabled={savingMetaId === v.id}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setGroupPickerVid(isOpen ? null : v.id)
+                          setNewGroupInput('')
+                        }}
+                        style={{
+                          fontSize: 10, fontWeight: 700, padding: '2px 8px',
+                          background: g ? 'var(--accent-light)' : 'transparent',
+                          color: g ? 'var(--accent)' : 'var(--text-muted)',
+                          border: `1px ${g ? 'solid' : 'dashed'} var(--border)`,
+                          borderRadius: 4, cursor: 'pointer',
+                          opacity: savingMetaId === v.id ? 0.5 : 1,
+                        }}>
+                        {g || '+ 그룹'}
+                      </button>
+                      {isOpen && (
+                        <div onClick={e => e.stopPropagation()}
+                          style={{
+                            position: 'absolute', top: '100%', left: 0, marginTop: 4,
+                            minWidth: 200, zIndex: 100,
+                            background: 'var(--bg-surface)', border: '1px solid var(--border)',
+                            borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.16)',
+                            padding: 6,
+                          }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)',
+                            padding: '4px 8px' }}>그룹 선택</div>
+                          <button type="button"
+                            onClick={() => { updateGroup(v, ''); setGroupPickerVid(null) }}
+                            style={pickerItemSt(!g)}>미분류</button>
+                          {userGroups.map(gn => (
+                            <button key={gn} type="button"
+                              onClick={() => { updateGroup(v, gn); setGroupPickerVid(null) }}
+                              style={pickerItemSt(g === gn)}>{gn}</button>
+                          ))}
+                          <div style={{ borderTop: '1px solid var(--border)', marginTop: 4, paddingTop: 4 }}>
+                            <div style={{ display: 'flex', gap: 4 }}>
+                              <input type="text"
+                                value={newGroupInput}
+                                onChange={e => setNewGroupInput(e.target.value)}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') {
+                                    const val = newGroupInput.trim()
+                                    if (val) { updateGroup(v, val); setGroupPickerVid(null) }
+                                  }
+                                }}
+                                placeholder="새 그룹 이름"
+                                style={{ flex: 1, padding: '4px 6px', fontSize: 11,
+                                  border: '1px solid var(--border)', borderRadius: 4,
+                                  background: 'var(--bg-base)', color: 'var(--text-body)' }} />
+                              <button type="button"
+                                disabled={!newGroupInput.trim()}
+                                onClick={() => {
+                                  const val = newGroupInput.trim()
+                                  if (val) { updateGroup(v, val); setGroupPickerVid(null) }
+                                }}
+                                style={{
+                                  padding: '4px 10px', fontSize: 11, fontWeight: 600,
+                                  background: 'var(--accent)', color: '#fff', border: 'none',
+                                  borderRadius: 4, cursor: newGroupInput.trim() ? 'pointer' : 'not-allowed',
+                                  opacity: newGroupInput.trim() ? 1 : 0.5,
+                                }}>+</button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
 
@@ -172,6 +348,24 @@ export default function SeedanceLibrary() {
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
               {selected.resolution || '?'} · {selected.duration || '?'}s · {selected.aspect_ratio || ''} ·
               {selected.generate_audio ? ' 오디오 O' : ' 오디오 X'} · {new Date(selected.created_at).toLocaleString('ko-KR')}
+            </div>
+
+            <div style={{ marginBottom: 10 }}>
+              <Label>그룹</Label>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span style={{ fontSize: 12, padding: '4px 10px', borderRadius: 4,
+                  background: getGroup(selected) ? 'var(--accent-light)' : 'transparent',
+                  color: getGroup(selected) ? 'var(--accent)' : 'var(--text-muted)',
+                  border: `1px ${getGroup(selected) ? 'solid' : 'dashed'} var(--border)` }}>
+                  {getGroup(selected) || '미분류'}
+                </span>
+                <button onClick={() => {
+                  const name = prompt('그룹 이름 (비우면 미분류):', getGroup(selected))?.trim()
+                  if (name === undefined) return
+                  updateGroup(selected, name)
+                }}
+                  style={{ ...smBtnGhost, padding: '4px 10px' }}>변경</button>
+              </div>
             </div>
 
             {selected.prompt && (
@@ -232,6 +426,16 @@ function aspectStyle(ar: string | null): string {
   return '16/9'
 }
 
+function pickerItemSt(active: boolean): React.CSSProperties {
+  return {
+    display: 'block', width: '100%', textAlign: 'left',
+    padding: '6px 8px', fontSize: 11, fontWeight: active ? 700 : 500,
+    background: active ? 'var(--accent-light)' : 'transparent',
+    color: active ? 'var(--accent)' : 'var(--text-body)',
+    border: 'none', borderRadius: 4, cursor: 'pointer',
+  }
+}
+
 const smBtn: React.CSSProperties = {
   padding: '6px 12px', fontSize: 11, fontWeight: 700,
   background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 4,
@@ -252,5 +456,20 @@ function Label({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-secondary)',
       marginBottom: 4, letterSpacing: '0.02em' }}>{children}</div>
+  )
+}
+
+function FilterBtn({ children, active, onClick, dashed }: {
+  children: React.ReactNode; active: boolean; onClick: () => void; dashed?: boolean;
+}) {
+  return (
+    <button type="button" onClick={onClick}
+      style={{
+        padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+        borderRadius: 6,
+        border: `1px ${dashed ? 'dashed' : 'solid'} var(--border)`,
+        background: active ? 'var(--accent)' : 'var(--bg-surface)',
+        color: active ? '#fff' : 'var(--text-body)',
+      }}>{children}</button>
   )
 }

@@ -5718,23 +5718,39 @@ def seedance_list_videos(request: Request):
 
 class SeedanceVideoPatch(BaseModel):
     name: str | None = None
+    group_name: str | None = None  # 빈 문자열 = 미분류로 해제
 
 
 @app.patch("/api/seedance/videos/{vid}")
 def seedance_update_video(vid: str, body: SeedanceVideoPatch, request: Request):
     me = auth_svc.require_user(request)
-    payload = {}
-    if body.name is not None:
-        payload["name"] = body.name.strip() or None
-    if not payload:
-        return {"updated": False}
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
     _r = supabase.get_session()
+    payload: dict = {}
+    if body.name is not None:
+        payload["name"] = body.name.strip() or None
+    if body.group_name is not None:
+        # meta.group_name 패치 — 기존 meta 가져와서 merge
+        cur = _r.get(
+            f"{SUPA}/rest/v1/seedance_videos?id=eq.{vid}&created_by=eq.{me['id']}&select=meta&limit=1",
+            headers=H, timeout=10,
+        ).json() or []
+        if not cur:
+            raise HTTPException(404, "영상 없음")
+        meta = dict(cur[0].get("meta") or {})
+        gn = body.group_name.strip()
+        if gn:
+            meta["group_name"] = gn
+        else:
+            meta.pop("group_name", None)
+        payload["meta"] = meta
+    if not payload:
+        return {"updated": False}
     r = _r.patch(
         f"{SUPA}/rest/v1/seedance_videos?id=eq.{vid}&created_by=eq.{me['id']}",
-        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
-                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        headers={**H, "Content-Type": "application/json", "Prefer": "return=representation"},
         json=payload, timeout=10,
     )
     if r.status_code not in (200, 204):
@@ -5957,6 +5973,186 @@ def mockup_status(job_id: str, request: Request):
         "created_at": job.created_at,
         "updated_at": job.updated_at,
     }
+
+
+# ── Figma OAuth + 디자인 import ──
+from services import figma as figma_svc  # noqa: E402
+from services import figma_render as figma_render_svc  # noqa: E402
+from fastapi.responses import RedirectResponse  # noqa: E402
+import tempfile, shutil as _shutil  # noqa: E402
+
+
+@app.get("/api/figma/status")
+def figma_status(request: Request):
+    me = auth_svc.require_user(request)
+    if not figma_svc.is_configured():
+        return {"connected": False, "configured": False}
+    conn = figma_svc.get_connection(me["id"])
+    if not conn:
+        return {"connected": False, "configured": True}
+    return {
+        "connected": True, "configured": True,
+        "figma_user_id": conn.get("figma_user_id"),
+        "figma_handle": conn.get("figma_handle"),
+    }
+
+
+@app.get("/api/figma/oauth/start")
+def figma_oauth_start(request: Request, redirect: str = "/figma-mockup"):
+    me = auth_svc.require_user(request)
+    if not figma_svc.is_configured():
+        raise HTTPException(500, "FIGMA_CLIENT_ID/SECRET 미설정 — 설정에서 시크릿 등록 필요")
+    url = figma_svc.authorize_url(me["id"], redirect_to=redirect)
+    return {"authorize_url": url}
+
+
+@app.get("/api/figma/oauth/callback")
+def figma_oauth_callback(code: str = "", state: str = "", error: str = ""):
+    base_redirect = "/figma-mockup"
+    if error:
+        return RedirectResponse(url=f"{base_redirect}?figma_error={error}")
+    if not code or not state:
+        return RedirectResponse(url=f"{base_redirect}?figma_error=missing_code_state")
+    parsed = figma_svc.verify_state(state)
+    if not parsed:
+        return RedirectResponse(url=f"{base_redirect}?figma_error=invalid_state")
+    try:
+        token = figma_svc.exchange_code(code)
+        info = figma_svc.get_user_info(token.get("access_token", ""))
+        if info:
+            token["user_id"] = info.get("id")
+            token["handle"] = info.get("handle") or info.get("email", "")
+        figma_svc.save_tokens(parsed["u"], token)
+    except Exception as e:
+        logger.exception("[figma/oauth] callback failed")
+        from urllib.parse import quote
+        return RedirectResponse(url=f"{base_redirect}?figma_error={quote(str(e)[:80])}")
+    return RedirectResponse(url=f"{parsed.get('r') or base_redirect}?figma_connected=1")
+
+
+@app.post("/api/figma/disconnect")
+def figma_disconnect(request: Request):
+    me = auth_svc.require_user(request)
+    figma_svc.clear_tokens(me["id"])
+    return {"ok": True}
+
+
+class FigmaFetchReq(BaseModel):
+    url: str
+    scale: float = 2.0
+
+
+@app.post("/api/figma/fetch")
+def figma_fetch(body: FigmaFetchReq, request: Request):
+    me = auth_svc.require_user(request)
+    conn = figma_svc.get_connection(me["id"])
+    if not conn:
+        raise HTTPException(401, "figma not connected")
+    parsed = figma_svc.parse_figma_url(body.url)
+    if not parsed["file_key"]:
+        raise HTTPException(400, "Figma URL 형식 인식 못함")
+    if not parsed["node_id"]:
+        raise HTTPException(400, "URL에 ?node-id=... 필요 — Figma에서 프레임 우클릭 → Copy link to selection")
+    token = conn["access_token"]
+    try:
+        file_json = figma_svc.get_file(token, parsed["file_key"], node_id=parsed["node_id"])
+        image_url = figma_svc.render_node_image(token, parsed["file_key"],
+                                                 parsed["node_id"], scale=body.scale)
+    except Exception as e:
+        raise HTTPException(502, f"Figma API 실패: {e}")
+    root, texts = figma_svc.extract_text_nodes(file_json, parsed["node_id"])
+    if not root:
+        raise HTTPException(404, "해당 node를 찾지 못함")
+    return {
+        "file_key": parsed["file_key"],
+        "node_id": parsed["node_id"],
+        "root": root,
+        "texts": texts,
+        "image_url": image_url,
+        "scale": body.scale,
+    }
+
+
+class FigmaRenderReq(BaseModel):
+    image_url: str
+    frame_w: int
+    frame_h: int
+    layers: list[dict]
+    duration_sec: float = 4.0
+    device_id: str | None = None
+    aspect: str = "9:16"
+    bg_color: str = "#1a1a2e"
+    device_scale: float = 0.85
+
+
+@app.post("/api/figma/render-video")
+def figma_render_video(body: FigmaRenderReq, request: Request):
+    me = auth_svc.require_user(request)
+    job = mockup_svc._create_job()
+
+    def run():
+        mockup_svc._active.acquire()
+        work = Path(tempfile.mkdtemp(prefix=f"figma_render_{job.id}_"))
+        try:
+            job.update(status="recording", progress="베이스 이미지 다운로드")
+            bg_local = work / "base.png"
+            figma_render_svc.download_image(body.image_url, bg_local)
+
+            job.update(progress="애니메이션 HTML 빌드")
+            html_text = figma_render_svc.build_animation_html(
+                base_image_url=bg_local.as_uri(),
+                frame_w=body.frame_w, frame_h=body.frame_h,
+                layers=body.layers, duration_sec=body.duration_sec,
+            )
+            html_path = work / "scene.html"
+            html_path.write_text(html_text, encoding="utf-8")
+
+            job.update(progress="Playwright 녹화 중")
+            webm = work / "raw.webm"
+            figma_render_svc.record_animation(
+                html_path, body.frame_w, body.frame_h,
+                body.duration_sec, webm,
+            )
+
+            if body.device_id and body.device_id in mockup_svc.DEVICES:
+                job.update(status="compositing", progress="디바이스 프레임 합성")
+                out = work / "out.mp4"
+                mockup_svc.composite_video(
+                    webm, body.device_id, body.aspect,
+                    body.bg_color, None, body.device_scale, out,
+                )
+            else:
+                job.update(status="compositing", progress="mp4 인코딩")
+                out = work / "out.mp4"
+                mockup_svc._run_ffmpeg([
+                    "-i", str(webm),
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
+                    "-crf", "20", "-movflags", "+faststart",
+                    str(out),
+                ], timeout=120)
+
+            job.update(progress="업로드 중")
+            data = out.read_bytes()
+            public_url = _mockup_upload_to_supabase(data, "mp4", user_id=me["id"])
+            job.update(status="done", output_url=public_url,
+                       output_kind="mp4", progress="완료")
+        except Exception as e:
+            logger.exception("[figma/render] job %s failed", job.id)
+            job.update(status="failed", error=str(e)[:500])
+        finally:
+            try: _shutil.rmtree(work, ignore_errors=True)
+            except: pass
+            mockup_svc._active.release()
+
+    import threading
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job.id, "status": job.status}
+
+
+# Figma render job 상태는 mockup status endpoint와 동일 — alias
+@app.get("/api/figma/render-status")
+def figma_render_status(job_id: str, request: Request):
+    return mockup_status(job_id, request)
 
 
 # ── Serve built frontend (must be last: catches all non-API routes) ──

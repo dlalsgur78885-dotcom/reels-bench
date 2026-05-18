@@ -571,41 +571,52 @@ def _ensure_sentence_end(text):
 
 def _build_full_script_text(sentences, tag_map, persona_cue=None):
     """전체 스크립트를 단일 호출용 텍스트로 합침.
-    각 sentence 사이는 ', ' (콤마+공백) — ElevenLabs가 짧은 호흡(~150ms) 일관 적용.
-    중간 sentence의 trailing '.'는 strip (', '로 대체). 마지막 sentence의 ./?/! 는 유지.
+    sentence i가 원본에 종결부호(. ! ?)가 있으면 다음과 ', ' (콤마, ~150ms 호흡) 연결.
+    종결부호 없으면 다음과 ' ' (공백, 호흡 없음) 연결 — 절 단위로 split된 문장이
+    한 호흡으로 자연 흐름되도록.
 
-    persona_cue는 외부에서 한 번만 prepend (매 문장 X). modal directive 누수 차단은
-    sentence opener directive promotion (_build_synth_input)으로 처리.
-    persona_cue 파라미터는 시그니처 유지용 (현재 미사용)."""
-    _ = persona_cue  # placeholder
+    persona_cue는 외부에서 한 번만 prepend (매 문장 X)."""
+    _ = persona_cue
     parts = []
+    had_terminator = []  # i번째 sentence 원본 텍스트가 종결부호로 끝나는지
     for i, s in enumerate(sentences):
+        orig_text = (s.get("text") or "").rstrip()
+        had_term = bool(orig_text and orig_text[-1] in _SENT_END_CHARS)
+        had_terminator.append(had_term)
         text, outer_tag = _build_synth_input(s, i, tag_map)
         combined = f"{outer_tag} {text}".strip() if outer_tag else text
         combined = _ensure_sentence_end(combined)
         parts.append(combined)
     if not parts:
         return ""
-    out = []
+    # 마지막 빼고 trailing '.' 제거 (?, ! 는 유지 — 의미 보존)
+    cleaned = []
     for i, p in enumerate(parts):
         if i < len(parts) - 1:
-            # 중간 문장의 trailing period 제거 (?, ! 는 유지)
-            s = p.rstrip()
-            while s and s[-1] == ".":
-                s = s[:-1].rstrip()
-            out.append(s)
+            s_text = p.rstrip()
+            while s_text and s_text[-1] == ".":
+                s_text = s_text[:-1].rstrip()
+            cleaned.append(s_text)
         else:
-            out.append(p)
-    return ", ".join(out)
+            cleaned.append(p)
+    # 종결부호 유무 따라 separator 선택
+    out = cleaned[0]
+    for i in range(1, len(cleaned)):
+        sep = ", " if had_terminator[i-1] else " "
+        out += sep + cleaned[i]
+    return out
 
 
 def _rebuild_full_text_from_meta(sentences, persona_cue=None):
     """저장된 meta의 sentences에서 full text 재조립 — _build_full_script_text와 동일 호흡 가이드.
     문장 첫 directive를 sentence 맨 앞으로 promote + 연속 동일 dedup.
-    persona_cue 파라미터는 시그니처 유지용 (외부에서 한 번만 prepend, 매 문장 X)."""
-    _ = persona_cue  # placeholder
+    종결부호 유무에 따라 sentence 사이 separator 자동 (', ' or ' ')."""
+    _ = persona_cue
     parts = []
+    had_terminator = []
     for s in sentences:
+        orig_text = (s.get("text") or "").rstrip()
+        had_terminator.append(bool(orig_text and orig_text[-1] in _SENT_END_CHARS))
         if s.get("phrases"):
             # sentence_emotion 우선, 없으면 첫 phrase tag fallback
             sent_emo = (s.get("sentence_emotion") or "").strip()
@@ -634,16 +645,21 @@ def _rebuild_full_text_from_meta(sentences, persona_cue=None):
         parts.append(_ensure_sentence_end(text))
     if not parts:
         return ""
-    out = []
+    cleaned = []
     for i, p in enumerate(parts):
         if i < len(parts) - 1:
             t = p.rstrip()
             while t and t[-1] == ".":
                 t = t[:-1].rstrip()
-            out.append(t)
+            cleaned.append(t)
         else:
-            out.append(p)
-    return ", ".join(out)
+            cleaned.append(p)
+    # 종결부호 유무 따라 separator 선택 (없으면 공백 = 호흡 없이 흐름)
+    out = cleaned[0]
+    for i in range(1, len(cleaned)):
+        sep = ", " if had_terminator[i-1] else " "
+        out += sep + cleaned[i]
+    return out
 
 
 def _chunk_sentences_for_v3(sentences, tag_map, max_chars):

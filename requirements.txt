@@ -6,3 +6,5 @@ numpy
 fal-client
 python-multipart
 beautifulsoup4
+imageio-ffmpeg
+imageio

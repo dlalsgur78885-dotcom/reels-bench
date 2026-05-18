@@ -37,6 +37,22 @@ export interface TimelineUiStore {
   pps: number
   /** Update pixels-per-second; out-of-range values are clamped. */
   setPps(pps: number): void
+
+  // ----- Beat snap (Phase 2.5) -----
+  /** Whether snapping to beats is enabled. */
+  beatSnapEnabled: boolean
+  /** Beat positions in ms (timeline-absolute). */
+  beats: number[]
+  /** Manual BPM (used by computed-beats helper). */
+  bpm: number
+  setBeatSnapEnabled(enabled: boolean): void
+  setBeats(beats: number[]): void
+  setBpm(bpm: number): void
+
+  // ----- Waveform cache (Phase 2.5) -----
+  /** Map media id → data: URI for the rendered waveform PNG. */
+  waveformUris: Record<string, string>
+  setWaveformUri(mediaId: string, uri: string): void
 }
 
 /** Default pixels-per-second for the timeline ruler. */
@@ -46,11 +62,20 @@ export const MIN_PPS = 10
 /** Upper bound for zoom-in. */
 export const MAX_PPS = 400
 
+/** Default BPM used when the user hasn't entered a custom tempo yet. */
+export const DEFAULT_BPM = 120
+/** Snap-to-beat tolerance in milliseconds. */
+export const BEAT_SNAP_TOLERANCE_MS = 80
+
 export const useTimelineUi = create<TimelineUiStore>((set, get) => ({
   selectedClipIds: new Set<string>(),
   playheadMs: 0,
   playing: false,
   pps: DEFAULT_PPS,
+  beatSnapEnabled: false,
+  beats: [],
+  bpm: DEFAULT_BPM,
+  waveformUris: {},
 
   selectClip(clipId: string | null): void {
     const current = get().selectedClipIds
@@ -87,8 +112,56 @@ export const useTimelineUi = create<TimelineUiStore>((set, get) => ({
   setPps(pps: number): void {
     const clamped = Math.max(MIN_PPS, Math.min(MAX_PPS, pps))
     if (clamped !== get().pps) set({ pps: clamped })
+  },
+
+  setBeatSnapEnabled(enabled: boolean): void {
+    const v = Boolean(enabled)
+    if (v !== get().beatSnapEnabled) set({ beatSnapEnabled: v })
+  },
+  setBeats(beats: number[]): void {
+    if (!Array.isArray(beats)) return
+    const clean = beats
+      .map((b) => Math.max(0, Math.round(Number(b))))
+      .filter((b) => Number.isFinite(b))
+      .sort((a, b) => a - b)
+    set({ beats: clean })
+  },
+  setBpm(bpm: number): void {
+    const n = Number(bpm)
+    if (!Number.isFinite(n)) return
+    const clamped = Math.max(30, Math.min(300, Math.round(n)))
+    if (clamped !== get().bpm) set({ bpm: clamped })
+  },
+  setWaveformUri(mediaId: string, uri: string): void {
+    if (!mediaId || !uri) return
+    const cur = get().waveformUris
+    if (cur[mediaId] === uri) return
+    set({ waveformUris: { ...cur, [mediaId]: uri } })
   }
 }))
+
+/**
+ * Snap `desiredMs` to the nearest beat in `beats[]` within tolerance.
+ * Returns `desiredMs` unchanged when no beat is close enough.
+ */
+export function snapToNearestBeat(
+  desiredMs: number,
+  beats: number[],
+  toleranceMs = BEAT_SNAP_TOLERANCE_MS
+): number {
+  if (!beats || beats.length === 0) return desiredMs
+  let bestDist = Infinity
+  let best = desiredMs
+  // Linear scan — beats arrays are small (< few hundred) in practice.
+  for (const b of beats) {
+    const d = Math.abs(b - desiredMs)
+    if (d < bestDist) {
+      bestDist = d
+      best = b
+    }
+  }
+  return bestDist <= toleranceMs ? best : desiredMs
+}
 
 /** Convenience: returns the currently selected single clip id, or null. */
 export function getSelectedClipId(): string | null {

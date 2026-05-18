@@ -13,7 +13,13 @@ import {
   type VideoAudioClip
 } from '../../../shared/project'
 import { useProjectStore } from '../store/project'
-import { MAX_PPS, MIN_PPS, useTimelineUi } from '../store/timelineUi'
+import {
+  BEAT_SNAP_TOLERANCE_MS,
+  MAX_PPS,
+  MIN_PPS,
+  snapToNearestBeat,
+  useTimelineUi
+} from '../store/timelineUi'
 import { ClipContextMenu } from './ClipContextMenu'
 import { MEDIA_DRAG_MIME } from './MediaLibrary'
 
@@ -25,6 +31,8 @@ interface TimelineProps {
   onSelectClip: (clipId: string | null) => void
   onEditCaption: (clipId: string) => void
   onDeleteClip: (clipId: string) => void
+  /** Phase 2.5 — invoked when the user picks "무음 자동 제거…" on a media clip. */
+  onOpenSilenceDialog?: (clipId: string) => void
 }
 
 const HANDLE_PX = 6
@@ -95,11 +103,61 @@ const styles = {
   trackHeader: {
     flexShrink: 0,
     width: 120,
-    padding: '8px 10px',
+    padding: '6px 8px',
     background: '#141414',
     borderRight: '1px solid #2a2a2a',
     fontSize: 11,
-    color: '#9aa0a6'
+    color: '#9aa0a6',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 4,
+    justifyContent: 'center'
+  } as React.CSSProperties,
+  trackHeaderRow: {
+    display: 'flex',
+    gap: 4,
+    alignItems: 'center'
+  } as React.CSSProperties,
+  trackHeaderName: {
+    fontSize: 11,
+    color: '#cbd5e1',
+    fontWeight: 600,
+    whiteSpace: 'nowrap' as const,
+    overflow: 'hidden' as const,
+    textOverflow: 'ellipsis' as const,
+    flex: 1
+  } as React.CSSProperties,
+  trackBtn: {
+    background: '#1f2937',
+    color: '#9aa0a6',
+    border: '1px solid #374151',
+    borderRadius: 4,
+    width: 22,
+    height: 22,
+    padding: 0,
+    fontSize: 11,
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center'
+  } as React.CSSProperties,
+  trackBtnMuteActive: {
+    background: '#facc15',
+    color: '#1a1a1a',
+    border: '1px solid #eab308'
+  } as React.CSSProperties,
+  trackBtnSoloActive: {
+    background: '#3b82f6',
+    color: '#fff',
+    border: '1px solid #2563eb'
+  } as React.CSSProperties,
+  beatTick: {
+    position: 'absolute' as const,
+    top: 12,
+    bottom: 0,
+    width: 1,
+    background: 'rgba(99, 102, 241, 0.55)',
+    pointerEvents: 'none' as const
   } as React.CSSProperties,
   trackLane: {
     flex: 1,
@@ -178,7 +236,8 @@ function snapMs(
   pps: number,
   track: Track,
   ignoreClipId: string | null,
-  altPressed: boolean
+  altPressed: boolean,
+  options?: { beats?: number[]; beatSnapEnabled?: boolean }
 ): number {
   if (altPressed) return Math.max(0, desiredMs)
   const snapMsTolerance = (SNAP_PX / pps) * 1000
@@ -196,6 +255,16 @@ function snapMs(
       bestDist = d
       best = e
     }
+  }
+  // Beat snap takes an additional (looser) tolerance so an enabled "비트 스냅"
+  // can pull a clip edge even when no second/edge is nearby.
+  if (options?.beatSnapEnabled && options.beats && options.beats.length > 0) {
+    const beatSnapped = snapToNearestBeat(
+      best,
+      options.beats,
+      BEAT_SNAP_TOLERANCE_MS
+    )
+    if (beatSnapped !== best) best = beatSnapped
   }
   return Math.max(0, best)
 }
@@ -290,12 +359,17 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const setClipSpeed = useProjectStore((s) => s.setClipSpeed)
   const addClip = useProjectStore((s) => s.addClip)
   const updateCaption = useProjectStore((s) => s.updateCaption)
+  const setTrackMuted = useProjectStore((s) => s.setTrackMuted)
+  const setTrackSolo = useProjectStore((s) => s.setTrackSolo)
 
   // Mirror selection into the timelineUi store so keyboard shortcuts (Editor)
   // and tests can introspect via __TIMELINE_UI_FOR_TEST__.
   const selectClipInUi = useTimelineUi((s) => s.selectClip)
   const pps = useTimelineUi((s) => s.pps)
   const setPps = useTimelineUi((s) => s.setPps)
+  const beats = useTimelineUi((s) => s.beats)
+  const beatSnapEnabled = useTimelineUi((s) => s.beatSnapEnabled)
+  const waveformUris = useTimelineUi((s) => s.waveformUris)
 
   const [ctx, setCtx] = useState<{ clipId: string; x: number; y: number } | null>(null)
   const [dropTargetTrackId, setDropTargetTrackId] = useState<string | null>(null)
@@ -377,6 +451,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
       if (newId) handleSelect(newId)
     } else if (key === 'split' && isMediaClip(clip)) {
       splitClipAt(clip.id, playheadMs)
+    } else if (key === 'remove-silence' && isMediaClip(clip)) {
+      props.onOpenSilenceDialog?.(clip.id)
     }
   }
 
@@ -517,7 +593,10 @@ export function Timeline(props: TimelineProps): JSX.Element {
 
       if (side === 'left') {
         let desiredStart = orig.startMs + deltaMs
-        desiredStart = snapMs(desiredStart, pps, liveTrack, clip.id, ev.altKey)
+        desiredStart = snapMs(desiredStart, pps, liveTrack, clip.id, ev.altKey, {
+          beats,
+          beatSnapEnabled
+        })
         if (desiredStart > orig.endMs - MIN_CLIP_MS) {
           desiredStart = orig.endMs - MIN_CLIP_MS
         }
@@ -541,7 +620,10 @@ export function Timeline(props: TimelineProps): JSX.Element {
         })
       } else {
         let desiredEnd = orig.endMs + deltaMs
-        desiredEnd = snapMs(desiredEnd, pps, liveTrack, clip.id, ev.altKey)
+        desiredEnd = snapMs(desiredEnd, pps, liveTrack, clip.id, ev.altKey, {
+          beats,
+          beatSnapEnabled
+        })
         if (desiredEnd < orig.startMs + MIN_CLIP_MS) {
           desiredEnd = orig.startMs + MIN_CLIP_MS
         }
@@ -603,7 +685,10 @@ export function Timeline(props: TimelineProps): JSX.Element {
         useProjectStore
           .getState()
           .project.tracks.find((t) => t.id === track.id) ?? track
-      desired = snapMs(desired, pps, liveTrack, clip.id, ev.altKey)
+      desired = snapMs(desired, pps, liveTrack, clip.id, ev.altKey, {
+        beats,
+        beatSnapEnabled
+      })
       desired = clampNoOverlap(liveTrack, desired, duration, clip.id)
       desired = Math.max(0, Math.round(desired))
       if (desired === clip.startMs) return
@@ -667,6 +752,15 @@ export function Timeline(props: TimelineProps): JSX.Element {
               {s}s
             </div>
           ))}
+          {beatSnapEnabled &&
+            beats.map((b, i) => (
+              <div
+                key={`beat-${i}`}
+                style={{ ...styles.beatTick, left: (b / 1000) * pps }}
+                data-testid="ruler-beat-tick"
+                data-beat-ms={b}
+              />
+            ))}
         </div>
       </div>
       <div style={styles.body} ref={bodyRef}>
@@ -677,7 +771,56 @@ export function Timeline(props: TimelineProps): JSX.Element {
             data-testid={`track-row-${track.kind}`}
             data-track-id={track.id}
           >
-            <div style={styles.trackHeader}>{track.name}</div>
+            <div
+              style={styles.trackHeader}
+              data-testid={`track-header-${track.kind}`}
+              data-track-id={track.id}
+              data-track-muted={track.muted ? 'true' : 'false'}
+              data-track-solo={track.solo ? 'true' : 'false'}
+              data-track-role={track.role ?? ''}
+            >
+              <div style={styles.trackHeaderRow}>
+                <span style={styles.trackHeaderName}>{track.name}</span>
+              </div>
+              {track.kind !== 'caption' && (
+                <div style={styles.trackHeaderRow}>
+                  <button
+                    type="button"
+                    title="음소거"
+                    aria-pressed={Boolean(track.muted)}
+                    style={{
+                      ...styles.trackBtn,
+                      ...(track.muted ? styles.trackBtnMuteActive : {})
+                    }}
+                    data-testid="track-mute-btn"
+                    data-track-id={track.id}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setTrackMuted(track.id, !track.muted)
+                    }}
+                  >
+                    M
+                  </button>
+                  <button
+                    type="button"
+                    title="솔로"
+                    aria-pressed={Boolean(track.solo)}
+                    style={{
+                      ...styles.trackBtn,
+                      ...(track.solo ? styles.trackBtnSoloActive : {})
+                    }}
+                    data-testid="track-solo-btn"
+                    data-track-id={track.id}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setTrackSolo(track.id, !track.solo)
+                    }}
+                  >
+                    S
+                  </button>
+                </div>
+              )}
+            </div>
             <div
               style={{
                 ...styles.trackLane,
@@ -705,13 +848,38 @@ export function Timeline(props: TimelineProps): JSX.Element {
                   isMediaClip(clip) && (clip.speed ?? 1) !== 1
                     ? ` · ${(clip.speed ?? 1).toFixed(2)}×`
                     : ''
+                // Phase 2.5 — waveform bg for audio-bearing media clips.
+                // Math: the PNG covers the full source media. We map a
+                // [trimInMs..trimOutMs] window onto [0..w] pixels so trimmed
+                // clips show the correct slice.
+                let waveformBg: React.CSSProperties = {}
+                if (isMediaClip(clip)) {
+                  const media = project.media[clip.mediaId]
+                  const uri = waveformUris[clip.mediaId]
+                  if (media && uri && media.durationMs > 0) {
+                    const srcSliceMs = Math.max(1, clip.trimOutMs - clip.trimInMs)
+                    const fullWidthPx = w * (media.durationMs / srcSliceMs)
+                    const offsetPx = -(w * (clip.trimInMs / srcSliceMs))
+                    waveformBg = {
+                      backgroundImage: `url(${uri})`,
+                      backgroundRepeat: 'no-repeat',
+                      backgroundSize: `${fullWidthPx}px 100%`,
+                      backgroundPosition: `${offsetPx}px center`,
+                      backgroundColor: '#0c1322'
+                    }
+                  }
+                }
+                const audioMuted =
+                  isMediaClip(clip) && Boolean(clip.isMuted)
                 return (
                   <div
                     key={clip.id}
                     style={{
                       ...styles.clip,
                       ...(isCap ? styles.captionClip : {}),
+                      ...waveformBg,
                       ...(isSel ? styles.clipSelected : {}),
+                      ...(audioMuted ? { opacity: 0.5 } : {}),
                       left,
                       width: w
                     }}
@@ -722,6 +890,13 @@ export function Timeline(props: TimelineProps): JSX.Element {
                     data-clip-id={clip.id}
                     data-clip-kind={clip.kind}
                     data-selected={isSel ? 'true' : 'false'}
+                    data-has-waveform={
+                      isMediaClip(clip) &&
+                      Boolean(waveformUris[clip.mediaId])
+                        ? 'true'
+                        : 'false'
+                    }
+                    data-muted={audioMuted ? 'true' : 'false'}
                     onContextMenu={(e) => handleContext(e, clip)}
                   >
                     {isMediaClip(clip) && (

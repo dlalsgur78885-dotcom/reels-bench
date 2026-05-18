@@ -6,6 +6,8 @@ import {
 } from 'electron'
 import {
   IPC_CHANNELS,
+  type BeatDetectOptions,
+  type BeatMarker,
   type ElectronApi,
   type FfmpegCapabilities,
   type FfmpegRunSpec,
@@ -13,7 +15,11 @@ import {
   type JobResult,
   type ParsedCaptionCue,
   type PickFileOptions,
-  type ProgressEvent
+  type ProgressEvent,
+  type SilenceDetectOptions,
+  type SilenceRange,
+  type WaveformOptions,
+  type WaveformResult
 } from '../shared/ipc'
 import type {
   ProbeResult,
@@ -59,7 +65,26 @@ const api: ElectronApi = {
     ): Promise<ThumbnailResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.media.generateThumbnail, filePath, options),
     readThumbnail: (thumbnailPath: string): Promise<string | null> =>
-      ipcRenderer.invoke(IPC_CHANNELS.media.readThumbnail, thumbnailPath)
+      ipcRenderer.invoke(IPC_CHANNELS.media.readThumbnail, thumbnailPath),
+    generateWaveform: (
+      filePath: string,
+      options?: WaveformOptions
+    ): Promise<WaveformResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.media.generateWaveform, filePath, options),
+    readWaveform: (waveformPath: string): Promise<string | null> =>
+      ipcRenderer.invoke(IPC_CHANNELS.media.readWaveform, waveformPath)
+  },
+  audio: {
+    detectSilence: (
+      filePath: string,
+      options?: SilenceDetectOptions
+    ): Promise<SilenceRange[]> =>
+      ipcRenderer.invoke(IPC_CHANNELS.audio.detectSilence, filePath, options),
+    detectBeats: (
+      filePath: string,
+      options?: BeatDetectOptions
+    ): Promise<BeatMarker[]> =>
+      ipcRenderer.invoke(IPC_CHANNELS.audio.detectBeats, filePath, options)
   },
   // Electron 32+: extract the absolute path of a drag-dropped File. The raw
   // File.path property is hidden under sandbox:true.

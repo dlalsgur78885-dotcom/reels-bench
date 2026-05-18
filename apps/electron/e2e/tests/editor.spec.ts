@@ -48,7 +48,13 @@ test.describe('@phase-2-smoke editor view + media library', () => {
         .electron.media
       return Object.keys(m).sort()
     })
-    expect(keys).toEqual(['generateThumbnail', 'probe', 'readThumbnail'])
+    expect(keys).toEqual([
+      'generateThumbnail',
+      'generateWaveform',
+      'probe',
+      'readThumbnail',
+      'readWaveform'
+    ])
   })
 
   test('aspect ratio change updates canvas dimensions', async () => {

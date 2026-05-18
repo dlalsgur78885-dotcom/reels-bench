@@ -3,6 +3,7 @@ import { registerFsHandlers } from './fs'
 import { registerAuthHandlers } from './auth'
 import { registerMediaHandlers } from './media'
 import { registerCaptionHandlers } from './captions'
+import { registerAudioHandlers } from './audio'
 
 export function registerIpcHandlers(): void {
   registerFfmpegHandlers()
@@ -10,4 +11,5 @@ export function registerIpcHandlers(): void {
   registerMediaHandlers()
   registerAuthHandlers()
   registerCaptionHandlers()
+  registerAudioHandlers()
 }

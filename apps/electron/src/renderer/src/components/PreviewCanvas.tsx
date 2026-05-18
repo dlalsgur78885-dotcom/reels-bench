@@ -7,6 +7,7 @@ import {
   type CaptionStyle,
   type Clip,
   type Project,
+  type Track,
   type VideoAudioClip
 } from '../../../shared/project'
 import { useTimelineUi } from '../store/timelineUi'
@@ -40,24 +41,80 @@ interface PreviewCanvasProps {
 // ---------------------------------------------------------------------------
 // Active-clip resolution.
 // ---------------------------------------------------------------------------
-function videoClipAt(project: Project, ms: number): VideoAudioClip | null {
+function videoClipAt(
+  project: Project,
+  ms: number
+): { clip: VideoAudioClip; track: Track } | null {
   for (const t of project.tracks) {
     if (t.kind !== 'video') continue
     for (const c of t.clips) {
-      if (isMediaClip(c) && ms >= c.startMs && ms < c.endMs) return c
+      if (isMediaClip(c) && ms >= c.startMs && ms < c.endMs)
+        return { clip: c, track: t }
     }
   }
   return null
 }
 
-function audioClipAt(project: Project, ms: number): VideoAudioClip | null {
+function audioClipAt(
+  project: Project,
+  ms: number
+): { clip: VideoAudioClip; track: Track } | null {
   for (const t of project.tracks) {
     if (t.kind !== 'audio') continue
     for (const c of t.clips) {
-      if (isMediaClip(c) && ms >= c.startMs && ms < c.endMs) return c
+      if (isMediaClip(c) && ms >= c.startMs && ms < c.endMs)
+        return { clip: c, track: t }
     }
   }
   return null
+}
+
+/**
+ * True when any track has solo=true. In that mode, non-soloed audio-bearing
+ * tracks render silent (mirrors typical DAW behavior).
+ */
+function anyTrackSoloed(project: Project): boolean {
+  for (const t of project.tracks) if (t.solo) return true
+  return false
+}
+
+/** Is a track audible right now (mute + solo combined)? */
+function trackAudible(track: Track | undefined, soloMode: boolean): boolean {
+  if (!track) return true
+  if (track.muted) return false
+  if (soloMode && !track.solo) return false
+  return true
+}
+
+/** True iff any voice-role track currently has a media clip at the playhead. */
+function voiceActiveAt(project: Project, ms: number): boolean {
+  for (const t of project.tracks) {
+    if (t.role !== 'voice') continue
+    if (t.muted) continue
+    for (const c of t.clips) {
+      if (isMediaClip(c) && ms >= c.startMs && ms < c.endMs) {
+        if (c.isMuted) continue
+        return true
+      }
+    }
+  }
+  return false
+}
+
+/** Volume contribution from clip's gainDb, fades, and mute. */
+function clipGain(clip: VideoAudioClip, ms: number): number {
+  if (clip.isMuted) return 0
+  const dur = Math.max(1, clip.endMs - clip.startMs)
+  const offset = Math.max(0, Math.min(dur, ms - clip.startMs))
+  let env = 1
+  if (clip.fadeInMs && offset < clip.fadeInMs) {
+    env = offset / clip.fadeInMs
+  } else if (clip.fadeOutMs && offset > dur - clip.fadeOutMs) {
+    env = Math.max(0, (dur - offset) / clip.fadeOutMs)
+  }
+  const db = clip.gainDb ?? 0
+  const linear = db === 0 ? 1 : Math.pow(10, db / 20)
+  return Math.max(0, Math.min(2, env * linear))
 }
 
 function captionsAtTime(project: Project, t: number): CaptionClip[] {
@@ -304,12 +361,24 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   const loadedAudioId = useRef<string | null>(null)
   const swapRaf = useRef<number | null>(null)
 
-  const activeVideo = useMemo(
+  const activeVideoHit = useMemo(
     () => videoClipAt(project, playheadMs),
     [project, playheadMs]
   )
-  const activeAudio = useMemo(
+  const activeAudioHit = useMemo(
     () => audioClipAt(project, playheadMs),
+    [project, playheadMs]
+  )
+  const activeVideo = activeVideoHit?.clip ?? null
+  const activeAudio = activeAudioHit?.clip ?? null
+  const activeVideoTrack = activeVideoHit?.track
+  const activeAudioTrack = activeAudioHit?.track
+
+  const soloMode = useMemo(() => anyTrackSoloed(project), [project])
+  const videoAudible = trackAudible(activeVideoTrack, soloMode)
+  const audioAudible = trackAudible(activeAudioTrack, soloMode)
+  const voiceOn = useMemo(
+    () => voiceActiveAt(project, playheadMs),
     [project, playheadMs]
   )
 
@@ -349,6 +418,13 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               const rate = clipPlaybackRate(activeVideo)
               if (Math.abs(v.playbackRate - rate) > 0.001) v.playbackRate = rate
             }
+            // Phase 2.5 audio shaping on the <video> element (video tracks
+            // carry audio too — e.g. a clip with embedded VO).
+            const gain = clipGain(activeVideo, playheadMs)
+            const wantMuted = !videoAudible || gain === 0
+            if (v.muted !== wantMuted) v.muted = wantMuted
+            const targetVol = Math.max(0, Math.min(1, gain))
+            if (Math.abs(v.volume - targetVol) > 0.005) v.volume = targetVol
           } else if (loadedVideoId.current !== null) {
             v.removeAttribute('src')
             v.load()
@@ -381,6 +457,23 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
             }
             const rate = clipPlaybackRate(activeAudio)
             if (Math.abs(a.playbackRate - rate) > 0.001) a.playbackRate = rate
+            // Mute / volume / ducking. Ducking is applied to BGM-role tracks
+            // when any voice-role track is currently audible.
+            let target_vol = clipGain(activeAudio, playheadMs)
+            if (
+              activeAudioTrack?.role === 'bgm' &&
+              activeAudioTrack.duckTarget === 'voice' &&
+              voiceOn
+            ) {
+              const duckDb = activeAudioTrack.duckingDb ?? -12
+              target_vol = target_vol * Math.pow(10, duckDb / 20)
+            }
+            const wantMuted = !audioAudible || target_vol === 0
+            if (a.muted !== wantMuted) a.muted = wantMuted
+            // Smooth a touch — the rAF tick lands ~16ms, so even a direct
+            // assignment here is effectively a fast linear ramp.
+            const clamped = Math.max(0, Math.min(1, target_vol))
+            if (Math.abs(a.volume - clamped) > 0.005) a.volume = clamped
           }
         } else if (loadedAudioId.current !== null) {
           a.pause()
@@ -396,7 +489,16 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
         swapRaf.current = null
       }
     }
-  }, [project, playheadMs, activeVideo, activeAudio])
+  }, [
+    project,
+    playheadMs,
+    activeVideo,
+    activeAudio,
+    activeAudioTrack,
+    videoAudible,
+    audioAudible,
+    voiceOn
+  ])
 
   // -----------------------------------------------------------------------
   // Play / pause sync with transport state.
@@ -467,6 +569,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
         <video
           ref={videoEl}
           data-testid="preview-video"
+          data-track-audible={videoAudible ? 'true' : 'false'}
           playsInline
           muted={false}
           style={{
@@ -480,7 +583,18 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           }}
         />
         {/* <audio> for audio-only tracks (BGM / VO). No visual surface. */}
-        <audio ref={audioEl} data-testid="preview-audio" />
+        <audio
+          ref={audioEl}
+          data-testid="preview-audio"
+          data-track-audible={audioAudible ? 'true' : 'false'}
+          data-ducking={
+            activeAudioTrack?.role === 'bgm' &&
+            activeAudioTrack.duckTarget === 'voice' &&
+            voiceOn
+              ? 'true'
+              : 'false'
+          }
+        />
 
         {/* Placeholder when no video clip is at the playhead. */}
         {!activeVideo && (

@@ -2,9 +2,12 @@ import { ulid } from 'ulid'
 import { create } from 'zustand'
 import {
   ASPECT_RATIO_DIMENSIONS,
+  DEFAULT_DUCKING_DB,
   MAX_CLIP_SPEED,
+  MAX_GAIN_DB,
   MIN_CLIP_MS,
   MIN_CLIP_SPEED,
+  MIN_GAIN_DB,
   type AspectRatio,
   type CaptionClip,
   type Clip,
@@ -14,6 +17,7 @@ import {
   isCaptionClip,
   isMediaClip
 } from '../../../shared/project'
+import type { SilenceRange } from '../../../shared/ipc'
 
 // ---------------------------------------------------------------------------
 // Helpers.
@@ -30,7 +34,18 @@ function freshProject(): Project {
     fps: 30,
     tracks: [
       { id: ulid(), kind: 'video', name: 'Video 1', clips: [] },
-      { id: ulid(), kind: 'audio', name: 'Audio 1', clips: [] },
+      // Voice track — primary VO/dialogue lane.
+      { id: ulid(), kind: 'audio', name: 'Voice 1', clips: [], role: 'voice' },
+      // BGM track — ducked by the voice track when active.
+      {
+        id: ulid(),
+        kind: 'audio',
+        name: 'BGM',
+        clips: [],
+        role: 'bgm',
+        duckTarget: 'voice',
+        duckingDb: DEFAULT_DUCKING_DB
+      },
       { id: ulid(), kind: 'caption', name: 'Caption 1', clips: [] }
     ],
     media: {},
@@ -106,6 +121,8 @@ export interface ProjectStore {
   addMedia(asset: MediaAsset): void
   removeMedia(mediaId: string): void
   updateMediaThumbnail(mediaId: string, thumbnailPath: string): void
+  /** Attach a generated waveform PNG to a media asset (Phase 2.5). */
+  updateMediaWaveform(mediaId: string, waveformPath: string): void
 
   addClip(clip: Clip): void
   removeClip(clipId: string): void
@@ -142,6 +159,26 @@ export interface ProjectStore {
    * No-op for caption clips.
    */
   setClipSpeed(clipId: string, speed: number): void
+
+  // --- Audio shaping (Phase 2.5, media clips only) ---
+  /** Set a media clip's gain in dB, clamped to [MIN_GAIN_DB, MAX_GAIN_DB]. */
+  setClipGainDb(clipId: string, db: number): void
+  /** Set per-clip fade-in / fade-out (ms). Negatives rejected; clamped to
+   *  the clip's own duration so fades never overlap. */
+  setClipFade(clipId: string, fadeInMs: number, fadeOutMs: number): void
+  /** Set per-clip mute. */
+  setClipMuted(clipId: string, muted: boolean): void
+  /** Set track-wide mute. */
+  setTrackMuted(trackId: string, muted: boolean): void
+  /** Set track-wide solo. */
+  setTrackSolo(trackId: string, solo: boolean): void
+  /**
+   * Remove silent sections from a media clip in one atomic step.
+   * Splits the clip into the surviving voiced pieces. Returns the IDs of
+   * the resulting clips (in timeline order), or [] if the clip is missing,
+   * is not a media clip, or `ranges` is empty.
+   */
+  removeSilencesFromClip(clipId: string, ranges: SilenceRange[]): string[]
 
   // --- Captions (Phase 2.4) ---
   /** Append a caption clip to the caption track. */
@@ -208,6 +245,21 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       media: {
         ...project.media,
         [mediaId]: { ...existing, thumbnailPath }
+      }
+    })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  updateMediaWaveform(mediaId: string, waveformPath: string): void {
+    const project = get().project
+    const existing = project.media[mediaId]
+    if (!existing) return
+    const next = touch({
+      ...project,
+      media: {
+        ...project.media,
+        [mediaId]: { ...existing, waveformPath }
       }
     })
     set({ project: next })
@@ -435,6 +487,220 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     const next = touch({ ...project, tracks })
     set({ project: next })
     schedulePersist(next)
+  },
+
+  // --------------------------------------------------------------------
+  // Audio shaping (Phase 2.5). Media clips only — caption clips ignored.
+  // --------------------------------------------------------------------
+  setClipGainDb(clipId: string, db: number): void {
+    const numeric = Number(db)
+    if (!Number.isFinite(numeric)) return
+    const clamped = Math.max(MIN_GAIN_DB, Math.min(MAX_GAIN_DB, numeric))
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      if ((c.gainDb ?? 0) === clamped) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, gainDb: clamped }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  setClipFade(clipId: string, fadeInMs: number, fadeOutMs: number): void {
+    const fin = Number(fadeInMs)
+    const fout = Number(fadeOutMs)
+    if (!Number.isFinite(fin) || !Number.isFinite(fout)) return
+    // Reject negatives — no-op rather than clamp (caller bug → loud failure mode).
+    if (fin < 0 || fout < 0) return
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const dur = Math.max(0, c.endMs - c.startMs)
+      // Clamp each fade to the clip duration; then ensure fadeIn+fadeOut <= duration.
+      let a = Math.min(fin, dur)
+      let b = Math.min(fout, dur)
+      if (a + b > dur) {
+        // Proportional shrink.
+        const ratio = dur / (a + b)
+        a = Math.floor(a * ratio)
+        b = Math.floor(b * ratio)
+      }
+      if ((c.fadeInMs ?? 0) === a && (c.fadeOutMs ?? 0) === b) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, fadeInMs: a, fadeOutMs: b }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  setClipMuted(clipId: string, muted: boolean): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      if (Boolean(c.isMuted) === Boolean(muted)) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, isMuted: Boolean(muted) }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  setTrackMuted(trackId: string, muted: boolean): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      if (t.id !== trackId) return t
+      if (Boolean(t.muted) === Boolean(muted)) return t
+      changed = true
+      return { ...t, muted: Boolean(muted) }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  setTrackSolo(trackId: string, solo: boolean): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      if (t.id !== trackId) return t
+      if (Boolean(t.solo) === Boolean(solo)) return t
+      changed = true
+      return { ...t, solo: Boolean(solo) }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  removeSilencesFromClip(clipId: string, ranges: SilenceRange[]): string[] {
+    if (!Array.isArray(ranges) || ranges.length === 0) return []
+    const project = get().project
+    let trackIdx = -1
+    let clipIdx = -1
+    for (let i = 0; i < project.tracks.length; i++) {
+      const idx = project.tracks[i].clips.findIndex((c) => c.id === clipId)
+      if (idx !== -1) {
+        trackIdx = i
+        clipIdx = idx
+        break
+      }
+    }
+    if (trackIdx === -1 || clipIdx === -1) return []
+    const orig = project.tracks[trackIdx].clips[clipIdx]
+    if (!isMediaClip(orig)) return []
+
+    const speed = orig.speed ?? 1
+    // Translate source-time silence ranges to TIMELINE ranges relative to the
+    // clip. silencedetect emits source-time seconds; we received ms here.
+    // src_t = trimInMs + (timeline_t - startMs) * speed
+    //      => timeline_t = startMs + (src_t - trimInMs) / speed
+    const localRanges: { startMs: number; endMs: number }[] = []
+    for (const r of ranges) {
+      // Normalize + clamp into the clip's source window.
+      const sStart = Math.max(orig.trimInMs, Math.min(orig.trimOutMs, r.startMs))
+      const sEnd = Math.max(orig.trimInMs, Math.min(orig.trimOutMs, r.endMs))
+      if (sEnd <= sStart) continue
+      const tStart = orig.startMs + (sStart - orig.trimInMs) / speed
+      const tEnd = orig.startMs + (sEnd - orig.trimInMs) / speed
+      localRanges.push({
+        startMs: Math.round(tStart),
+        endMs: Math.round(tEnd)
+      })
+    }
+    if (localRanges.length === 0) return []
+    // Sort + merge overlapping ranges.
+    localRanges.sort((a, b) => a.startMs - b.startMs)
+    const merged: { startMs: number; endMs: number }[] = []
+    for (const r of localRanges) {
+      const last = merged[merged.length - 1]
+      if (last && r.startMs <= last.endMs) {
+        if (r.endMs > last.endMs) last.endMs = r.endMs
+      } else {
+        merged.push({ startMs: r.startMs, endMs: r.endMs })
+      }
+    }
+    // Build the surviving (voiced) timeline segments.
+    const survivors: { startMs: number; endMs: number }[] = []
+    let cursor = orig.startMs
+    for (const m of merged) {
+      if (m.startMs > cursor) {
+        survivors.push({ startMs: cursor, endMs: Math.min(orig.endMs, m.startMs) })
+      }
+      cursor = Math.max(cursor, m.endMs)
+    }
+    if (cursor < orig.endMs) {
+      survivors.push({ startMs: cursor, endMs: orig.endMs })
+    }
+    // Drop survivors shorter than MIN_CLIP_MS.
+    const usable = survivors.filter((s) => s.endMs - s.startMs >= MIN_CLIP_MS)
+    if (usable.length === 0) {
+      // Everything was silence — drop the clip entirely.
+      const tracks = project.tracks.map((t, i) => {
+        if (i !== trackIdx) return t
+        const clips = [...t.clips]
+        clips.splice(clipIdx, 1)
+        return { ...t, clips }
+      })
+      const next = touch({ ...project, tracks })
+      set({ project: next })
+      schedulePersist(next)
+      return []
+    }
+    // Compose new media clips. Each survivor is a fresh clip referencing the
+    // same media; trimInMs/trimOutMs are derived from the timeline window.
+    const ids: string[] = []
+    const built: VideoAudioClip[] = usable.map((s) => {
+      const id = ulid()
+      ids.push(id)
+      const trimIn = orig.trimInMs + (s.startMs - orig.startMs) * speed
+      const trimOut = orig.trimInMs + (s.endMs - orig.startMs) * speed
+      return {
+        ...orig,
+        id,
+        startMs: s.startMs,
+        endMs: s.endMs,
+        trimInMs: Math.max(0, Math.round(trimIn)),
+        trimOutMs: Math.max(0, Math.round(trimOut))
+      }
+    })
+    const tracks = project.tracks.map((t, i) => {
+      if (i !== trackIdx) return t
+      const clips = [...t.clips]
+      clips.splice(clipIdx, 1, ...built)
+      return { ...t, clips }
+    })
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+    return ids
   },
 
   addCaption(caption: CaptionClip): void {

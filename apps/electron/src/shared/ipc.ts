@@ -24,7 +24,9 @@ export const IPC_CHANNELS = {
   media: {
     probe: 'media:probe',
     generateThumbnail: 'media:generateThumbnail',
-    readThumbnail: 'media:readThumbnail'
+    readThumbnail: 'media:readThumbnail',
+    generateWaveform: 'media:generateWaveform',
+    readWaveform: 'media:readWaveform'
   },
   auth: {
     startDeeplinkFlow: 'auth:startDeeplinkFlow',
@@ -33,8 +35,61 @@ export const IPC_CHANNELS = {
   captions: {
     importSrt: 'captions:importSrt',
     parseSrtString: 'captions:parseSrtString'
+  },
+  audio: {
+    detectSilence: 'audio:detectSilence',
+    detectBeats: 'audio:detectBeats'
   }
 } as const
+
+// ---------------------------------------------------------------------------
+// Audio analysis types (Phase 2.5).
+// ---------------------------------------------------------------------------
+export interface SilenceRange {
+  startMs: number
+  endMs: number
+  durationMs: number
+}
+
+export interface SilenceDetectOptions {
+  /** Noise floor in dB, default -30. */
+  noiseDb?: number
+  /** Minimum silence duration in ms, default 400. */
+  minMs?: number
+}
+
+export interface BeatMarker {
+  timeMs: number
+}
+
+export interface BeatDetectOptions {
+  /** Manual BPM override; required for the MVP stub. */
+  bpm?: number
+  /** Offset of the first beat from the source start. Default 0. */
+  startOffsetMs?: number
+  /** Length of the analysed range in ms. Default = full media duration. */
+  durationMs?: number
+}
+
+export interface WaveformResult {
+  /** Absolute path of the generated waveform PNG. */
+  path: string
+  /** data: URI for direct CSS background use (img-src + base64-encoded). */
+  dataUri: string
+  width: number
+  height: number
+}
+
+export interface WaveformOptions {
+  /** Output pixel width (default 1200). */
+  width?: number
+  /** Output pixel height (default 80). */
+  height?: number
+  /** Override output path. */
+  outPath?: string
+  /** Used to compute default outPath = userData/waveforms/<mediaId>.png. */
+  mediaId?: string
+}
 
 /** Result of parsing an SRT/VTT file: caller maps to CaptionClip with a trackId. */
 export interface ParsedCaptionCue {
@@ -190,6 +245,21 @@ export interface ElectronApi {
     ): Promise<ThumbnailResult>
     /** Read an existing thumbnail file into a data: URI (used on app restart). */
     readThumbnail(thumbnailPath: string): Promise<string | null>
+    generateWaveform(
+      filePath: string,
+      options?: WaveformOptions
+    ): Promise<WaveformResult>
+    readWaveform(waveformPath: string): Promise<string | null>
+  }
+  audio: {
+    detectSilence(
+      filePath: string,
+      options?: SilenceDetectOptions
+    ): Promise<SilenceRange[]>
+    detectBeats(
+      filePath: string,
+      options?: BeatDetectOptions
+    ): Promise<BeatMarker[]>
   }
   /**
    * Electron 32+ — pull the real on-disk path out of a drag-and-drop File.

@@ -13,19 +13,25 @@ import { useTimelineUi } from '../store/timelineUi'
 
 export function installTestBridge(): void {
   if (typeof window !== 'undefined') {
+    type Store = ReturnType<typeof useProjectStore.getState>
     ;(window as unknown as {
       __reelsStore: {
-        state: () => ReturnType<typeof useProjectStore.getState>
-        addMedia: ReturnType<typeof useProjectStore.getState>['addMedia']
-        addClip: ReturnType<typeof useProjectStore.getState>['addClip']
-        removeClip: ReturnType<typeof useProjectStore.getState>['removeClip']
-        updateMediaClipTrim: ReturnType<
-          typeof useProjectStore.getState
-        >['updateMediaClipTrim']
-        splitClipAt: ReturnType<typeof useProjectStore.getState>['splitClipAt']
-        duplicateClip: ReturnType<typeof useProjectStore.getState>['duplicateClip']
-        setClipSpeed: ReturnType<typeof useProjectStore.getState>['setClipSpeed']
-        createNew: ReturnType<typeof useProjectStore.getState>['createNew']
+        state: () => Store
+        addMedia: Store['addMedia']
+        addClip: Store['addClip']
+        removeClip: Store['removeClip']
+        updateMediaClipTrim: Store['updateMediaClipTrim']
+        splitClipAt: Store['splitClipAt']
+        duplicateClip: Store['duplicateClip']
+        setClipSpeed: Store['setClipSpeed']
+        createNew: Store['createNew']
+        setClipGainDb: Store['setClipGainDb']
+        setClipFade: Store['setClipFade']
+        setClipMuted: Store['setClipMuted']
+        setTrackMuted: Store['setTrackMuted']
+        setTrackSolo: Store['setTrackSolo']
+        removeSilencesFromClip: Store['removeSilencesFromClip']
+        updateMediaWaveform: Store['updateMediaWaveform']
         newId: () => string
       }
     }).__reelsStore = {
@@ -41,6 +47,20 @@ export function installTestBridge(): void {
       setClipSpeed: (id, speed) =>
         useProjectStore.getState().setClipSpeed(id, speed),
       createNew: () => useProjectStore.getState().createNew(),
+      setClipGainDb: (id, db) =>
+        useProjectStore.getState().setClipGainDb(id, db),
+      setClipFade: (id, fin, fout) =>
+        useProjectStore.getState().setClipFade(id, fin, fout),
+      setClipMuted: (id, muted) =>
+        useProjectStore.getState().setClipMuted(id, muted),
+      setTrackMuted: (tid, muted) =>
+        useProjectStore.getState().setTrackMuted(tid, muted),
+      setTrackSolo: (tid, solo) =>
+        useProjectStore.getState().setTrackSolo(tid, solo),
+      removeSilencesFromClip: (id, ranges) =>
+        useProjectStore.getState().removeSilencesFromClip(id, ranges),
+      updateMediaWaveform: (mid, p) =>
+        useProjectStore.getState().updateMediaWaveform(mid, p),
       newId
     }
     ;(window as unknown as {

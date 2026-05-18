@@ -165,7 +165,8 @@ test.describe('@phase-2-timeline timeline + preview + transport', () => {
     await expect(page.locator('[data-testid="transport-skip-end"]')).toBeVisible()
     await expect(page.locator('[data-testid="transport-time"]')).toBeVisible()
     await expect(page.locator('[data-testid="track-lane-video"]')).toBeVisible()
-    await expect(page.locator('[data-testid="track-lane-audio"]')).toBeVisible()
+    // Phase 2.5 adds a BGM track, so audio lanes are now 2x. Verify ≥ 1 visible.
+    await expect(page.locator('[data-testid="track-lane-audio"]').first()).toBeVisible()
     await expect(page.locator('[data-testid="preview-video"]')).toHaveCount(1)
     await expect(page.locator('[data-testid="preview-audio"]')).toHaveCount(1)
   })

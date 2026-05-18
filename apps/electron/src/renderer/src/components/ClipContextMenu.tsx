@@ -135,6 +135,8 @@ function mediaRows(clip: Clip, playheadMs: number | undefined): MenuRow[] {
       enabled: split
     },
     { key: 'duplicate', label: '복제', shortcut: 'Ctrl+D' },
+    // Phase 2.5 — opens the silence-remove dialog (handled by parent).
+    { key: 'remove-silence', label: '무음 자동 제거…' },
     { key: 'delete', label: '삭제', shortcut: 'Delete', destructive: true }
   ]
 }

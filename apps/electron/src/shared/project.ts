@@ -16,6 +16,8 @@ export interface MediaAsset {
   codec?: string
   /** Absolute local path to the generated thumbnail (JPG). */
   thumbnailPath?: string
+  /** Absolute local path to the generated waveform PNG (audio only, Phase 2.5). */
+  waveformPath?: string
   importedAt: number
   fileName: string
   fileSizeBytes: number
@@ -47,6 +49,17 @@ export interface VideoAudioClip {
   trimOutMs: number
   /** Playback speed multiplier (1.0 = normal). */
   speed?: number
+  // -----------------------------------------------------------------
+  // Phase 2.5 — audio shaping (optional, backwards-compatible).
+  // -----------------------------------------------------------------
+  /** Gain in decibels, clamped to [MIN_GAIN_DB, MAX_GAIN_DB]. Default 0. */
+  gainDb?: number
+  /** Linear fade-in in ms from clip start. Default 0. */
+  fadeInMs?: number
+  /** Linear fade-out in ms before clip end. Default 0. */
+  fadeOutMs?: number
+  /** Per-clip mute (overrides gain). Default false. */
+  isMuted?: boolean
 }
 
 /** Visual preset for a caption block. */
@@ -103,11 +116,28 @@ export interface CaptionClip {
 /** Union: every clip on a track. Use `clip.kind` to narrow safely. */
 export type Clip = VideoAudioClip | CaptionClip
 
+/** Semantic role for an audio track (Phase 2.5, used by ducking). */
+export type TrackRole = 'voice' | 'bgm' | 'sfx' | null
+
 export interface Track {
   id: string
   kind: TrackKind
   name: string
   clips: Clip[]
+  // -----------------------------------------------------------------
+  // Phase 2.5 — track-level audio controls.
+  // -----------------------------------------------------------------
+  /** Track-wide mute. Default false. */
+  muted?: boolean
+  /** Solo flag — when any track has solo=true, non-soloed tracks mute. */
+  solo?: boolean
+  /** Semantic role for ducking and routing. */
+  role?: TrackRole
+  /** Duck target ('voice'|'bgm'|null). A BGM track's duckTarget='voice'
+   *  attenuates whenever any voice clip is audible. */
+  duckTarget?: 'voice' | 'bgm' | null
+  /** Ducking attenuation in dB applied while target is active. Default -12. */
+  duckingDb?: number
 }
 
 export type AspectRatio = '9:16' | '1:1' | '16:9' | '4:5'
@@ -150,6 +180,16 @@ export const MIN_CLIP_SPEED = 0.1
 export const MAX_CLIP_SPEED = 10.0
 /** Minimum on-timeline clip width (ms). Prevents zero/negative widths. */
 export const MIN_CLIP_MS = 100
+
+// ---------------------------------------------------------------------------
+// Audio constants (Phase 2.5).
+// ---------------------------------------------------------------------------
+/** Minimum allowed clip gain (dB). */
+export const MIN_GAIN_DB = -60
+/** Maximum allowed clip gain (dB). */
+export const MAX_GAIN_DB = 12
+/** Default ducking attenuation for a BGM track when a voice clip plays. */
+export const DEFAULT_DUCKING_DB = -12
 
 export interface ProbeResult {
   durationMs: number

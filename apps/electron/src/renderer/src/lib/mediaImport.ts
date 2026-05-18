@@ -1,5 +1,6 @@
 import type { MediaAsset } from '../../../shared/project'
 import { newId, useProjectStore } from '../store/project'
+import { useTimelineUi } from '../store/timelineUi'
 
 export interface ImportCallbacks {
   /** Called after probe + thumbnail + store-add succeeds for one file. */
@@ -86,6 +87,21 @@ export async function importFilesByPath(
       added.push(asset)
       if (dataUri && callbacks.onAssetReady) {
         callbacks.onAssetReady(asset, dataUri)
+      }
+
+      // Fire-and-forget waveform generation for any clip carrying audio
+      // (audio media + video files — video tracks may still want a waveform
+      // strip on the timeline). Failures are non-fatal.
+      if (probe.kind === 'audio' || probe.kind === 'video') {
+        void window.electron.media
+          .generateWaveform(filePath, { mediaId: id })
+          .then((wf) => {
+            useProjectStore.getState().updateMediaWaveform(id, wf.path)
+            useTimelineUi.getState().setWaveformUri(id, wf.dataUri)
+          })
+          .catch((err: unknown) => {
+            console.warn('[import] waveform failed', filePath, err)
+          })
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)

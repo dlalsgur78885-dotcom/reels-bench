@@ -3,7 +3,11 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, unlink } from 'node:fs/promises'
 import path from 'node:path'
-import { IPC_CHANNELS } from '../../shared/ipc'
+import {
+  IPC_CHANNELS,
+  type WaveformOptions,
+  type WaveformResult
+} from '../../shared/ipc'
 import type {
   MediaKind,
   ProbeResult,
@@ -291,6 +295,91 @@ async function generateThumbnail(
 }
 
 // ---------------------------------------------------------------------------
+// Waveform PNG generation (Phase 2.5).
+// ---------------------------------------------------------------------------
+function waveformDir(): string {
+  return path.join(app.getPath('userData'), 'waveforms')
+}
+
+async function ensureWaveformDir(): Promise<string> {
+  const dir = waveformDir()
+  await mkdir(dir, { recursive: true })
+  return dir
+}
+
+async function generateWaveform(
+  filePath: string,
+  options: WaveformOptions = {}
+): Promise<WaveformResult> {
+  const ffmpeg = resolveFfmpegPath()
+  const inputPath = assertPathAllowed(filePath, 'input')
+
+  const dir = await ensureWaveformDir()
+  const id = sanitizeMediaId(options.mediaId)
+  // Width/height clamped to sane bounds so a bad caller can't blow up memory.
+  const width = Math.max(120, Math.min(4096, Math.floor(options.width ?? 1200)))
+  const height = Math.max(20, Math.min(400, Math.floor(options.height ?? 80)))
+  const outPath = options.outPath
+    ? assertPathAllowed(options.outPath, 'output')
+    : path.join(dir, `${id}.png`)
+  allowPath(outPath)
+
+  // showwavespic — colors must be ascii word; we hard-code purple.
+  const filter = `showwavespic=s=${width}x${height}:colors=0xa78bfa:split_channels=0`
+  const args = [
+    '-hide_banner',
+    '-y',
+    '-nostdin',
+    '-i',
+    inputPath,
+    '-filter_complex',
+    filter,
+    '-frames:v',
+    '1',
+    outPath
+  ]
+
+  await new Promise<void>((resolve, reject) => {
+    const proc = spawn(ffmpeg, args, {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true
+    })
+    let stderr = ''
+    const STDERR_LIMIT = 8192
+    const timer = setTimeout(() => {
+      try {
+        proc.kill()
+      } catch {
+        // ignore
+      }
+      reject(new Error('[ffmpeg] waveform timed out'))
+    }, 60_000)
+    proc.stderr.setEncoding('utf8')
+    proc.stderr.on('data', (chunk: string) => {
+      stderr += chunk
+      if (stderr.length > STDERR_LIMIT) stderr = stderr.slice(-STDERR_LIMIT)
+    })
+    proc.on('error', (err) => {
+      clearTimeout(timer)
+      reject(err)
+    })
+    proc.on('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0) resolve()
+      else reject(new Error(`[ffmpeg] waveform exited ${code}: ${stderr.slice(-512)}`))
+    })
+  })
+
+  if (!existsSync(outPath)) {
+    throw new Error('[ffmpeg] waveform file missing after run')
+  }
+
+  const buf = await readFile(outPath)
+  const dataUri = `data:image/png;base64,${buf.toString('base64')}`
+  return { path: outPath, dataUri, width, height }
+}
+
+// ---------------------------------------------------------------------------
 // IPC registration.
 // ---------------------------------------------------------------------------
 export function registerMediaHandlers(): void {
@@ -338,6 +427,45 @@ export function registerMediaHandlers(): void {
       return `data:image/jpeg;base64,${buf.toString('base64')}`
     } catch (err) {
       console.warn('[media] readThumbnail failed', err)
+      return null
+    }
+  })
+
+  ipcMain.handle(
+    IPC_CHANNELS.media.generateWaveform,
+    async (_event, filePath: unknown, options?: WaveformOptions) => {
+      if (typeof filePath !== 'string' || !filePath) {
+        throw new Error('[media] generateWaveform: filePath required')
+      }
+      const safeOpts: WaveformOptions = {
+        width: typeof options?.width === 'number' ? options.width : undefined,
+        height: typeof options?.height === 'number' ? options.height : undefined,
+        outPath: typeof options?.outPath === 'string' ? options.outPath : undefined,
+        mediaId: typeof options?.mediaId === 'string' ? options.mediaId : undefined
+      }
+      try {
+        return await generateWaveform(filePath, safeOpts)
+      } catch (err) {
+        if (safeOpts.outPath) {
+          try {
+            await unlink(safeOpts.outPath)
+          } catch {
+            // ignore
+          }
+        }
+        throw err
+      }
+    }
+  )
+
+  ipcMain.handle(IPC_CHANNELS.media.readWaveform, async (_event, wfPath: unknown) => {
+    if (typeof wfPath !== 'string' || !wfPath) return null
+    try {
+      const resolved = assertPathAllowed(wfPath, 'input')
+      const buf = await readFile(resolved)
+      return `data:image/png;base64,${buf.toString('base64')}`
+    } catch (err) {
+      console.warn('[media] readWaveform failed', err)
       return null
     }
   })

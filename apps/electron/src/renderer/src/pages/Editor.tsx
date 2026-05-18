@@ -1,12 +1,17 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MediaLibrary } from '../components/MediaLibrary'
 import { PreviewCanvas } from '../components/PreviewCanvas'
+import { SilenceRemoveDialog } from '../components/SilenceRemoveDialog'
 import { Timeline } from '../components/Timeline'
 import { Transport } from '../components/Transport'
 import { CaptionEditor } from '../components/CaptionEditor'
 import { getTotalDurationMs, useProjectStore } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
-import { isMediaClip, type AspectRatio } from '../../../shared/project'
+import {
+  isMediaClip,
+  type AspectRatio,
+  type VideoAudioClip
+} from '../../../shared/project'
 import {
   addClipsToStore,
   cuesToClips,
@@ -171,6 +176,37 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
   const [editingCaptionId, setEditingCaptionId] = useState<string | null>(null)
   const [srtError, setSrtError] = useState<string | null>(null)
+  const [silenceTargetClipId, setSilenceTargetClipId] = useState<string | null>(
+    null
+  )
+
+  // Phase 2.5 — manual BPM + beat snap UI.
+  const bpm = useTimelineUi((s) => s.bpm)
+  const setBpm = useTimelineUi((s) => s.setBpm)
+  const beatSnapEnabled = useTimelineUi((s) => s.beatSnapEnabled)
+  const setBeatSnapEnabled = useTimelineUi((s) => s.setBeatSnapEnabled)
+  const setBeats = useTimelineUi((s) => s.setBeats)
+
+  const totalDuration = useMemo(
+    () => getTotalDurationMs(project),
+    [project]
+  )
+
+  // Recompute beats whenever BPM or total duration changes.
+  useEffect(() => {
+    const periodMs = (60 * 1000) / Math.max(1, bpm)
+    const cap = Math.max(0, totalDuration)
+    if (cap <= 0 || !Number.isFinite(periodMs) || periodMs <= 0) {
+      setBeats([])
+      return
+    }
+    const beats: number[] = []
+    const MAX_BEATS = 4096
+    for (let t = 0; t <= cap && beats.length < MAX_BEATS; t += periodMs) {
+      beats.push(Math.round(t))
+    }
+    setBeats(beats)
+  }, [bpm, totalDuration, setBeats])
 
   const handleAddCaption = useCallback((): void => {
     const id = insertCaptionAtPlayhead(playheadMs)
@@ -363,6 +399,36 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           data-testid="playhead-input"
         />
 
+        <label style={styles.hint} htmlFor="bpm-input">
+          BPM
+        </label>
+        <input
+          id="bpm-input"
+          type="number"
+          min={30}
+          max={300}
+          step={1}
+          value={bpm}
+          onChange={(e) => setBpm(Number(e.target.value))}
+          style={{ ...styles.playheadInput, width: 56 }}
+          aria-label="BPM"
+          data-testid="bpm-input"
+        />
+        <button
+          type="button"
+          style={{
+            ...styles.secondaryBtn,
+            ...(beatSnapEnabled
+              ? { background: '#3b82f6', borderColor: '#2563eb' }
+              : {})
+          }}
+          onClick={() => setBeatSnapEnabled(!beatSnapEnabled)}
+          aria-pressed={beatSnapEnabled}
+          data-testid="beat-snap-toggle"
+        >
+          비트 스냅 {beatSnapEnabled ? 'ON' : 'OFF'}
+        </button>
+
         <button
           style={styles.primaryBtn}
           onClick={handleAddCaption}
@@ -441,6 +507,14 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
                 if (editingCaptionId === id) setEditingCaptionId(null)
                 if (selectedClipId === id) setSelectedClipId(null)
               }}
+              onOpenSilenceDialog={(id) => {
+                // Verify the clip is still a media clip before opening.
+                let target: VideoAudioClip | null = null
+                for (const t of project.tracks)
+                  for (const c of t.clips)
+                    if (c.id === id && isMediaClip(c)) target = c
+                if (target) setSilenceTargetClipId(target.id)
+              }}
             />
           </div>
         </div>
@@ -452,6 +526,13 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           />
         )}
       </div>
+      {silenceTargetClipId && (
+        <SilenceRemoveDialog
+          project={project}
+          clipId={silenceTargetClipId}
+          onClose={() => setSilenceTargetClipId(null)}
+        />
+      )}
     </div>
   )
 }

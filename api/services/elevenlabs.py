@@ -1256,25 +1256,8 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
                 timings = [(float(s.get("start", 0)), float(s.get("end", 0))) for s in sentences]
                 alignment_method = "match_approx"
 
-    # segment 사이 silence 제거 (v3 자연 호흡 + ',' separator로 생긴 inter-sentence gap)
-    if alignment_method == "whisper" and len(timings) >= 2:
-        tmp_compact = job_dir / "compact.mp3"
-        if _compact_segments(final_path, timings, tmp_compact):
-            final_path.write_bytes(tmp_compact.read_bytes())
-            try:
-                tmp_compact.unlink()
-            except OSError:
-                pass
-            total_duration = probe_duration(final_path)
-            # gap 제거 후 timings 재계산 — 누적식 (각 segment 길이 합산)
-            new_timings = []
-            cum = 0.0
-            for st, en in timings:
-                dur = max(0.0, en - st)
-                new_timings.append((round(cum, 3), round(cum + dur, 3)))
-                cum += dur
-            timings = new_timings
-            alignment_method = "whisper+compact"
+    # 원본 합성은 v3 자연 호흡 그대로 유지 (사용자 결정 — 원본은 쉼 있어야 자연스러움).
+    # gap 제거는 apply_segment_speeds (속도 조절 시)에만 silenceremove로 처리.
 
     # 원본 final.mp3 백업 (post-synth per-sentence speed 조절 시 source)
     final_orig_path = job_dir / "final_orig.mp3"

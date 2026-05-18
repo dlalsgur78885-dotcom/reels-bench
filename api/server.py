@@ -30,6 +30,7 @@ _PUBLIC_API_PATHS = {
     "/api/health",
     "/api/_debug/fs",
     "/api/_debug/auth",
+    "/api/figma/oauth/callback",  # Figma redirect — signed state로 보안
 }
 _OUR_DOMAINS = ("reels-bench.vercel.app", "reels-bench-dev.vercel.app", "localhost", "127.0.0.1")
 # Vercel 프리뷰 (reels-bench-<hash>-<team>.vercel.app) 도 허용

@@ -1,0 +1,26 @@
+{
+  "appId": "com.reels-studio.app",
+  "productName": "Reels Studio",
+  "asar": true,
+  "asarUnpack": [
+    "node_modules/@ffmpeg-installer/**/*"
+  ],
+  "files": [
+    "out/**/*",
+    "package.json",
+    "!**/*.map"
+  ],
+  "directories": {
+    "output": "release"
+  },
+  "win": {
+    "target": ["nsis"]
+  },
+  "mac": {
+    "target": ["dmg"],
+    "category": "public.app-category.video"
+  },
+  "linux": {
+    "target": ["AppImage"]
+  }
+}

@@ -4,6 +4,9 @@ export const BASE = import.meta.env.VITE_API_BASE || ''
 // TTS 전용 (Render 별도 배포). 프로덕션 기본값 하드코딩 — Vite env 로드 누락 대비.
 const TTS_DEFAULT = import.meta.env.PROD ? 'https://tts-worker-m2zr.onrender.com' : BASE
 export const TTS_BASE = import.meta.env.VITE_TTS_API_BASE || TTS_DEFAULT
+// Mockup/Figma render 워커 — Playwright + ffmpeg 무거운 작업. Render 별도 인스턴스.
+const MOCKUP_DEFAULT = import.meta.env.PROD ? 'https://mockup-worker.onrender.com' : BASE
+export const MOCKUP_BASE = import.meta.env.VITE_MOCKUP_API_BASE || MOCKUP_DEFAULT
 
 async function authedHeaders(extra?: HeadersInit, token?: string | null): Promise<HeadersInit> {
   const tk = token ?? await getAccessToken()
@@ -32,6 +35,11 @@ export async function authedFetch(path: string, init: RequestInit = {}): Promise
 export async function ttsAuthedFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = await authedHeaders(init.headers)
   return fetch(`${TTS_BASE}${path}`, { ...init, headers })
+}
+
+export async function mockupAuthedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = await authedHeaders(init.headers)
+  return fetch(`${MOCKUP_BASE}${path}`, { ...init, headers })
 }
 
 async function get<T>(path: string): Promise<T> {

@@ -38,3 +38,21 @@ services:
         sync: false
       - key: PYTHON_VERSION
         value: "3.12"
+
+  - type: web
+    name: mockup-worker
+    runtime: python
+    region: oregon
+    plan: starter           # free 플랜은 512MB — Playwright Chromium은 빠듯함
+    buildCommand: pip install -r requirements-mockup.txt && playwright install --with-deps chromium
+    startCommand: uvicorn mockup_web:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.12"

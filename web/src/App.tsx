@@ -35,6 +35,8 @@ const FbSearchAds = lazy(() => import('./pages/FbSearchAds'))
 const FbAdImportPage = lazy(() => import('./pages/FbAdImportPage'))
 const Seedance = lazy(() => import('./pages/Seedance'))
 const SeedanceLibrary = lazy(() => import('./pages/SeedanceLibrary'))
+const Mockup = lazy(() => import('./pages/Mockup'))
+const FigmaMockup = lazy(() => import('./pages/FigmaMockup'))
 
 const routePrefetchers: Record<string, () => Promise<unknown>> = {
   '/': () => import('./pages/Home'),
@@ -295,6 +297,8 @@ export default function App() {
           <Route path="/my-scripts/:pid/:sid" element={<MyScriptDetail />} />
           <Route path="/seedance" element={<Seedance />} />
           <Route path="/seedance/library" element={<SeedanceLibrary />} />
+          <Route path="/mockup" element={<Mockup />} />
+          <Route path="/figma-mockup" element={<FigmaMockup />} />
           <Route path="/login" element={<Navigate to="/" replace />} />
           <Route path="/settings" element={
             meLoading ? <div style={{ padding: 40, color: 'var(--text-muted)' }}>로딩...</div>
@@ -358,6 +362,8 @@ function UserMenu({ me }: { me: UserProfile | null }) {
       >내 상품</button>
       <button onClick={() => navigate('/seedance')} style={{ ...btnSt, marginBottom: 6 }}>🎞 영상 생성</button>
       <button onClick={() => navigate('/seedance/library')} style={{ ...btnSt, marginBottom: 6 }}>📁 영상 라이브러리</button>
+      <button onClick={() => navigate('/mockup')} style={{ ...btnSt, marginBottom: 6 }}>📱 앱 목업</button>
+      <button onClick={() => navigate('/figma-mockup')} style={{ ...btnSt, marginBottom: 6 }}>🎨 Figma 목업</button>
       <button onClick={logout} style={btnSt}>로그아웃</button>
       {me?.role === 'admin' && (
         <button onClick={() => navigate('/settings')} style={{ ...btnSt, marginTop: 6 }}>설정</button>

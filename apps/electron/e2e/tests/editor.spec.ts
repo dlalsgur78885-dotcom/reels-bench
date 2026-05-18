@@ -30,8 +30,9 @@ test.describe('@phase-2-smoke editor view + media library', () => {
     await expect(page.locator('[data-testid="editor-page"]')).toBeVisible()
     await expect(page.locator('[data-testid="project-name-input"]')).toBeVisible()
     await expect(page.locator('[data-testid="aspect-ratio-select"]')).toBeVisible()
-    await expect(page.locator('[data-testid="preview-placeholder"]')).toBeVisible()
-    await expect(page.locator('[data-testid="timeline-placeholder"]')).toBeVisible()
+    // Phase 2.2 replaced the placeholders with real components.
+    await expect(page.locator('[data-testid="preview-area"]')).toBeVisible()
+    await expect(page.locator('[data-testid="timeline"]')).toBeVisible()
 
     // Back to home.
     await page.locator('[data-testid="editor-back-button"]').click()

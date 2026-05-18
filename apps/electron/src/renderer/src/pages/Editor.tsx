@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 import { MediaLibrary } from '../components/MediaLibrary'
+import { PreviewCanvas } from '../components/PreviewCanvas'
+import { Timeline } from '../components/Timeline'
+import { Transport } from '../components/Transport'
 import { useProjectStore } from '../store/project'
 import type { AspectRatio } from '../../../shared/project'
 
@@ -61,45 +64,14 @@ const styles = {
     flex: 1,
     display: 'grid',
     gridTemplateColumns: 'minmax(280px, 320px) 1fr',
-    overflow: 'hidden'
+    overflow: 'hidden',
+    minHeight: 0
   } as React.CSSProperties,
   right: {
     display: 'grid',
-    gridTemplateRows: '1fr minmax(180px, 240px)',
-    overflow: 'hidden'
-  } as React.CSSProperties,
-  previewArea: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    background: '#0a0a0a',
-    borderBottom: '1px solid #2a2a2a',
-    padding: 24,
-    overflow: 'hidden'
-  } as React.CSSProperties,
-  previewCanvas: {
-    background: '#000',
-    border: '2px dashed #2a2a2a',
-    borderRadius: 8,
-    color: '#475569',
-    fontSize: 12,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    textAlign: 'center',
-    padding: 16,
-    boxSizing: 'border-box' as const
-  } as React.CSSProperties,
-  timelineArea: {
-    background: '#0a0a0a',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    color: '#475569',
-    fontSize: 12,
-    border: '2px dashed #2a2a2a',
-    borderRadius: 8,
-    margin: 16
+    gridTemplateRows: '1fr auto minmax(220px, 280px)',
+    overflow: 'hidden',
+    minHeight: 0
   } as React.CSSProperties,
   hint: {
     fontSize: 11,
@@ -127,16 +99,6 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
       return
     }
     if (trimmed !== project.name) setName(trimmed)
-  }
-
-  // Compute preview canvas aspect-ratio styling.
-  const previewBoxStyle: React.CSSProperties = {
-    ...styles.previewCanvas,
-    aspectRatio: `${project.width} / ${project.height}`,
-    maxHeight: '85%',
-    maxWidth: '85%',
-    height: 'auto',
-    width: 'auto'
   }
 
   return (
@@ -190,24 +152,15 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
 
         <div style={styles.flex1} />
 
-        {!hydrated && (
-          <div style={styles.hint}>프로젝트 로딩 중…</div>
-        )}
+        {!hydrated && <div style={styles.hint}>프로젝트 로딩 중…</div>}
       </div>
 
       <div style={styles.body}>
         <MediaLibrary />
         <div style={styles.right}>
-          <div style={styles.previewArea}>
-            <div style={previewBoxStyle} data-testid="preview-placeholder">
-              Preview will live here
-              <br />
-              <span style={{ color: '#334155' }}>(Phase 2.2에서 추가 예정)</span>
-            </div>
-          </div>
-          <div style={styles.timelineArea} data-testid="timeline-placeholder">
-            Timeline will live here — Phase 2.2에서 추가 예정
-          </div>
+          <PreviewCanvas />
+          <Transport />
+          <Timeline />
         </div>
       </div>
     </div>

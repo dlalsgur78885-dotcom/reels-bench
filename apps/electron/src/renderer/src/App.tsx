@@ -7,6 +7,7 @@ import type {
 } from '../../shared/ipc'
 import { Editor } from './pages/Editor'
 import { initProjectStore } from './store/project'
+import { installTestBridge } from './lib/testBridge'
 
 const wrap: React.CSSProperties = {
   fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
@@ -246,6 +247,7 @@ export default function App(): JSX.Element {
   // Kick off project hydration once at mount. Safe to call multiple times —
   // initProjectStore guards against duplicates internally.
   useEffect(() => {
+    installTestBridge()
     void initProjectStore()
   }, [])
 

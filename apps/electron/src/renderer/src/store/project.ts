@@ -72,6 +72,8 @@ export interface ProjectStore {
   updateMediaThumbnail(mediaId: string, thumbnailPath: string): void
 
   addClip(clip: Clip): void
+  updateClip(clipId: string, partial: Partial<Clip>): void
+  removeClip(clipId: string): void
 
   /**
    * Replace the entire project with one loaded from disk. Used at startup.
@@ -163,10 +165,70 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     schedulePersist(next)
   },
 
+  updateClip(clipId: string, partial: Partial<Clip>): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const current = t.clips[idx]
+      const nextClip = { ...current, ...partial, id: current.id }
+      // Light invariant: keep startMs < endMs, clamp non-negative.
+      if (nextClip.startMs < 0) nextClip.startMs = 0
+      if (nextClip.endMs <= nextClip.startMs) {
+        nextClip.endMs = nextClip.startMs + 1
+      }
+      const clips = [...t.clips]
+      clips[idx] = nextClip
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  removeClip(clipId: string): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const filtered = t.clips.filter((c) => c.id !== clipId)
+      if (filtered.length !== t.clips.length) changed = true
+      return filtered.length === t.clips.length ? t : { ...t, clips: filtered }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
   _hydrateFromDisk(project: Project): void {
     set({ project, hydrated: true })
   }
 }))
+
+// ---------------------------------------------------------------------------
+// Selector helpers — pure functions; safe to call from any component.
+// ---------------------------------------------------------------------------
+export function getClipAt(project: Project, trackId: string, ms: number): Clip | null {
+  const track = project.tracks.find((t) => t.id === trackId)
+  if (!track) return null
+  for (const c of track.clips) {
+    if (ms >= c.startMs && ms < c.endMs) return c
+  }
+  return null
+}
+
+export function getTotalDurationMs(project: Project): number {
+  let max = 0
+  for (const t of project.tracks) {
+    for (const c of t.clips) {
+      if (c.endMs > max) max = c.endMs
+    }
+  }
+  return max
+}
 
 // ---------------------------------------------------------------------------
 // Init: try to load the persisted project once when this module is imported.

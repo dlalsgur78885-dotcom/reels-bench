@@ -423,6 +423,12 @@ function MediaCard(props: {
       style={styles.card}
       data-testid="media-card"
       data-media-id={asset.id}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = 'copy'
+        e.dataTransfer.setData('application/x-reels-media-id', asset.id)
+        e.dataTransfer.setData('text/plain', asset.id)
+      }}
       onContextMenu={(e) => {
         e.preventDefault()
         onRemove()

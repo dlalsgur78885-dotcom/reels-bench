@@ -1,8 +1,16 @@
 import { app, BrowserWindow, session } from 'electron'
 import { createMainWindow } from './window'
 import { registerIpcHandlers } from './ipc'
+import {
+  registerMediaProtocolHandler,
+  registerMediaSchemePrivileges
+} from './mediaProtocol'
 
 app.setName('Reels Studio')
+
+// Must run BEFORE app.whenReady() — registers the `media://` scheme as
+// standard/secure so the renderer can use it for <video>/<audio> srcs.
+registerMediaSchemePrivileges()
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -28,6 +36,7 @@ function applySessionHardening(): void {
 
 app.whenReady().then(() => {
   applySessionHardening()
+  registerMediaProtocolHandler()
   registerIpcHandlers()
   createMainWindow()
 

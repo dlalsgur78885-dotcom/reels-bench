@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ulid } from 'ulid'
 import {
   getClipDuration,
   getClipSourceText,
@@ -6,13 +7,15 @@ import {
   isMediaClip,
   MIN_CLIP_MS,
   type Clip,
+  type MediaAsset,
   type Project,
   type Track,
   type VideoAudioClip
 } from '../../../shared/project'
 import { useProjectStore } from '../store/project'
-import { useTimelineUi } from '../store/timelineUi'
+import { MAX_PPS, MIN_PPS, useTimelineUi } from '../store/timelineUi'
 import { ClipContextMenu } from './ClipContextMenu'
+import { MEDIA_DRAG_MIME } from './MediaLibrary'
 
 interface TimelineProps {
   project: Project
@@ -24,9 +27,11 @@ interface TimelineProps {
   onDeleteClip: (clipId: string) => void
 }
 
-const PX_PER_SECOND = 60 // 60px = 1 second @ default zoom
 const HANDLE_PX = 6
 const SNAP_PX = 5
+const CLICK_VS_DRAG_PX = 5
+const IMAGE_DEFAULT_MS = 5000
+const ZOOM_FACTOR = 1.2
 
 const styles = {
   wrap: {
@@ -39,12 +44,33 @@ const styles = {
     overflow: 'hidden',
     userSelect: 'none' as const
   } as React.CSSProperties,
+  toolbar: {
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '4px 10px',
+    background: '#111',
+    borderBottom: '1px solid #2a2a2a',
+    fontSize: 11,
+    color: '#9aa0a6'
+  } as React.CSSProperties,
+  zoomBtn: {
+    background: '#1f2937',
+    color: '#f5f5f5',
+    border: '1px solid #374151',
+    borderRadius: 4,
+    padding: '2px 8px',
+    fontSize: 11,
+    cursor: 'pointer'
+  } as React.CSSProperties,
   ruler: {
     height: 24,
     background: '#141414',
     borderBottom: '1px solid #2a2a2a',
     position: 'relative' as const,
-    overflow: 'hidden'
+    overflow: 'hidden',
+    cursor: 'pointer'
   } as React.CSSProperties,
   rulerTick: {
     position: 'absolute' as const,
@@ -80,6 +106,9 @@ const styles = {
     position: 'relative' as const,
     background: '#0a0a0a'
   } as React.CSSProperties,
+  trackLaneDropActive: {
+    background: 'rgba(16, 185, 129, 0.08)'
+  } as React.CSSProperties,
   clip: {
     position: 'absolute' as const,
     top: 6,
@@ -100,7 +129,8 @@ const styles = {
     padding: '4px 6px',
     overflow: 'hidden' as const,
     textOverflow: 'ellipsis' as const,
-    whiteSpace: 'nowrap' as const
+    whiteSpace: 'nowrap' as const,
+    cursor: 'grab'
   } as React.CSSProperties,
   clipSelected: {
     outline: '2px solid #60a5fa',
@@ -138,16 +168,9 @@ const styles = {
   } as React.CSSProperties
 }
 
-function clipLeft(clip: Clip): number {
-  return (clip.startMs / 1000) * PX_PER_SECOND
-}
-
-function clipWidth(clip: Clip): number {
-  return Math.max(8, (getClipDuration(clip) / 1000) * PX_PER_SECOND)
-}
-
 // ---------------------------------------------------------------------------
-// Snap: 1) second boundaries; 2) adjacent clip edges; within 5 px tolerance.
+// Snap: 1) zero; 2) second boundaries; 3) adjacent clip edges (excluding
+// the moving clip's own edges); within SNAP_PX tolerance.
 // Alt-drag disables snap.
 // ---------------------------------------------------------------------------
 function snapMs(
@@ -166,7 +189,6 @@ function snapMs(
     if (c.id === ignoreClipId) continue
     edges.push(c.startMs, c.endMs)
   }
-  // Second-boundary candidate.
   edges.push(Math.round(desiredMs / 1000) * 1000)
   for (const e of edges) {
     const d = Math.abs(e - desiredMs)
@@ -176,6 +198,79 @@ function snapMs(
     }
   }
   return Math.max(0, best)
+}
+
+// Walk the lane and find the next free start position >= desired, clamping
+// each iteration to the next collision's endMs. Returns desired if no clip
+// overlaps. Used by drop handler and (indirectly) the body-drag clamp.
+function findFreeStart(
+  track: Track,
+  desiredStart: number,
+  durationMs: number,
+  ignoreClipId?: string
+): number {
+  const sorted = [...track.clips]
+    .filter((c) => c.id !== ignoreClipId)
+    .sort((a, b) => a.startMs - b.startMs)
+  let start = Math.max(0, desiredStart)
+  for (let i = 0; i <= sorted.length; i++) {
+    let collided = false
+    for (const c of sorted) {
+      if (start < c.endMs && start + durationMs > c.startMs) {
+        start = c.endMs
+        collided = true
+        break
+      }
+    }
+    if (!collided) return start
+  }
+  return start
+}
+
+// Clamp a desired startMs so [start, start+duration] does not overlap any
+// other clip on the same track. Returns the largest valid startMs that's <=
+// desiredStart and respects the immediate-left neighbor, OR pushes to the
+// next valid slot. We pick "closest valid to desired" (left or right).
+function clampNoOverlap(
+  track: Track,
+  desiredStart: number,
+  durationMs: number,
+  ignoreClipId: string
+): number {
+  const sorted = [...track.clips]
+    .filter((c) => c.id !== ignoreClipId)
+    .sort((a, b) => a.startMs - b.startMs)
+  if (sorted.length === 0) return Math.max(0, desiredStart)
+  const desiredEnd = desiredStart + durationMs
+  // Find a clip we'd overlap.
+  const collider = sorted.find((c) => desiredStart < c.endMs && desiredEnd > c.startMs)
+  if (!collider) return Math.max(0, desiredStart)
+  // Clamp to the collider's left edge or right edge — whichever is closer
+  // to the desired start.
+  const leftCandidate = collider.startMs - durationMs
+  const rightCandidate = collider.endMs
+  const leftValid = leftCandidate >= 0 && !sorted.some(
+    (c) => c.id !== collider.id && leftCandidate < c.endMs && leftCandidate + durationMs > c.startMs
+  )
+  const rightValid = !sorted.some(
+    (c) => c.id !== collider.id && rightCandidate < c.endMs && rightCandidate + durationMs > c.startMs
+  )
+  if (leftValid && rightValid) {
+    return Math.abs(desiredStart - leftCandidate) <= Math.abs(desiredStart - rightCandidate)
+      ? leftCandidate
+      : rightCandidate
+  }
+  if (leftValid) return leftCandidate
+  if (rightValid) return rightCandidate
+  // Both invalid — fall back to the lane-walk free finder.
+  return findFreeStart(track, desiredStart, durationMs, ignoreClipId)
+}
+
+function clipLeft(clip: Clip, pps: number): number {
+  return (clip.startMs / 1000) * pps
+}
+function clipWidth(clip: Clip, pps: number): number {
+  return Math.max(8, (getClipDuration(clip) / 1000) * pps)
 }
 
 export function Timeline(props: TimelineProps): JSX.Element {
@@ -193,21 +288,25 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const splitClipAt = useProjectStore((s) => s.splitClipAt)
   const duplicateClip = useProjectStore((s) => s.duplicateClip)
   const setClipSpeed = useProjectStore((s) => s.setClipSpeed)
+  const addClip = useProjectStore((s) => s.addClip)
+  const updateCaption = useProjectStore((s) => s.updateCaption)
+
   // Mirror selection into the timelineUi store so keyboard shortcuts (Editor)
   // and tests can introspect via __TIMELINE_UI_FOR_TEST__.
   const selectClipInUi = useTimelineUi((s) => s.selectClip)
+  const pps = useTimelineUi((s) => s.pps)
+  const setPps = useTimelineUi((s) => s.setPps)
 
-  const [ctx, setCtx] = useState<{
-    clipId: string
-    x: number
-    y: number
-  } | null>(null)
+  const [ctx, setCtx] = useState<{ clipId: string; x: number; y: number } | null>(null)
+  const [dropTargetTrackId, setDropTargetTrackId] = useState<string | null>(null)
 
   // Compute total length (max endMs across all clips, min 10s for ruler).
   const allClips = project.tracks.flatMap((t) => t.clips)
   const maxEnd = allClips.reduce((acc, c) => Math.max(acc, c.endMs), 10_000)
   const totalSeconds = Math.ceil(maxEnd / 1000) + 5
-  const laneWidth = totalSeconds * PX_PER_SECOND
+  const laneWidth = totalSeconds * pps
+
+  const bodyRef = useRef<HTMLDivElement | null>(null)
 
   const handleSelect = useCallback(
     (clipId: string | null): void => {
@@ -222,9 +321,30 @@ export function Timeline(props: TimelineProps): JSX.Element {
     const target = e.currentTarget
     const rect = target.getBoundingClientRect()
     const x = e.clientX - rect.left
-    const ms = Math.max(0, Math.round((x / PX_PER_SECOND) * 1000))
+    const ms = Math.max(0, Math.round((x / pps) * 1000))
     onSeek(ms)
     handleSelect(null)
+  }
+
+  const handleRulerMouseDown = (e: React.MouseEvent<HTMLDivElement>): void => {
+    e.preventDefault()
+    const ruler = e.currentTarget
+    const rect = ruler.getBoundingClientRect()
+    // The ruler scrolls together with the lanes, so subtract the header
+    // offset (120px) baked into the layout.
+    const HEADER = 120
+    const initialX = e.clientX - rect.left - HEADER
+    onSeek(Math.max(0, Math.round((initialX / pps) * 1000)))
+    const onMove = (ev: MouseEvent): void => {
+      const x = ev.clientX - rect.left - HEADER
+      onSeek(Math.max(0, Math.round((x / pps) * 1000)))
+    }
+    const onUp = (): void => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
   }
 
   const handleContext = (e: React.MouseEvent, clip: Clip): void => {
@@ -234,8 +354,6 @@ export function Timeline(props: TimelineProps): JSX.Element {
     setCtx({ clipId: clip.id, x: e.clientX, y: e.clientY })
   }
 
-  // Resolve the menu's clip from the live project so playhead/speed changes
-  // are reflected in real-time inside the menu.
   const ctxClip = useMemo<Clip | null>(() => {
     if (!ctx) return null
     for (const t of project.tracks) {
@@ -263,7 +381,114 @@ export function Timeline(props: TimelineProps): JSX.Element {
   }
 
   // -------------------------------------------------------------------------
-  // Trim handle drag — media clips only.
+  // Ctrl+wheel zoom — anchor on cursor where possible.
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    const el = bodyRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent): void => {
+      if (!(e.ctrlKey || e.metaKey)) return
+      e.preventDefault()
+      const direction = e.deltaY > 0 ? -1 : 1
+      const oldPps = useTimelineUi.getState().pps
+      const factor = direction > 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR
+      const target = Math.max(MIN_PPS, Math.min(MAX_PPS, oldPps * factor))
+      if (target === oldPps) return
+
+      // Anchor the time-under-cursor: compute the timeMs the cursor was on
+      // BEFORE zoom (subtracting the 120px lane-header offset), then after
+      // setPps adjust scrollLeft so that timeMs sits at the same screen X.
+      const rect = el.getBoundingClientRect()
+      const HEADER = 120
+      const screenX = e.clientX - rect.left
+      const contentX = el.scrollLeft + screenX - HEADER
+      const timeMs = (contentX / oldPps) * 1000
+
+      setPps(target)
+      requestAnimationFrame(() => {
+        if (!bodyRef.current) return
+        const newContentX = (timeMs / 1000) * target
+        bodyRef.current.scrollLeft = Math.max(0, newContentX - (screenX - HEADER))
+      })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [setPps])
+
+  // -------------------------------------------------------------------------
+  // Drop handler — MediaLibrary card → track lane.
+  // -------------------------------------------------------------------------
+  const handleLaneDragOver = (
+    e: React.DragEvent<HTMLDivElement>,
+    track: Track
+  ): void => {
+    // Only intercept our own MIME so unrelated drags pass through.
+    if (!e.dataTransfer.types.includes(MEDIA_DRAG_MIME)) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    if (dropTargetTrackId !== track.id) setDropTargetTrackId(track.id)
+  }
+
+  const handleLaneDragLeave = (
+    e: React.DragEvent<HTMLDivElement>,
+    track: Track
+  ): void => {
+    // Only clear if leaving to outside this lane.
+    const related = e.relatedTarget as Node | null
+    if (related && e.currentTarget.contains(related)) return
+    if (dropTargetTrackId === track.id) setDropTargetTrackId(null)
+  }
+
+  const handleLaneDrop = (
+    e: React.DragEvent<HTMLDivElement>,
+    track: Track
+  ): void => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDropTargetTrackId(null)
+    const mediaId = e.dataTransfer.getData(MEDIA_DRAG_MIME)
+    if (!mediaId) return
+    const media: MediaAsset | undefined = project.media[mediaId]
+    if (!media) return
+
+    // Auto-route: audio media goes on the audio track, video/image on the
+    // video track. Caption tracks reject media drops outright.
+    if (track.kind === 'caption') return
+    let target: Track | undefined = track
+    if (media.kind === 'audio' && track.kind !== 'audio') {
+      target = project.tracks.find((t) => t.kind === 'audio')
+    } else if (
+      (media.kind === 'video' || media.kind === 'image') &&
+      track.kind !== 'video'
+    ) {
+      target = project.tracks.find((t) => t.kind === 'video')
+    }
+    if (!target) return
+
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const dropMs = Math.max(0, Math.round((x / pps) * 1000))
+    const durationMs =
+      media.durationMs > 0 ? media.durationMs : IMAGE_DEFAULT_MS
+    // Snap to nearest second unless Alt is held.
+    const desired = e.altKey ? dropMs : Math.round(dropMs / 1000) * 1000
+    const startMs = findFreeStart(target, desired, durationMs)
+    const clip: VideoAudioClip = {
+      id: ulid(),
+      kind: 'media',
+      mediaId,
+      trackId: target.id,
+      startMs,
+      endMs: startMs + durationMs,
+      trimInMs: 0,
+      trimOutMs: media.durationMs > 0 ? media.durationMs : durationMs,
+      speed: 1
+    }
+    addClip(clip)
+  }
+
+  // -------------------------------------------------------------------------
+  // Trim handle drag — media clips only. (Unchanged from Phase 2.3.)
   // -------------------------------------------------------------------------
   const onTrimHandleMouseDown = (
     e: React.MouseEvent<HTMLDivElement>,
@@ -279,13 +504,12 @@ export function Timeline(props: TimelineProps): JSX.Element {
     const startMouseX = e.clientX
     const orig: VideoAudioClip = { ...clip }
     const speed = orig.speed ?? 1
-    // Source media duration upper-bound for trimOut.
     const media = project.media[orig.mediaId]
     const mediaDuration = media?.durationMs ?? Number.POSITIVE_INFINITY
 
     const onMove = (ev: MouseEvent): void => {
       const dx = ev.clientX - startMouseX
-      const deltaMs = (dx / PX_PER_SECOND) * 1000
+      const deltaMs = (dx / pps) * 1000
       const liveTrack =
         useProjectStore
           .getState()
@@ -293,19 +517,16 @@ export function Timeline(props: TimelineProps): JSX.Element {
 
       if (side === 'left') {
         let desiredStart = orig.startMs + deltaMs
-        desiredStart = snapMs(desiredStart, PX_PER_SECOND, liveTrack, clip.id, ev.altKey)
-        // Right-edge constraint: keep at least MIN_CLIP_MS of clip remaining.
+        desiredStart = snapMs(desiredStart, pps, liveTrack, clip.id, ev.altKey)
         if (desiredStart > orig.endMs - MIN_CLIP_MS) {
           desiredStart = orig.endMs - MIN_CLIP_MS
         }
-        // Don't overlap a neighbour on the left.
         for (const other of liveTrack.clips) {
           if (other.id === clip.id) continue
           if (other.endMs <= orig.startMs && other.endMs > desiredStart) {
             desiredStart = other.endMs
           }
         }
-        // trimInMs corresponds to source position; can't go below 0.
         const startShift = desiredStart - orig.startMs
         let newTrimIn = orig.trimInMs + startShift * speed
         if (newTrimIn < 0) {
@@ -320,7 +541,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
         })
       } else {
         let desiredEnd = orig.endMs + deltaMs
-        desiredEnd = snapMs(desiredEnd, PX_PER_SECOND, liveTrack, clip.id, ev.altKey)
+        desiredEnd = snapMs(desiredEnd, pps, liveTrack, clip.id, ev.altKey)
         if (desiredEnd < orig.startMs + MIN_CLIP_MS) {
           desiredEnd = orig.startMs + MIN_CLIP_MS
         }
@@ -352,21 +573,103 @@ export function Timeline(props: TimelineProps): JSX.Element {
     window.addEventListener('mouseup', onUp)
   }
 
+  // -------------------------------------------------------------------------
+  // Clip body drag-to-reposition (whole clip move). Click-vs-drag threshold
+  // of CLICK_VS_DRAG_PX prevents accidental moves on simple clicks.
+  // -------------------------------------------------------------------------
+  const onClipBodyMouseDown = (
+    e: React.MouseEvent<HTMLDivElement>,
+    clip: Clip,
+    track: Track
+  ): void => {
+    if (e.button !== 0) return
+    // Don't stopPropagation immediately — we still want a click-without-drag
+    // to register as a selection click.
+    const startMouseX = e.clientX
+    const origStart = clip.startMs
+    const duration = clip.endMs - clip.startMs
+    let dragging = false
+
+    const onMove = (ev: MouseEvent): void => {
+      const dx = ev.clientX - startMouseX
+      if (!dragging) {
+        if (Math.abs(dx) < CLICK_VS_DRAG_PX) return
+        dragging = true
+        handleSelect(clip.id)
+      }
+      const deltaMs = (dx / pps) * 1000
+      let desired = origStart + deltaMs
+      const liveTrack =
+        useProjectStore
+          .getState()
+          .project.tracks.find((t) => t.id === track.id) ?? track
+      desired = snapMs(desired, pps, liveTrack, clip.id, ev.altKey)
+      desired = clampNoOverlap(liveTrack, desired, duration, clip.id)
+      desired = Math.max(0, Math.round(desired))
+      if (desired === clip.startMs) return
+
+      const newStart = desired
+      const newEnd = newStart + duration
+      if (isMediaClip(clip)) {
+        // Reuse updateMediaClipTrim for media clips so we get the same
+        // invariant clamping logic.
+        updateMediaClipTrim(clip.id, { startMs: newStart, endMs: newEnd })
+      } else if (isCaptionClip(clip)) {
+        updateCaption(clip.id, { startMs: newStart, endMs: newEnd })
+      }
+    }
+    const onUp = (): void => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
   return (
     <div style={styles.wrap} data-testid="timeline">
-      <div style={styles.ruler}>
+      <div style={styles.toolbar}>
+        <div>줌</div>
+        <button
+          style={styles.zoomBtn}
+          onClick={() => setPps(pps / ZOOM_FACTOR)}
+          aria-label="축소"
+          data-testid="timeline-zoom-out"
+        >
+          −
+        </button>
+        <div
+          style={{ minWidth: 56, textAlign: 'center' }}
+          data-testid="timeline-zoom-level"
+        >
+          {Math.round(pps)} px/s
+        </div>
+        <button
+          style={styles.zoomBtn}
+          onClick={() => setPps(pps * ZOOM_FACTOR)}
+          aria-label="확대"
+          data-testid="timeline-zoom-in"
+        >
+          +
+        </button>
+        <div style={{ marginLeft: 16 }}>
+          Ctrl/Cmd + 휠로 확대·축소 · Alt 누르면 스냅 해제
+        </div>
+      </div>
+      <div
+        style={styles.ruler}
+        onMouseDown={handleRulerMouseDown}
+        data-testid="timeline-ruler"
+      >
         <div style={{ position: 'absolute', left: 120, right: 0, height: '100%' }}>
           {Array.from({ length: totalSeconds + 1 }).map((_, s) => (
-            <div
-              key={s}
-              style={{ ...styles.rulerTick, left: s * PX_PER_SECOND }}
-            >
+            <div key={s} style={{ ...styles.rulerTick, left: s * pps }}>
               {s}s
             </div>
           ))}
         </div>
       </div>
-      <div style={styles.body}>
+      <div style={styles.body} ref={bodyRef}>
         {project.tracks.map((track) => (
           <div
             key={track.id}
@@ -378,14 +681,21 @@ export function Timeline(props: TimelineProps): JSX.Element {
             <div
               style={{
                 ...styles.trackLane,
+                ...(dropTargetTrackId === track.id
+                  ? styles.trackLaneDropActive
+                  : {}),
                 width: laneWidth
               }}
               onClick={handleLaneClick}
+              onDragOver={(e) => handleLaneDragOver(e, track)}
+              onDragLeave={(e) => handleLaneDragLeave(e, track)}
+              onDrop={(e) => handleLaneDrop(e, track)}
               data-testid={`track-lane-${track.kind}`}
+              data-track-drop={track.kind}
             >
               {track.clips.map((clip) => {
-                const left = clipLeft(clip)
-                const w = clipWidth(clip)
+                const left = clipLeft(clip, pps)
+                const w = clipWidth(clip, pps)
                 const isCap = isCaptionClip(clip)
                 const isSel = clip.id === selectedClipId
                 const label = isCap
@@ -406,14 +716,14 @@ export function Timeline(props: TimelineProps): JSX.Element {
                       width: w
                     }}
                     title={label + speedLabel}
-                    data-testid={isCap ? 'caption-clip-block' : 'media-clip-block'}
+                    data-testid={
+                      isCap ? 'caption-clip-block' : 'media-clip-block'
+                    }
                     data-clip-id={clip.id}
                     data-clip-kind={clip.kind}
                     data-selected={isSel ? 'true' : 'false'}
                     onContextMenu={(e) => handleContext(e, clip)}
                   >
-                    {/* Trim handles — media-only. Render BEFORE body so the
-                        body can sit between them via left/right padding. */}
                     {isMediaClip(clip) && (
                       <div
                         style={{ ...styles.trimHandle, ...styles.trimHandleLeft }}
@@ -432,6 +742,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
                       }}
                       data-testid="clip-body"
                       data-clip-id={clip.id}
+                      onMouseDown={(e) => onClipBodyMouseDown(e, clip, track)}
                       onClick={(e) => {
                         e.stopPropagation()
                         handleSelect(clip.id)
@@ -448,7 +759,10 @@ export function Timeline(props: TimelineProps): JSX.Element {
                     </div>
                     {isMediaClip(clip) && (
                       <div
-                        style={{ ...styles.trimHandle, ...styles.trimHandleRight }}
+                        style={{
+                          ...styles.trimHandle,
+                          ...styles.trimHandleRight
+                        }}
                         data-testid="trim-handle-right"
                         data-clip-id={clip.id}
                         onMouseDown={(e) =>
@@ -459,11 +773,10 @@ export function Timeline(props: TimelineProps): JSX.Element {
                   </div>
                 )
               })}
-              {/* Playhead — render once per lane so it cuts through every track. */}
               <div
                 style={{
                   ...styles.playhead,
-                  left: (playheadMs / 1000) * PX_PER_SECOND
+                  left: (playheadMs / 1000) * pps
                 }}
                 data-testid="playhead"
               />

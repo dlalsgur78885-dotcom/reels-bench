@@ -3,6 +3,9 @@ import type { MediaAsset } from '../../../shared/project'
 import { useProjectStore } from '../store/project'
 import { importFilesByPath } from '../lib/mediaImport'
 
+/** dataTransfer MIME used to carry a mediaId from MediaLibrary to Timeline. */
+export const MEDIA_DRAG_MIME = 'application/x-reels-media-id'
+
 const SUPPORTED_EXTS = new Set([
   'mp4',
   'mov',
@@ -418,11 +421,25 @@ function MediaCard(props: {
   onRemove: () => void
 }): JSX.Element {
   const { asset, thumbUri, onRemove } = props
+  const [dragging, setDragging] = useState(false)
+  const cardStyle: React.CSSProperties = dragging
+    ? { ...styles.card, opacity: 0.55 }
+    : styles.card
   return (
     <div
-      style={styles.card}
+      style={cardStyle}
       data-testid="media-card"
       data-media-id={asset.id}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = 'copy'
+        // Two MIME types: the strict one (consumed by Timeline) and a
+        // text fallback for debugging / other drop targets.
+        e.dataTransfer.setData(MEDIA_DRAG_MIME, asset.id)
+        e.dataTransfer.setData('text/plain', asset.id)
+        setDragging(true)
+      }}
+      onDragEnd={() => setDragging(false)}
       onContextMenu={(e) => {
         e.preventDefault()
         onRemove()

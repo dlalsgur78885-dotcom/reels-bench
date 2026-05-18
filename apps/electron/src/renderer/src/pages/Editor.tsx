@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { MediaLibrary } from '../components/MediaLibrary'
 import { PreviewCanvas } from '../components/PreviewCanvas'
 import { Timeline } from '../components/Timeline'
+import { Transport } from '../components/Transport'
 import { CaptionEditor } from '../components/CaptionEditor'
 import { getTotalDurationMs, useProjectStore } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
@@ -80,7 +81,9 @@ const styles = {
   } as React.CSSProperties,
   right: {
     display: 'grid',
-    gridTemplateRows: '1fr minmax(200px, 280px)',
+    // Preview takes flex space, transport is auto-sized, timeline gets a
+    // bounded row so it can scroll without pushing the preview off-screen.
+    gridTemplateRows: '1fr auto minmax(220px, 320px)',
     overflow: 'hidden'
   } as React.CSSProperties,
   previewArea: {
@@ -144,6 +147,12 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   const setAspectRatio = useProjectStore((s) => s.setAspectRatio)
   const removeClip = useProjectStore((s) => s.removeClip)
 
+  // Phase 2.2: playhead lives in the timelineUi store so Transport's rAF
+  // loop and PreviewCanvas's <video>/<audio> sync share a single source of
+  // truth.
+  const playheadMs = useTimelineUi((s) => s.playheadMs)
+  const setPlayheadMs = useTimelineUi((s) => s.setPlayheadMs)
+
   // Local mirror so the input feels responsive; flush to store on blur/enter.
   const [draftName, setDraftName] = useState(project.name)
   useEffect(() => {
@@ -159,10 +168,6 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     if (trimmed !== project.name) setName(trimmed)
   }
 
-  // Playhead state (ms). Phase 2.4 is captions-focused — there's no playback
-  // engine yet, so the playhead is purely a scrubbing/marker concept for
-  // caption insert + preview overlay.
-  const [playheadMs, setPlayheadMs] = useState(0)
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
   const [editingCaptionId, setEditingCaptionId] = useState<string | null>(null)
   const [srtError, setSrtError] = useState<string | null>(null)
@@ -195,7 +200,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   }, [])
 
   // -----------------------------------------------------------------------
-  // Keyboard shortcuts.
+  // Keyboard shortcuts (Space is handled by Transport).
   //   C                     insert caption at playhead
   //   Delete / Backspace    remove the selected clip (media OR caption)
   //   Ctrl+D / Cmd+D        duplicate the selected clip
@@ -203,8 +208,6 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   //   ← / →                 move playhead by 1 frame (1000/fps ms)
   //   Shift+← / Shift+→     move playhead by 1 second
   //   Home / End            playhead to 0 / total duration
-  // Shortcuts are suppressed while focus is in an input/textarea or any
-  // contenteditable element (e.g. caption text editor).
   // -----------------------------------------------------------------------
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -219,44 +222,44 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         return
       }
 
-      // ----- Caption insert (existing behavior) -----
       if (e.key === 'c' || e.key === 'C') {
-        if (e.ctrlKey || e.metaKey) return // don't intercept Ctrl+C copy
+        if (e.ctrlKey || e.metaKey) return
         e.preventDefault()
         handleAddCaption()
         return
       }
 
-      // ----- Playhead navigation -----
       const store = useProjectStore.getState()
+      const ui = useTimelineUi.getState()
       const fps = store.project.fps || 30
       const frameMs = Math.max(1, Math.round(1000 / fps))
 
       if (e.key === 'ArrowLeft') {
         e.preventDefault()
         const step = e.shiftKey ? 1000 : frameMs
-        setPlayheadMs((cur) => Math.max(0, cur - step))
+        ui.setPlayheadMs(Math.max(0, ui.playheadMs - step))
         return
       }
       if (e.key === 'ArrowRight') {
         e.preventDefault()
         const step = e.shiftKey ? 1000 : frameMs
         const cap = getTotalDurationMs(store.project)
-        setPlayheadMs((cur) => (cap > 0 ? Math.min(cap, cur + step) : cur + step))
+        ui.setPlayheadMs(
+          cap > 0 ? Math.min(cap, ui.playheadMs + step) : ui.playheadMs + step
+        )
         return
       }
       if (e.key === 'Home') {
         e.preventDefault()
-        setPlayheadMs(0)
+        ui.setPlayheadMs(0)
         return
       }
       if (e.key === 'End') {
         e.preventDefault()
-        setPlayheadMs(getTotalDurationMs(store.project))
+        ui.setPlayheadMs(getTotalDurationMs(store.project))
         return
       }
 
-      // ----- Selection-dependent ops -----
       const sel = useTimelineUi.getState().selectedClipIds
       const firstSelected = (sel.size > 0 ? sel.values().next().value : null) ?? null
       if (!firstSelected) return
@@ -269,7 +272,6 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         if (editingCaptionId === firstSelected) setEditingCaptionId(null)
         return
       }
-      // Ctrl+D / Cmd+D — duplicate. Suppress browser bookmark dialog.
       if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
         e.preventDefault()
         const nid = store.duplicateClip(firstSelected)
@@ -279,10 +281,8 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         }
         return
       }
-      // S — split selected media clip at current playhead.
       if ((e.key === 's' || e.key === 'S') && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault()
-        // Resolve the selected clip and ensure it's a media clip.
         let target = null as null | { kind: string }
         for (const t of store.project.tracks) {
           const c = t.clips.find((cc) => cc.id === firstSelected)
@@ -292,14 +292,14 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           }
         }
         if (target && isMediaClip(target as never)) {
-          store.splitClipAt(firstSelected, playheadMs)
+          store.splitClipAt(firstSelected, useTimelineUi.getState().playheadMs)
         }
         return
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [handleAddCaption, editingCaptionId, playheadMs])
+  }, [handleAddCaption, editingCaptionId])
 
   return (
     <div style={styles.page} data-testid="editor-page">
@@ -393,8 +393,6 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
                 aspectRatio: `${project.width} / ${project.height}`,
                 maxHeight: '100%',
                 maxWidth: '100%',
-                // Give the box a real height fallback so flex children don't
-                // collapse to 0 in headless / first-paint conditions.
                 minHeight: 240,
                 height: '85%',
                 width: 'auto'
@@ -425,6 +423,8 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
               </div>
             )}
           </div>
+          {/* Transport bar sits between preview and timeline. */}
+          <Transport />
           <div data-testid="timeline-placeholder" style={{ overflow: 'hidden' }}>
             <Timeline
               project={project}

@@ -767,6 +767,51 @@ def _approx_segment_timings(sentences, total_duration):
     return timings
 
 
+def _apply_per_sentence_speed(audio_path, alignment_timings, sentences, out_path):
+    """sentence별 speed_factor가 1.0이 아니면 그 구간만 atempo 적용 후 concat.
+    alignment_timings: [(actual_start, actual_end), ...] Whisper 위치
+    sentences: [{speed_factor?: float, ...}]
+    speed_factor: 0.5 ~ 2.0 (ffmpeg atempo 1단 한계)
+    1.0인 segment는 atempo 안 적용 (음질 보존)."""
+    import tempfile
+    segs_dir = tempfile.mkdtemp(prefix="ttsspeed_")
+    seg_files = []
+    any_change = False
+    for i, ((a_st, a_en), s) in enumerate(zip(alignment_timings, sentences)):
+        sf = float(s.get("speed_factor") or 1.0)
+        sf = max(0.5, min(2.0, sf))
+        out_seg = f"{segs_dir}/seg_{i:03d}.mp3"
+        if abs(sf - 1.0) < 0.01:
+            # 그대로 잘라내기 (atempo 안 적용)
+            cmd = [FFMPEG, "-y", "-ss", f"{a_st:.3f}", "-to", f"{a_en:.3f}", "-i", str(audio_path),
+                   "-c:a", "libmp3lame", "-b:a", "128k", out_seg]
+        else:
+            cmd = [FFMPEG, "-y", "-ss", f"{a_st:.3f}", "-to", f"{a_en:.3f}", "-i", str(audio_path),
+                   "-filter:a", f"atempo={sf:.3f}",
+                   "-c:a", "libmp3lame", "-b:a", "128k", out_seg]
+            any_change = True
+        proc = subprocess.run(cmd, capture_output=True)
+        if proc.returncode != 0:
+            return False
+        seg_files.append(out_seg)
+    if not any_change or not seg_files:
+        # 모든 sentence가 1.0이면 처리 안 함 (원본 그대로 사용)
+        return False
+    # concat
+    list_file = f"{segs_dir}/list.txt"
+    with open(list_file, "w", encoding="utf-8") as f:
+        for sf_path in seg_files:
+            f.write(f"file '{sf_path}'\n")
+    cmd = [FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", list_file,
+           "-c:a", "libmp3lame", "-b:a", "128k", str(out_path)]
+    proc = subprocess.run(cmd, capture_output=True)
+    try:
+        shutil.rmtree(segs_dir)
+    except OSError:
+        pass
+    return proc.returncode == 0
+
+
 def _resegment_to_ref_timing(audio_path, alignment_timings, ref_sentences, out_path):
     """각 segment를 ref 길이에 맞게 atempo 가속/감속 후 concat.
     alignment_timings: [(actual_start, actual_end), ...] — Whisper로 잡힌 합성 위치
@@ -1076,9 +1121,28 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
                 timings = [(float(s.get("start", 0)), float(s.get("end", 0))) for s in sentences]
                 alignment_method = "match_approx"
 
+    # per-sentence speed_factor 적용 — sentences[i].speed_factor가 1.0이 아니면 그 구간만 atempo
+    has_per_speed = any(abs(float(s.get("speed_factor") or 1.0) - 1.0) > 0.01 for s in sentences)
+    if has_per_speed and timings:
+        tmp_speed = job_dir / "speed.mp3"
+        ok = _apply_per_sentence_speed(final_path, timings, sentences, tmp_speed)
+        if ok and tmp_speed.exists():
+            final_path.write_bytes(tmp_speed.read_bytes())
+            try:
+                tmp_speed.unlink()
+            except OSError:
+                pass
+            total_duration = probe_duration(final_path)
+            new_timings = _align_sentences_to_audio(sentences, final_path)
+            if new_timings:
+                timings = new_timings
+                alignment_method = (alignment_method or "whisper") + "+per_speed"
+
     for i, sm in enumerate(sent_meta):
         if i < len(timings):
             sm["start"], sm["end"] = timings[i]
+        # per-sentence speed_factor 메타 저장 (UI 표시용)
+        sm["speed_factor"] = float(sentences[i].get("speed_factor") or 1.0)
 
     # Supabase Storage 업로드 → public URL
     supabase_url = _upload_final_to_supabase(job_id, final_path)

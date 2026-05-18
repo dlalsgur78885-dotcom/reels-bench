@@ -11,6 +11,7 @@ interface InputSentence {
   start: number; end: number; text: string;
   direction?: string;
   sentence_emotion?: string  // 전체감정 — sentence 맨 앞에 prepend (LLM 자동/사용자 수동)
+  speed_factor?: number      // 이 sentence만 배속 조절 (0.5~2.0, 기본 1.0)
   phrases?: Phrase[]  // 어절 모드 (선택) — 있으면 백엔드가 inline tag로 합성
 }
 
@@ -409,9 +410,9 @@ export default function TtsGen() {
                       }}>👇 "🎙 음성 생성"으로 적용</span>
                     )}
                   </div>
-                  {/* sentence_emotion (전체감정) picker — 문장 전체 톤 */}
+                  {/* sentence_emotion (전체감정) + speed picker */}
                   {inPhraseMode && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
                       <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)' }}>🎬 전체 감정:</span>
                       <select
                         value={s.sentence_emotion || ''}
@@ -429,11 +430,28 @@ export default function TtsGen() {
                           <option key={pr.tag} value={pr.tag}>{pr.emoji} {pr.label} {pr.tag}</option>
                         ))}
                       </select>
-                      {s.sentence_emotion && (
-                        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                          ← 문장 맨 앞에 prepend (v3 전체 톤 지배)
-                        </span>
-                      )}
+                      <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', marginLeft: 8 }}>⏱ 속도:</span>
+                      <select
+                        value={String(s.speed_factor ?? 1.0)}
+                        onChange={e => {
+                          const v = parseFloat(e.target.value)
+                          updateSentence(i, { speed_factor: v === 1.0 ? undefined : v })
+                        }}
+                        disabled={!canEdit}
+                        style={{
+                          fontSize: 12, padding: '3px 8px',
+                          background: (s.speed_factor && s.speed_factor !== 1.0) ? 'rgba(245,158,11,0.12)' : 'var(--bg-base)',
+                          color: (s.speed_factor && s.speed_factor !== 1.0) ? '#a16207' : 'var(--text-body)',
+                          border: '1px solid', borderColor: (s.speed_factor && s.speed_factor !== 1.0) ? '#f59e0b' : 'var(--border)',
+                          borderRadius: 4, fontWeight: 600, cursor: canEdit ? 'pointer' : 'not-allowed',
+                        }}>
+                        <option value="0.7">0.7× (느림)</option>
+                        <option value="0.85">0.85×</option>
+                        <option value="1.0">1.0× (기본)</option>
+                        <option value="1.15">1.15×</option>
+                        <option value="1.3">1.3×</option>
+                        <option value="1.5">1.5× (빠름)</option>
+                      </select>
                     </div>
                   )}
                   {inPhraseMode ? (

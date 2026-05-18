@@ -542,14 +542,23 @@ def _ensure_sentence_end(text):
     return t + "."
 
 
-def _build_full_script_text(sentences, tag_map):
+def _build_full_script_text(sentences, tag_map, persona_cue=None):
     """전체 스크립트를 단일 호출용 텍스트로 합침.
     각 sentence 사이는 ', ' (콤마+공백) — ElevenLabs가 짧은 호흡(~150ms) 일관 적용.
-    중간 sentence의 trailing '.'는 strip (', '로 대체). 마지막 sentence의 ./?/! 는 유지."""
+    중간 sentence의 trailing '.'는 strip (', '로 대체). 마지막 sentence의 ./?/! 는 유지.
+
+    persona_cue 전달 시 매 sentence 시작마다 다시 prepend → modal directive 누수 차단:
+    v3는 한번 박은 directive(예 '(비밀스럽게)')가 다음 directive까지 유지되는데
+    그러면 한 문장의 '(비밀스럽게)'가 그 뒤 문장 다 속삭임 톤으로 만듦.
+    매 문장 앞에 persona cue가 있으면 매 문장이 기본 톤으로 reset됨."""
     parts = []
     for i, s in enumerate(sentences):
         text, outer_tag = _build_synth_input(s, i, tag_map)
         combined = f"{outer_tag} {text}".strip() if outer_tag else text
+        # 매 문장 시작에 persona cue 재삽입 — 이전 문장의 directive 누수 차단
+        # 단, 맨 첫 문장은 외부에서 한 번 prepend되니까 skip
+        if persona_cue and i > 0:
+            combined = f"{persona_cue} {combined}"
         combined = _ensure_sentence_end(combined)
         parts.append(combined)
     if not parts:
@@ -567,9 +576,10 @@ def _build_full_script_text(sentences, tag_map):
     return ", ".join(out)
 
 
-def _rebuild_full_text_from_meta(sentences):
+def _rebuild_full_text_from_meta(sentences, persona_cue=None):
     """저장된 meta의 sentences에서 full text 재조립 — _build_full_script_text와 동일 호흡 가이드.
-    연속 동일 directive 자동 dedup (v3 modal 동작 + pause 최소화)."""
+    연속 동일 directive 자동 dedup (v3 modal 동작 + pause 최소화).
+    persona_cue 전달 시 매 문장 시작에도 prepend (directive 누수 차단)."""
     parts = []
     for s in sentences:
         if s.get("phrases"):
@@ -601,6 +611,9 @@ def _rebuild_full_text_from_meta(sentences):
             out.append(t)
         else:
             out.append(p)
+    # 매 문장 시작에 persona cue 재삽입 (첫 문장 제외 — 외부에서 한 번 prepend됨)
+    if persona_cue:
+        out = [out[0]] + [f"{persona_cue} {x}" for x in out[1:]]
     return ", ".join(out)
 
 
@@ -941,8 +954,9 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
     # 항상 v3 단일 호출 (audio tag + persona cue + voice 일관성)
     # 실측: stability=0.85 + cue prefix로 600자+에서도 환각 0, voice 일관 유지
     effective_model = "eleven_v3"
-    base_text = _build_full_script_text(sentences, tag_map)
     persona_cue = build_persona_cue(persona)
+    # persona_cue 매 문장 시작에도 prepend → 이전 문장 directive 누수 차단
+    base_text = _build_full_script_text(sentences, tag_map, persona_cue=persona_cue)
     full_text = f"{persona_cue} {base_text}" if persona_cue else base_text
 
     # 문장별 메타 (UI 표시용; per-segment mp3는 없음)
@@ -1110,8 +1124,8 @@ def regenerate_segment(job_id: str, idx: int, strength_level: int):
     sentences[idx]["tag"] = new_tag
 
     # 전체 재합성 — v3 단일 호출 (stab=0.85로 600자+ 안정)
-    base_text = _rebuild_full_text_from_meta(sentences)
     persona_cue = meta.get("persona_cue")
+    base_text = _rebuild_full_text_from_meta(sentences, persona_cue=persona_cue)
     full_text = f"{persona_cue} {base_text}" if persona_cue else base_text
     voice_settings = emotion_to_voice_settings(meta.get("base_emotion_strength", DEFAULT_EMOTION))
     final_path = _job_dir(job_id) / "final.mp3"

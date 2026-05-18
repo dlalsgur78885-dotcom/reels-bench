@@ -5330,6 +5330,8 @@ def tts_download_legacy(filename: str):
 
 # ── Seedance 2.0 (fal.ai image→video) ──
 _SEEDANCE_MODEL = "bytedance/seedance-2.0/image-to-video"
+# fal queue는 submit은 full 모델 path, status/result는 app namespace(끝 변형 제외)만 받음
+_SEEDANCE_APP = "/".join(_SEEDANCE_MODEL.split("/")[:-1])
 
 
 def _normalize_naver_blog_url(url: str) -> str:
@@ -5582,9 +5584,10 @@ def seedance_status(request_id: str, request: Request):
     auth_svc.require_user(request)
     if not request_id:
         raise HTTPException(400, "request_id 필수")
-    # status URL — queue 응답 포맷 그대로 재구성 (모델별 prefix 포함)
-    status_url = f"https://queue.fal.run/{_SEEDANCE_MODEL}/requests/{request_id}/status"
-    result_url = f"https://queue.fal.run/{_SEEDANCE_MODEL}/requests/{request_id}"
+    # fal queue는 status/result에서 app namespace(`bytedance/seedance-2.0`)만 받고
+    # full model path(`.../image-to-video`)는 405 — submit과 path가 다름
+    status_url = f"https://queue.fal.run/{_SEEDANCE_APP}/requests/{request_id}/status"
+    result_url = f"https://queue.fal.run/{_SEEDANCE_APP}/requests/{request_id}"
     sr = requests.get(status_url, headers=_fal_headers(json=False), timeout=10)
     if sr.status_code != 200:
         # fal queue 가 모델 prefix 없이 응답하는 경우도 있음 — fallback

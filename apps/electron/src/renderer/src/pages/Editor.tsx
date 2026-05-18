@@ -1,7 +1,15 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { MediaLibrary } from '../components/MediaLibrary'
+import { PreviewCanvas } from '../components/PreviewCanvas'
+import { Timeline } from '../components/Timeline'
+import { CaptionEditor } from '../components/CaptionEditor'
 import { useProjectStore } from '../store/project'
 import type { AspectRatio } from '../../../shared/project'
+import {
+  addClipsToStore,
+  cuesToClips,
+  insertCaptionAtPlayhead
+} from '../lib/captions'
 
 interface EditorProps {
   onBack: () => void
@@ -63,9 +71,15 @@ const styles = {
     gridTemplateColumns: 'minmax(280px, 320px) 1fr',
     overflow: 'hidden'
   } as React.CSSProperties,
+  bodyWithEditor: {
+    flex: 1,
+    display: 'grid',
+    gridTemplateColumns: 'minmax(280px, 320px) 1fr 360px',
+    overflow: 'hidden'
+  } as React.CSSProperties,
   right: {
     display: 'grid',
-    gridTemplateRows: '1fr minmax(180px, 240px)',
+    gridTemplateRows: '1fr minmax(200px, 280px)',
     overflow: 'hidden'
   } as React.CSSProperties,
   previewArea: {
@@ -75,36 +89,50 @@ const styles = {
     background: '#0a0a0a',
     borderBottom: '1px solid #2a2a2a',
     padding: 24,
-    overflow: 'hidden'
+    overflow: 'hidden',
+    position: 'relative'
   } as React.CSSProperties,
-  previewCanvas: {
+  previewBox: {
     background: '#000',
-    border: '2px dashed #2a2a2a',
     borderRadius: 8,
-    color: '#475569',
-    fontSize: 12,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    textAlign: 'center',
-    padding: 16,
+    width: '100%',
+    height: '100%',
+    maxWidth: '100%',
+    maxHeight: '100%',
     boxSizing: 'border-box' as const
-  } as React.CSSProperties,
-  timelineArea: {
-    background: '#0a0a0a',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    color: '#475569',
-    fontSize: 12,
-    border: '2px dashed #2a2a2a',
-    borderRadius: 8,
-    margin: 16
   } as React.CSSProperties,
   hint: {
     fontSize: 11,
     color: '#475569',
     marginLeft: 12
+  } as React.CSSProperties,
+  primaryBtn: {
+    background: '#6366f1',
+    color: '#fff',
+    border: 'none',
+    borderRadius: 6,
+    padding: '6px 12px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer'
+  } as React.CSSProperties,
+  secondaryBtn: {
+    background: '#1f2937',
+    color: '#f5f5f5',
+    border: '1px solid #374151',
+    borderRadius: 6,
+    padding: '6px 12px',
+    fontSize: 12,
+    cursor: 'pointer'
+  } as React.CSSProperties,
+  playheadInput: {
+    background: '#0d0d0d',
+    color: '#f5f5f5',
+    border: '1px solid #2a2a2a',
+    borderRadius: 6,
+    padding: '4px 8px',
+    fontSize: 11,
+    width: 90
   } as React.CSSProperties
 }
 
@@ -113,6 +141,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   const hydrated = useProjectStore((s) => s.hydrated)
   const setName = useProjectStore((s) => s.setName)
   const setAspectRatio = useProjectStore((s) => s.setAspectRatio)
+  const removeClip = useProjectStore((s) => s.removeClip)
 
   // Local mirror so the input feels responsive; flush to store on blur/enter.
   const [draftName, setDraftName] = useState(project.name)
@@ -129,15 +158,58 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     if (trimmed !== project.name) setName(trimmed)
   }
 
-  // Compute preview canvas aspect-ratio styling.
-  const previewBoxStyle: React.CSSProperties = {
-    ...styles.previewCanvas,
-    aspectRatio: `${project.width} / ${project.height}`,
-    maxHeight: '85%',
-    maxWidth: '85%',
-    height: 'auto',
-    width: 'auto'
-  }
+  // Playhead state (ms). Phase 2.4 is captions-focused — there's no playback
+  // engine yet, so the playhead is purely a scrubbing/marker concept for
+  // caption insert + preview overlay.
+  const [playheadMs, setPlayheadMs] = useState(0)
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
+  const [editingCaptionId, setEditingCaptionId] = useState<string | null>(null)
+  const [srtError, setSrtError] = useState<string | null>(null)
+
+  const handleAddCaption = useCallback((): void => {
+    const id = insertCaptionAtPlayhead(playheadMs)
+    if (id) {
+      setSelectedClipId(id)
+      setEditingCaptionId(id)
+    }
+  }, [playheadMs])
+
+  const handleImportSrt = useCallback(async (): Promise<void> => {
+    setSrtError(null)
+    try {
+      const picked = await window.electron.fs.pickFile([
+        { name: 'Captions', extensions: ['srt', 'vtt'] }
+      ])
+      if (!picked) return
+      const cues = await window.electron.captions.importSrt(picked)
+      if (!cues || cues.length === 0) {
+        setSrtError('자막 파일에 큐를 찾지 못했어요.')
+        return
+      }
+      const clips = cuesToClips(cues)
+      addClipsToStore(clips)
+    } catch (err) {
+      setSrtError(err instanceof Error ? err.message : String(err))
+    }
+  }, [])
+
+  // Keyboard shortcuts: C inserts a caption at playhead.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      // Ignore when typing in inputs/textareas to avoid stealing keys.
+      const target = e.target as HTMLElement | null
+      const tag = target?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) {
+        return
+      }
+      if (e.key === 'c' || e.key === 'C') {
+        e.preventDefault()
+        handleAddCaption()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [handleAddCaption])
 
   return (
     <div style={styles.page} data-testid="editor-page">
@@ -190,25 +262,105 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
 
         <div style={styles.flex1} />
 
+        <input
+          style={styles.playheadInput}
+          type="number"
+          min={0}
+          step={100}
+          value={playheadMs}
+          onChange={(e) => setPlayheadMs(Math.max(0, Number(e.target.value) || 0))}
+          aria-label="플레이헤드(ms)"
+          data-testid="playhead-input"
+        />
+
+        <button
+          style={styles.primaryBtn}
+          onClick={handleAddCaption}
+          data-testid="add-caption-button"
+        >
+          + 자막 추가
+        </button>
+        <button
+          style={styles.secondaryBtn}
+          onClick={handleImportSrt}
+          data-testid="import-srt-button"
+        >
+          SRT 가져오기
+        </button>
+
         {!hydrated && (
           <div style={styles.hint}>프로젝트 로딩 중…</div>
         )}
       </div>
 
-      <div style={styles.body}>
+      <div style={editingCaptionId ? styles.bodyWithEditor : styles.body}>
         <MediaLibrary />
         <div style={styles.right}>
           <div style={styles.previewArea}>
-            <div style={previewBoxStyle} data-testid="preview-placeholder">
-              Preview will live here
-              <br />
-              <span style={{ color: '#334155' }}>(Phase 2.2에서 추가 예정)</span>
+            <div
+              style={{
+                ...styles.previewBox,
+                aspectRatio: `${project.width} / ${project.height}`,
+                maxHeight: '100%',
+                maxWidth: '100%',
+                // Give the box a real height fallback so flex children don't
+                // collapse to 0 in headless / first-paint conditions.
+                minHeight: 240,
+                height: '85%',
+                width: 'auto'
+              }}
+              data-testid="preview-placeholder"
+            >
+              <PreviewCanvas project={project} playheadMs={playheadMs} />
             </div>
+            {srtError && (
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: 12,
+                  left: 12,
+                  right: 12,
+                  background: '#2a0d0d',
+                  border: '1px solid #4a1f1f',
+                  color: '#fca5a5',
+                  padding: '8px 12px',
+                  borderRadius: 6,
+                  fontSize: 11
+                }}
+                onClick={() => setSrtError(null)}
+                role="button"
+                data-testid="srt-error"
+              >
+                {srtError}
+              </div>
+            )}
           </div>
-          <div style={styles.timelineArea} data-testid="timeline-placeholder">
-            Timeline will live here — Phase 2.2에서 추가 예정
+          <div data-testid="timeline-placeholder" style={{ overflow: 'hidden' }}>
+            <Timeline
+              project={project}
+              playheadMs={playheadMs}
+              onSeek={setPlayheadMs}
+              selectedClipId={selectedClipId}
+              onSelectClip={setSelectedClipId}
+              onEditCaption={(id) => {
+                setSelectedClipId(id)
+                setEditingCaptionId(id)
+              }}
+              onDeleteClip={(id) => {
+                removeClip(id)
+                if (editingCaptionId === id) setEditingCaptionId(null)
+                if (selectedClipId === id) setSelectedClipId(null)
+              }}
+            />
           </div>
         </div>
+        {editingCaptionId && (
+          <CaptionEditor
+            project={project}
+            captionId={editingCaptionId}
+            onClose={() => setEditingCaptionId(null)}
+          />
+        )}
       </div>
     </div>
   )

@@ -23,8 +23,17 @@ export interface MediaAsset {
 
 export type TrackKind = 'video' | 'audio' | 'caption'
 
-export interface Clip {
+// ---------------------------------------------------------------------------
+// Clips: discriminated union between media-backed clips and caption clips.
+// ---------------------------------------------------------------------------
+
+/**
+ * Media-backed clip (video / audio / image). Phase 2.1~2.3 fields live here.
+ * Discriminator: `kind === 'media'`.
+ */
+export interface VideoAudioClip {
   id: string
+  kind: 'media'
   /** References MediaAsset.id. */
   mediaId: string
   trackId: string
@@ -36,7 +45,63 @@ export interface Clip {
   trimInMs: number
   /** Offset into the source media end. */
   trimOutMs: number
+  /** Playback speed multiplier (1.0 = normal). */
+  speed?: number
 }
+
+/** Visual preset for a caption block. */
+export type CaptionPreset =
+  | 'bottom-center'
+  | 'neon'
+  | 'block-bold'
+  | 'minimal-white'
+  | 'youtube-yellow'
+  | 'tiktok-rounded'
+  | 'gradient'
+
+/** Caption alignment within the overlay box. */
+export type CaptionAlign = 'left' | 'center' | 'right'
+
+/** Background treatment for the caption overlay. */
+export type CaptionBackground = 'none' | 'solid' | 'pill' | 'highlight'
+
+export interface CaptionStyle {
+  preset: CaptionPreset
+  /** Base font size in px (relative to canvas height — overlay scales). */
+  fontSize: number
+  align: CaptionAlign
+  /** 0..1, fraction of canvas height (0 = top, 1 = bottom anchor). */
+  yPosition: number
+  background: CaptionBackground
+}
+
+/** Per-word optional emphasis. */
+export type CaptionEmphasis = 'bold' | 'highlight' | 'pulse'
+
+export interface CaptionSpan {
+  text: string
+  emphasis?: CaptionEmphasis
+  /** Hex color (#rrggbb). */
+  color?: string
+}
+
+/**
+ * Caption clip — lives on a `caption` track. No media reference, no trim
+ * window, no playback speed. Discriminator: `kind === 'caption'`.
+ */
+export interface CaptionClip {
+  id: string
+  kind: 'caption'
+  trackId: string
+  startMs: number
+  endMs: number
+  /** Ordered spans; joined with a single space when rendering. */
+  spans: CaptionSpan[]
+  style: CaptionStyle
+}
+
+/** Union: every clip on a track. Use `clip.kind` to narrow safely. */
+export type Clip = VideoAudioClip | CaptionClip
 
 export interface Track {
   id: string
@@ -95,4 +160,35 @@ export interface ThumbnailOptions {
   outPath?: string
   /** Required when caller wants the default path computed for them. */
   mediaId?: string
+}
+
+// ---------------------------------------------------------------------------
+// Shared clip helpers (pure, importable from any layer).
+// ---------------------------------------------------------------------------
+
+/** Duration of a clip on the timeline (endMs - startMs). */
+export function getClipDuration(clip: Clip): number {
+  return Math.max(0, clip.endMs - clip.startMs)
+}
+
+/**
+ * Plain-text content of a clip for display / preview / search.
+ * - media clips → empty string (caller should look up media.fileName)
+ * - caption clips → spans joined with single space
+ */
+export function getClipSourceText(clip: Clip): string {
+  if (clip.kind === 'caption') {
+    return clip.spans.map((s) => s.text).join(' ').trim()
+  }
+  return ''
+}
+
+/** Type-narrowed predicate: is this clip a media-backed (video/audio) clip? */
+export function isMediaClip(clip: Clip): clip is VideoAudioClip {
+  return clip.kind === 'media'
+}
+
+/** Type-narrowed predicate: is this clip a caption clip? */
+export function isCaptionClip(clip: Clip): clip is CaptionClip {
+  return clip.kind === 'caption'
 }

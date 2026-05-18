@@ -11,6 +11,7 @@ import {
   type FfmpegRunSpec,
   type FilePickerFilter,
   type JobResult,
+  type ParsedCaptionCue,
   type PickFileOptions,
   type ProgressEvent
 } from '../shared/ipc'
@@ -77,6 +78,12 @@ const api: ElectronApi = {
       ipcRenderer.on(IPC_CHANNELS.auth.tokenReceived, listener)
       return () => ipcRenderer.removeListener(IPC_CHANNELS.auth.tokenReceived, listener)
     }
+  },
+  captions: {
+    importSrt: (filePath: string): Promise<ParsedCaptionCue[]> =>
+      ipcRenderer.invoke(IPC_CHANNELS.captions.importSrt, filePath),
+    parseSrtString: (raw: string): Promise<ParsedCaptionCue[]> =>
+      ipcRenderer.invoke(IPC_CHANNELS.captions.parseSrtString, raw)
   }
 }
 

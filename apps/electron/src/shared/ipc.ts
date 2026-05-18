@@ -29,8 +29,22 @@ export const IPC_CHANNELS = {
   auth: {
     startDeeplinkFlow: 'auth:startDeeplinkFlow',
     tokenReceived: 'auth:tokenReceived'
+  },
+  captions: {
+    importSrt: 'captions:importSrt',
+    parseSrtString: 'captions:parseSrtString'
   }
 } as const
+
+/** Result of parsing an SRT/VTT file: caller maps to CaptionClip with a trackId. */
+export interface ParsedCaptionCue {
+  /** Optional cue id from the source file (line above the timestamp arrow). */
+  id?: string
+  startMs: number
+  endMs: number
+  /** Plain text, lines collapsed to single spaces. */
+  text: string
+}
 
 // --- ffmpeg allow-lists -----------------------------------------------------
 // Renderer is NEVER trusted to supply raw ffmpeg args. It may only choose
@@ -185,6 +199,12 @@ export interface ElectronApi {
   auth: {
     startDeeplinkFlow(): Promise<void>
     onTokenReceived(cb: (token: string) => void): () => void
+  }
+  captions: {
+    /** Reads an SRT or VTT file from disk (path must be allowlisted). */
+    importSrt(filePath: string): Promise<ParsedCaptionCue[]>
+    /** Parses an in-memory SRT/VTT payload (used for tests + paste flow). */
+    parseSrtString(raw: string): Promise<ParsedCaptionCue[]>
   }
 }
 

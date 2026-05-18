@@ -5,3 +5,4 @@ pydantic
 numpy
 fal-client
 python-multipart
+beautifulsoup4

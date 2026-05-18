@@ -5332,6 +5332,157 @@ def tts_download_legacy(filename: str):
 _SEEDANCE_MODEL = "bytedance/seedance-2.0/image-to-video"
 
 
+def _normalize_naver_blog_url(url: str) -> str:
+    """blog.naver.com/{user}/{logno} → PostView.naver iframe URL (실 컨텐츠가 있는 곳)."""
+    from urllib.parse import urlparse
+    p = urlparse(url)
+    host = (p.netloc or "").lower()
+    if "blog.naver.com" not in host:
+        return url
+    # 이미 PostView면 그대로
+    if "PostView" in p.path:
+        return url
+    parts = [x for x in p.path.split("/") if x]
+    if len(parts) >= 2 and parts[-1].isdigit():
+        user, logno = parts[-2], parts[-1]
+        base = "https://m.blog.naver.com" if host.startswith("m.") else "https://blog.naver.com"
+        return f"{base}/PostView.naver?blogId={user}&logNo={logno}"
+    return url
+
+
+def _extract_blog_images(url: str) -> list[dict]:
+    """블로그 URL에서 본문 이미지 URL 추출. 네이버 블로그 PostView 변환 포함.
+
+    반환: [{url, alt}] — 큰 이미지 우선 정렬, 작은 아이콘/광고는 필터.
+    """
+    from bs4 import BeautifulSoup
+    from urllib.parse import urljoin, urlparse
+    norm = _normalize_naver_blog_url(url)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+    }
+    r = requests.get(norm, headers=headers, timeout=15)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.content, "html.parser")
+    base = norm
+
+    candidates: list[dict] = []
+    seen: set[str] = set()
+
+    def add(src: str, alt: str = ""):
+        if not src or src.startswith("data:"):
+            return
+        abs_url = urljoin(base, src)
+        # Naver 이미지 크기 파라미터 제거 (?type=w773 등) — 원본 받기
+        if "blogfiles.pstatic.net" in abs_url or "postfiles.pstatic.net" in abs_url:
+            abs_url = abs_url.split("?")[0]
+        if abs_url in seen:
+            return
+        seen.add(abs_url)
+        candidates.append({"url": abs_url, "alt": (alt or "").strip()[:120]})
+
+    # 네이버 SmartEditor 우선
+    for img in soup.select("img.se-image-resource, .se-component img, .se-main-container img"):
+        add(img.get("data-lazy-src") or img.get("data-src") or img.get("src") or "",
+            img.get("alt", ""))
+
+    # OG image (대표 이미지)
+    og = soup.find("meta", attrs={"property": "og:image"})
+    if og and og.get("content"):
+        add(og["content"], "og:image")
+
+    # 일반 본문 img (네이버 외 블로그 / fallback)
+    if not candidates:
+        for img in soup.find_all("img"):
+            add(img.get("data-src") or img.get("data-lazy-src") or img.get("src") or "",
+                img.get("alt", ""))
+
+    # 작은 아이콘/광고/프로필 필터 (URL 패턴 기반)
+    BAD_PATTERNS = (
+        "profile", "icon", "logo", "blank.gif", "spacer", "tracking", "pixel",
+        "adfit", "googleads", "doubleclick",
+    )
+    filtered = []
+    for c in candidates:
+        u = c["url"].lower()
+        if any(p in u for p in BAD_PATTERNS):
+            continue
+        # 너무 짧은 (작은) gif/svg 가능성 — 확장자 필터
+        if u.endswith((".svg", ".ico")):
+            continue
+        filtered.append(c)
+
+    return filtered
+
+
+class SeedanceImportImageReq(BaseModel):
+    url: str
+    referer: str | None = None  # 네이버 등 hotlink 보호 우회용
+
+
+@app.post("/api/seedance/import-image")
+def seedance_import_image(body: SeedanceImportImageReq, request: Request):
+    """원격 이미지 URL을 우리 서버가 받아서 fal storage에 재업로드. fal-fetchable URL 반환."""
+    auth_svc.require_user(request)
+    if not body.url.startswith(("http://", "https://")):
+        raise HTTPException(400, "url 필수")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        "Accept": "image/*,*/*;q=0.8",
+    }
+    if body.referer:
+        headers["Referer"] = body.referer
+    elif "pstatic.net" in body.url:
+        headers["Referer"] = "https://blog.naver.com/"
+    try:
+        rr = requests.get(body.url, headers=headers, timeout=20, stream=False)
+        rr.raise_for_status()
+    except Exception as e:
+        raise HTTPException(502, f"이미지 download 실패: {e}")
+    content = rr.content
+    if len(content) < 200:
+        raise HTTPException(400, f"이미지 너무 작음 ({len(content)} bytes)")
+    # fal upload
+    import tempfile, mimetypes
+    ext = mimetypes.guess_extension(rr.headers.get("Content-Type", "image/jpeg")) or ".jpg"
+    if ext == ".jpe": ext = ".jpg"
+    try:
+        import fal_client
+        os.environ["FAL_KEY"] = _fal_key()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tf:
+            tf.write(content)
+            tmp_path = tf.name
+        try:
+            up = fal_client.upload_file(tmp_path)
+        finally:
+            try: os.unlink(tmp_path)
+            except: pass
+        return {"image_url": up, "size": len(content), "source": body.url}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[seedance/import-image] fal upload failed")
+        raise HTTPException(500, f"fal 업로드 실패: {e}")
+
+
+@app.get("/api/seedance/extract-images")
+def seedance_extract_images(url: str, request: Request):
+    auth_svc.require_user(request)
+    if not url or not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "url 필수 (http/https)")
+    try:
+        imgs = _extract_blog_images(url)
+        return {"url": url, "count": len(imgs), "images": imgs}
+    except requests.HTTPError as e:
+        raise HTTPException(502, f"블로그 fetch 실패: {e}")
+    except Exception as e:
+        logger.exception("[seedance/extract] failed")
+        raise HTTPException(500, f"추출 실패: {e}")
+
+
 def _fal_key() -> str:
     k = (os.getenv("SEEDANCE_API_KEY") or os.getenv("FAL_KEY") or "").strip()
     if not k:

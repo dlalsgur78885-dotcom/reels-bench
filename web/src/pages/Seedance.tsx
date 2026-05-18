@@ -1,96 +1,169 @@
 import { useEffect, useRef, useState } from 'react'
-import { authedFetch, BASE } from '../api'
+import { authedFetch } from '../api'
 
-type Status = 'idle' | 'uploading' | 'submitting' | 'queued' | 'in_progress' | 'completed' | 'failed'
+type Status = 'idle' | 'importing' | 'uploading' | 'submitting' | 'queued' | 'in_progress' | 'completed' | 'failed'
+type Mode = 'blog' | 'upload'
+type BlogImage = { url: string; alt: string }
+type Slot = 'start' | 'end'
 
 const RESOLUTIONS = ['480p', '720p', '1080p'] as const
 const DURATIONS = ['4', '5', '6', '8', '10', '12', '15'] as const
 const ASPECTS = ['9:16', '16:9', '1:1', '4:3', '3:4', '21:9', 'auto'] as const
 
 export default function Seedance() {
-  const [file, setFile] = useState<File | null>(null)
-  const [previewUrl, setPreviewUrl] = useState<string>('')  // 로컬 미리보기
-  const [imageUrl, setImageUrl] = useState<string>('')  // fal upload 후 URL
-  const [prompt, setPrompt] = useState('카메라가 천천히 줌인하며 따뜻한 햇살이 비추는 장면')
+  const [mode, setMode] = useState<Mode>('blog')
+
+  // 블로그 모드
+  const [blogUrl, setBlogUrl] = useState('')
+  const [blogImages, setBlogImages] = useState<BlogImage[]>([])
+  const [blogExtracting, setBlogExtracting] = useState(false)
+  const [blogError, setBlogError] = useState('')
+  // 선택된 시작/끝 이미지 (블로그 원본 URL 보관, submit 시 fal로 import)
+  const [startSrc, setStartSrc] = useState<string>('')
+  const [endSrc, setEndSrc] = useState<string>('')
+
+  // 업로드 모드
+  const [startFile, setStartFile] = useState<File | null>(null)
+  const [endFile, setEndFile] = useState<File | null>(null)
+  const [startPreview, setStartPreview] = useState('')
+  const [endPreview, setEndPreview] = useState('')
+
+  // 공통 옵션
+  const [prompt, setPrompt] = useState('자연스러운 카메라 무빙으로 첫 장면에서 두 번째 장면으로 부드럽게 전환')
   const [resolution, setResolution] = useState<typeof RESOLUTIONS[number]>('720p')
-  const [duration, setDuration] = useState<typeof DURATIONS[number]>('4')
+  const [duration, setDuration] = useState<typeof DURATIONS[number]>('5')
   const [aspectRatio, setAspectRatio] = useState<typeof ASPECTS[number]>('9:16')
   const [generateAudio, setGenerateAudio] = useState(false)
 
+  // 진행
   const [status, setStatus] = useState<Status>('idle')
-  const [requestId, setRequestId] = useState<string>('')
+  const [requestId, setRequestId] = useState('')
   const [elapsed, setElapsed] = useState(0)
   const [queuePosition, setQueuePosition] = useState<number | null>(null)
-  const [videoUrl, setVideoUrl] = useState<string>('')
-  const [error, setError] = useState<string>('')
+  const [videoUrl, setVideoUrl] = useState('')
+  const [error, setError] = useState('')
 
   const tickerRef = useRef<number | null>(null)
   const pollerRef = useRef<number | null>(null)
-  const startedAtRef = useRef<number>(0)
+  const startedAtRef = useRef(0)
 
   useEffect(() => () => {
     if (tickerRef.current) window.clearInterval(tickerRef.current)
     if (pollerRef.current) window.clearInterval(pollerRef.current)
-    if (previewUrl) URL.revokeObjectURL(previewUrl)
+    if (startPreview) URL.revokeObjectURL(startPreview)
+    if (endPreview) URL.revokeObjectURL(endPreview)
   }, [])
 
-  const onPickFile = (f: File | null) => {
-    setFile(f)
-    setImageUrl('')
-    if (previewUrl) URL.revokeObjectURL(previewUrl)
-    setPreviewUrl(f ? URL.createObjectURL(f) : '')
+  const onPickFile = (slot: Slot, f: File | null) => {
+    if (slot === 'start') {
+      if (startPreview) URL.revokeObjectURL(startPreview)
+      setStartFile(f)
+      setStartPreview(f ? URL.createObjectURL(f) : '')
+    } else {
+      if (endPreview) URL.revokeObjectURL(endPreview)
+      setEndFile(f)
+      setEndPreview(f ? URL.createObjectURL(f) : '')
+    }
+  }
+
+  const extractBlog = async () => {
+    setBlogError('')
+    setBlogImages([])
+    setStartSrc(''); setEndSrc('')
+    if (!blogUrl.startsWith('http')) { setBlogError('http(s):// URL 필요'); return }
+    setBlogExtracting(true)
+    try {
+      const r = await authedFetch(`/api/seedance/extract-images?url=${encodeURIComponent(blogUrl)}`)
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`)
+      const data = await r.json()
+      setBlogImages(data.images || [])
+      if (!data.images?.length) setBlogError('이미지를 찾지 못했어요')
+    } catch (e: any) {
+      setBlogError(e?.message || String(e))
+    } finally {
+      setBlogExtracting(false)
+    }
+  }
+
+  const toggleBlogImage = (url: string) => {
+    if (startSrc === url) { setStartSrc(''); return }
+    if (endSrc === url) { setEndSrc(''); return }
+    if (!startSrc) setStartSrc(url)
+    else if (!endSrc) setEndSrc(url)
+    else { setEndSrc(url) }  // 둘 다 차 있으면 end 교체
   }
 
   const reset = () => {
-    setStatus('idle')
-    setRequestId('')
-    setElapsed(0)
-    setQueuePosition(null)
-    setVideoUrl('')
-    setError('')
+    setStatus('idle'); setRequestId(''); setElapsed(0)
+    setQueuePosition(null); setVideoUrl(''); setError('')
     if (tickerRef.current) { window.clearInterval(tickerRef.current); tickerRef.current = null }
     if (pollerRef.current) { window.clearInterval(pollerRef.current); pollerRef.current = null }
   }
-
   const startTicker = () => {
-    startedAtRef.current = Date.now()
-    setElapsed(0)
+    startedAtRef.current = Date.now(); setElapsed(0)
     tickerRef.current = window.setInterval(() => {
       setElapsed(Math.floor((Date.now() - startedAtRef.current) / 1000))
     }, 1000)
   }
-
   const stopTicker = () => {
     if (tickerRef.current) { window.clearInterval(tickerRef.current); tickerRef.current = null }
   }
 
+  const uploadLocalFile = async (file: File): Promise<string> => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const r = await authedFetch('/api/seedance/upload', { method: 'POST', body: fd })
+    if (!r.ok) throw new Error(`업로드 ${r.status}: ${(await r.text()).slice(0, 200)}`)
+    const data = await r.json()
+    return data.image_url
+  }
+  const importRemoteImage = async (url: string): Promise<string> => {
+    const r = await authedFetch('/api/seedance/import-image', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, referer: blogUrl || null }),
+    })
+    if (!r.ok) throw new Error(`이미지 import ${r.status}: ${(await r.text()).slice(0, 200)}`)
+    const data = await r.json()
+    return data.image_url
+  }
+
   const submit = async () => {
     reset()
-    if (!file && !imageUrl) { setError('이미지가 필요합니다'); return }
     if (!prompt.trim()) { setError('프롬프트를 입력하세요'); return }
 
+    let startInput = ''
+    let endInput = ''
+    if (mode === 'blog') {
+      if (!startSrc) { setError('시작 이미지를 선택하세요'); return }
+      startInput = startSrc
+      endInput = endSrc
+    } else {
+      if (!startFile) { setError('시작 이미지를 업로드하세요'); return }
+    }
+
     try {
-      let urlForFal = imageUrl
-      if (file && !imageUrl) {
-        setStatus('uploading')
-        startTicker()
-        const fd = new FormData()
-        fd.append('file', file)
-        const r = await authedFetch('/api/seedance/upload', { method: 'POST', body: fd })
-        if (!r.ok) throw new Error(`업로드 ${r.status}: ${(await r.text()).slice(0, 200)}`)
-        const data = await r.json()
-        urlForFal = data.image_url
-        setImageUrl(urlForFal)
+      startTicker()
+      setStatus(mode === 'blog' ? 'importing' : 'uploading')
+      const startUrl = mode === 'blog'
+        ? await importRemoteImage(startInput)
+        : await uploadLocalFile(startFile!)
+      let endUrl = ''
+      if (mode === 'blog' && endInput) {
+        endUrl = await importRemoteImage(endInput)
+      } else if (mode === 'upload' && endFile) {
+        endUrl = await uploadLocalFile(endFile)
       }
 
       setStatus('submitting')
+      const payload: any = {
+        prompt, image_url: startUrl, resolution, duration,
+        aspect_ratio: aspectRatio, generate_audio: generateAudio,
+      }
+      if (endUrl) payload.end_image_url = endUrl
+
       const sr = await authedFetch('/api/seedance/submit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt, image_url: urlForFal, resolution, duration, aspect_ratio: aspectRatio,
-          generate_audio: generateAudio,
-        }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       })
       if (!sr.ok) throw new Error(`제출 ${sr.status}: ${(await sr.text()).slice(0, 200)}`)
       const sub = await sr.json()
@@ -129,6 +202,7 @@ export default function Seedance() {
 
   const statusLabel: Record<Status, string> = {
     idle: '대기',
+    importing: '이미지 가져오는 중',
     uploading: '이미지 업로드 중',
     submitting: '제출 중',
     queued: queuePosition !== null ? `대기열 #${queuePosition}` : '대기열',
@@ -136,51 +210,116 @@ export default function Seedance() {
     completed: '완료',
     failed: '실패',
   }
-
-  const busy = status === 'uploading' || status === 'submitting' || status === 'queued' || status === 'in_progress'
+  const busy = ['importing', 'uploading', 'submitting', 'queued', 'in_progress'].includes(status)
 
   return (
-    <div style={{ maxWidth: 1100, margin: '0 auto', padding: 24 }}>
+    <div style={{ maxWidth: 1200, margin: '0 auto', padding: 24 }}>
       <div style={{ marginBottom: 18 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Seedance 2.0 — 이미지 → 영상</h1>
         <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 0' }}>
-          이미지 + 프롬프트로 4–15초 영상 생성. 720p 기준 약 3분 소요.
+          이미지 2장으로 시작→끝 전환 영상 생성. 720p 4초 ≈ 3분.
         </p>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
-        {/* 좌: 입력 */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: 18 }}>
         <div style={cardSt}>
-          <Label>이미지 (최대 30MB)</Label>
-          <div style={{ marginBottom: 12 }}>
-            {previewUrl ? (
-              <div style={{ position: 'relative' }}>
-                <img src={previewUrl} alt="preview"
-                  style={{ width: '100%', maxHeight: 320, objectFit: 'contain',
-                    background: 'var(--bg-base)', borderRadius: 6, border: '1px solid var(--border)' }} />
-                <button onClick={() => onPickFile(null)} disabled={busy}
-                  style={{ position: 'absolute', top: 6, right: 6, padding: '4px 10px',
-                    fontSize: 11, fontWeight: 600, border: 'none', borderRadius: 4,
-                    background: 'rgba(0,0,0,0.6)', color: '#fff', cursor: 'pointer' }}>
-                  교체
-                </button>
-              </div>
-            ) : (
-              <label htmlFor="seedance-file"
-                style={{ display: 'block', padding: 30, textAlign: 'center', cursor: 'pointer',
-                  border: '1.5px dashed var(--border)', borderRadius: 8,
-                  background: 'var(--bg-base)', color: 'var(--text-muted)', fontSize: 13 }}>
-                + 클릭해서 이미지 선택
-              </label>
-            )}
-            <input id="seedance-file" type="file" accept="image/*"
-              onChange={e => onPickFile(e.target.files?.[0] || null)} disabled={busy}
-              style={{ display: 'none' }} />
+          {/* 모드 선택 */}
+          <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+            {(['blog', 'upload'] as const).map(m => (
+              <button key={m} onClick={() => !busy && setMode(m)} disabled={busy}
+                style={{
+                  padding: '8px 14px', fontSize: 12, fontWeight: 700,
+                  border: '1px solid var(--border)', borderRadius: 6,
+                  background: mode === m ? 'var(--accent)' : 'transparent',
+                  color: mode === m ? '#fff' : 'var(--text-secondary)',
+                  cursor: busy ? 'wait' : 'pointer', opacity: busy ? 0.6 : 1,
+                }}>
+                {m === 'blog' ? '블로그에서 추출' : '직접 업로드'}
+              </button>
+            ))}
           </div>
 
-          <Label>프롬프트 (영문 권장 — 한글도 OK)</Label>
-          <textarea value={prompt} onChange={e => setPrompt(e.target.value)} disabled={busy}
-            rows={4} style={textareaSt} />
+          {mode === 'blog' ? (
+            <>
+              <Label>블로그 URL (네이버 블로그 권장)</Label>
+              <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+                <input type="url" value={blogUrl} onChange={e => setBlogUrl(e.target.value)}
+                  placeholder="https://blog.naver.com/.../223..." disabled={busy || blogExtracting}
+                  onKeyDown={e => { if (e.key === 'Enter') extractBlog() }}
+                  style={{ flex: 1, padding: '8px 10px', fontSize: 12,
+                    border: '1px solid var(--border)', borderRadius: 6,
+                    background: 'var(--bg-base)', color: 'var(--text-body)' }} />
+                <button onClick={extractBlog} disabled={busy || blogExtracting || !blogUrl}
+                  style={{ padding: '8px 14px', fontSize: 12, fontWeight: 700,
+                    background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 6,
+                    cursor: (busy || blogExtracting || !blogUrl) ? 'wait' : 'pointer',
+                    opacity: (busy || blogExtracting || !blogUrl) ? 0.6 : 1 }}>
+                  {blogExtracting ? '추출 중…' : '이미지 추출'}
+                </button>
+              </div>
+              {blogError && (
+                <div style={{ padding: 8, marginBottom: 10, fontSize: 12,
+                  background: 'rgba(239,68,68,0.08)', color: 'var(--error)',
+                  border: '1px solid var(--error)', borderRadius: 6 }}>{blogError}</div>
+              )}
+
+              {blogImages.length > 0 && (
+                <>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+                    <Label>이미지 클릭으로 선택 (1=시작 / 2=끝)</Label>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{blogImages.length}장 발견</span>
+                  </div>
+                  <div style={{
+                    display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))',
+                    gap: 6, maxHeight: 380, overflowY: 'auto', padding: 4,
+                    border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-base)',
+                  }}>
+                    {blogImages.map((img, i) => {
+                      const isStart = startSrc === img.url
+                      const isEnd = endSrc === img.url
+                      const sel = isStart || isEnd
+                      return (
+                        <div key={i} onClick={() => !busy && toggleBlogImage(img.url)}
+                          style={{
+                            position: 'relative', cursor: busy ? 'wait' : 'pointer',
+                            border: `2px solid ${isStart ? 'var(--success, #10b981)' : isEnd ? 'var(--accent)' : 'transparent'}`,
+                            borderRadius: 6, overflow: 'hidden', aspectRatio: '1', background: '#000',
+                          }}>
+                          <img src={img.url} alt={img.alt}
+                            referrerPolicy="no-referrer"
+                            style={{ width: '100%', height: '100%', objectFit: 'cover',
+                              opacity: sel ? 1 : 0.85 }} />
+                          {sel && (
+                            <span style={{
+                              position: 'absolute', top: 4, left: 4, padding: '2px 6px',
+                              fontSize: 10, fontWeight: 700, borderRadius: 3,
+                              background: isStart ? 'var(--success, #10b981)' : 'var(--accent)',
+                              color: '#fff',
+                            }}>{isStart ? '시작' : '끝'}</span>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <FileSlot label="시작 프레임" required preview={startPreview}
+                  onPick={(f) => onPickFile('start', f)} disabled={busy} />
+                <FileSlot label="끝 프레임 (선택)" preview={endPreview}
+                  onPick={(f) => onPickFile('end', f)} disabled={busy} />
+              </div>
+            </>
+          )}
+
+          <div style={{ marginTop: 14 }}>
+            <Label>프롬프트</Label>
+            <textarea value={prompt} onChange={e => setPrompt(e.target.value)} disabled={busy}
+              rows={3} style={textareaSt} />
+          </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 12 }}>
             <Select label="해상도" value={resolution} options={[...RESOLUTIONS]}
@@ -193,17 +332,17 @@ export default function Seedance() {
 
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, fontSize: 12, color: 'var(--text-secondary)' }}>
             <input type="checkbox" checked={generateAudio} onChange={e => setGenerateAudio(e.target.checked)} disabled={busy} />
-            오디오도 함께 생성 (체크 시 비용·시간 증가)
+            오디오도 함께 생성
           </label>
 
-          <button onClick={submit} disabled={busy || !file}
+          <button onClick={submit} disabled={busy}
             style={{
               marginTop: 16, width: '100%', padding: '10px 14px',
               fontSize: 14, fontWeight: 700,
               background: busy ? 'var(--bg-elevated)' : 'var(--accent)',
               color: busy ? 'var(--text-muted)' : '#fff',
               border: 'none', borderRadius: 6, cursor: busy ? 'wait' : 'pointer',
-              opacity: busy || !file ? 0.6 : 1,
+              opacity: busy ? 0.7 : 1,
             }}>
             {busy ? statusLabel[status] : '영상 생성'}
           </button>
@@ -263,7 +402,38 @@ export default function Seedance() {
           </div>
         </div>
       </div>
-      {BASE && <div style={{ display: 'none' }}>{BASE}</div>}
+    </div>
+  )
+}
+
+function FileSlot({ label, preview, onPick, required, disabled }: {
+  label: string; preview: string; onPick: (f: File | null) => void; required?: boolean; disabled?: boolean;
+}) {
+  const inputId = `seedance-${label.replace(/\s+/g, '-')}`
+  return (
+    <div>
+      <Label>{label}{required && <span style={{ color: 'var(--error)' }}> *</span>}</Label>
+      {preview ? (
+        <div style={{ position: 'relative' }}>
+          <img src={preview} alt={label}
+            style={{ width: '100%', maxHeight: 200, objectFit: 'cover',
+              borderRadius: 6, border: '1px solid var(--border)', background: '#000' }} />
+          <button onClick={() => onPick(null)} disabled={disabled}
+            style={{ position: 'absolute', top: 6, right: 6, padding: '3px 8px',
+              fontSize: 10, fontWeight: 600, border: 'none', borderRadius: 4,
+              background: 'rgba(0,0,0,0.6)', color: '#fff', cursor: 'pointer' }}>교체</button>
+        </div>
+      ) : (
+        <label htmlFor={inputId}
+          style={{ display: 'block', padding: 24, textAlign: 'center', cursor: 'pointer',
+            border: '1.5px dashed var(--border)', borderRadius: 6,
+            background: 'var(--bg-base)', color: 'var(--text-muted)', fontSize: 12 }}>
+          + 클릭
+        </label>
+      )}
+      <input id={inputId} type="file" accept="image/*"
+        onChange={e => onPick(e.target.files?.[0] || null)} disabled={disabled}
+        style={{ display: 'none' }} />
     </div>
   )
 }

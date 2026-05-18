@@ -5524,7 +5524,7 @@ def _classify_ref_sections(primary: dict) -> list[tuple[str, list[dict]]]:
     ]
 
 
-def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, chunk_usp_override: dict[str, list[int] | int] | None = None, chunk_meta_override: dict[str, dict] | None = None, skip_chunk_sections: list[str] | None = None, skip_sentence_starts: list[float] | None = None, hook_archetype_override: dict | None = None, session_id: str | None = None) -> dict:
+def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[dict], primary: dict, target_persona: dict | None, chunk_usp_override: dict[str, list[int] | int] | None = None, chunk_meta_override: dict[str, dict] | None = None, skip_chunk_sections: list[str] | None = None, skip_sentence_starts: list[float] | None = None, hook_archetype_override: dict | None = None, session_id: str | None = None, product_capability_out: str | None = None) -> dict:
     """v4 = B버전: Pre-Planner Flash + Section Planners parallel + Writers parallel.
 
     skip_chunk_sections: 이번 생성에서 제외할 chunk.section 목록 (사용자가 wizard에서 ✕ 삭제).
@@ -6371,7 +6371,8 @@ def generate(product_name: str, pain: str, desire: str, usps: list[dict], refere
                                 skip_chunk_sections=skip_chunk_sections,
                                 skip_sentence_starts=skip_sentence_starts,
                                 hook_archetype_override=hook_archetype_override,
-                                session_id=session_id)
+                                session_id=session_id,
+                                product_capability_out=product_capability_out)
 
     # 2차 다듬기 (선택)
     if refine:

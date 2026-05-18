@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
-import time, threading, logging, os, re
+import time, threading, logging, os, re, uuid
 import requests
 from datetime import datetime, timezone
 
@@ -1057,7 +1057,7 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
 
     # 2. product USPs 로드
     rows = _r.get(
-        f"{SUPA}/rest/v1/my_products?id=eq.{body.product_id}&select=id,name,usps,persona",
+        f"{SUPA}/rest/v1/my_products?id=eq.{body.product_id}&select=id,name,usps,persona,capability_out",
         headers=H, timeout=10,
     ).json()
     if not rows:
@@ -5794,6 +5794,169 @@ def seedance_status(request_id: str, request: Request):
         else:
             out["result_error"] = rr.text[:200]
     return out
+
+
+# ── Mockup generator (app screen → device frame composite) ──
+from services import mockup as mockup_svc  # noqa: E402
+
+_MOCKUP_BUCKET = "mockup-outputs"
+_MOCKUP_UPLOADS = Path(__file__).parent.parent / "data" / "mockup_uploads"
+
+
+def _mockup_upload_to_supabase(data: bytes, ext: str, *, user_id: str) -> str:
+    supabase.storage_create_bucket(_MOCKUP_BUCKET, public=True)
+    fid = uuid.uuid4().hex
+    path = f"{user_id}/{fid}.{ext}"
+    ct = "video/mp4" if ext == "mp4" else "image/png"
+    ok, err = supabase.storage_upload(_MOCKUP_BUCKET, path, data,
+                                       content_type=ct, upsert=True)
+    if not ok:
+        raise HTTPException(500, f"Storage 업로드 실패: {err}")
+    return supabase.storage_public_url(_MOCKUP_BUCKET, path)
+
+
+@app.get("/api/mockup/devices")
+def mockup_devices(request: Request):
+    auth_svc.require_user(request)
+    out = []
+    for did, spec in mockup_svc.DEVICES.items():
+        sx, sy, sw, sh = mockup_svc.device_aperture(did)
+        out.append({
+            "id": did, "name": spec["name"],
+            "body_w": spec["body_w"], "body_h": spec["body_h"],
+            "screen_x": sx, "screen_y": sy,
+            "screen_w": sw, "screen_h": sh,
+            "screen_radius": spec["screen_radius"],
+            "corner_radius": spec["corner_radius"],
+            "color": spec["color"],
+            "notch": spec.get("notch", False),
+        })
+    return {"devices": out}
+
+
+@app.get("/api/mockup/frame/{device_id}.png")
+def mockup_frame_png(device_id: str, request: Request):
+    auth_svc.require_user(request)
+    if device_id not in mockup_svc.DEVICES:
+        raise HTTPException(404, "unknown device")
+    png = mockup_svc.render_device_frame(device_id)
+    return Response(content=png, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.post("/api/mockup/upload")
+async def mockup_upload(request: Request):
+    """source 또는 bg 이미지/영상 업로드 → 서버 임시 파일. file_id 반환."""
+    me = auth_svc.require_user(request)
+    form = await request.form()
+    f = form.get("file")
+    if not f or not hasattr(f, "read"):
+        raise HTTPException(400, "file 필수 (multipart)")
+    name = getattr(f, "filename", "upload")
+    suffix = Path(name).suffix.lower() or ".bin"
+    if suffix not in (".mp4", ".mov", ".webm", ".png", ".jpg", ".jpeg"):
+        raise HTTPException(400, f"지원 안 함: {suffix}")
+    user_dir = _MOCKUP_UPLOADS / me["id"]
+    user_dir.mkdir(parents=True, exist_ok=True)
+    fid = uuid.uuid4().hex
+    out = user_dir / f"{fid}{suffix}"
+    data = await f.read()
+    out.write_bytes(data)
+    is_video = suffix in (".mp4", ".mov", ".webm")
+    return {
+        "file_id": fid,
+        "is_video": is_video,
+        "size_bytes": len(data),
+        "filename": name,
+    }
+
+
+class MockupGenerateReq(BaseModel):
+    mode: str  # 'url' | 'upload'
+    url: str | None = None
+    source_file_id: str | None = None
+    bg_file_id: str | None = None
+    device_id: str = "iphone-16-pro"
+    aspect: str = "9:16"
+    bg_color: str = "#1a1a2e"
+    device_scale: float = 0.85
+    viewport_w: int = 390
+    viewport_h: int = 844
+    duration_sec: float = 6.0
+
+
+def _resolve_upload(user_id: str, file_id: str | None) -> Path | None:
+    if not file_id:
+        return None
+    user_dir = _MOCKUP_UPLOADS / user_id
+    if not user_dir.is_dir():
+        return None
+    for p in user_dir.iterdir():
+        if p.stem == file_id:
+            return p
+    return None
+
+
+@app.post("/api/mockup/generate")
+def mockup_generate(body: MockupGenerateReq, request: Request):
+    me = auth_svc.require_user(request)
+    if body.mode not in ("url", "upload"):
+        raise HTTPException(400, "mode = 'url' | 'upload'")
+    if body.device_id not in mockup_svc.DEVICES:
+        raise HTTPException(400, f"unknown device: {body.device_id}")
+    if body.aspect not in mockup_svc.ASPECTS:
+        raise HTTPException(400, f"unknown aspect: {body.aspect}")
+
+    source_path: Path | None = None
+    is_video = True
+    if body.mode == "url":
+        if not (body.url or "").startswith(("http://", "https://")):
+            raise HTTPException(400, "url 필수")
+    else:
+        source_path = _resolve_upload(me["id"], body.source_file_id)
+        if not source_path:
+            raise HTTPException(400, "source_file_id 유효하지 않음")
+        is_video = source_path.suffix.lower() in (".mp4", ".mov", ".webm")
+
+    bg_path = _resolve_upload(me["id"], body.bg_file_id) if body.bg_file_id else None
+
+    req = mockup_svc.GenerateRequest(
+        mode=body.mode,
+        url=body.url,
+        source_path=source_path,
+        source_is_video=is_video,
+        device_id=body.device_id,
+        aspect=body.aspect,
+        bg_color=body.bg_color,
+        bg_image_path=bg_path,
+        device_scale=body.device_scale,
+        viewport_w=body.viewport_w,
+        viewport_h=body.viewport_h,
+        duration_sec=body.duration_sec,
+    )
+    job = mockup_svc.submit_job(
+        req, user_id=me["id"],
+        upload_to_supabase=_mockup_upload_to_supabase,
+    )
+    return {"job_id": job.id, "status": job.status}
+
+
+@app.get("/api/mockup/status")
+def mockup_status(job_id: str, request: Request):
+    auth_svc.require_user(request)
+    job = mockup_svc.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "progress": job.progress,
+        "output_url": job.output_url,
+        "output_kind": job.output_kind,
+        "error": job.error,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+    }
 
 
 # ── Serve built frontend (must be last: catches all non-API routes) ──

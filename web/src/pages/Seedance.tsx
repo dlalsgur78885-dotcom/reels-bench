@@ -41,7 +41,14 @@ export default function Seedance() {
   const [elapsed, setElapsed] = useState(0)
   const [queuePosition, setQueuePosition] = useState<number | null>(null)
   const [videoUrl, setVideoUrl] = useState('')
+  const [seed, setSeed] = useState<number | null>(null)
   const [error, setError] = useState('')
+  // 저장 상태
+  const [saving, setSaving] = useState(false)
+  const [savedId, setSavedId] = useState<string | null>(null)
+  const [saveName, setSaveName] = useState('')
+  // 마지막 생성 메타 (저장 시 같이 보냄)
+  const lastMetaRef = useRef<{ startUrl: string; endUrl: string }>({ startUrl: '', endUrl: '' })
 
   const tickerRef = useRef<number | null>(null)
   const pollerRef = useRef<number | null>(null)
@@ -96,6 +103,7 @@ export default function Seedance() {
   const reset = () => {
     setStatus('idle'); setRequestId(''); setElapsed(0)
     setQueuePosition(null); setVideoUrl(''); setError('')
+    setSeed(null); setSavedId(null); setSaveName('')
     if (tickerRef.current) { window.clearInterval(tickerRef.current); tickerRef.current = null }
     if (pollerRef.current) { window.clearInterval(pollerRef.current); pollerRef.current = null }
   }
@@ -153,6 +161,7 @@ export default function Seedance() {
       } else if (mode === 'upload' && endFile) {
         endUrl = await uploadLocalFile(endFile)
       }
+      lastMetaRef.current = { startUrl, endUrl }
 
       setStatus('submitting')
       const payload: any = {
@@ -183,6 +192,7 @@ export default function Seedance() {
           else if (s === 'COMPLETED') {
             setStatus('completed')
             setVideoUrl(ps.video_url || '')
+            setSeed(typeof ps.seed === 'number' ? ps.seed : null)
             stopTicker()
             if (pollerRef.current) { window.clearInterval(pollerRef.current); pollerRef.current = null }
           } else if (s === 'FAILED') {
@@ -197,6 +207,33 @@ export default function Seedance() {
       stopTicker()
       setStatus('failed')
       setError(e?.message || String(e))
+    }
+  }
+
+  const saveVideo = async () => {
+    if (!videoUrl || saving || savedId) return
+    setSaving(true)
+    try {
+      const r = await authedFetch('/api/seedance/save', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          video_url: videoUrl,
+          name: saveName.trim() || null,
+          prompt,
+          source_blog_url: mode === 'blog' ? blogUrl : null,
+          start_image_url: lastMetaRef.current.startUrl,
+          end_image_url: lastMetaRef.current.endUrl || null,
+          resolution, duration, aspect_ratio: aspectRatio,
+          generate_audio: generateAudio, seed, request_id: requestId,
+        }),
+      })
+      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`)
+      const row = await r.json()
+      setSavedId(row.id || 'ok')
+    } catch (e: any) {
+      alert('저장 실패: ' + (e?.message || e))
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -386,12 +423,43 @@ export default function Seedance() {
               <>
                 <video src={videoUrl} controls autoPlay loop
                   style={{ width: '100%', borderRadius: 8, background: '#000' }} />
-                <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+                <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <a href={videoUrl} download target="_blank" rel="noopener noreferrer"
                     style={linkBtnSt}>↓ 다운로드</a>
                   <button onClick={() => navigator.clipboard.writeText(videoUrl)}
                     style={linkBtnSt}>URL 복사</button>
                 </div>
+                {!savedId ? (
+                  <div style={{ marginTop: 12, padding: 10, borderRadius: 6,
+                    background: 'var(--bg-base)', border: '1px solid var(--border)' }}>
+                    <Label>이름 (선택)</Label>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <input type="text" value={saveName} onChange={e => setSaveName(e.target.value)}
+                        placeholder="예: 카페 입구 클로즈업"
+                        disabled={saving}
+                        onKeyDown={e => { if (e.key === 'Enter') saveVideo() }}
+                        style={{ flex: 1, padding: '6px 10px', fontSize: 12,
+                          border: '1px solid var(--border)', borderRadius: 4,
+                          background: 'var(--bg-surface)', color: 'var(--text-body)' }} />
+                      <button onClick={saveVideo} disabled={saving}
+                        style={{ padding: '6px 14px', fontSize: 12, fontWeight: 700,
+                          background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 4,
+                          cursor: saving ? 'wait' : 'pointer', opacity: saving ? 0.6 : 1 }}>
+                        {saving ? '저장 중…' : '💾 영상 라이브러리에 저장'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 12, padding: 10, borderRadius: 6,
+                    background: 'rgba(34,197,94,0.08)', border: '1px solid var(--success, #10b981)',
+                    fontSize: 12, color: 'var(--success, #10b981)', display: 'flex',
+                    justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>✓ 라이브러리에 저장됨</span>
+                    <a href="/seedance/library" style={{ color: 'var(--accent)', fontSize: 11, fontWeight: 600 }}>
+                      라이브러리 열기 →
+                    </a>
+                  </div>
+                )}
               </>
             ) : (
               <div style={{ padding: 50, textAlign: 'center', fontSize: 13, color: 'var(--text-muted)',

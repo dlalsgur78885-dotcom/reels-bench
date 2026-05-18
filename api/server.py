@@ -5629,6 +5629,137 @@ def seedance_submit(body: SeedanceSubmitReq, request: Request):
     }
 
 
+_SEEDANCE_BUCKET = "seedance-videos"
+
+
+class SeedanceSaveReq(BaseModel):
+    video_url: str            # fal CDN URL (생성 직후 받은)
+    name: str | None = None
+    prompt: str | None = None
+    source_blog_url: str | None = None
+    start_image_url: str | None = None
+    end_image_url: str | None = None
+    resolution: str | None = None
+    duration: str | None = None
+    aspect_ratio: str | None = None
+    generate_audio: bool | None = None
+    seed: int | None = None
+    request_id: str | None = None
+
+
+@app.post("/api/seedance/save")
+def seedance_save(body: SeedanceSaveReq, request: Request):
+    """fal CDN의 영상을 우리 Supabase Storage 로 옮긴 뒤 DB에 기록."""
+    me = auth_svc.require_user(request)
+    if not body.video_url.startswith(("http://", "https://")):
+        raise HTTPException(400, "video_url 필수")
+    try:
+        rr = requests.get(body.video_url, timeout=120)
+        rr.raise_for_status()
+    except Exception as e:
+        raise HTTPException(502, f"영상 다운로드 실패: {e}")
+    video_bytes = rr.content
+    if len(video_bytes) < 1024:
+        raise HTTPException(400, f"영상 너무 작음 ({len(video_bytes)} bytes)")
+
+    supabase.storage_create_bucket(_SEEDANCE_BUCKET, public=True)
+    import uuid as _uuid
+    vid = str(_uuid.uuid4())
+    path = f"{me['id']}/{vid}.mp4"
+    ok, err = supabase.storage_upload(_SEEDANCE_BUCKET, path, video_bytes,
+                                       content_type="video/mp4", upsert=True)
+    if not ok:
+        raise HTTPException(500, f"Storage 업로드 실패: {err}")
+    public_url = supabase.storage_public_url(_SEEDANCE_BUCKET, path)
+
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    row = {
+        "id": vid,
+        "created_by": me["id"],
+        "name": (body.name or "").strip() or None,
+        "prompt": body.prompt,
+        "video_url": public_url,
+        "source_blog_url": body.source_blog_url,
+        "start_image_url": body.start_image_url,
+        "end_image_url": body.end_image_url,
+        "resolution": body.resolution,
+        "duration": body.duration,
+        "aspect_ratio": body.aspect_ratio,
+        "generate_audio": body.generate_audio,
+        "seed": body.seed,
+        "meta": {"request_id": body.request_id, "file_size": len(video_bytes)},
+    }
+    ins = _r.post(
+        f"{SUPA}/rest/v1/seedance_videos",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json=row, timeout=15,
+    )
+    if ins.status_code not in (200, 201):
+        raise HTTPException(ins.status_code, ins.text[:300])
+    return ins.json()[0] if ins.json() else row
+
+
+@app.get("/api/seedance/videos")
+def seedance_list_videos(request: Request):
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.get(
+        f"{SUPA}/rest/v1/seedance_videos?created_by=eq.{me['id']}&archived_at=is.null"
+        f"&select=*&order=created_at.desc",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+    )
+    return r.json() if r.status_code == 200 else []
+
+
+class SeedanceVideoPatch(BaseModel):
+    name: str | None = None
+
+
+@app.patch("/api/seedance/videos/{vid}")
+def seedance_update_video(vid: str, body: SeedanceVideoPatch, request: Request):
+    me = auth_svc.require_user(request)
+    payload = {}
+    if body.name is not None:
+        payload["name"] = body.name.strip() or None
+    if not payload:
+        return {"updated": False}
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.patch(
+        f"{SUPA}/rest/v1/seedance_videos?id=eq.{vid}&created_by=eq.{me['id']}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json=payload, timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:300])
+    rows = r.json() if r.status_code == 200 else []
+    return {"updated": True, "row": rows[0] if rows else None}
+
+
+@app.delete("/api/seedance/videos/{vid}")
+def seedance_delete_video(vid: str, request: Request):
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.patch(
+        f"{SUPA}/rest/v1/seedance_videos?id=eq.{vid}&created_by=eq.{me['id']}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=minimal"},
+        json={"archived_at": "now()"}, timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:300])
+    return {"deleted": True}
+
+
 @app.get("/api/seedance/status")
 def seedance_status(request_id: str, request: Request):
     """fal 상태 조회. COMPLETED 면 result 도 같이 fetch 해서 video_url 반환."""

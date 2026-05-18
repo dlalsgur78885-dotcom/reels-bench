@@ -786,8 +786,51 @@ def _approx_segment_timings(sentences, total_duration):
     return timings
 
 
+def _compact_segments(audio_path, alignment_timings, out_path, min_keep_gap=0.05):
+    """segment 사이 silence 제거 — Whisper로 잡은 [start, end] 구간만 잘라 concat.
+    min_keep_gap: 최소 보존 gap (초). 너무 0으로 붙이면 alignment 오차로 단어 잘림 위험.
+    Returns True 성공, False 실패."""
+    import tempfile
+    if len(alignment_timings) < 2:
+        return False
+    # gap이 있는지 빠른 체크 (모두 0에 가까우면 skip)
+    has_gap = False
+    for i in range(len(alignment_timings) - 1):
+        gap = alignment_timings[i+1][0] - alignment_timings[i][1]
+        if gap > min_keep_gap:
+            has_gap = True
+            break
+    if not has_gap:
+        return False
+    segs_dir = tempfile.mkdtemp(prefix="ttscompact_")
+    seg_files = []
+    for i, (st, en) in enumerate(alignment_timings):
+        # 마지막은 audio 끝까지 보존
+        out_seg = f"{segs_dir}/seg_{i:03d}.mp3"
+        cmd = [FFMPEG, "-y", "-ss", f"{max(0, st):.3f}", "-to", f"{en:.3f}",
+               "-i", str(audio_path),
+               "-c:a", "libmp3lame", "-b:a", "128k", out_seg]
+        proc = subprocess.run(cmd, capture_output=True)
+        if proc.returncode != 0:
+            return False
+        seg_files.append(out_seg)
+    list_file = f"{segs_dir}/list.txt"
+    with open(list_file, "w", encoding="utf-8") as f:
+        for sf in seg_files:
+            f.write(f"file '{sf}'\n")
+    cmd = [FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", list_file,
+           "-c:a", "libmp3lame", "-b:a", "128k", str(out_path)]
+    proc = subprocess.run(cmd, capture_output=True)
+    try:
+        shutil.rmtree(segs_dir)
+    except OSError:
+        pass
+    return proc.returncode == 0
+
+
 def _apply_per_sentence_speed(audio_path, alignment_timings, sentences, out_path):
     """sentence별 speed_factor가 1.0이 아니면 그 구간만 atempo 적용 후 concat.
+    각 slice에 silenceremove 적용 (trailing silence 제거 → concat 후 gap 0).
     alignment_timings: [(actual_start, actual_end), ...] Whisper 위치
     sentences: [{speed_factor?: float, ...}]
     speed_factor: 0.5 ~ 2.0 (ffmpeg atempo 1단 한계)
@@ -796,25 +839,31 @@ def _apply_per_sentence_speed(audio_path, alignment_timings, sentences, out_path
     segs_dir = tempfile.mkdtemp(prefix="ttsspeed_")
     seg_files = []
     any_change = False
+    # silenceremove 필터 — start와 end 양쪽 silence 제거 (-40dB, ≥50ms)
+    # areverse 트릭으로 end silence 제거
+    silence_filter = (
+        "silenceremove=start_periods=1:start_duration=0:start_threshold=-40dB,"
+        "areverse,"
+        "silenceremove=start_periods=1:start_duration=0:start_threshold=-40dB,"
+        "areverse"
+    )
     for i, ((a_st, a_en), s) in enumerate(zip(alignment_timings, sentences)):
         sf = float(s.get("speed_factor") or 1.0)
         sf = max(0.5, min(2.0, sf))
         out_seg = f"{segs_dir}/seg_{i:03d}.mp3"
         if abs(sf - 1.0) < 0.01:
-            # 그대로 잘라내기 (atempo 안 적용)
-            cmd = [FFMPEG, "-y", "-ss", f"{a_st:.3f}", "-to", f"{a_en:.3f}", "-i", str(audio_path),
-                   "-c:a", "libmp3lame", "-b:a", "128k", out_seg]
+            af = silence_filter
         else:
-            cmd = [FFMPEG, "-y", "-ss", f"{a_st:.3f}", "-to", f"{a_en:.3f}", "-i", str(audio_path),
-                   "-filter:a", f"atempo={sf:.3f}",
-                   "-c:a", "libmp3lame", "-b:a", "128k", out_seg]
+            af = f"{silence_filter},atempo={sf:.3f}"
             any_change = True
+        cmd = [FFMPEG, "-y", "-ss", f"{a_st:.3f}", "-to", f"{a_en:.3f}", "-i", str(audio_path),
+               "-filter:a", af,
+               "-c:a", "libmp3lame", "-b:a", "128k", out_seg]
         proc = subprocess.run(cmd, capture_output=True)
         if proc.returncode != 0:
             return False
         seg_files.append(out_seg)
     if not any_change or not seg_files:
-        # 모든 sentence가 1.0이면 처리 안 함 (원본 그대로 사용)
         return False
     # concat
     list_file = f"{segs_dir}/list.txt"
@@ -1206,6 +1255,26 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
                 # 재정렬은 됐지만 align 실패 → 새 timing은 REF 그대로 사용
                 timings = [(float(s.get("start", 0)), float(s.get("end", 0))) for s in sentences]
                 alignment_method = "match_approx"
+
+    # segment 사이 silence 제거 (v3 자연 호흡 + ',' separator로 생긴 inter-sentence gap)
+    if alignment_method == "whisper" and len(timings) >= 2:
+        tmp_compact = job_dir / "compact.mp3"
+        if _compact_segments(final_path, timings, tmp_compact):
+            final_path.write_bytes(tmp_compact.read_bytes())
+            try:
+                tmp_compact.unlink()
+            except OSError:
+                pass
+            total_duration = probe_duration(final_path)
+            # gap 제거 후 timings 재계산 — 누적식 (각 segment 길이 합산)
+            new_timings = []
+            cum = 0.0
+            for st, en in timings:
+                dur = max(0.0, en - st)
+                new_timings.append((round(cum, 3), round(cum + dur, 3)))
+                cum += dur
+            timings = new_timings
+            alignment_method = "whisper+compact"
 
     # 원본 final.mp3 백업 (post-synth per-sentence speed 조절 시 source)
     final_orig_path = job_dir / "final_orig.mp3"

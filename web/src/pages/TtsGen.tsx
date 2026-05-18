@@ -746,6 +746,48 @@ ${JSON.stringify({
                 <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
                   강도 단계 변경 → "재생성"으로 그 문장만 새 단어로 재합성 · 속도 변경 → 아래 "속도 적용" 버튼 (재합성 없이 ffmpeg만)
                 </div>
+                {/* 🌐 전체 속도 — 모든 sentence speedDraft에 일괄 반영 */}
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
+                  padding: '8px 12px', borderRadius: 6, background: 'var(--bg-elevated)',
+                }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)' }}>🌐 전체 속도:</span>
+                  <select
+                    value="placeholder"
+                    onChange={e => {
+                      const v = parseFloat(e.target.value)
+                      if (!isFinite(v)) return
+                      const all: Record<number, number> = {}
+                      job.sentences.forEach((_s, i) => { all[i] = v })
+                      setSpeedDrafts(all)
+                      // select 값을 즉시 reset (다음 선택도 onChange 발화되도록)
+                      e.target.value = 'placeholder'
+                    }}
+                    disabled={applyingSpeeds}
+                    style={{
+                      fontSize: 12, padding: '4px 10px',
+                      background: 'var(--bg-base)', color: 'var(--text-body)',
+                      border: '1px solid var(--border)', borderRadius: 4, fontWeight: 600,
+                      cursor: applyingSpeeds ? 'wait' : 'pointer',
+                    }}>
+                    <option value="placeholder" disabled>(선택)</option>
+                    <option value="0.5">0.5× 매우 느림</option>
+                    <option value="0.65">0.65×</option>
+                    <option value="0.75">0.75×</option>
+                    <option value="0.85">0.85×</option>
+                    <option value="0.9">0.9×</option>
+                    <option value="1">1.0× 원본</option>
+                    <option value="1.1">1.1×</option>
+                    <option value="1.2">1.2×</option>
+                    <option value="1.3">1.3×</option>
+                    <option value="1.5">1.5×</option>
+                    <option value="1.75">1.75×</option>
+                    <option value="2">2.0× 매우 빠름</option>
+                  </select>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    → 모든 문장에 적용 (개별 조정도 가능) → 아래 "속도 적용" 클릭
+                  </span>
+                </div>
                 {/* 속도 draft가 있으면 일괄 적용 버튼 */}
                 {(() => {
                   const changedCount = job.sentences.reduce((acc, s, i) => {

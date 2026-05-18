@@ -44,7 +44,7 @@ services:
     runtime: python
     region: oregon
     plan: starter           # free 플랜은 512MB — Playwright Chromium은 빠듯함
-    buildCommand: pip install -r requirements-mockup.txt && playwright install --with-deps chromium
+    buildCommand: pip install -r requirements-mockup.txt && playwright install chromium
     startCommand: uvicorn mockup_web:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     envVars:

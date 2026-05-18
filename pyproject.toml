@@ -1,5 +1,5 @@
 [project]
 name = "app"
 version = "0.1.0"
-dependencies = [ "fastapi", "requests", "python-dotenv", "pydantic", "numpy", "fal-client", "python-multipart", "beautifulsoup4" ]
+dependencies = [ "fastapi", "requests", "python-dotenv", "pydantic", "numpy", "fal-client", "python-multipart", "beautifulsoup4", "imageio-ffmpeg", "imageio" ]
 requires-python = ">=3.11"

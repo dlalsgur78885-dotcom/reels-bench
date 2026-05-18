@@ -38,7 +38,9 @@ logger = logging.getLogger(__name__)
 AUTHORIZE_URL = "https://www.figma.com/oauth"
 TOKEN_URL     = "https://api.figma.com/v1/oauth/token"
 REFRESH_URL   = "https://api.figma.com/v1/oauth/refresh"
-SCOPES        = "files:read"
+# 2024-2025 신 scope 체계 — 옛 'files:read' 통합 scope는 새 앱에서 거부됨
+# files API + 인증 사용자 정보만 필요
+SCOPES        = "file_content:read current_user:read"
 
 
 def _client_id() -> str:

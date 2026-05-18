@@ -2561,6 +2561,12 @@ function StepDone({
                       if (pick) {
                         const merged: GeneratedScript = { ...cur, sentences: pick.sentences }
                         onRefined(active, merged)
+                        // editedResult가 남아있으면 display()가 이전 편집본을 우선 표시 → 단계 전환이 화면에 안 보임.
+                        setEditedResult(prev => {
+                          if (!(active in prev)) return prev
+                          const { [active]: _drop, ...rest } = prev
+                          return rest
+                        })
                       }
                     }}
                     style={{ padding: '4px 8px', fontSize: 11, borderRadius: 4,
@@ -2623,6 +2629,12 @@ function StepDone({
                             setStageViewByTab(prev => ({ ...prev, [active]: targetKey }))
                             const merged: GeneratedScript = { ...cur, sentences: refined.sentences, tts_script: refined.tts_script || cur.tts_script }
                             onRefined(active, merged)
+                            // editedResult가 남아있으면 display()가 이전 편집본을 우선 표시 → 다듬기 결과가 화면에 안 보임.
+                            setEditedResult(prev => {
+                              if (!(active in prev)) return prev
+                              const { [active]: _drop, ...rest } = prev
+                              return rest
+                            })
                           }
                         } catch (e: any) {
                           alert('다듬기 실패: ' + (e?.message || e))

@@ -221,8 +221,11 @@ EMOTION_PRESETS_FOR_LLM = [
 INTENSITY_GUIDES = {
     "low":    "문장당 강조 어절 0~1개 (꼭 필요한 곳만 — 끊김 최소)",
     "medium": "문장당 강조 어절 1~2개 (적당한 변화)",
-    "high":   "문장당 강조 어절 2~3개 (감정 풍부, 끊김 늘어남)",
+    "high":   "문장당 강조 어절 정확히 2개 (최대 — v3 끊김 한계)",
 }
+
+# 문장당 최대 directive 수 — v3 끊김 한계 (intensity 무관 hard cap)
+MAX_DIRECTIVES_PER_SENTENCE = 2
 
 
 def analyze_phrase_emotion(sentences, intensity="low"):
@@ -251,8 +254,8 @@ def analyze_phrase_emotion(sentences, intensity="low"):
         '- 조사·연결어미는 앞 단어와 묶음 ("저는 / 이거 정말 / 좋아해요")\n\n'
         "## 강조 규칙 (중요)\n"
         f"- 강도={intensity}: {INTENSITY_GUIDES[intensity]}\n"
+        "- ⚠️ **한 문장당 directive 최대 2개 (절대 한계)** — v3는 directive마다 미세 pause 발생\n"
         "- 강조는 의미 핵심 (감탄사, 숫자, 핵심 형용사·동사, 결정적 단어)\n"
-        "- ⚠️ ElevenLabs v3는 directive마다 미세 pause 발생 — 한 문장에 directive 많이 박으면 끊겨 들림\n"
         "- 같은 문장 내 동일 directive 연속 X (단조로움 방지)\n"
         "- 후킹/결론 문장은 강조 비중↑, 설명 문장은 ↓\n"
         "- 평범한 phrase 대다수, 강조는 포인트만 (전체 phrase의 20~30%만 directive)\n\n"
@@ -323,6 +326,14 @@ def analyze_phrase_emotion(sentences, intensity="low"):
                 joined = "".join(p["text"] for p in phrases_clean).replace(" ", "")
                 orig = (s.get("text") or "").replace(" ", "")
                 if joined == orig or abs(len(joined) - len(orig)) <= 2:
+                    # 문장당 directive 최대 N개 강제 — LLM이 더 박았으면 위치 순 N개만 유지
+                    tagged_count = 0
+                    for p in phrases_clean:
+                        if p.get("tag"):
+                            if tagged_count < MAX_DIRECTIVES_PER_SENTENCE:
+                                tagged_count += 1
+                            else:
+                                p.pop("tag", None)  # 한도 초과 → tag 제거
                     new_s["phrases"] = phrases_clean
                 # 글자 차이 크면 자동 split 폴백 (공백 분리)
                 else:

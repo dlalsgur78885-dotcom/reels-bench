@@ -241,32 +241,36 @@ def analyze_phrase_emotion(sentences, intensity="low"):
 
     prompt = (
         "당신은 한국어 숏폼 영상의 음성 합성 감정 디렉터입니다.\n"
-        "입력 문장들을 자연스러운 발화 단위(어절)로 나누고, 강조·감정이 필요한 부분에 한국어 directive를 할당하세요.\n"
-        "directive는 ElevenLabs v3가 텍스트 앞에 prepend해 톤만 조정 (발화 안 함). 괄호 형태라 pause 없음.\n\n"
+        "각 문장에 대해:\n"
+        "1. **sentence_emotion** (전체감정) — 그 문장 전체의 dominant 톤 1개 (hook은 비밀/유머/단호, body는 진지/차분, CTA는 격앙/밝게 등)\n"
+        "2. **phrases** — 어절 분리. 일부 phrase에 **mid-sentence accent tag** 0~1개 (sentence_emotion과 다른 톤이 필요한 곳만)\n"
+        "directive는 ElevenLabs v3가 텍스트 앞에 prepend해 톤만 조정. 괄호 형태라 pause 없음.\n\n"
         f"## 입력 문장 ({len(texts)}개)\n"
         f"{json.dumps(texts, ensure_ascii=False, indent=2)}\n\n"
-        "## 사용 가능 directive (이 외엔 금지)\n"
-        '- "" (directive 없음 — 평범한 발화)\n'
+        "## 사용 가능 directive (sentence_emotion + phrase tag 둘 다, 이 외엔 금지)\n"
         f"{tag_list}\n\n"
         "## 어절 분리 규칙\n"
         '- 공백 1:1 분리 ❌ — 의미 묶음으로 (예: "신기한 거" 한 덩어리)\n'
         "- 한 phrase는 보통 1~3 어절, 5어절 넘지 말 것\n"
         '- 조사·연결어미는 앞 단어와 묶음 ("저는 / 이거 정말 / 좋아해요")\n\n'
-        "## 강조 규칙 (중요)\n"
+        "## sentence_emotion (전체감정) 규칙\n"
+        "- 각 문장 반드시 1개 (필수)\n"
+        "- 문장의 narrative role 기반 (hook/body/cta), 톤이 자연스러우면 인접 문장끼리 같은 값 OK\n\n"
+        "## phrase tag (accent) 규칙\n"
         f"- 강도={intensity}: {INTENSITY_GUIDES[intensity]}\n"
-        "- ⚠️ **한 문장당 directive 최대 2개 (절대 한계)** — v3는 directive마다 미세 pause 발생\n"
-        "- 강조는 의미 핵심 (감탄사, 숫자, 핵심 형용사·동사, 결정적 단어)\n"
-        "- 같은 문장 내 동일 directive 연속 X (단조로움 방지)\n"
-        "- 후킹/결론 문장은 강조 비중↑, 설명 문장은 ↓\n"
-        "- 평범한 phrase 대다수, 강조는 포인트만 (전체 phrase의 20~30%만 directive)\n\n"
+        "- ⚠️ **한 문장당 phrase tag 최대 1개** — sentence_emotion과 다른 강한 accent 필요한 곳만\n"
+        "- sentence_emotion과 같은 tag는 phrase에 박지 말 것 (중복 X)\n"
+        "- 대다수 phrase는 tag 없음 (sentence_emotion이 전체 톤 깔아줌)\n\n"
         "## 출력 JSON (sentences 배열 길이 입력과 동일)\n"
         "{\n"
         '  "sentences": [\n'
         "    {\n"
+        '      "sentence_emotion": "(비밀스럽게)",\n'
         '      "phrases": [\n'
-        '        {"text": "저는", "tag": ""},\n'
-        '        {"text": "이거 정말", "tag": "(당당하게)"},\n'
-        '        {"text": "좋아해요", "tag": "(밝게)"}\n'
+        '        {"text": "여행 고수들이"},\n'
+        '        {"text": "제발 여긴"},\n'
+        '        {"text": "소문내지", "tag": "(당당하게)"},\n'
+        '        {"text": "말래요"}\n'
         "      ]\n"
         "    }\n"
         "  ]\n"
@@ -300,42 +304,51 @@ def analyze_phrase_emotion(sentences, intensity="low"):
             raise
     raw_sents = data.get("sentences") or []
 
+    allowed_presets = {t for t, _ in EMOTION_PRESETS_FOR_LLM}
+    def _validate_directive(tag: str) -> str:
+        """preset 또는 한국어 (괄호) directive면 통과, 그 외 빈 문자열."""
+        tag = (tag or "").strip()
+        if not tag:
+            return ""
+        if tag in allowed_presets:
+            return tag
+        if tag.startswith("(") and tag.endswith(")") and len(tag) <= 30:
+            return tag
+        return ""
+
     out = []
     for i, s in enumerate(sentences):
         new_s = dict(s)
         if i < len(raw_sents):
+            # sentence_emotion (전체감정) 추출 — 검증 후 sentence dict에 저장
+            sent_emo = _validate_directive(raw_sents[i].get("sentence_emotion") or "")
+            if sent_emo:
+                new_s["sentence_emotion"] = sent_emo
+            # phrases 처리
             phrases_raw = raw_sents[i].get("phrases") or []
             phrases_clean = []
             for p in phrases_raw:
                 pt = (p.get("text") or "").strip()
                 if not pt:
                     continue
-                tag = (p.get("tag") or "").strip()
-                # preset 또는 (한국어) 괄호 형식이면 통과. [bracket] tag은 거름 (v3 pause 회피).
-                allowed_presets = {t for t, _ in EMOTION_PRESETS_FOR_LLM}
-                if tag:
-                    if tag in allowed_presets:
-                        pass  # preset OK
-                    elif tag.startswith("(") and tag.endswith(")") and len(tag) <= 30:
-                        pass  # 자유 한국어 directive OK (괄호 형태 + 길이 제한)
-                    else:
-                        tag = ""
+                tag = _validate_directive(p.get("tag") or "")
+                # sentence_emotion과 동일 tag면 중복 — 제거
+                if tag and sent_emo and tag == sent_emo:
+                    tag = ""
                 phrases_clean.append({"text": pt, "tag": tag} if tag else {"text": pt})
             if phrases_clean:
-                # 입력 텍스트와 phrases 합본 비교 — 글자 손실 체크 (의미 안 맞으면 폴백)
                 joined = "".join(p["text"] for p in phrases_clean).replace(" ", "")
                 orig = (s.get("text") or "").replace(" ", "")
                 if joined == orig or abs(len(joined) - len(orig)) <= 2:
-                    # 문장당 directive 최대 N개 강제 — LLM이 더 박았으면 위치 순 N개만 유지
+                    # phrase tag 최대 1개 (sentence_emotion이 전체 톤이라 accent는 1개만)
                     tagged_count = 0
                     for p in phrases_clean:
                         if p.get("tag"):
-                            if tagged_count < MAX_DIRECTIVES_PER_SENTENCE:
+                            if tagged_count < 1:
                                 tagged_count += 1
                             else:
-                                p.pop("tag", None)  # 한도 초과 → tag 제거
+                                p.pop("tag", None)
                     new_s["phrases"] = phrases_clean
-                # 글자 차이 크면 자동 split 폴백 (공백 분리)
                 else:
                     tokens = (s.get("text") or "").split()
                     if tokens:
@@ -499,30 +512,32 @@ def _resolve_tag(item, sent_idx, phrase_idx, tag_map):
 
 def _build_synth_input(s, sent_idx, tag_map):
     """phrases가 있으면 inline-tagged text 조립 (한국어 괄호 directive 사용).
-    v3는 directive 마커마다 미세 pause 삽입 → 가능한 한 directive 적게 박음:
-    - **문장 내 첫 directive를 sentence 맨 앞으로 promote** — 그 이전 phrase들도 같은 톤
-      (예: '여행 고수들이 (비밀스럽게) 제발 여긴' → '(비밀스럽게) 여행 고수들이 제발 여긴')
-    - 연속 동일 tag는 두 번째부터 제거 (modal이라 이미 적용 중)
-    - 빈 tag(평범)는 directive 안 박음
-    phrase 사이는 공백만.
+
+    구조: (sentence_emotion) phrase1 phrase2 (accent_tag) phrase3 ...
+    - sentence_emotion (s['sentence_emotion']): 문장 전체 톤 — 맨 앞에 prepend
+    - 없으면 fallback: 문장 내 첫 phrase tag를 promote (기존 동작)
+    - 인라인 phrase tag: sentence_emotion과 다를 때만 emit (mid-sentence accent)
+    - 연속 동일 dedup
+
+    v3는 directive마다 미세 pause → 가능한 적게 박는 게 핵심.
     Returns (text, outer_tag)."""
     phrases = s.get("phrases") or []
     if phrases:
-        # 1) 문장 내 첫 non-empty directive 찾기 → sentence opener
-        first_directive = ""
-        for j, p in enumerate(phrases):
-            t = _resolve_tag(p, sent_idx, j, tag_map)
-            if t:
-                first_directive = t
-                break
+        # 1) sentence_emotion 우선, 없으면 첫 phrase tag fallback
+        sent_emo = (s.get("sentence_emotion") or "").strip()
+        if not sent_emo:
+            for j, p in enumerate(phrases):
+                t = _resolve_tag(p, sent_idx, j, tag_map)
+                if t:
+                    sent_emo = t
+                    break
 
-        # 2) opener를 sentence 맨 앞에 prepend (있으면)
-        result = f"{first_directive} " if first_directive else ""
-        last_active_tag = first_directive  # opener가 이미 적용 중
+        # 2) sentence_emotion 맨 앞 prepend
+        result = f"{sent_emo} " if sent_emo else ""
+        last_active_tag = sent_emo
 
         for j, p in enumerate(phrases):
             tag = _resolve_tag(p, sent_idx, j, tag_map)
-            # 동일 tag (또는 opener) 면 skip (modal로 이미 적용 중)
             emit_tag = tag if tag and tag != last_active_tag else ""
             piece = f"{emit_tag} {p['text']}" if emit_tag else p["text"]
             if tag:
@@ -531,7 +546,7 @@ def _build_synth_input(s, sent_idx, tag_map):
                 result += piece
             else:
                 result += " " + piece
-        return result, ""  # outer는 비움 — 인라인이 다 핸들
+        return result, ""
     return s["text"], _resolve_tag(s, sent_idx, None, tag_map)
 
 
@@ -592,15 +607,16 @@ def _rebuild_full_text_from_meta(sentences, persona_cue=None):
     parts = []
     for s in sentences:
         if s.get("phrases"):
-            # 첫 non-empty directive 찾기 → sentence opener
-            first_directive = ""
-            for p in s["phrases"]:
-                t = (p.get("tag") or "").strip()
-                if t:
-                    first_directive = t
-                    break
-            result = f"{first_directive} " if first_directive else ""
-            last_active_tag = first_directive
+            # sentence_emotion 우선, 없으면 첫 phrase tag fallback
+            sent_emo = (s.get("sentence_emotion") or "").strip()
+            if not sent_emo:
+                for p in s["phrases"]:
+                    t = (p.get("tag") or "").strip()
+                    if t:
+                        sent_emo = t
+                        break
+            result = f"{sent_emo} " if sent_emo else ""
+            last_active_tag = sent_emo
             for j, p in enumerate(s["phrases"]):
                 tag = (p.get("tag") or "").strip()
                 emit_tag = tag if tag and tag != last_active_tag else ""

@@ -10,6 +10,7 @@ interface Phrase {
 interface InputSentence {
   start: number; end: number; text: string;
   direction?: string;
+  sentence_emotion?: string  // 전체감정 — sentence 맨 앞에 prepend (LLM 자동/사용자 수동)
   phrases?: Phrase[]  // 어절 모드 (선택) — 있으면 백엔드가 inline tag로 합성
 }
 
@@ -408,6 +409,33 @@ export default function TtsGen() {
                       }}>👇 "🎙 음성 생성"으로 적용</span>
                     )}
                   </div>
+                  {/* sentence_emotion (전체감정) picker — 문장 전체 톤 */}
+                  {inPhraseMode && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)' }}>🎬 전체 감정:</span>
+                      <select
+                        value={s.sentence_emotion || ''}
+                        onChange={e => updateSentence(i, { sentence_emotion: e.target.value || undefined })}
+                        disabled={!canEdit}
+                        style={{
+                          fontSize: 12, padding: '3px 8px',
+                          background: s.sentence_emotion ? 'rgba(99,102,241,0.12)' : 'var(--bg-base)',
+                          color: s.sentence_emotion ? 'var(--accent)' : 'var(--text-body)',
+                          border: '1px solid', borderColor: s.sentence_emotion ? 'var(--accent)' : 'var(--border)',
+                          borderRadius: 4, fontWeight: 600, cursor: canEdit ? 'pointer' : 'not-allowed',
+                        }}>
+                        <option value="">(없음)</option>
+                        {PHRASE_PRESETS.map(pr => (
+                          <option key={pr.tag} value={pr.tag}>{pr.emoji} {pr.label} {pr.tag}</option>
+                        ))}
+                      </select>
+                      {s.sentence_emotion && (
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                          ← 문장 맨 앞에 prepend (v3 전체 톤 지배)
+                        </span>
+                      )}
+                    </div>
+                  )}
                   {inPhraseMode ? (
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                       {s.phrases!.map((p, j) => {

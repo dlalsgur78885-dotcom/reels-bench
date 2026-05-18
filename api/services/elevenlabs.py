@@ -18,6 +18,9 @@ import os
 import re
 import json
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 import shutil
 import subprocess
 from pathlib import Path

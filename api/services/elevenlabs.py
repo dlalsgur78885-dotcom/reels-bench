@@ -500,23 +500,35 @@ def _resolve_tag(item, sent_idx, phrase_idx, tag_map):
 def _build_synth_input(s, sent_idx, tag_map):
     """phrases가 있으면 inline-tagged text 조립 (한국어 괄호 directive 사용).
     v3는 directive 마커마다 미세 pause 삽입 → 가능한 한 directive 적게 박음:
+    - **문장 내 첫 directive를 sentence 맨 앞으로 promote** — 그 이전 phrase들도 같은 톤
+      (예: '여행 고수들이 (비밀스럽게) 제발 여긴' → '(비밀스럽게) 여행 고수들이 제발 여긴')
     - 연속 동일 tag는 두 번째부터 제거 (modal이라 이미 적용 중)
     - 빈 tag(평범)는 directive 안 박음
     phrase 사이는 공백만.
     Returns (text, outer_tag)."""
     phrases = s.get("phrases") or []
     if phrases:
-        result = ""
-        last_active_tag = ""  # 이미 박은 directive (modal — 다음 다른 tag 나올 때까지 유지)
+        # 1) 문장 내 첫 non-empty directive 찾기 → sentence opener
+        first_directive = ""
+        for j, p in enumerate(phrases):
+            t = _resolve_tag(p, sent_idx, j, tag_map)
+            if t:
+                first_directive = t
+                break
+
+        # 2) opener를 sentence 맨 앞에 prepend (있으면)
+        result = f"{first_directive} " if first_directive else ""
+        last_active_tag = first_directive  # opener가 이미 적용 중
+
         for j, p in enumerate(phrases):
             tag = _resolve_tag(p, sent_idx, j, tag_map)
-            # 직전과 동일 tag면 skip (modal로 이미 적용 중)
+            # 동일 tag (또는 opener) 면 skip (modal로 이미 적용 중)
             emit_tag = tag if tag and tag != last_active_tag else ""
             piece = f"{emit_tag} {p['text']}" if emit_tag else p["text"]
             if tag:
                 last_active_tag = tag
             if j == 0:
-                result = piece
+                result += piece
             else:
                 result += " " + piece
         return result, ""  # outer는 비움 — 인라인이 다 핸들
@@ -578,13 +590,20 @@ def _build_full_script_text(sentences, tag_map, persona_cue=None):
 
 def _rebuild_full_text_from_meta(sentences, persona_cue=None):
     """저장된 meta의 sentences에서 full text 재조립 — _build_full_script_text와 동일 호흡 가이드.
-    연속 동일 directive 자동 dedup (v3 modal 동작 + pause 최소화).
+    문장 첫 directive를 sentence 맨 앞으로 promote + 연속 동일 dedup.
     persona_cue 전달 시 매 문장 시작에도 prepend (directive 누수 차단)."""
     parts = []
     for s in sentences:
         if s.get("phrases"):
-            result = ""
-            last_active_tag = ""
+            # 첫 non-empty directive 찾기 → sentence opener
+            first_directive = ""
+            for p in s["phrases"]:
+                t = (p.get("tag") or "").strip()
+                if t:
+                    first_directive = t
+                    break
+            result = f"{first_directive} " if first_directive else ""
+            last_active_tag = first_directive
             for j, p in enumerate(s["phrases"]):
                 tag = (p.get("tag") or "").strip()
                 emit_tag = tag if tag and tag != last_active_tag else ""
@@ -592,7 +611,7 @@ def _rebuild_full_text_from_meta(sentences, persona_cue=None):
                 if tag:
                     last_active_tag = tag
                 if j == 0:
-                    result = piece
+                    result += piece
                 else:
                     result += " " + piece
             text = result

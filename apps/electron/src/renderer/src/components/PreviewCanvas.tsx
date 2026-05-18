@@ -4,8 +4,29 @@ import {
   type CaptionClip,
   type CaptionSpan,
   type CaptionStyle,
-  type Project
+  type Project,
+  type VideoAudioClip
 } from '../../../shared/project'
+
+// ---------------------------------------------------------------------------
+// Source-time mapping (Phase 2.3 speed-aware).
+//
+// timelineMs → source media currentTime, factoring playback speed and the
+// clip's trim window. Exported for unit tests and for when an actual
+// <video>/<audio> element gets wired into PreviewCanvas in a later phase.
+//
+//   currentTime = ((timelineMs - clip.startMs) * speed + clip.trimInMs) / 1000
+//   playbackRate = speed
+// ---------------------------------------------------------------------------
+export function clipSourceTimeSec(clip: VideoAudioClip, timelineMs: number): number {
+  const speed = clip.speed ?? 1
+  const offsetMs = (timelineMs - clip.startMs) * speed
+  return (offsetMs + clip.trimInMs) / 1000
+}
+
+export function clipPlaybackRate(clip: VideoAudioClip): number {
+  return clip.speed ?? 1
+}
 
 interface PreviewCanvasProps {
   project: Project

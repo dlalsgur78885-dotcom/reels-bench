@@ -2,6 +2,9 @@ import { ulid } from 'ulid'
 import { create } from 'zustand'
 import {
   ASPECT_RATIO_DIMENSIONS,
+  MAX_CLIP_SPEED,
+  MIN_CLIP_MS,
+  MIN_CLIP_SPEED,
   type AspectRatio,
   type CaptionClip,
   type Clip,
@@ -106,6 +109,39 @@ export interface ProjectStore {
 
   addClip(clip: Clip): void
   removeClip(clipId: string): void
+  /**
+   * Partial update for a media clip's trim/timeline fields. Caption clips
+   * are handled by `updateCaption` instead. Light invariants:
+   *   - startMs >= 0
+   *   - endMs > startMs (clamped to startMs+1 otherwise)
+   */
+  updateMediaClipTrim(
+    clipId: string,
+    partial: Partial<Pick<VideoAudioClip, 'startMs' | 'endMs' | 'trimInMs' | 'trimOutMs'>>
+  ): void
+
+  // --- Editing operations (Phase 2.3) ---
+  /**
+   * Split a media clip at the given absolute timeline ms.
+   * Returns the id of the newly created right-side clip, or null if:
+   *   - clip not found
+   *   - clip is a caption (split is not supported for captions in 2.3)
+   *   - split position is outside [startMs+MIN, endMs-MIN]
+   */
+  splitClipAt(clipId: string, atMs: number): string | null
+  /**
+   * Deep-clone a clip and place the duplicate at the next free slot on the
+   * same track. Works for BOTH media and caption clips. Returns the new
+   * clip's id, or null if the source clip can't be found.
+   */
+  duplicateClip(clipId: string): string | null
+  /**
+   * Set a media clip's playback speed (clamped to [MIN_CLIP_SPEED,
+   * MAX_CLIP_SPEED]). Keeps startMs and the source in/out range
+   * (trimInMs..trimOutMs) fixed and recomputes endMs.
+   * No-op for caption clips.
+   */
+  setClipSpeed(clipId: string, speed: number): void
 
   // --- Captions (Phase 2.4) ---
   /** Append a caption clip to the caption track. */
@@ -232,6 +268,175 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     schedulePersist(next)
   },
 
+  updateMediaClipTrim(clipId, partial): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const cur = t.clips[idx]
+      if (!isMediaClip(cur)) return t
+      const merged: VideoAudioClip = { ...cur, ...partial }
+      if (merged.startMs < 0) merged.startMs = 0
+      if (merged.endMs <= merged.startMs) merged.endMs = merged.startMs + 1
+      if (merged.trimInMs < 0) merged.trimInMs = 0
+      const clips = [...t.clips]
+      clips[idx] = merged
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // --- Editing operations (Phase 2.3) ---
+  splitClipAt(clipId: string, atMs: number): string | null {
+    const project = get().project
+    let trackIdx = -1
+    let clipIdx = -1
+    for (let i = 0; i < project.tracks.length; i++) {
+      const found = project.tracks[i].clips.findIndex((c) => c.id === clipId)
+      if (found !== -1) {
+        trackIdx = i
+        clipIdx = found
+        break
+      }
+    }
+    if (trackIdx === -1 || clipIdx === -1) return null
+    const orig = project.tracks[trackIdx].clips[clipIdx]
+    // Split is only supported for media clips in Phase 2.3.
+    if (!isMediaClip(orig)) return null
+    // Must be strictly inside the clip, with at least MIN_CLIP_MS on each side.
+    if (atMs <= orig.startMs + MIN_CLIP_MS) return null
+    if (atMs >= orig.endMs - MIN_CLIP_MS) return null
+
+    const speed = orig.speed ?? 1
+    // Source-time offset from orig.trimInMs for the split point.
+    const offsetSourceMs = (atMs - orig.startMs) * speed
+    const splitSource = orig.trimInMs + offsetSourceMs
+    const newRightId = ulid()
+    const left: VideoAudioClip = {
+      ...orig,
+      endMs: atMs,
+      trimOutMs: splitSource
+    }
+    const right: VideoAudioClip = {
+      ...orig,
+      id: newRightId,
+      startMs: atMs,
+      trimInMs: splitSource
+    }
+    const tracks = project.tracks.map((t, i) => {
+      if (i !== trackIdx) return t
+      const clips = [...t.clips]
+      clips.splice(clipIdx, 1, left, right)
+      return { ...t, clips }
+    })
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+    return newRightId
+  },
+
+  duplicateClip(clipId: string): string | null {
+    const project = get().project
+    let trackIdx = -1
+    let orig: Clip | null = null
+    for (let i = 0; i < project.tracks.length; i++) {
+      const c = project.tracks[i].clips.find((cc) => cc.id === clipId)
+      if (c) {
+        trackIdx = i
+        orig = c
+        break
+      }
+    }
+    if (trackIdx === -1 || !orig) return null
+    const duration = orig.endMs - orig.startMs
+    const desired = orig.endMs
+
+    // Find a free slot on the same track (lane-overlap walk).
+    const sorted = [...project.tracks[trackIdx].clips]
+      .filter((c) => c.id !== orig!.id)
+      .sort((a, b) => a.startMs - b.startMs)
+    let start = Math.max(0, desired)
+    for (let i = 0; i <= sorted.length; i++) {
+      let collided = false
+      for (const c of sorted) {
+        if (start < c.endMs && start + duration > c.startMs) {
+          start = c.endMs
+          collided = true
+          break
+        }
+      }
+      if (!collided) break
+    }
+    const newClipId = ulid()
+    // Deep-copy: spread covers all surface fields. For caption clips we need
+    // to clone the nested spans + style so future edits to the duplicate
+    // don't mutate the original. Media clips have no nested mutable refs.
+    let dup: Clip
+    if (isCaptionClip(orig)) {
+      dup = {
+        ...orig,
+        id: newClipId,
+        startMs: start,
+        endMs: start + duration,
+        spans: orig.spans.map((s) => ({ ...s })),
+        style: { ...orig.style }
+      }
+    } else {
+      dup = {
+        ...orig,
+        id: newClipId,
+        startMs: start,
+        endMs: start + duration
+      }
+    }
+    const tracks = project.tracks.map((t, i) => {
+      if (i !== trackIdx) return t
+      return { ...t, clips: [...t.clips, dup] }
+    })
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+    return newClipId
+  },
+
+  setClipSpeed(clipId: string, speed: number): void {
+    const project = get().project
+    const clamped = Math.max(MIN_CLIP_SPEED, Math.min(MAX_CLIP_SPEED, speed))
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      // Speed is a media-only concept; silently ignore captions.
+      if (!isMediaClip(c)) return t
+      const srcDur = c.trimOutMs - c.trimInMs
+      // Guard against zero/negative source duration (defensive — shouldn't
+      // normally happen, but avoids divide-by-zero / negative width).
+      const newTimelineDur = Math.max(
+        MIN_CLIP_MS,
+        Math.round(srcDur / clamped)
+      )
+      const updated: VideoAudioClip = {
+        ...c,
+        speed: clamped,
+        endMs: c.startMs + newTimelineDur
+      }
+      const clips = [...t.clips]
+      clips[idx] = updated
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
   addCaption(caption: CaptionClip): void {
     // Delegate to addClip; addClip validates track-kind compatibility.
     get().addClip(caption)
@@ -328,6 +533,17 @@ export function initProjectStore(): Promise<void> {
 /** Generates a fresh ulid (re-exported for renderer convenience). */
 export function newId(): string {
   return ulid()
+}
+
+/** Compute the total timeline duration (max endMs across every clip). */
+export function getTotalDurationMs(project: Project): number {
+  let max = 0
+  for (const t of project.tracks) {
+    for (const c of t.clips) {
+      if (c.endMs > max) max = c.endMs
+    }
+  }
+  return max
 }
 
 // ---------------------------------------------------------------------------

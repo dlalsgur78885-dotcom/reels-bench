@@ -138,6 +138,19 @@ export const ASPECT_RATIO_DIMENSIONS: Record<
   '4:5': { width: 1080, height: 1350 }
 }
 
+// ---------------------------------------------------------------------------
+// Editing constants (Phase 2.3).
+// ---------------------------------------------------------------------------
+
+/** Default playback speed for a freshly added media clip. */
+export const DEFAULT_CLIP_SPEED = 1.0
+/** Minimum allowed playback speed (slowest). */
+export const MIN_CLIP_SPEED = 0.1
+/** Maximum allowed playback speed (fastest). */
+export const MAX_CLIP_SPEED = 10.0
+/** Minimum on-timeline clip width (ms). Prevents zero/negative widths. */
+export const MIN_CLIP_MS = 100
+
 export interface ProbeResult {
   durationMs: number
   width: number

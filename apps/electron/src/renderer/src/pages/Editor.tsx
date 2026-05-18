@@ -3,8 +3,9 @@ import { MediaLibrary } from '../components/MediaLibrary'
 import { PreviewCanvas } from '../components/PreviewCanvas'
 import { Timeline } from '../components/Timeline'
 import { CaptionEditor } from '../components/CaptionEditor'
-import { useProjectStore } from '../store/project'
-import type { AspectRatio } from '../../../shared/project'
+import { getTotalDurationMs, useProjectStore } from '../store/project'
+import { useTimelineUi } from '../store/timelineUi'
+import { isMediaClip, type AspectRatio } from '../../../shared/project'
 import {
   addClipsToStore,
   cuesToClips,
@@ -193,23 +194,112 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     }
   }, [])
 
-  // Keyboard shortcuts: C inserts a caption at playhead.
+  // -----------------------------------------------------------------------
+  // Keyboard shortcuts.
+  //   C                     insert caption at playhead
+  //   Delete / Backspace    remove the selected clip (media OR caption)
+  //   Ctrl+D / Cmd+D        duplicate the selected clip
+  //   S                     split selected media clip at playhead
+  //   ← / →                 move playhead by 1 frame (1000/fps ms)
+  //   Shift+← / Shift+→     move playhead by 1 second
+  //   Home / End            playhead to 0 / total duration
+  // Shortcuts are suppressed while focus is in an input/textarea or any
+  // contenteditable element (e.g. caption text editor).
+  // -----------------------------------------------------------------------
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      // Ignore when typing in inputs/textareas to avoid stealing keys.
       const target = e.target as HTMLElement | null
       const tag = target?.tagName?.toLowerCase()
-      if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) {
+      if (
+        tag === 'input' ||
+        tag === 'textarea' ||
+        tag === 'select' ||
+        target?.isContentEditable
+      ) {
         return
       }
+
+      // ----- Caption insert (existing behavior) -----
       if (e.key === 'c' || e.key === 'C') {
+        if (e.ctrlKey || e.metaKey) return // don't intercept Ctrl+C copy
         e.preventDefault()
         handleAddCaption()
+        return
+      }
+
+      // ----- Playhead navigation -----
+      const store = useProjectStore.getState()
+      const fps = store.project.fps || 30
+      const frameMs = Math.max(1, Math.round(1000 / fps))
+
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        const step = e.shiftKey ? 1000 : frameMs
+        setPlayheadMs((cur) => Math.max(0, cur - step))
+        return
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        const step = e.shiftKey ? 1000 : frameMs
+        const cap = getTotalDurationMs(store.project)
+        setPlayheadMs((cur) => (cap > 0 ? Math.min(cap, cur + step) : cur + step))
+        return
+      }
+      if (e.key === 'Home') {
+        e.preventDefault()
+        setPlayheadMs(0)
+        return
+      }
+      if (e.key === 'End') {
+        e.preventDefault()
+        setPlayheadMs(getTotalDurationMs(store.project))
+        return
+      }
+
+      // ----- Selection-dependent ops -----
+      const sel = useTimelineUi.getState().selectedClipIds
+      const firstSelected = (sel.size > 0 ? sel.values().next().value : null) ?? null
+      if (!firstSelected) return
+
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault()
+        store.removeClip(firstSelected)
+        useTimelineUi.getState().clearSelection()
+        setSelectedClipId((cur) => (cur === firstSelected ? null : cur))
+        if (editingCaptionId === firstSelected) setEditingCaptionId(null)
+        return
+      }
+      // Ctrl+D / Cmd+D — duplicate. Suppress browser bookmark dialog.
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault()
+        const nid = store.duplicateClip(firstSelected)
+        if (nid) {
+          useTimelineUi.getState().selectClip(nid)
+          setSelectedClipId(nid)
+        }
+        return
+      }
+      // S — split selected media clip at current playhead.
+      if ((e.key === 's' || e.key === 'S') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault()
+        // Resolve the selected clip and ensure it's a media clip.
+        let target = null as null | { kind: string }
+        for (const t of store.project.tracks) {
+          const c = t.clips.find((cc) => cc.id === firstSelected)
+          if (c) {
+            target = c
+            break
+          }
+        }
+        if (target && isMediaClip(target as never)) {
+          store.splitClipAt(firstSelected, playheadMs)
+        }
+        return
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [handleAddCaption])
+  }, [handleAddCaption, editingCaptionId, playheadMs])
 
   return (
     <div style={styles.page} data-testid="editor-page">

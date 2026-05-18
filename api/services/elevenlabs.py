@@ -1124,6 +1124,8 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
     # 원본 final.mp3 백업 (post-synth per-sentence speed 조절 시 source)
     final_orig_path = job_dir / "final_orig.mp3"
     final_orig_path.write_bytes(final_path.read_bytes())
+    # 원본 timings 보존 — 향후 apply_segment_speeds가 final_orig.mp3 slice할 때 사용
+    orig_timings = [(round(t[0], 3), round(t[1], 3)) for t in timings]
 
     for i, sm in enumerate(sent_meta):
         if i < len(timings):
@@ -1155,6 +1157,8 @@ def synthesize_script(sentences, voice_name="joonpark", model_id="eleven_v3",
         "speed_factor": round(effective_speed, 3),
         "target_duration": target_duration,
         "alignment_method": alignment_method,
+        # final_orig.mp3 기준 segment timings (post-synth apply_segment_speeds용 source-of-truth)
+        "orig_timings": orig_timings,
     }
     _save_meta(job_id, meta)
     return _state_response(meta)
@@ -1253,15 +1257,26 @@ def apply_segment_speeds(job_id: str, speeds: dict[int, float]):
     final_orig_path = _job_dir(job_id) / "final_orig.mp3"
     final_path = _job_dir(job_id) / "final.mp3"
     if not final_orig_path.exists():
-        # 옛 job — final_orig 없음. 현재 final.mp3로 복원 (그러면 그 위에 atempo 누적 가능 X 위험)
-        # 사용자에게 재합성 안내 필요
-        raise FileNotFoundError("이 job은 원본 mp3가 없어서 속도 조절 불가 (재합성 필요)")
+        # 옛 job — final_orig 없음. 현재 final.mp3를 원본으로 backup (한 번만, 이후 재사용).
+        # 이미 모든 sentence speed=1.0인 상태에서 final.mp3가 만들어졌다는 가정 (보통 그러함).
+        if final_path.exists():
+            final_orig_path.write_bytes(final_path.read_bytes())
+            logger.info("[tts/apply-speeds] final_orig.mp3 백업 생성 (옛 job %s)", job_id)
+        else:
+            raise FileNotFoundError(f"job {job_id}에 final.mp3도 없음 — 재합성 필요")
 
     # sentences에 speed_factor 적용 후 dict 형태로
     for i, s in enumerate(sentences):
         s["speed_factor"] = float(speeds.get(i, speeds.get(str(i), 1.0)))
-    # 현재 timing 사용 (이미 Whisper로 정렬됨)
-    timings = [(float(s.get("start", 0)), float(s.get("end", 0))) for s in sentences]
+    # final_orig.mp3 slicing은 orig_timings (원본 합성 timing) 사용 — 반복 apply에도 안전
+    orig_timings = meta.get("orig_timings")
+    if orig_timings and len(orig_timings) == len(sentences):
+        timings = [(float(t[0]), float(t[1])) for t in orig_timings]
+    else:
+        # 옛 job — orig_timings 없음. 현재 timing 사용 (1회만 정확)
+        timings = [(float(s.get("start", 0)), float(s.get("end", 0))) for s in sentences]
+        # 1회 적용 후 보존 (다음 apply부터 정확)
+        meta["orig_timings"] = [(round(t[0], 3), round(t[1], 3)) for t in timings]
     has_change = any(abs(s["speed_factor"] - 1.0) > 0.01 for s in sentences)
     if has_change:
         tmp_speed = _job_dir(job_id) / "speed.mp3"

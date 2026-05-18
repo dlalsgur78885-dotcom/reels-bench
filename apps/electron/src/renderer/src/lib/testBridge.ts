@@ -22,6 +22,9 @@ export function installTestBridge(): void {
       addClip: ReturnType<typeof useProjectStore.getState>['addClip']
       updateClip: ReturnType<typeof useProjectStore.getState>['updateClip']
       removeClip: ReturnType<typeof useProjectStore.getState>['removeClip']
+      splitClipAt: ReturnType<typeof useProjectStore.getState>['splitClipAt']
+      duplicateClip: ReturnType<typeof useProjectStore.getState>['duplicateClip']
+      setClipSpeed: ReturnType<typeof useProjectStore.getState>['setClipSpeed']
       createNew: ReturnType<typeof useProjectStore.getState>['createNew']
       newId: () => string
     }
@@ -32,6 +35,11 @@ export function installTestBridge(): void {
     updateClip: (id, partial) =>
       useProjectStore.getState().updateClip(id, partial),
     removeClip: (id) => useProjectStore.getState().removeClip(id),
+    splitClipAt: (id, atMs) =>
+      useProjectStore.getState().splitClipAt(id, atMs),
+    duplicateClip: (id) => useProjectStore.getState().duplicateClip(id),
+    setClipSpeed: (id, speed) =>
+      useProjectStore.getState().setClipSpeed(id, speed),
     createNew: () => useProjectStore.getState().createNew(),
     newId
   }

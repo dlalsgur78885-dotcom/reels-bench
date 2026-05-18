@@ -36,7 +36,23 @@ export interface Clip {
   trimInMs: number
   /** Offset into the source media end. */
   trimOutMs: number
+  /**
+   * Playback speed multiplier. 1.0 = normal, 2.0 = double-time, 0.5 = half.
+   * Range: 0.1 ~ 10.
+   *
+   * Invariant: (endMs - startMs) * speed === (trimOutMs - trimInMs).
+   * Optional in the type for back-compat with persisted Phase 2.2 projects;
+   * code should treat `clip.speed ?? 1` as the effective speed.
+   */
+  speed?: number
 }
+
+/** Default speed for new clips. */
+export const DEFAULT_CLIP_SPEED = 1
+
+/** Allowed clip-speed range. */
+export const MIN_CLIP_SPEED = 0.1
+export const MAX_CLIP_SPEED = 10
 
 export interface Track {
   id: string

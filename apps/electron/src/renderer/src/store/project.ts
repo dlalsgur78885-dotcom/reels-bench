@@ -5,7 +5,9 @@ import {
   type AspectRatio,
   type Clip,
   type MediaAsset,
-  type Project
+  type Project,
+  MIN_CLIP_SPEED,
+  MAX_CLIP_SPEED
 } from '../../../shared/project'
 
 // ---------------------------------------------------------------------------
@@ -74,6 +76,22 @@ export interface ProjectStore {
   addClip(clip: Clip): void
   updateClip(clipId: string, partial: Partial<Clip>): void
   removeClip(clipId: string): void
+  /**
+   * Split a clip at the given absolute timeline ms.
+   * Returns the id of the newly created right-side clip, or null if the
+   * split would produce a sub-100ms fragment or the position is out of range.
+   */
+  splitClipAt(clipId: string, atMs: number): string | null
+  /**
+   * Deep-clone a clip and place the duplicate immediately after the original
+   * on the same track. Returns the new clip's id, or null on failure.
+   */
+  duplicateClip(clipId: string): string | null
+  /**
+   * Set a clip's playback speed. Recomputes endMs while keeping startMs and
+   * the source in/out range (trimInMs..trimOutMs) fixed.
+   */
+  setClipSpeed(clipId: string, speed: number): void
 
   /**
    * Replace the entire project with one loaded from disk. Used at startup.
@@ -196,6 +214,121 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       const filtered = t.clips.filter((c) => c.id !== clipId)
       if (filtered.length !== t.clips.length) changed = true
       return filtered.length === t.clips.length ? t : { ...t, clips: filtered }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  splitClipAt(clipId: string, atMs: number): string | null {
+    const project = get().project
+    let trackIdx = -1
+    let clipIdx = -1
+    for (let i = 0; i < project.tracks.length; i++) {
+      const found = project.tracks[i].clips.findIndex((c) => c.id === clipId)
+      if (found !== -1) {
+        trackIdx = i
+        clipIdx = found
+        break
+      }
+    }
+    if (trackIdx === -1 || clipIdx === -1) return null
+    const orig = project.tracks[trackIdx].clips[clipIdx]
+    // Must be strictly inside the clip, with at least 100ms on each side.
+    if (atMs <= orig.startMs + 100) return null
+    if (atMs >= orig.endMs - 100) return null
+    const speed = orig.speed ?? 1
+    // Source-time offset from orig.trimInMs for the split point.
+    const offsetSourceMs = (atMs - orig.startMs) * speed
+    const splitSource = orig.trimInMs + offsetSourceMs
+    const newRightId = ulid()
+    const left: Clip = { ...orig, endMs: atMs, trimOutMs: splitSource }
+    const right: Clip = {
+      ...orig,
+      id: newRightId,
+      startMs: atMs,
+      trimInMs: splitSource
+    }
+    const tracks = project.tracks.map((t, i) => {
+      if (i !== trackIdx) return t
+      const clips = [...t.clips]
+      clips.splice(clipIdx, 1, left, right)
+      return { ...t, clips }
+    })
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+    return newRightId
+  },
+
+  duplicateClip(clipId: string): string | null {
+    const project = get().project
+    let trackIdx = -1
+    let orig: Clip | null = null
+    for (let i = 0; i < project.tracks.length; i++) {
+      const c = project.tracks[i].clips.find((cc) => cc.id === clipId)
+      if (c) {
+        trackIdx = i
+        orig = c
+        break
+      }
+    }
+    if (trackIdx === -1 || !orig) return null
+    const duration = orig.endMs - orig.startMs
+    const desired = orig.endMs
+    // Reuse the lane-overlap logic inline (same algorithm as Timeline.tsx).
+    const sorted = [...project.tracks[trackIdx].clips]
+      .filter((c) => c.id !== orig!.id)
+      .sort((a, b) => a.startMs - b.startMs)
+    let start = Math.max(0, desired)
+    for (let i = 0; i <= sorted.length; i++) {
+      let collided = false
+      for (const c of sorted) {
+        if (start < c.endMs && start + duration > c.startMs) {
+          start = c.endMs
+          collided = true
+          break
+        }
+      }
+      if (!collided) break
+    }
+    const newId = ulid()
+    const dup: Clip = {
+      ...orig,
+      id: newId,
+      startMs: start,
+      endMs: start + duration
+    }
+    const tracks = project.tracks.map((t, i) => {
+      if (i !== trackIdx) return t
+      return { ...t, clips: [...t.clips, dup] }
+    })
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+    return newId
+  },
+
+  setClipSpeed(clipId: string, speed: number): void {
+    const project = get().project
+    const clamped = Math.max(MIN_CLIP_SPEED, Math.min(MAX_CLIP_SPEED, speed))
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      const srcDur = c.trimOutMs - c.trimInMs
+      const newTimelineDur = Math.max(1, Math.round(srcDur / clamped))
+      const updated: Clip = {
+        ...c,
+        speed: clamped,
+        endMs: c.startMs + newTimelineDur
+      }
+      const clips = [...t.clips]
+      clips[idx] = updated
+      changed = true
+      return { ...t, clips }
     })
     if (!changed) return
     const next = touch({ ...project, tracks })

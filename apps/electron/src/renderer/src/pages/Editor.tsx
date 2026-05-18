@@ -3,7 +3,8 @@ import { MediaLibrary } from '../components/MediaLibrary'
 import { PreviewCanvas } from '../components/PreviewCanvas'
 import { Timeline } from '../components/Timeline'
 import { Transport } from '../components/Transport'
-import { useProjectStore } from '../store/project'
+import { getTotalDurationMs, useProjectStore } from '../store/project'
+import { useTimelineUi } from '../store/timelineUi'
 import type { AspectRatio } from '../../../shared/project'
 
 interface EditorProps {
@@ -100,6 +101,87 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     }
     if (trimmed !== project.name) setName(trimmed)
   }
+
+  // Editor-wide keyboard shortcuts.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const target = e.target as HTMLElement | null
+      if (target) {
+        const tag = target.tagName
+        if (
+          tag === 'INPUT' ||
+          tag === 'TEXTAREA' ||
+          tag === 'SELECT' ||
+          target.isContentEditable
+        ) {
+          return
+        }
+      }
+
+      const fps = useProjectStore.getState().project.fps || 30
+      const frameMs = Math.round(1000 / fps)
+
+      // Navigation: ←/→ frame, Shift modifies to 1s. Home/End to bounds.
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        const step = e.shiftKey ? 1000 : frameMs
+        const cur = useTimelineUi.getState().playheadMs
+        useTimelineUi.getState().setPlayheadMs(Math.max(0, cur - step))
+        return
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        const step = e.shiftKey ? 1000 : frameMs
+        const cur = useTimelineUi.getState().playheadMs
+        const cap = getTotalDurationMs(useProjectStore.getState().project)
+        useTimelineUi
+          .getState()
+          .setPlayheadMs(cap > 0 ? Math.min(cap, cur + step) : cur + step)
+        return
+      }
+      if (e.key === 'Home') {
+        e.preventDefault()
+        useTimelineUi.getState().setPlayheadMs(0)
+        return
+      }
+      if (e.key === 'End') {
+        e.preventDefault()
+        useTimelineUi
+          .getState()
+          .setPlayheadMs(getTotalDurationMs(useProjectStore.getState().project))
+        return
+      }
+
+      const sel = useTimelineUi.getState().selectedClipIds
+      const firstSelected = sel.size > 0 ? sel.values().next().value : null
+
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (!firstSelected) return
+        e.preventDefault()
+        useProjectStore.getState().removeClip(firstSelected)
+        useTimelineUi.getState().clearSelection()
+        return
+      }
+      // Ctrl+D / Cmd+D — duplicate.
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
+        if (!firstSelected) return
+        e.preventDefault()
+        const newId = useProjectStore.getState().duplicateClip(firstSelected)
+        if (newId) useTimelineUi.getState().selectClip(newId)
+        return
+      }
+      // S — split selected clip at playhead.
+      if ((e.key === 's' || e.key === 'S') && !e.ctrlKey && !e.metaKey) {
+        if (!firstSelected) return
+        e.preventDefault()
+        const playMs = useTimelineUi.getState().playheadMs
+        useProjectStore.getState().splitClipAt(firstSelected, playMs)
+        return
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   return (
     <div style={styles.page} data-testid="editor-page">

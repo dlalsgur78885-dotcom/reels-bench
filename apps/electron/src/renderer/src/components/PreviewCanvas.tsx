@@ -115,11 +115,20 @@ export function PreviewCanvas(): JSX.Element {
               videoEl.src = desiredUrl
               loadedVideoMediaId.current = media.id
             }
+            const speed = videoClip.speed ?? 1
             const localMs =
-              playheadMs - videoClip.startMs + videoClip.trimInMs
+              (playheadMs - videoClip.startMs) * speed + videoClip.trimInMs
             const target = Math.max(0, localMs) / 1000
-            // Image clips don't need currentTime set.
+            // Reflect speed on the media element (clamp to a sane range that
+            // matches our setClipSpeed bounds).
             if (media.kind !== 'image') {
+              try {
+                if (videoEl.playbackRate !== speed) {
+                  videoEl.playbackRate = speed
+                }
+              } catch {
+                /* some media won't accept a playbackRate change yet */
+              }
               if (Math.abs((videoEl.currentTime || 0) - target) > 0.05) {
                 try {
                   videoEl.currentTime = target
@@ -154,9 +163,17 @@ export function PreviewCanvas(): JSX.Element {
               audioEl.src = toMediaUrl(media.path)
               loadedAudioMediaId.current = media.id
             }
+            const speed = audioClip.speed ?? 1
             const localMs =
-              playheadMs - audioClip.startMs + audioClip.trimInMs
+              (playheadMs - audioClip.startMs) * speed + audioClip.trimInMs
             const target = Math.max(0, localMs) / 1000
+            try {
+              if (audioEl.playbackRate !== speed) {
+                audioEl.playbackRate = speed
+              }
+            } catch {
+              /* ignore */
+            }
             if (Math.abs((audioEl.currentTime || 0) - target) > 0.05) {
               try {
                 audioEl.currentTime = target

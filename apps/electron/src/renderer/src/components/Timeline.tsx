@@ -10,6 +10,7 @@ import {
   MIN_PPS,
   useTimelineUi
 } from '../store/timelineUi'
+import { ClipContextMenu } from './ClipContextMenu'
 
 const TRACK_HEIGHT = 60
 const RULER_HEIGHT = 28
@@ -17,6 +18,8 @@ const LANE_LABEL_WIDTH = 64
 const SNAP_PX = 5
 const MEDIA_MIME = 'application/x-reels-media-id'
 const IMAGE_DEFAULT_MS = 5000
+const MIN_CLIP_MS = 100
+const HANDLE_PX = 6
 
 function fmtTime(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000))
@@ -237,7 +240,6 @@ const styles = {
     color: '#04231a',
     fontSize: 11,
     fontWeight: 600,
-    padding: '4px 6px',
     boxSizing: 'border-box',
     whiteSpace: 'nowrap',
     textOverflow: 'ellipsis'
@@ -247,6 +249,39 @@ const styles = {
       'linear-gradient(180deg, rgba(59,130,246,0.85), rgba(59,130,246,0.55))',
     border: '1px solid #3b82f6',
     color: '#0b1d3a'
+  } as React.CSSProperties,
+  clipSelected: {
+    outline: '2px solid #60a5fa',
+    outlineOffset: 0,
+    boxShadow: '0 0 0 2px rgba(96,165,250,0.35)'
+  } as React.CSSProperties,
+  clipBody: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: HANDLE_PX,
+    right: HANDLE_PX,
+    cursor: 'grab',
+    padding: '4px 6px',
+    boxSizing: 'border-box',
+    overflow: 'hidden'
+  } as React.CSSProperties,
+  trimHandle: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: HANDLE_PX,
+    background: 'rgba(0,0,0,0.35)',
+    cursor: 'col-resize',
+    zIndex: 2
+  } as React.CSSProperties,
+  trimHandleLeft: {
+    left: 0,
+    borderRight: '1px solid rgba(255,255,255,0.25)'
+  } as React.CSSProperties,
+  trimHandleRight: {
+    right: 0,
+    borderLeft: '1px solid rgba(255,255,255,0.25)'
   } as React.CSSProperties,
   clipThumb: {
     position: 'absolute',
@@ -287,6 +322,12 @@ const styles = {
   } as React.CSSProperties
 }
 
+interface ContextMenuState {
+  clipId: string
+  x: number
+  y: number
+}
+
 // ---------------------------------------------------------------------------
 // Component.
 // ---------------------------------------------------------------------------
@@ -295,14 +336,21 @@ export function Timeline(): JSX.Element {
   const addClip = useProjectStore((s) => s.addClip)
   const updateClip = useProjectStore((s) => s.updateClip)
   const removeClip = useProjectStore((s) => s.removeClip)
+  const splitClipAt = useProjectStore((s) => s.splitClipAt)
+  const duplicateClip = useProjectStore((s) => s.duplicateClip)
+  const setClipSpeed = useProjectStore((s) => s.setClipSpeed)
 
   const pps = useTimelineUi((s) => s.pps)
   const setPps = useTimelineUi((s) => s.setPps)
   const playheadMs = useTimelineUi((s) => s.playheadMs)
   const setPlayheadMs = useTimelineUi((s) => s.setPlayheadMs)
+  const selectedClipIds = useTimelineUi((s) => s.selectedClipIds)
+  const selectClip = useTimelineUi((s) => s.selectClip)
+  const clearSelection = useTimelineUi((s) => s.clearSelection)
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const tracksRef = useRef<HTMLDivElement | null>(null)
+  const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null)
 
   const totalMs = useMemo(() => getTotalDurationMs(project), [project])
   const ticks = useMemo(() => buildTicks(totalMs, pps), [totalMs, pps])
@@ -411,13 +459,14 @@ export function Timeline(): JSX.Element {
       startMs,
       endMs: startMs + durationMs,
       trimInMs: 0,
-      trimOutMs: 0
+      trimOutMs: durationMs,
+      speed: 1
     }
     addClip(newClip)
   }
 
-  // Clip drag-to-reposition.
-  const onClipMouseDown = (
+  // Clip drag-to-reposition (body — not the trim handles).
+  const onClipBodyMouseDown = (
     e: React.MouseEvent<HTMLDivElement>,
     clip: Clip,
     track: Track
@@ -425,18 +474,28 @@ export function Timeline(): JSX.Element {
     if (e.button !== 0) return
     e.preventDefault()
     e.stopPropagation()
+    selectClip(clip.id)
+    setCtxMenu(null)
     const startMouseX = e.clientX
     const origStartMs = clip.startMs
     const durationMs = clip.endMs - clip.startMs
 
+    let moved = false
     const onMove = (ev: MouseEvent): void => {
       const dx = ev.clientX - startMouseX
+      if (Math.abs(dx) < 2 && !moved) return
+      moved = true
       const deltaMs = (dx / pps) * 1000
       const desired = origStartMs + deltaMs
       const altPressed = ev.altKey
-      const snapped = snapMs(desired, pps, track, clip.id, altPressed)
-      const freeStart = findFreeStart(track, snapped, durationMs, clip.id)
-      if (freeStart !== clip.startMs) {
+      const liveTrack =
+        useProjectStore
+          .getState()
+          .project.tracks.find((t) => t.id === track.id) ?? track
+      const snapped = snapMs(desired, pps, liveTrack, clip.id, altPressed)
+      const freeStart = findFreeStart(liveTrack, snapped, durationMs, clip.id)
+      const current = liveTrack.clips.find((c) => c.id === clip.id)
+      if (current && freeStart !== current.startMs) {
         updateClip(clip.id, {
           startMs: freeStart,
           endMs: freeStart + durationMs
@@ -451,7 +510,135 @@ export function Timeline(): JSX.Element {
     window.addEventListener('mouseup', onUp)
   }
 
+  // Trim handles.
+  const onTrimHandleMouseDown = (
+    e: React.MouseEvent<HTMLDivElement>,
+    clip: Clip,
+    track: Track,
+    side: 'left' | 'right',
+    media: MediaAsset | undefined
+  ): void => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    selectClip(clip.id)
+    setCtxMenu(null)
+    const startMouseX = e.clientX
+    const orig = { ...clip }
+    const speed = orig.speed ?? 1
+    const mediaDuration = media?.durationMs ?? Infinity
+
+    const onMove = (ev: MouseEvent): void => {
+      const dx = ev.clientX - startMouseX
+      const deltaMs = (dx / pps) * 1000
+      const liveTrack =
+        useProjectStore
+          .getState()
+          .project.tracks.find((t) => t.id === track.id) ?? track
+
+      if (side === 'left') {
+        // Move startMs by deltaMs (snap), keep endMs fixed.
+        let desiredStart = orig.startMs + deltaMs
+        desiredStart = snapMs(desiredStart, pps, liveTrack, clip.id, ev.altKey)
+        // Hard limit: at least MIN_CLIP_MS remaining width.
+        if (desiredStart > orig.endMs - MIN_CLIP_MS) {
+          desiredStart = orig.endMs - MIN_CLIP_MS
+        }
+        // Don't overlap a neighbour on the left.
+        for (const other of liveTrack.clips) {
+          if (other.id === clip.id) continue
+          if (other.endMs <= orig.startMs && other.endMs > desiredStart) {
+            desiredStart = other.endMs
+          }
+        }
+        // trimInMs corresponds to source position; can't go below 0.
+        const startShift = desiredStart - orig.startMs
+        let newTrimIn = orig.trimInMs + startShift * speed
+        if (newTrimIn < 0) {
+          // Clamp so trimIn stays >= 0; back out startShift accordingly.
+          const overshoot = -newTrimIn / speed
+          desiredStart = desiredStart + overshoot
+          newTrimIn = 0
+        }
+        if (desiredStart === orig.startMs) return
+        updateClip(clip.id, {
+          startMs: Math.round(desiredStart),
+          trimInMs: Math.round(newTrimIn)
+        })
+      } else {
+        // Right: keep startMs fixed, move endMs.
+        let desiredEnd = orig.endMs + deltaMs
+        desiredEnd = snapMs(desiredEnd, pps, liveTrack, clip.id, ev.altKey)
+        // Hard limits: ≥ startMs + MIN_CLIP_MS.
+        if (desiredEnd < orig.startMs + MIN_CLIP_MS) {
+          desiredEnd = orig.startMs + MIN_CLIP_MS
+        }
+        // Don't overlap a neighbour on the right.
+        for (const other of liveTrack.clips) {
+          if (other.id === clip.id) continue
+          if (other.startMs >= orig.endMs && other.startMs < desiredEnd) {
+            desiredEnd = other.startMs
+          }
+        }
+        const endShift = desiredEnd - orig.endMs
+        let newTrimOut = orig.trimOutMs + endShift * speed
+        if (newTrimOut > mediaDuration) {
+          const overshoot = (newTrimOut - mediaDuration) / speed
+          desiredEnd = desiredEnd - overshoot
+          newTrimOut = mediaDuration
+        }
+        if (desiredEnd === orig.endMs) return
+        updateClip(clip.id, {
+          endMs: Math.round(desiredEnd),
+          trimOutMs: Math.round(newTrimOut)
+        })
+      }
+    }
+    const onUp = (): void => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  const onClipContextMenu = (
+    e: React.MouseEvent<HTMLDivElement>,
+    clip: Clip
+  ): void => {
+    e.preventDefault()
+    e.stopPropagation()
+    selectClip(clip.id)
+    setCtxMenu({ clipId: clip.id, x: e.clientX, y: e.clientY })
+  }
+
+  // Background-click → deselect + close menu.
+  const onBackgroundMouseDown = (e: React.MouseEvent<HTMLDivElement>): void => {
+    // Only deselect if user clicked the empty lane background, not a clip
+    // (clips stop propagation).
+    if (e.target === e.currentTarget) {
+      clearSelection()
+      setCtxMenu(null)
+    }
+  }
+
   const playheadPx = LANE_LABEL_WIDTH + (playheadMs / 1000) * pps
+
+  // Look up the active context-menu clip (re-resolved on every render so
+  // updates flow through).
+  const ctxClip = useMemo(() => {
+    if (!ctxMenu) return null
+    for (const t of project.tracks) {
+      const c = t.clips.find((cc) => cc.id === ctxMenu.clipId)
+      if (c) return c
+    }
+    return null
+  }, [ctxMenu, project])
+
+  const splitEnabled =
+    ctxClip !== null &&
+    playheadMs > ctxClip.startMs + 100 &&
+    playheadMs < ctxClip.endMs - 100
 
   return (
     <div style={styles.wrap} data-testid="timeline">
@@ -475,7 +662,7 @@ export function Timeline(): JSX.Element {
           +
         </button>
         <div style={{ marginLeft: 16 }}>
-          Ctrl/Cmd + 휠로 확대·축소 · Alt 누르면 스냅 해제
+          Ctrl/Cmd + 휠로 확대·축소 · Alt 누르면 스냅 해제 · S=자르기 · Ctrl+D=복제
         </div>
       </div>
 
@@ -544,12 +731,12 @@ export function Timeline(): JSX.Element {
                 track={track}
                 pps={pps}
                 project={project}
+                selectedClipIds={selectedClipIds}
                 onDrop={(e) => handleLaneDrop(e, track)}
-                onClipMouseDown={onClipMouseDown}
-                onClipContextMenu={(e, clip) => {
-                  e.preventDefault()
-                  removeClip(clip.id)
-                }}
+                onClipBodyMouseDown={onClipBodyMouseDown}
+                onTrimHandleMouseDown={onTrimHandleMouseDown}
+                onClipContextMenu={onClipContextMenu}
+                onBackgroundMouseDown={onBackgroundMouseDown}
               />
             ))}
           </div>
@@ -567,6 +754,32 @@ export function Timeline(): JSX.Element {
           />
         </div>
       </div>
+
+      {ctxMenu && ctxClip && (
+        <ClipContextMenu
+          clip={ctxClip}
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          splitEnabled={splitEnabled}
+          onSplit={() => {
+            splitClipAt(ctxClip.id, useTimelineUi.getState().playheadMs)
+            setCtxMenu(null)
+          }}
+          onDuplicate={() => {
+            duplicateClip(ctxClip.id)
+            setCtxMenu(null)
+          }}
+          onDelete={() => {
+            removeClip(ctxClip.id)
+            setCtxMenu(null)
+          }}
+          onSpeedChange={(s) => {
+            setClipSpeed(ctxClip.id, s)
+            // keep menu open during slider edits
+          }}
+          onClose={() => setCtxMenu(null)}
+        />
+      )}
     </div>
   )
 }
@@ -578,18 +791,36 @@ interface TrackLaneProps {
   track: Track
   pps: number
   project: ReturnType<typeof useProjectStore.getState>['project']
+  selectedClipIds: Set<string>
   onDrop: (e: React.DragEvent<HTMLDivElement>) => void
-  onClipMouseDown: (
+  onClipBodyMouseDown: (
     e: React.MouseEvent<HTMLDivElement>,
     clip: Clip,
     track: Track
   ) => void
+  onTrimHandleMouseDown: (
+    e: React.MouseEvent<HTMLDivElement>,
+    clip: Clip,
+    track: Track,
+    side: 'left' | 'right',
+    media: MediaAsset | undefined
+  ) => void
   onClipContextMenu: (e: React.MouseEvent<HTMLDivElement>, clip: Clip) => void
+  onBackgroundMouseDown: (e: React.MouseEvent<HTMLDivElement>) => void
 }
 
 function TrackLane(props: TrackLaneProps): JSX.Element {
-  const { track, pps, project, onDrop, onClipMouseDown, onClipContextMenu } =
-    props
+  const {
+    track,
+    pps,
+    project,
+    selectedClipIds,
+    onDrop,
+    onClipBodyMouseDown,
+    onTrimHandleMouseDown,
+    onClipContextMenu,
+    onBackgroundMouseDown
+  } = props
   const [over, setOver] = useState(false)
 
   const isVideo = track.kind === 'video'
@@ -624,37 +855,65 @@ function TrackLane(props: TrackLaneProps): JSX.Element {
           setOver(false)
           onDrop(e)
         }}
+        onMouseDown={onBackgroundMouseDown}
         data-testid={`track-drop-${track.kind}`}
       >
         {track.clips.map((clip) => {
           const media = project.media[clip.mediaId]
           const left = (clip.startMs / 1000) * pps
           const width = ((clip.endMs - clip.startMs) / 1000) * pps
-          const style: React.CSSProperties = {
+          const selected = selectedClipIds.has(clip.id)
+          const wrapStyle: React.CSSProperties = {
             ...styles.clip,
             ...(isVideo ? {} : styles.clipAudio),
+            ...(selected ? styles.clipSelected : {}),
             left,
             width: Math.max(8, width)
           }
+          const speed = clip.speed ?? 1
           return (
             <div
               key={clip.id}
-              style={style}
+              style={wrapStyle}
               data-testid="timeline-clip"
               data-clip-id={clip.id}
-              onMouseDown={(e) => onClipMouseDown(e, clip, track)}
+              data-selected={selected ? 'true' : 'false'}
               onContextMenu={(e) => onClipContextMenu(e, clip)}
               title={`${media?.fileName ?? clip.mediaId} · ${(
                 (clip.endMs - clip.startMs) /
                 1000
               ).toFixed(2)}s`}
             >
-              <div style={styles.clipLabel}>
-                {media?.fileName ?? '미디어'}
-                <span style={{ opacity: 0.7, marginLeft: 6 }}>
-                  {((clip.endMs - clip.startMs) / 1000).toFixed(1)}s
-                </span>
+              <div
+                style={{ ...styles.trimHandle, ...styles.trimHandleLeft }}
+                data-testid="trim-handle-left"
+                data-clip-id={clip.id}
+                onMouseDown={(e) =>
+                  onTrimHandleMouseDown(e, clip, track, 'left', media)
+                }
+              />
+              <div
+                style={styles.clipBody}
+                data-testid="clip-body"
+                data-clip-id={clip.id}
+                onMouseDown={(e) => onClipBodyMouseDown(e, clip, track)}
+              >
+                <div style={styles.clipLabel}>
+                  {media?.fileName ?? '미디어'}
+                  <span style={{ opacity: 0.7, marginLeft: 6 }}>
+                    {((clip.endMs - clip.startMs) / 1000).toFixed(1)}s
+                    {speed !== 1 ? ` · ${speed.toFixed(2)}×` : ''}
+                  </span>
+                </div>
               </div>
+              <div
+                style={{ ...styles.trimHandle, ...styles.trimHandleRight }}
+                data-testid="trim-handle-right"
+                data-clip-id={clip.id}
+                onMouseDown={(e) =>
+                  onTrimHandleMouseDown(e, clip, track, 'right', media)
+                }
+              />
             </div>
           )
         })}

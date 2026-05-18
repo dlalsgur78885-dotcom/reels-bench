@@ -3,3 +3,5 @@ requests
 python-dotenv
 pydantic
 numpy
+fal-client
+python-multipart

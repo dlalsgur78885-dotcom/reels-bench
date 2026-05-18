@@ -33,6 +33,7 @@ const FbAdvertisers = lazy(() => import('./pages/FbAdvertisers'))
 const FbSearchAdvertisers = lazy(() => import('./pages/FbSearchAdvertisers'))
 const FbSearchAds = lazy(() => import('./pages/FbSearchAds'))
 const FbAdImportPage = lazy(() => import('./pages/FbAdImportPage'))
+const Seedance = lazy(() => import('./pages/Seedance'))
 
 const routePrefetchers: Record<string, () => Promise<unknown>> = {
   '/': () => import('./pages/Home'),
@@ -291,6 +292,7 @@ export default function App() {
           <Route path="/my-products/:id/scripts" element={<MyProductScripts />} />
           <Route path="/my-scripts" element={<MyScripts />} />
           <Route path="/my-scripts/:pid/:sid" element={<MyScriptDetail />} />
+          <Route path="/seedance" element={<Seedance />} />
           <Route path="/login" element={<Navigate to="/" replace />} />
           <Route path="/settings" element={
             meLoading ? <div style={{ padding: 40, color: 'var(--text-muted)' }}>로딩...</div>
@@ -352,6 +354,7 @@ function UserMenu({ me }: { me: UserProfile | null }) {
         onClick={() => navigate('/my-products')}
         style={{ ...btnSt, marginBottom: 6 }}
       >내 상품</button>
+      <button onClick={() => navigate('/seedance')} style={{ ...btnSt, marginBottom: 6 }}>🎞 영상 생성</button>
       <button onClick={logout} style={btnSt}>로그아웃</button>
       {me?.role === 'admin' && (
         <button onClick={() => navigate('/settings')} style={{ ...btnSt, marginTop: 6 }}>설정</button>

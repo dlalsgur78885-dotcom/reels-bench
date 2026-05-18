@@ -5328,6 +5328,138 @@ def tts_download_legacy(filename: str):
     return FileResponse(str(p), media_type="audio/mpeg", filename=filename)
 
 
+# ── Seedance 2.0 (fal.ai image→video) ──
+_SEEDANCE_MODEL = "bytedance/seedance-2.0/image-to-video"
+
+
+def _fal_key() -> str:
+    k = (os.getenv("SEEDANCE_API_KEY") or os.getenv("FAL_KEY") or "").strip()
+    if not k:
+        raise HTTPException(500, "SEEDANCE_API_KEY 미설정")
+    return k
+
+
+def _fal_headers(json: bool = True) -> dict:
+    h = {"Authorization": f"Key {_fal_key()}"}
+    if json:
+        h["Content-Type"] = "application/json"
+    return h
+
+
+@app.post("/api/seedance/upload")
+async def seedance_upload(request: Request):
+    """이미지 파일을 fal storage 에 업로드 → 공개 URL 반환.
+
+    multipart/form-data 로 'file' 필드 수신. fal-client SDK 가 가장 단순해서 그걸 사용.
+    """
+    auth_svc.require_user(request)
+    from fastapi import UploadFile
+    form = await request.form()
+    file = form.get("file")
+    if not file or not hasattr(file, "read"):
+        raise HTTPException(400, "file 필수 (multipart)")
+    try:
+        import fal_client
+        os.environ["FAL_KEY"] = _fal_key()
+        # 임시 파일로 떨군 뒤 upload_file 호출 (SDK가 path 받음)
+        import tempfile
+        suffix = Path(getattr(file, "filename", "img.jpg")).suffix or ".jpg"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tf:
+            tf.write(await file.read())
+            tmp_path = tf.name
+        try:
+            url = fal_client.upload_file(tmp_path)
+        finally:
+            try: os.unlink(tmp_path)
+            except: pass
+        return {"image_url": url}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[seedance/upload] failed")
+        raise HTTPException(500, f"upload 실패: {e}")
+
+
+class SeedanceSubmitReq(BaseModel):
+    prompt: str
+    image_url: str
+    resolution: str = "720p"  # 480p / 720p / 1080p
+    duration: str = "4"  # 4 ~ 15 (str) 또는 'auto'
+    aspect_ratio: str = "9:16"  # 9:16 / 16:9 / 1:1 / 4:3 / 3:4 / 21:9 / auto
+    generate_audio: bool = False
+    end_image_url: str | None = None
+    seed: int | None = None
+
+
+@app.post("/api/seedance/submit")
+def seedance_submit(body: SeedanceSubmitReq, request: Request):
+    auth_svc.require_user(request)
+    if not body.prompt.strip() or not body.image_url.strip():
+        raise HTTPException(400, "prompt + image_url 필수")
+    args = {
+        "prompt": body.prompt.strip(),
+        "image_url": body.image_url,
+        "resolution": body.resolution,
+        "duration": body.duration,
+        "aspect_ratio": body.aspect_ratio,
+        "generate_audio": body.generate_audio,
+    }
+    if body.end_image_url:
+        args["end_image_url"] = body.end_image_url
+    if body.seed is not None:
+        args["seed"] = body.seed
+    r = requests.post(
+        f"https://queue.fal.run/{_SEEDANCE_MODEL}",
+        headers=_fal_headers(json=True),
+        json=args, timeout=30,
+    )
+    if r.status_code not in (200, 202):
+        logger.warning("[seedance/submit] HTTP %s: %s", r.status_code, r.text[:300])
+        raise HTTPException(r.status_code, r.text[:300])
+    data = r.json()
+    return {
+        "request_id": data.get("request_id"),
+        "status_url": data.get("status_url"),
+        "response_url": data.get("response_url"),
+        "queue_position": data.get("queue_position"),
+    }
+
+
+@app.get("/api/seedance/status")
+def seedance_status(request_id: str, request: Request):
+    """fal 상태 조회. COMPLETED 면 result 도 같이 fetch 해서 video_url 반환."""
+    auth_svc.require_user(request)
+    if not request_id:
+        raise HTTPException(400, "request_id 필수")
+    # status URL — queue 응답 포맷 그대로 재구성 (모델별 prefix 포함)
+    status_url = f"https://queue.fal.run/{_SEEDANCE_MODEL}/requests/{request_id}/status"
+    result_url = f"https://queue.fal.run/{_SEEDANCE_MODEL}/requests/{request_id}"
+    sr = requests.get(status_url, headers=_fal_headers(json=False), timeout=10)
+    if sr.status_code != 200:
+        # fal queue 가 모델 prefix 없이 응답하는 경우도 있음 — fallback
+        logger.warning("[seedance/status] %s: %s", sr.status_code, sr.text[:200])
+        raise HTTPException(sr.status_code, sr.text[:200])
+    st = sr.json()
+    status = st.get("status")
+    out = {
+        "status": status,
+        "queue_position": st.get("queue_position"),
+        "logs": st.get("logs") or [],
+        "metrics": st.get("metrics") or {},
+    }
+    if status == "COMPLETED":
+        rr = requests.get(result_url, headers=_fal_headers(json=False), timeout=15)
+        if rr.status_code == 200:
+            res = rr.json()
+            out["result"] = res
+            v = (res.get("video") or {}) if isinstance(res, dict) else {}
+            out["video_url"] = v.get("url")
+            out["seed"] = res.get("seed") if isinstance(res, dict) else None
+        else:
+            out["result_error"] = rr.text[:200]
+    return out
+
+
 # ── Serve built frontend (must be last: catches all non-API routes) ──
 _PUBLIC_DIR = Path(__file__).parent.parent / "web" / "dist"
 

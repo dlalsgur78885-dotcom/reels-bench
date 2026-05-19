@@ -6385,6 +6385,7 @@ async def seedance_create_character(request: Request):
         "name": name,
         "description": description,
         "image_url": image_url,
+        "image_urls": [image_url],
         "meta": {"file_size": len(content), "filename": fn},
     }
     ins = _r.post(
@@ -6443,6 +6444,119 @@ def seedance_delete_character(cid: str, request: Request):
     if r.status_code not in (200, 204):
         raise HTTPException(r.status_code, r.text[:300])
     return {"deleted": True}
+
+
+def _seedance_char_owned(cid: str, me_id: str) -> dict:
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.get(
+        f"{SUPA}/rest/v1/seedance_characters?id=eq.{cid}&created_by=eq.{me_id}"
+        f"&archived_at=is.null&select=*&limit=1",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+    ).json() or []
+    if not r:
+        raise HTTPException(404, "인물 없음")
+    return r[0]
+
+
+@app.post("/api/seedance/characters/{cid}/images")
+async def seedance_add_character_image(cid: str, request: Request):
+    """기존 인물에 사진 추가 (multipart: file)."""
+    me = auth_svc.require_user(request)
+    row = _seedance_char_owned(cid, me["id"])
+    form = await request.form()
+    file = form.get("file")
+    if not file or not hasattr(file, "read"):
+        raise HTTPException(400, "file 필수")
+    content = await file.read()
+    if len(content) < 200:
+        raise HTTPException(400, f"이미지 너무 작음 ({len(content)} bytes)")
+
+    import uuid as _uuid
+    img_id = str(_uuid.uuid4())
+    fn = getattr(file, "filename", "") or ""
+    ext = ".jpg"
+    if fn.lower().endswith((".png", ".webp", ".jpeg", ".jpg")):
+        ext = "." + fn.lower().rsplit(".", 1)[1].replace("jpeg", "jpg")
+    path = f"{me['id']}/{cid}-{img_id}{ext}"
+    ct = getattr(file, "content_type", None) or ("image/png" if ext == ".png" else "image/jpeg")
+    ok, err = supabase.storage_upload(_SEEDANCE_CHAR_BUCKET, path, content,
+                                       content_type=ct, upsert=True)
+    if not ok:
+        raise HTTPException(500, f"Storage 업로드 실패: {err}")
+    new_url = supabase.storage_public_url(_SEEDANCE_CHAR_BUCKET, path)
+
+    image_urls = list(row.get("image_urls") or [])
+    if row.get("image_url") and row["image_url"] not in image_urls:
+        image_urls.insert(0, row["image_url"])
+    image_urls.append(new_url)
+
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.patch(
+        f"{SUPA}/rest/v1/seedance_characters?id=eq.{cid}&created_by=eq.{me['id']}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json={"image_urls": image_urls}, timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:300])
+    rows = r.json() if r.status_code == 200 else []
+    return {"added": new_url, "row": rows[0] if rows else None}
+
+
+class SeedanceCharImageOp(BaseModel):
+    url: str
+
+
+@app.post("/api/seedance/characters/{cid}/images/remove")
+def seedance_remove_character_image(cid: str, body: SeedanceCharImageOp, request: Request):
+    me = auth_svc.require_user(request)
+    row = _seedance_char_owned(cid, me["id"])
+    image_urls = [u for u in (row.get("image_urls") or []) if u != body.url]
+    if len(image_urls) == len(row.get("image_urls") or []):
+        raise HTTPException(404, "해당 URL 없음")
+    if not image_urls:
+        raise HTTPException(400, "마지막 사진은 제거 불가 (인물 자체를 삭제해주세요)")
+    primary = row.get("image_url")
+    new_primary = primary if primary in image_urls else image_urls[0]
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.patch(
+        f"{SUPA}/rest/v1/seedance_characters?id=eq.{cid}&created_by=eq.{me['id']}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json={"image_urls": image_urls, "image_url": new_primary}, timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:300])
+    rows = r.json() if r.status_code == 200 else []
+    return {"removed": body.url, "row": rows[0] if rows else None}
+
+
+@app.post("/api/seedance/characters/{cid}/images/primary")
+def seedance_set_primary_image(cid: str, body: SeedanceCharImageOp, request: Request):
+    me = auth_svc.require_user(request)
+    row = _seedance_char_owned(cid, me["id"])
+    urls = list(row.get("image_urls") or [])
+    if body.url not in urls:
+        raise HTTPException(404, "해당 URL이 사진 목록에 없음")
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.patch(
+        f"{SUPA}/rest/v1/seedance_characters?id=eq.{cid}&created_by=eq.{me['id']}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json={"image_url": body.url}, timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:300])
+    rows = r.json() if r.status_code == 200 else []
+    return {"primary": body.url, "row": rows[0] if rows else None}
 
 
 # ── Serve built frontend (must be last: catches all non-API routes) ──

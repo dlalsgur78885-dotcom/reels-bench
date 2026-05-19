@@ -6,10 +6,16 @@ type Character = {
   id: string
   name: string | null
   description: string | null
-  image_url: string
+  image_url: string             // primary/cover
+  image_urls: string[]          // 전체 사진 리스트
   use_count: number
   created_at: string
   meta: any
+}
+
+function imageList(c: Character): string[] {
+  const arr = (c.image_urls && c.image_urls.length > 0) ? c.image_urls : [c.image_url]
+  return arr.filter(Boolean)
 }
 
 export default function SeedanceCharacters() {
@@ -28,6 +34,7 @@ export default function SeedanceCharacters() {
   const [uploadName, setUploadName] = useState('')
   const [uploadDesc, setUploadDesc] = useState('')
   const [uploading, setUploading] = useState(false)
+  const [addingImage, setAddingImage] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => { load() }, [])
@@ -99,9 +106,59 @@ export default function SeedanceCharacters() {
     }
   }
 
+  const replaceCharacter = (updated: Character) => {
+    setItems(prev => prev.map(x => x.id === updated.id ? updated : x))
+    if (selected?.id === updated.id) setSelected(updated)
+  }
+
+  const addImage = async (c: Character, file: File) => {
+    if (addingImage) return
+    setAddingImage(true)
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      const r = await authedFetch(`/api/seedance/characters/${c.id}/images`, { method: 'POST', body: fd })
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`)
+      const data = await r.json()
+      if (data.row) replaceCharacter(data.row as Character)
+    } catch (e: any) {
+      alert('사진 추가 실패: ' + (e?.message || e))
+    } finally { setAddingImage(false) }
+  }
+
+  const removeImage = async (c: Character, url: string) => {
+    if (!confirm('이 사진을 제거할까요?')) return
+    try {
+      const r = await authedFetch(`/api/seedance/characters/${c.id}/images/remove`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`)
+      const data = await r.json()
+      if (data.row) replaceCharacter(data.row as Character)
+    } catch (e: any) {
+      alert('사진 제거 실패: ' + (e?.message || e))
+    }
+  }
+
+  const setPrimary = async (c: Character, url: string) => {
+    try {
+      const r = await authedFetch(`/api/seedance/characters/${c.id}/images/primary`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`)
+      const data = await r.json()
+      if (data.row) replaceCharacter(data.row as Character)
+    } catch (e: any) {
+      alert('대표 사진 변경 실패: ' + (e?.message || e))
+    }
+  }
+
   const useInGen = (c: Character) => {
+    const urls = imageList(c)
     sessionStorage.setItem('seedance_pending_character', JSON.stringify({
-      id: c.id, image_url: c.image_url, name: c.name,
+      id: c.id, image_url: c.image_url, image_urls: urls, name: c.name,
     }))
     sessionStorage.setItem('seedance_pending_mode', 'reference')
     navigate('/seedance')
@@ -212,8 +269,14 @@ export default function SeedanceCharacters() {
                     whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {c.name || <span style={{ color: 'var(--text-muted)' }}>(이름 없음)</span>}
                   </div>
-                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
-                    사용 {c.use_count}회
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2,
+                    display: 'flex', justifyContent: 'space-between' }}>
+                    <span>사용 {c.use_count}회</span>
+                    {imageList(c).length > 1 && (
+                      <span style={{ color: 'var(--accent)', fontWeight: 700 }}>
+                        📷 {imageList(c).length}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -243,7 +306,54 @@ export default function SeedanceCharacters() {
             </div>
 
             <img src={selected.image_url} alt={selected.name || ''}
-              style={{ width: '100%', borderRadius: 8, background: '#000', marginBottom: 10 }} />
+              style={{ width: '100%', borderRadius: 8, background: '#000', marginBottom: 8 }} />
+
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+                <Label>사진 ({imageList(selected).length}장)</Label>
+                <label htmlFor={`add-img-${selected.id}`}
+                  style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)',
+                    border: '1px solid var(--accent)', borderRadius: 4,
+                    padding: '3px 8px', cursor: addingImage ? 'wait' : 'pointer',
+                    opacity: addingImage ? 0.5 : 1 }}>
+                  {addingImage ? '추가 중…' : '+ 사진 추가'}
+                </label>
+                <input id={`add-img-${selected.id}`} type="file" accept="image/*"
+                  disabled={addingImage}
+                  onChange={e => {
+                    const f = e.target.files?.[0]
+                    if (f) addImage(selected, f)
+                    e.target.value = ''
+                  }}
+                  style={{ display: 'none' }} />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(68px, 1fr))', gap: 6 }}>
+                {imageList(selected).map((u, i) => (
+                  <div key={u + i} style={{ position: 'relative' }}>
+                    <img src={u} alt=""
+                      onClick={() => u !== selected.image_url && setPrimary(selected, u)}
+                      title={u === selected.image_url ? '대표 사진' : '클릭해서 대표로 지정'}
+                      style={{ width: '100%', aspectRatio: '1', objectFit: 'cover',
+                        border: u === selected.image_url ? '2px solid var(--accent)' : '1px solid var(--border)',
+                        borderRadius: 4, background: '#000',
+                        cursor: u === selected.image_url ? 'default' : 'pointer' }} />
+                    {u === selected.image_url && (
+                      <span style={{ position: 'absolute', top: 2, left: 2, padding: '1px 4px',
+                        fontSize: 8, fontWeight: 700, borderRadius: 2,
+                        background: 'var(--accent)', color: '#fff' }}>대표</span>
+                    )}
+                    {imageList(selected).length > 1 && (
+                      <button onClick={() => removeImage(selected, u)}
+                        title="이 사진 제거"
+                        style={{ position: 'absolute', top: 2, right: 2, padding: '0 4px',
+                          fontSize: 10, fontWeight: 700, lineHeight: '14px',
+                          background: 'rgba(0,0,0,0.6)', color: '#fff',
+                          border: 'none', borderRadius: 2, cursor: 'pointer' }}>×</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
 
             <Label>메모</Label>
             {editingName ? (

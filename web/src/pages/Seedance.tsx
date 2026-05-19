@@ -62,7 +62,8 @@ export default function Seedance() {
   const [savingPrompt, setSavingPrompt] = useState(false)
   const [promptSaved, setPromptSaved] = useState(false)
   // 라이브러리에서 가져온 인물 (reference 모드 시작 슬롯에 대입)
-  const [pendingCharacterUrl, setPendingCharacterUrl] = useState<string>('')
+  const [pendingCharacterUrls, setPendingCharacterUrls] = useState<string[]>([])
+  const pendingCharacterUrl = pendingCharacterUrls[0] || ''
   // 마지막 생성 메타 (저장 시 같이 보냄)
   const lastMetaRef = useRef<{ startUrl: string; endUrl: string }>({ startUrl: '', endUrl: '' })
 
@@ -92,8 +93,11 @@ export default function Seedance() {
     if (pendingChar) {
       try {
         const obj = JSON.parse(pendingChar)
-        if (obj?.image_url) {
-          setPendingCharacterUrl(obj.image_url)
+        const urls: string[] = Array.isArray(obj?.image_urls) && obj.image_urls.length > 0
+          ? obj.image_urls
+          : (obj?.image_url ? [obj.image_url] : [])
+        if (urls.length > 0) {
+          setPendingCharacterUrls(urls)
           setGenMode('reference')
         }
       } catch {}
@@ -200,11 +204,22 @@ export default function Seedance() {
     try {
       startTicker()
       setStatus(mode === 'blog' || useLibChar ? 'importing' : 'uploading')
-      // 라이브러리 인물 사용 시 — 이미 우리 Supabase Storage public URL, fal에 직접 넘겨도 됨.
-      // 일관성 위해 import-image 거쳐 fal storage로 옮긴다 (fal-fetchable URL 보장).
-      const startUrl = (mode === 'blog' || useLibChar)
-        ? await importRemoteImage(startInput)
-        : await uploadLocalFile(startFile!)
+
+      // 라이브러리 인물 멀티 — pendingCharacterUrls 전부 import 후 ref 배열로 함께 전달
+      let charUrls: string[] = []
+      if (useLibChar && pendingCharacterUrls.length > 0) {
+        // reference-to-video 는 최대 9장이라 잘림 (8 + 배경 1)
+        const slice = pendingCharacterUrls.slice(0, 8)
+        for (const u of slice) {
+          charUrls.push(await importRemoteImage(u))
+        }
+      }
+
+      const startUrl = useLibChar
+        ? (charUrls[0] || '')
+        : (mode === 'blog'
+            ? await importRemoteImage(startInput)
+            : await uploadLocalFile(startFile!))
       let endUrl = ''
       if (mode === 'blog' && endInput) {
         endUrl = await importRemoteImage(endInput)
@@ -219,8 +234,11 @@ export default function Seedance() {
         aspect_ratio: aspectRatio, generate_audio: generateAudio,
       }
       if (genMode === 'reference') {
-        // 인물 → @Image1, 배경 → @Image2
-        payload.reference_image_urls = [startUrl, endUrl].filter(Boolean)
+        // 라이브러리 인물 N장 (@Image1..@ImageN) + 배경 (@ImageN+1)
+        // 라이브러리 미사용이면 [시작(인물), 끝(배경)] 2장
+        const refs = useLibChar ? [...charUrls] : [startUrl]
+        if (endUrl) refs.push(endUrl)
+        payload.reference_image_urls = refs
       } else {
         payload.image_url = startUrl
         if (endUrl) payload.end_image_url = endUrl
@@ -324,13 +342,28 @@ export default function Seedance() {
       {pendingCharacterUrl && genMode === 'reference' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 10, marginBottom: 12,
           background: 'rgba(99,102,241,0.10)', border: '1px solid var(--accent)', borderRadius: 6 }}>
-          <img src={pendingCharacterUrl} alt="인물"
-            style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 4 }} />
-          <div style={{ flex: 1, fontSize: 12 }}>
-            <div style={{ fontWeight: 700, color: 'var(--accent)' }}>라이브러리 인물 사용 중</div>
-            <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>인물은 이걸 쓰고, 아래에선 배경만 선택하면 됩니다.</div>
+          <div style={{ display: 'flex', gap: 2 }}>
+            {pendingCharacterUrls.slice(0, 4).map((u, i) => (
+              <img key={u + i} src={u} alt=""
+                style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 4 }} />
+            ))}
+            {pendingCharacterUrls.length > 4 && (
+              <span style={{ width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 11, fontWeight: 700, background: 'var(--bg-base)',
+                border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-muted)' }}>
+                +{pendingCharacterUrls.length - 4}
+              </span>
+            )}
           </div>
-          <button onClick={() => setPendingCharacterUrl('')}
+          <div style={{ flex: 1, fontSize: 12 }}>
+            <div style={{ fontWeight: 700, color: 'var(--accent)' }}>
+              라이브러리 인물 사용 중 ({pendingCharacterUrls.length}장)
+            </div>
+            <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+              인물 reference로 모두 전달, 배경만 아래에서 골라주세요.
+            </div>
+          </div>
+          <button onClick={() => setPendingCharacterUrls([])}
             style={{ padding: '4px 10px', fontSize: 11,
               background: 'transparent', color: 'var(--text-secondary)',
               border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer' }}>해제</button>

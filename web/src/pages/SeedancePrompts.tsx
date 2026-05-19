@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { authedFetch } from '../api'
+import { useMe } from '../auth'
+import SeedanceShareModal from '../components/SeedanceShareModal'
 
 type Prompt = {
   id: string
@@ -10,6 +12,11 @@ type Prompt = {
   use_count: number
   created_at: string
   updated_at: string
+  created_by?: string
+  _shared?: boolean
+  _permission?: 'view' | 'edit'
+  _creator_name?: string
+  _creator_email?: string
 }
 
 const MODES = [
@@ -20,7 +27,9 @@ const MODES = [
 
 export default function SeedancePrompts() {
   const navigate = useNavigate()
+  const me = useMe()
   const [items, setItems] = useState<Prompt[]>([])
+  const [shareModalFor, setShareModalFor] = useState<Prompt | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [filterMode, setFilterMode] = useState<string | null>(null)
@@ -163,16 +172,30 @@ export default function SeedancePrompts() {
                     </span>
                   )}
                 </div>
-                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
-                  사용 {p.use_count}회 · {new Date(p.updated_at || p.created_at).toLocaleString('ko-KR')}
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2,
+                  display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <span>사용 {p.use_count}회 · {new Date(p.updated_at || p.created_at).toLocaleString('ko-KR')}</span>
+                  {p._shared && (
+                    <span title={`${p._creator_name || p._creator_email || ''} 공유`}
+                      style={{ fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
+                        background: 'var(--accent-light)', color: 'var(--accent)',
+                        border: '1px solid var(--accent)' }}>
+                      공유받음
+                    </span>
+                  )}
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button onClick={() => useInGen(p)} style={smBtn}>사용 →</button>
-                <button onClick={() => openEdit(p)} style={smBtnGhost}>수정</button>
+                {!p._shared && <button onClick={() => openEdit(p)} style={smBtnGhost}>수정</button>}
                 <button onClick={() => navigator.clipboard.writeText(p.content)} style={smBtnGhost}>복사</button>
-                <button onClick={() => remove(p)}
-                  style={{ ...smBtnGhost, color: 'var(--error)', borderColor: 'var(--error)' }}>삭제</button>
+                {!p._shared && me && p.created_by === me.id && (
+                  <button onClick={() => setShareModalFor(p)} style={smBtnGhost}>👥 공유</button>
+                )}
+                {!p._shared && (
+                  <button onClick={() => remove(p)}
+                    style={{ ...smBtnGhost, color: 'var(--error)', borderColor: 'var(--error)' }}>삭제</button>
+                )}
               </div>
             </div>
             <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-body)',
@@ -183,6 +206,15 @@ export default function SeedancePrompts() {
           </div>
         ))}
       </div>
+
+      {shareModalFor && (
+        <SeedanceShareModal
+          resourceType="prompts"
+          resourceId={shareModalFor.id}
+          resourceLabel={shareModalFor.name || shareModalFor.content.slice(0, 40)}
+          onClose={() => setShareModalFor(null)}
+        />
+      )}
 
       {/* 편집 모달 */}
       {editing && (

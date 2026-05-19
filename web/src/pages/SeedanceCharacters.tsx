@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { authedFetch } from '../api'
+import { useMe } from '../auth'
+import SeedanceShareModal from '../components/SeedanceShareModal'
 
 type Character = {
   id: string
@@ -10,7 +12,12 @@ type Character = {
   image_urls: string[]          // 전체 사진 리스트
   use_count: number
   created_at: string
+  created_by?: string
   meta: any
+  _shared?: boolean
+  _permission?: 'view' | 'edit'
+  _creator_name?: string
+  _creator_email?: string
 }
 
 function imageList(c: Character): string[] {
@@ -20,7 +27,9 @@ function imageList(c: Character): string[] {
 
 export default function SeedanceCharacters() {
   const navigate = useNavigate()
+  const me = useMe()
   const [items, setItems] = useState<Character[]>([])
+  const [shareModalFor, setShareModalFor] = useState<Character | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<Character | null>(null)
@@ -270,13 +279,23 @@ export default function SeedanceCharacters() {
                     {c.name || <span style={{ color: 'var(--text-muted)' }}>(이름 없음)</span>}
                   </div>
                   <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2,
-                    display: 'flex', justifyContent: 'space-between' }}>
+                    display: 'flex', justifyContent: 'space-between', gap: 4 }}>
                     <span>사용 {c.use_count}회</span>
-                    {imageList(c).length > 1 && (
-                      <span style={{ color: 'var(--accent)', fontWeight: 700 }}>
-                        📷 {imageList(c).length}
-                      </span>
-                    )}
+                    <span style={{ display: 'flex', gap: 4 }}>
+                      {c._shared && (
+                        <span title={`${c._creator_name || c._creator_email || ''} 공유`}
+                          style={{ fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
+                            background: 'var(--accent-light)', color: 'var(--accent)',
+                            border: '1px solid var(--accent)' }}>
+                          공유받음
+                        </span>
+                      )}
+                      {imageList(c).length > 1 && (
+                        <span style={{ color: 'var(--accent)', fontWeight: 700 }}>
+                          📷 {imageList(c).length}
+                        </span>
+                      )}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -377,14 +396,28 @@ export default function SeedanceCharacters() {
                   <button onClick={() => useInGen(selected)} style={smBtn}>🧑 인물로 사용 →</button>
                   <button onClick={() => { navigator.clipboard.writeText(selected.image_url); alert('URL 복사됨') }}
                     style={smBtnGhost}>URL 복사</button>
-                  <button onClick={() => remove(selected)}
-                    style={{ ...smBtnGhost, color: 'var(--error)', borderColor: 'var(--error)' }}>삭제</button>
+                  {!selected._shared && me && selected.created_by === me.id && (
+                    <button onClick={() => setShareModalFor(selected)} style={smBtnGhost}>👥 공유</button>
+                  )}
+                  {!selected._shared && (
+                    <button onClick={() => remove(selected)}
+                      style={{ ...smBtnGhost, color: 'var(--error)', borderColor: 'var(--error)' }}>삭제</button>
+                  )}
                 </>
               )}
             </div>
           </div>
         )}
       </div>
+
+      {shareModalFor && (
+        <SeedanceShareModal
+          resourceType="characters"
+          resourceId={shareModalFor.id}
+          resourceLabel={shareModalFor.name || '인물'}
+          onClose={() => setShareModalFor(null)}
+        />
+      )}
     </div>
   )
 }

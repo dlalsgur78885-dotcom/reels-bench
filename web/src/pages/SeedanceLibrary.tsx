@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { authedFetch } from '../api'
+import { useMe } from '../auth'
+import SeedanceShareModal from '../components/SeedanceShareModal'
 
 type Video = {
   id: string
@@ -15,14 +17,21 @@ type Video = {
   aspect_ratio: string | null
   generate_audio: boolean | null
   created_at: string
+  created_by?: string
   meta: any
+  _shared?: boolean
+  _permission?: 'view' | 'edit'
+  _creator_name?: string
+  _creator_email?: string
 }
 
 const UNCLASSIFIED = '__unclassified__'
 
 export default function SeedanceLibrary() {
   const navigate = useNavigate()
+  const me = useMe()
   const [videos, setVideos] = useState<Video[]>([])
+  const [shareModalFor, setShareModalFor] = useState<Video | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<Video | null>(null)
@@ -232,8 +241,17 @@ export default function SeedanceLibrary() {
                       onClick={() => setSelected(v)}>
                       {v.name || v.prompt?.slice(0, 40) || '제목 없음'}
                     </div>
-                    <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, marginBottom: 6 }}>
-                      {v.resolution || '?'} · {v.duration || '?'}s · {v.aspect_ratio || ''}
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, marginBottom: 6,
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 4 }}>
+                      <span>{v.resolution || '?'} · {v.duration || '?'}s · {v.aspect_ratio || ''}</span>
+                      {v._shared && (
+                        <span title={`${v._creator_name || v._creator_email || ''} 공유`}
+                          style={{ fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
+                            background: 'var(--accent-light)', color: 'var(--accent)',
+                            border: '1px solid var(--accent)' }}>
+                          공유받음
+                        </span>
+                      )}
                     </div>
                     {/* 그룹 picker */}
                     <div style={{ position: 'relative' }}>
@@ -407,14 +425,28 @@ export default function SeedanceLibrary() {
                 style={{ ...smBtn, textDecoration: 'none' }}>↓ 다운로드</a>
               <button onClick={() => { navigator.clipboard.writeText(selected.video_url); alert('URL 복사됨') }}
                 style={smBtnGhost}>URL 복사</button>
-              <button onClick={() => remove(selected)}
-                style={{ ...smBtnGhost, color: 'var(--error)', borderColor: 'var(--error)' }}>
-                삭제
-              </button>
+              {!selected._shared && me && selected.created_by === me.id && (
+                <button onClick={() => setShareModalFor(selected)} style={smBtnGhost}>👥 공유</button>
+              )}
+              {!selected._shared && (
+                <button onClick={() => remove(selected)}
+                  style={{ ...smBtnGhost, color: 'var(--error)', borderColor: 'var(--error)' }}>
+                  삭제
+                </button>
+              )}
             </div>
           </div>
         )}
       </div>
+
+      {shareModalFor && (
+        <SeedanceShareModal
+          resourceType="videos"
+          resourceId={shareModalFor.id}
+          resourceLabel={shareModalFor.name || shareModalFor.prompt?.slice(0, 40) || '제목 없음'}
+          onClose={() => setShareModalFor(null)}
+        />
+      )}
     </div>
   )
 }

@@ -5763,12 +5763,21 @@ def seedance_list_videos(request: Request):
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    perm_by_id = _seedance_shared_ids("seedance_video_shares", "video_id", me["id"])
+    shared_ids = list(perm_by_id.keys())
+    if shared_ids:
+        sids_csv = ",".join(f'"{x}"' for x in shared_ids)
+        flt = f"or=(created_by.eq.{me['id']},id.in.({sids_csv}))"
+    else:
+        flt = f"created_by=eq.{me['id']}"
     r = _r.get(
-        f"{SUPA}/rest/v1/seedance_videos?created_by=eq.{me['id']}&archived_at=is.null"
+        f"{SUPA}/rest/v1/seedance_videos?archived_at=is.null&{flt}"
         f"&select=*&order=created_at.desc",
-        headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+        headers=H, timeout=10,
     )
-    return r.json() if r.status_code == 200 else []
+    rows = r.json() if r.status_code == 200 else []
+    return _seedance_attach_creators(rows, me["id"], perm_by_id)
 
 
 class SeedanceVideoPatch(BaseModel):
@@ -6210,6 +6219,208 @@ def figma_render_status(job_id: str, request: Request):
     return mockup_status(job_id, request)
 
 
+# ── Seedance 공유 공통 헬퍼 ──
+
+def _seedance_shared_ids(share_table: str, target_col: str, me_id: str) -> dict:
+    """내가 공유받은 (target_id → permission) 매핑."""
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    rows = _r.get(
+        f"{SUPA}/rest/v1/{share_table}?shared_with_id=eq.{me_id}"
+        f"&select={target_col},permission",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+    ).json() or []
+    return {r[target_col]: r["permission"] for r in rows}
+
+
+def _seedance_attach_creators(rows: list, me_id: str, perm_by_id: dict):
+    """rows 에 _creator_name, _creator_email, _shared, _permission 부착."""
+    if not rows:
+        return rows
+    creator_ids = list({r["created_by"] for r in rows if r.get("created_by") and r["created_by"] != me_id})
+    creator_by_id: dict = {}
+    if creator_ids:
+        SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+        SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+        _r = supabase.get_session()
+        cids_csv = ",".join(f'"{x}"' for x in creator_ids)
+        prof = _r.get(
+            f"{SUPA}/rest/v1/profiles?id=in.({cids_csv})&select=id,email,display_name",
+            headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+        ).json() or []
+        creator_by_id = {p["id"]: p for p in prof}
+    for r in rows:
+        cb = r.get("created_by")
+        if cb and cb != me_id:
+            p = creator_by_id.get(cb) or {}
+            r["_creator_name"] = p.get("display_name") or ""
+            r["_creator_email"] = p.get("email") or ""
+            r["_shared"] = True
+            r["_permission"] = perm_by_id.get(r["id"], "view")
+    return rows
+
+
+def _seedance_check_share_perm(main_table: str, item_id: str, me: dict, edit: bool = False) -> dict:
+    """item 접근권: owner / admin / share. edit=True면 owner/admin/edit-share만 허용. 못 보면 403/404."""
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    rows = _r.get(
+        f"{SUPA}/rest/v1/{main_table}?id=eq.{item_id}&select=*&limit=1",
+        headers=H, timeout=10,
+    ).json() or []
+    if not rows:
+        raise HTTPException(404, "없음")
+    row = rows[0]
+    if row.get("archived_at"):
+        raise HTTPException(404, "삭제됨")
+    if row.get("created_by") == me["id"] or me.get("role") == "admin":
+        return row
+    share_table = {
+        "seedance_videos": ("seedance_video_shares", "video_id"),
+        "seedance_prompts": ("seedance_prompt_shares", "prompt_id"),
+        "seedance_characters": ("seedance_character_shares", "character_id"),
+    }[main_table]
+    st, tc = share_table
+    s = _r.get(
+        f"{SUPA}/rest/v1/{st}?{tc}=eq.{item_id}&shared_with_id=eq.{me['id']}&select=permission&limit=1",
+        headers=H, timeout=10,
+    ).json() or []
+    if not s:
+        raise HTTPException(403, "권한 없음")
+    if edit and s[0].get("permission") != "edit":
+        raise HTTPException(403, "편집 권한 없음")
+    return row
+
+
+def _seedance_assert_owner(main_table: str, item_id: str, me_id: str):
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    rows = _r.get(
+        f"{SUPA}/rest/v1/{main_table}?id=eq.{item_id}&select=created_by&limit=1",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+    ).json() or []
+    if not rows:
+        raise HTTPException(404, "없음")
+    if rows[0]["created_by"] != me_id:
+        raise HTTPException(403, "공유 관리는 소유자만")
+
+
+class SeedanceShareIn(BaseModel):
+    shared_with_id: str
+    permission: str = "view"   # 'view' | 'edit'
+
+
+def _share_endpoints(main_table: str, share_table: str, target_col: str):
+    """동일 패턴 (list/add/delete) 을 main_table 별로 한 번에 — 라우트 등록은 호출부에서."""
+    def list_shares(item_id: str, me: dict):
+        _seedance_assert_owner(main_table, item_id, me["id"])
+        SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+        SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+        _r = supabase.get_session()
+        H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+        shares = _r.get(
+            f"{SUPA}/rest/v1/{share_table}?{target_col}=eq.{item_id}"
+            f"&select=id,shared_with_id,permission,created_at&order=created_at.desc",
+            headers=H, timeout=10,
+        ).json() or []
+        if not shares:
+            return []
+        ids = [s["shared_with_id"] for s in shares]
+        prof = _r.get(
+            f"{SUPA}/rest/v1/profiles?id=in.({','.join(ids)})&select=id,email,display_name",
+            headers=H, timeout=10,
+        ).json() or []
+        pmap = {p["id"]: p for p in prof}
+        for s in shares:
+            p = pmap.get(s["shared_with_id"]) or {}
+            s["display_name"] = p.get("display_name") or (p.get("email") or "").split("@")[0]
+            s["email"] = p.get("email")
+        return shares
+
+    def add_share(item_id: str, body: SeedanceShareIn, me: dict):
+        _seedance_assert_owner(main_table, item_id, me["id"])
+        if body.shared_with_id == me["id"]:
+            raise HTTPException(400, "본인에게는 공유할 수 없습니다")
+        perm = body.permission if body.permission in ("view", "edit") else "view"
+        SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+        SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+        _r = supabase.get_session()
+        r = _r.post(
+            f"{SUPA}/rest/v1/{share_table}?on_conflict={target_col},shared_with_id",
+            headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                     "Content-Type": "application/json",
+                     "Prefer": "resolution=merge-duplicates,return=representation"},
+            json={target_col: item_id, "shared_with_id": body.shared_with_id,
+                  "shared_by": me["id"], "permission": perm},
+            timeout=10,
+        )
+        if r.status_code not in (200, 201):
+            raise HTTPException(r.status_code, r.text[:300])
+        return r.json()[0] if r.json() else {}
+
+    def remove_share(item_id: str, share_id: str, me: dict):
+        _seedance_assert_owner(main_table, item_id, me["id"])
+        SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+        SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+        _r = supabase.get_session()
+        _r.delete(
+            f"{SUPA}/rest/v1/{share_table}?id=eq.{share_id}&{target_col}=eq.{item_id}",
+            headers={"apikey": SK, "Authorization": f"Bearer {SK}", "Prefer": "return=minimal"},
+            timeout=10,
+        )
+        return {"deleted": True}
+
+    return list_shares, add_share, remove_share
+
+
+_videos_shares = _share_endpoints("seedance_videos", "seedance_video_shares", "video_id")
+_prompts_shares = _share_endpoints("seedance_prompts", "seedance_prompt_shares", "prompt_id")
+_chars_shares = _share_endpoints("seedance_characters", "seedance_character_shares", "character_id")
+
+
+@app.get("/api/seedance/videos/{vid}/shares")
+def seedance_video_shares_list(vid: str, request: Request):
+    return _videos_shares[0](vid, auth_svc.require_user(request))
+
+@app.post("/api/seedance/videos/{vid}/shares")
+def seedance_video_share_add(vid: str, body: SeedanceShareIn, request: Request):
+    return _videos_shares[1](vid, body, auth_svc.require_user(request))
+
+@app.delete("/api/seedance/videos/{vid}/shares/{share_id}")
+def seedance_video_share_del(vid: str, share_id: str, request: Request):
+    return _videos_shares[2](vid, share_id, auth_svc.require_user(request))
+
+
+@app.get("/api/seedance/prompts/{pid}/shares")
+def seedance_prompt_shares_list(pid: str, request: Request):
+    return _prompts_shares[0](pid, auth_svc.require_user(request))
+
+@app.post("/api/seedance/prompts/{pid}/shares")
+def seedance_prompt_share_add(pid: str, body: SeedanceShareIn, request: Request):
+    return _prompts_shares[1](pid, body, auth_svc.require_user(request))
+
+@app.delete("/api/seedance/prompts/{pid}/shares/{share_id}")
+def seedance_prompt_share_del(pid: str, share_id: str, request: Request):
+    return _prompts_shares[2](pid, share_id, auth_svc.require_user(request))
+
+
+@app.get("/api/seedance/characters/{cid}/shares")
+def seedance_char_shares_list(cid: str, request: Request):
+    return _chars_shares[0](cid, auth_svc.require_user(request))
+
+@app.post("/api/seedance/characters/{cid}/shares")
+def seedance_char_share_add(cid: str, body: SeedanceShareIn, request: Request):
+    return _chars_shares[1](cid, body, auth_svc.require_user(request))
+
+@app.delete("/api/seedance/characters/{cid}/shares/{share_id}")
+def seedance_char_share_del(cid: str, share_id: str, request: Request):
+    return _chars_shares[2](cid, share_id, auth_svc.require_user(request))
+
+
 # ── Seedance Prompts / Characters 라이브러리 ──
 
 _SEEDANCE_CHAR_BUCKET = "seedance-characters"
@@ -6227,12 +6438,21 @@ def seedance_list_prompts(request: Request):
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    perm_by_id = _seedance_shared_ids("seedance_prompt_shares", "prompt_id", me["id"])
+    shared_ids = list(perm_by_id.keys())
+    if shared_ids:
+        sids_csv = ",".join(f'"{x}"' for x in shared_ids)
+        flt = f"or=(created_by.eq.{me['id']},id.in.({sids_csv}))"
+    else:
+        flt = f"created_by=eq.{me['id']}"
     r = _r.get(
-        f"{SUPA}/rest/v1/seedance_prompts?created_by=eq.{me['id']}&archived_at=is.null"
+        f"{SUPA}/rest/v1/seedance_prompts?archived_at=is.null&{flt}"
         f"&select=*&order=created_at.desc",
-        headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+        headers=H, timeout=10,
     )
-    return r.json() if r.status_code == 200 else []
+    rows = r.json() if r.status_code == 200 else []
+    return _seedance_attach_creators(rows, me["id"], perm_by_id)
 
 
 @app.post("/api/seedance/prompts")
@@ -6340,12 +6560,21 @@ def seedance_list_characters(request: Request):
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    perm_by_id = _seedance_shared_ids("seedance_character_shares", "character_id", me["id"])
+    shared_ids = list(perm_by_id.keys())
+    if shared_ids:
+        sids_csv = ",".join(f'"{x}"' for x in shared_ids)
+        flt = f"or=(created_by.eq.{me['id']},id.in.({sids_csv}))"
+    else:
+        flt = f"created_by=eq.{me['id']}"
     r = _r.get(
-        f"{SUPA}/rest/v1/seedance_characters?created_by=eq.{me['id']}&archived_at=is.null"
+        f"{SUPA}/rest/v1/seedance_characters?archived_at=is.null&{flt}"
         f"&select=*&order=created_at.desc",
-        headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+        headers=H, timeout=10,
     )
-    return r.json() if r.status_code == 200 else []
+    rows = r.json() if r.status_code == 200 else []
+    return _seedance_attach_creators(rows, me["id"], perm_by_id)
 
 
 @app.post("/api/seedance/characters")

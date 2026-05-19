@@ -2,9 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import { authedFetch } from '../api'
 
 type Status = 'idle' | 'importing' | 'uploading' | 'submitting' | 'queued' | 'in_progress' | 'completed' | 'failed'
-type Mode = 'blog' | 'upload'
+type Mode = 'blog' | 'upload'        // 이미지 소스
+type GenMode = 'transition' | 'reference'   // 생성 모드
 type BlogImage = { url: string; alt: string }
 type Slot = 'start' | 'end'
+
+const TRANSITION_PROMPT = '자연스러운 카메라 무빙으로 첫 장면에서 두 번째 장면으로 부드럽게 전환'
+const REFERENCE_PROMPT = '@Image1 인물이 @Image2 배경 안에서 자연스럽게 행동하는 모습'
 
 const RESOLUTIONS = ['480p', '720p', '1080p'] as const
 const DURATIONS = ['4', '5', '6', '8', '10', '12', '15'] as const
@@ -12,6 +16,7 @@ const ASPECTS = ['9:16', '16:9', '1:1', '4:3', '3:4', '21:9', 'auto'] as const
 
 export default function Seedance() {
   const [mode, setMode] = useState<Mode>('blog')
+  const [genMode, setGenMode] = useState<GenMode>('transition')
 
   // 블로그 모드
   const [blogUrl, setBlogUrl] = useState('')
@@ -29,7 +34,13 @@ export default function Seedance() {
   const [endPreview, setEndPreview] = useState('')
 
   // 공통 옵션
-  const [prompt, setPrompt] = useState('자연스러운 카메라 무빙으로 첫 장면에서 두 번째 장면으로 부드럽게 전환')
+  const [prompt, setPrompt] = useState(TRANSITION_PROMPT)
+  // genMode 변경 시 prompt 기본값 자동 교체 (사용자가 직접 입력한 경우는 유지)
+  const [promptTouched, setPromptTouched] = useState(false)
+  useEffect(() => {
+    if (promptTouched) return
+    setPrompt(genMode === 'reference' ? REFERENCE_PROMPT : TRANSITION_PROMPT)
+  }, [genMode, promptTouched])
   const [resolution, setResolution] = useState<typeof RESOLUTIONS[number]>('1080p')
   const [duration, setDuration] = useState<typeof DURATIONS[number]>('5')
   const [aspectRatio, setAspectRatio] = useState<typeof ASPECTS[number]>('9:16')
@@ -142,11 +153,15 @@ export default function Seedance() {
     let startInput = ''
     let endInput = ''
     if (mode === 'blog') {
-      if (!startSrc) { setError('시작 이미지를 선택하세요'); return }
+      if (!startSrc) { setError(genMode === 'reference' ? '인물 이미지를 선택하세요' : '시작 이미지를 선택하세요'); return }
       startInput = startSrc
       endInput = endSrc
     } else {
-      if (!startFile) { setError('시작 이미지를 업로드하세요'); return }
+      if (!startFile) { setError(genMode === 'reference' ? '인물 이미지를 업로드하세요' : '시작 이미지를 업로드하세요'); return }
+    }
+    if (genMode === 'reference') {
+      const hasSecond = mode === 'blog' ? !!endSrc : !!endFile
+      if (!hasSecond) { setError('배경 이미지도 선택/업로드하세요'); return }
     }
 
     try {
@@ -165,10 +180,16 @@ export default function Seedance() {
 
       setStatus('submitting')
       const payload: any = {
-        prompt, image_url: startUrl, resolution, duration,
+        prompt, mode: genMode, resolution, duration,
         aspect_ratio: aspectRatio, generate_audio: generateAudio,
       }
-      if (endUrl) payload.end_image_url = endUrl
+      if (genMode === 'reference') {
+        // 인물 → @Image1, 배경 → @Image2
+        payload.reference_image_urls = [startUrl, endUrl].filter(Boolean)
+      } else {
+        payload.image_url = startUrl
+        if (endUrl) payload.end_image_url = endUrl
+      }
 
       const sr = await authedFetch('/api/seedance/submit', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -220,9 +241,13 @@ export default function Seedance() {
           video_url: videoUrl,
           name: saveName.trim() || null,
           prompt,
+          mode: genMode,
           source_blog_url: mode === 'blog' ? blogUrl : null,
           start_image_url: lastMetaRef.current.startUrl,
           end_image_url: lastMetaRef.current.endUrl || null,
+          reference_image_urls: genMode === 'reference'
+            ? [lastMetaRef.current.startUrl, lastMetaRef.current.endUrl].filter(Boolean)
+            : null,
           resolution, duration, aspect_ratio: aspectRatio,
           generate_audio: generateAudio, seed, request_id: requestId,
         }),
@@ -254,13 +279,37 @@ export default function Seedance() {
       <div style={{ marginBottom: 18 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Seedance 2.0 — 이미지 → 영상</h1>
         <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 0' }}>
-          이미지 2장으로 시작→끝 전환 영상 생성. 1080p 4초 ≈ 4–5분. 화질은 출력 해상도 + 입력 이미지 해상도에 비례.
+          {genMode === 'reference'
+            ? '인물 + 배경 합성 — 인물 이미지를 배경 안에 자연스럽게 배치한 영상. 1080p 4초 ≈ 4–5분.'
+            : '시작 → 끝 전환 영상 — 이미지 2장을 부드럽게 잇는 영상. 1080p 4초 ≈ 4–5분.'}
         </p>
+      </div>
+
+      {/* 생성 모드 토글 */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+        {([
+          ['transition', '🎬 전환 (시작 + 끝)', '이미지 2장을 자연스럽게 잇는 영상'],
+          ['reference', '🧑 합성 (인물 + 배경)', '인물을 배경 장면 안에 배치'],
+        ] as const).map(([m, label, sub]) => (
+          <button key={m} type="button" onClick={() => !busy && setGenMode(m as GenMode)} disabled={busy}
+            title={sub}
+            style={{
+              flex: 1, padding: '10px 12px', textAlign: 'left',
+              borderRadius: 6, cursor: busy ? 'wait' : 'pointer',
+              border: `2px solid ${genMode === m ? 'var(--accent)' : 'var(--border)'}`,
+              background: genMode === m ? 'var(--accent-light)' : 'var(--bg-surface)',
+              color: 'var(--text-body)', opacity: busy ? 0.6 : 1,
+            }}>
+            <div style={{ fontSize: 13, fontWeight: 700,
+              color: genMode === m ? 'var(--accent)' : 'var(--text-primary)' }}>{label}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{sub}</div>
+          </button>
+        ))}
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: 18 }}>
         <div style={cardSt}>
-          {/* 모드 선택 */}
+          {/* 이미지 소스 모드 (블로그 / 업로드) */}
           <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
             {(['blog', 'upload'] as const).map(m => (
               <button key={m} onClick={() => !busy && setMode(m)} disabled={busy}
@@ -303,7 +352,9 @@ export default function Seedance() {
               {blogImages.length > 0 && (
                 <>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
-                    <Label>이미지 클릭으로 선택 (1=시작 / 2=끝)</Label>
+                    <Label>{genMode === 'reference'
+                      ? '이미지 클릭으로 선택 (1=인물 / 2=배경)'
+                      : '이미지 클릭으로 선택 (1=시작 / 2=끝)'}</Label>
                     <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{blogImages.length}장 발견</span>
                   </div>
                   <div style={{
@@ -332,7 +383,9 @@ export default function Seedance() {
                               fontSize: 10, fontWeight: 700, borderRadius: 3,
                               background: isStart ? 'var(--success, #10b981)' : 'var(--accent)',
                               color: '#fff',
-                            }}>{isStart ? '시작' : '끝'}</span>
+                            }}>{genMode === 'reference'
+                              ? (isStart ? '인물' : '배경')
+                              : (isStart ? '시작' : '끝')}</span>
                           )}
                         </div>
                       )
@@ -344,9 +397,10 @@ export default function Seedance() {
           ) : (
             <>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <FileSlot label="시작 프레임" required preview={startPreview}
+                <FileSlot label={genMode === 'reference' ? '인물' : '시작 프레임'} required preview={startPreview}
                   onPick={(f) => onPickFile('start', f)} disabled={busy} />
-                <FileSlot label="끝 프레임 (선택)" preview={endPreview}
+                <FileSlot label={genMode === 'reference' ? '배경' : '끝 프레임 (선택)'}
+                  required={genMode === 'reference'} preview={endPreview}
                   onPick={(f) => onPickFile('end', f)} disabled={busy} />
               </div>
             </>
@@ -354,7 +408,8 @@ export default function Seedance() {
 
           <div style={{ marginTop: 14 }}>
             <Label>프롬프트</Label>
-            <textarea value={prompt} onChange={e => setPrompt(e.target.value)} disabled={busy}
+            <textarea value={prompt}
+              onChange={e => { setPrompt(e.target.value); setPromptTouched(true) }} disabled={busy}
               rows={3} style={textareaSt} />
           </div>
 

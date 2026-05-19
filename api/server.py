@@ -5343,9 +5343,11 @@ def tts_download_legacy(filename: str):
 
 
 # ── Seedance 2.0 (fal.ai image→video) ──
-_SEEDANCE_MODEL = "bytedance/seedance-2.0/image-to-video"
+_SEEDANCE_MODEL_I2V = "bytedance/seedance-2.0/image-to-video"          # 시작+끝 전환
+_SEEDANCE_MODEL_REF = "bytedance/seedance-2.0/reference-to-video"      # 인물+배경 합성 (@Image1, @Image2)
+_SEEDANCE_MODEL = _SEEDANCE_MODEL_I2V  # 호환
 # fal queue는 submit은 full 모델 path, status/result는 app namespace(끝 변형 제외)만 받음
-_SEEDANCE_APP = "/".join(_SEEDANCE_MODEL.split("/")[:-1])
+_SEEDANCE_APP = "/".join(_SEEDANCE_MODEL_I2V.split("/")[:-1])
 
 
 def _normalize_naver_blog_url(url: str) -> str:
@@ -5610,39 +5612,57 @@ async def seedance_upload(request: Request):
 
 class SeedanceSubmitReq(BaseModel):
     prompt: str
-    image_url: str
-    resolution: str = "1080p"  # 480p / 720p / 1080p — 출력 해상도 (높을수록 비용↑)
-    duration: str = "4"  # 4 ~ 15 (str) 또는 'auto'
-    aspect_ratio: str = "9:16"  # 9:16 / 16:9 / 1:1 / 4:3 / 3:4 / 21:9 / auto
+    mode: str = "transition"      # 'transition' (img→video, 시작+끝) | 'reference' (인물+배경 합성)
+    image_url: str = ""            # transition 모드 — 시작 프레임
+    end_image_url: str | None = None  # transition 모드 — 끝 프레임 (선택)
+    reference_image_urls: list[str] | None = None  # reference 모드 — 최대 9장 (@Image1, @Image2 ...)
+    resolution: str = "1080p"
+    duration: str = "4"
+    aspect_ratio: str = "9:16"
     generate_audio: bool = False
-    end_image_url: str | None = None
     seed: int | None = None
 
 
 @app.post("/api/seedance/submit")
 def seedance_submit(body: SeedanceSubmitReq, request: Request):
     auth_svc.require_user(request)
-    if not body.prompt.strip() or not body.image_url.strip():
-        raise HTTPException(400, "prompt + image_url 필수")
-    args = {
+    mode = body.mode if body.mode in ("transition", "reference") else "transition"
+    if not body.prompt.strip():
+        raise HTTPException(400, "prompt 필수")
+
+    common = {
         "prompt": body.prompt.strip(),
-        "image_url": body.image_url,
         "resolution": body.resolution,
         "duration": body.duration,
         "aspect_ratio": body.aspect_ratio,
         "generate_audio": body.generate_audio,
     }
-    if body.end_image_url:
-        args["end_image_url"] = body.end_image_url
     if body.seed is not None:
-        args["seed"] = body.seed
+        common["seed"] = body.seed
+
+    if mode == "reference":
+        refs = [u for u in (body.reference_image_urls or []) if u]
+        if not refs:
+            raise HTTPException(400, "reference 모드: reference_image_urls 1장 이상 필요 (최대 9장)")
+        if len(refs) > 9:
+            raise HTTPException(400, "reference 이미지는 최대 9장")
+        args = {**common, "image_urls": refs}
+        model = _SEEDANCE_MODEL_REF
+    else:
+        if not body.image_url.strip():
+            raise HTTPException(400, "transition 모드: image_url 필수")
+        args = {**common, "image_url": body.image_url}
+        if body.end_image_url:
+            args["end_image_url"] = body.end_image_url
+        model = _SEEDANCE_MODEL_I2V
+
     r = requests.post(
-        f"https://queue.fal.run/{_SEEDANCE_MODEL}",
+        f"https://queue.fal.run/{model}",
         headers=_fal_headers(json=True),
         json=args, timeout=30,
     )
     if r.status_code not in (200, 202):
-        logger.warning("[seedance/submit] HTTP %s: %s", r.status_code, r.text[:300])
+        logger.warning("[seedance/submit] mode=%s HTTP %s: %s", mode, r.status_code, r.text[:300])
         body_txt = r.text[:300]
         if "Exhausted balance" in body_txt or "User is locked" in body_txt:
             raise HTTPException(402, "fal.ai 잔액 소진 — fal.ai/dashboard/billing 에서 충전 후 재시도")
@@ -5653,6 +5673,7 @@ def seedance_submit(body: SeedanceSubmitReq, request: Request):
         "status_url": data.get("status_url"),
         "response_url": data.get("response_url"),
         "queue_position": data.get("queue_position"),
+        "mode": mode,
     }
 
 
@@ -5666,6 +5687,8 @@ class SeedanceSaveReq(BaseModel):
     source_blog_url: str | None = None
     start_image_url: str | None = None
     end_image_url: str | None = None
+    reference_image_urls: list[str] | None = None  # reference 모드 — 사용한 모든 ref
+    mode: str | None = None   # 'transition' | 'reference'
     resolution: str | None = None
     duration: str | None = None
     aspect_ratio: str | None = None
@@ -5716,7 +5739,12 @@ def seedance_save(body: SeedanceSaveReq, request: Request):
         "aspect_ratio": body.aspect_ratio,
         "generate_audio": body.generate_audio,
         "seed": body.seed,
-        "meta": {"request_id": body.request_id, "file_size": len(video_bytes)},
+        "meta": {
+            "request_id": body.request_id,
+            "file_size": len(video_bytes),
+            "mode": body.mode,
+            "reference_image_urls": body.reference_image_urls or None,
+        },
     }
     ins = _r.post(
         f"{SUPA}/rest/v1/seedance_videos",

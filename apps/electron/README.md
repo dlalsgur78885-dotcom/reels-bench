@@ -21,6 +21,20 @@ pnpm build          # bundles main/preload/renderer into ./out
 pnpm start          # previews the built output
 ```
 
+## Bundled ffmpeg
+- Provider: [`ffmpeg-static`](https://github.com/eugeneware/ffmpeg-static) `^5.3.0`
+- Bundled binary: **ffmpeg 6.1.1** (Windows: gyan.dev essentials build; macOS/Linux: ffmpeg-static prebuilds via the same release tag `b6.1.1`)
+- ffprobe: kept on `@ffprobe-installer/ffprobe ^2.1.2` (2023-02 gyan.dev build)
+- License: GPL-3.0 (the build enables `libx264`/`libx265`, which require GPL; the previous 2018 bundle was the same GPL flavour, so this isn't a license regression)
+- Approx unpacked size, Windows: **79 MB** for ffmpeg + 78 MB for ffprobe (was 62 MB + 78 MB → **+17 MB delta**)
+- Features unlocked by the upgrade vs. the 2018 build:
+  - `xfade` video transitions (introduced in 4.3) — the export pipeline now actually crossfades when a `transitionIn` is set, previously it fell back to plain `concat`.
+  - `libharfbuzz` for proper `drawtext` shaping
+  - Modern hardware encoder paths (`h264_nvenc`/`h264_qsv`/`h264_amf`) re-validated at startup via `capabilities.ts`
+  - `out_time_ms` still emits microseconds (per ffmpeg's long-standing quirk) — the progress parser was already dividing by 1000 and stays unchanged
+
+The exact bundled version is also logged to the main-process console at startup as `[ffmpeg] bundled: ffmpeg version 6.1.1-...` for debugging.
+
 ## Layout
 ```
 src/

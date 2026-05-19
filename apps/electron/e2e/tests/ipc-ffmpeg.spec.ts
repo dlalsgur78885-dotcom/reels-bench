@@ -298,4 +298,66 @@ test.describe('@phase-1-ipc-ffmpeg ffmpeg bridge', () => {
     // Partial output should be cleaned up by the runner.
     expect(existsSync(outputPath)).toBe(false)
   })
+
+  test('bundled ffmpeg supports xfade and actually shortens output by the overlap', async () => {
+    // Regression guard for the 2018→6.x upgrade. The 2018 build did not have
+    // the `xfade` filter — exports silently fell back to plain concat. After
+    // the upgrade we should both (a) find xfade in `-filters` output and
+    // (b) see a 2-clip xfade composition produce a shorter result than the
+    // sum of the inputs (because the transition overlaps both clips by the
+    // requested duration).
+    const versionCheck = spawnSync(FFMPEG_PATH, ['-hide_banner', '-version'], {
+      encoding: 'utf8'
+    })
+    const versionLine = (versionCheck.stdout || '').split(/\r?\n/)[0]
+    // Modern ffmpeg version line: "ffmpeg version 6.1.1-..." or "n6.x" or "5.x".
+    expect(versionLine).toMatch(/ffmpeg version (?:n?[4-9]|[12]\d)/i)
+
+    const filtersCheck = spawnSync(FFMPEG_PATH, ['-hide_banner', '-filters'], {
+      encoding: 'utf8'
+    })
+    expect(filtersCheck.stdout || '').toMatch(/\bxfade\b\s+VV->V/)
+
+    // Build a real xfade composition: 2 × 2s clips → 0.5s crossfade → expect
+    // output ≈ 3.5s (2 + 2 − 0.5), not 4s.
+    const outPath = path.join(TMP_ROOT, `xfade-${Date.now()}.mp4`)
+    const argv = [
+      '-hide_banner',
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'testsrc2=size=160x120:rate=24:duration=2',
+      '-f',
+      'lavfi',
+      '-i',
+      'testsrc2=size=160x120:rate=24:duration=2',
+      '-filter_complex',
+      '[0:v][1:v]xfade=transition=fade:duration=0.5:offset=1.5[v]',
+      '-map',
+      '[v]',
+      '-c:v',
+      'libx264',
+      '-preset',
+      'ultrafast',
+      '-pix_fmt',
+      'yuv420p',
+      '-t',
+      '5',
+      outPath
+    ]
+    const res = spawnSync(FFMPEG_PATH, argv, { encoding: 'utf8' })
+    expect(res.status, `xfade ffmpeg failed: ${res.stderr}`).toBe(0)
+    expect(existsSync(outPath)).toBe(true)
+
+    const dur = probeDurationSec(outPath)
+    expect(dur, 'could not probe xfade output duration').not.toBeNull()
+    if (dur !== null) {
+      // Expected duration is 2 + 2 - 0.5 = 3.5s. Allow ±0.3s for h264 GOP
+      // padding. Critically: must NOT be ≥3.9s (which would indicate plain
+      // concat had been used because xfade was missing).
+      expect(dur).toBeGreaterThan(3.2)
+      expect(dur).toBeLessThan(3.9)
+    }
+  })
 })

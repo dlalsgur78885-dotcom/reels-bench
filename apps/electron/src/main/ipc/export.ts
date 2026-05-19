@@ -127,6 +127,49 @@ const PRESETS: Record<ExportPresetKey, MainPreset> = {
 // ---------------------------------------------------------------------------
 let xfadeAvailableCache: boolean | null = null
 
+// Per-path audio-presence cache. ffmpeg 6 rejects the `[N:a:0?]` "optional
+// stream" syntax inside filter_complex (`Invalid stream specifier: a:0?`).
+// Instead of relying on `?`, we probe each input upfront and only emit an
+// audio chain for inputs that actually carry an audio stream.
+const audioPresenceCache = new Map<string, boolean>()
+
+function probeHasAudio(ffmpegPath: string, filePath: string): Promise<boolean> {
+  const cached = audioPresenceCache.get(filePath)
+  if (cached !== undefined) return Promise.resolve(cached)
+  return new Promise<boolean>((resolve) => {
+    // `ffmpeg -i <file>` prints stream info to stderr then exits with code 1
+    // because no output was specified. We grep that for a line that starts
+    // with `Stream #X:Y...Audio:` — present iff the file has an audio stream.
+    const proc = spawn(ffmpegPath, ['-hide_banner', '-i', filePath], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true
+    })
+    let stderr = ''
+    proc.stderr.setEncoding('utf8')
+    proc.stderr.on('data', (chunk: string) => {
+      stderr += chunk
+      if (stderr.length > 128 * 1024) stderr = stderr.slice(-128 * 1024)
+    })
+    const settle = (val: boolean): void => {
+      audioPresenceCache.set(filePath, val)
+      resolve(val)
+    }
+    proc.on('error', () => settle(false))
+    proc.on('close', () => {
+      const has = /Stream #\d+:\d+[^\n]*Audio:/.test(stderr)
+      settle(has)
+    })
+    setTimeout(() => {
+      try {
+        proc.kill('SIGKILL')
+      } catch {
+        /* ignore */
+      }
+      if (!audioPresenceCache.has(filePath)) settle(false)
+    }, 5_000)
+  })
+}
+
 function probeXfadeAvailable(ffmpegPath: string): Promise<boolean> {
   if (xfadeAvailableCache !== null) return Promise.resolve(xfadeAvailableCache)
   return new Promise<boolean>((resolve) => {
@@ -438,7 +481,16 @@ function buildVideoSegmentChain(
 }
 
 /** Build the per-clip audio filter chain (returns the output label). */
-function buildAudioSegmentChain(seg: AudioSegment): { out: string; fragment: string } | null {
+function buildAudioSegmentChain(
+  seg: AudioSegment,
+  options: { inputHasAudio?: (inputIdx: number) => boolean } = {}
+): { out: string; fragment: string } | null {
+  // ffmpeg 6 rejects the `[N:a:0?]` syntax in filter_complex — see top-of-file
+  // comment near `probeHasAudio`. We instead skip the segment if its source
+  // input has no audio stream, and use a plain `[N:a:0]` specifier otherwise.
+  const hasAudio = options.inputHasAudio ? options.inputHasAudio(seg.inputIdx) : true
+  if (!hasAudio) return null
+
   const out = `a${seg.fromVideoTrack ? 'v' : 't'}${seg.inputIdx}_${seg.clip.id.slice(-6)}`
   const speed = seg.clip.speed ?? 1
   const segDurSec = Math.max(0.001, (seg.clip.endMs - seg.clip.startMs) / 1000)
@@ -446,12 +498,9 @@ function buildAudioSegmentChain(seg: AudioSegment): { out: string; fragment: str
   const srcDurSec = segDurSec * speed
   const startDelayMs = seg.clip.startMs // delay on the FINAL timeline
 
-  // For embedded audio from video clips, the audio stream may not exist
-  // (some clips are silent). We add a `?` to the stream specifier so ffmpeg
-  // gracefully treats it as missing — but doing so dramatically complicates
-  // the graph. Simpler MVP: assume audio is present; if not, the user can
-  // mute the track. ffmpeg will error out otherwise.
-  const streamSpec = seg.fromVideoTrack ? `${seg.inputIdx}:a:0?` : `${seg.inputIdx}:a:0?`
+  // Use a plain `N:a:0` specifier (no `?`). Audio presence was checked above;
+  // for inputs without audio we never reach this point.
+  const streamSpec = `${seg.inputIdx}:a:0`
 
   const parts: string[] = []
   parts.push(`atrim=start=${trimInSec.toFixed(4)}:duration=${srcDurSec.toFixed(4)}`)
@@ -568,7 +617,8 @@ function stitchVideo(
 /** Stitch all audio: per-segment chains then amix across the lot. */
 function stitchAudio(
   segments: AudioSegment[],
-  project: Project
+  project: Project,
+  options: { inputHasAudio?: (inputIdx: number) => boolean } = {}
 ): { graph: string; finalLabel: string | null } {
   if (segments.length === 0) return { graph: '', finalLabel: null }
 
@@ -581,7 +631,7 @@ function stitchAudio(
     const isBgm = seg.track.role === 'bgm'
     const isMuted = seg.track.muted || seg.clip.isMuted
     if (isMuted) continue
-    const built = buildAudioSegmentChain(seg)
+    const built = buildAudioSegmentChain(seg, { inputHasAudio: options.inputHasAudio })
     if (!built) continue
     fragments.push(built.fragment)
     segByLabel.push({
@@ -678,7 +728,17 @@ function buildExportPlan(
   project: Project,
   presetKey: ExportPresetKey,
   outputPath: string,
-  options: { xfadeAvailable?: boolean } = {}
+  options: {
+    xfadeAvailable?: boolean
+    /**
+     * Set of input indices (matching the assembled `inputs[]` order from
+     * `collectSegments`) that carry an audio stream. When omitted, every
+     * input is assumed to have audio — fine for the plan-only IPC, but
+     * the runtime export path passes a probed set so ffmpeg 6's strict
+     * stream-spec validation doesn't blow up.
+     */
+    inputsWithAudio?: Set<number>
+  } = {}
 ): ExportPlan {
   const preset = PRESETS[presetKey]
   if (!preset) throw new Error(`[export] unknown preset: ${presetKey}`)
@@ -694,9 +754,14 @@ function buildExportPlan(
     preset,
     xfadeAvailable
   )
+  const inputsWithAudio = options.inputsWithAudio
+  const inputHasAudio = inputsWithAudio
+    ? (idx: number): boolean => inputsWithAudio.has(idx)
+    : undefined
   const { graph: audioGraph, finalLabel: audioLabel } = stitchAudio(
     audioSegments,
-    project
+    project,
+    { inputHasAudio }
   )
 
   // Combine. If no audio, still emit a silent stream for compliance with
@@ -849,10 +914,29 @@ async function runExport(
 
   const xfadeAvailable = await probeXfadeAvailable(ffmpegPath)
 
+  // Probe each unique input path for audio presence. We do this in the
+  // runtime path (not in buildPlan) because the plan-only IPC just needs
+  // a representative filter graph for UI inspection; the real run, however,
+  // must avoid `[N:a:0?]` (rejected by ffmpeg 6) and only emit chains for
+  // inputs that actually have an audio stream.
+  const { inputs: probedInputs } = collectSegments(project)
+  const inputsWithAudio = new Set<number>()
+  for (let i = 0; i < probedInputs.length; i++) {
+    const p = probedInputs[i]
+    try {
+      const hasAudio = await probeHasAudio(ffmpegPath, p)
+      if (hasAudio) inputsWithAudio.add(i)
+    } catch {
+      // On probe failure, conservatively assume no audio — better to drop
+      // the audio chain than to fail the entire export.
+    }
+  }
+
   let plan: ExportPlan
   try {
     plan = buildExportPlan(project, options.presetKey, safeOutput, {
-      xfadeAvailable
+      xfadeAvailable,
+      inputsWithAudio
     })
   } catch (err) {
     return {

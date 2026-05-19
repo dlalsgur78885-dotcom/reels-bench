@@ -3,7 +3,7 @@
   "productName": "Reels Studio",
   "asar": true,
   "asarUnpack": [
-    "node_modules/@ffmpeg-installer/**/*",
+    "node_modules/ffmpeg-static/**/*",
     "node_modules/@ffprobe-installer/**/*"
   ],
   "files": [

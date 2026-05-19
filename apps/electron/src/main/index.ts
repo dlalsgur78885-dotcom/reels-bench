@@ -1,6 +1,7 @@
 import { app, BrowserWindow, session } from 'electron'
 import { createMainWindow } from './window'
 import { registerIpcHandlers } from './ipc'
+import { probeFfmpegVersion } from './ffmpeg/binary'
 import {
   registerMediaProtocolHandler,
   registerMediaSchemePrivileges
@@ -40,6 +41,17 @@ app.whenReady().then(() => {
   registerMediaProtocolHandler()
   registerIpcHandlers()
   createMainWindow()
+
+  // Best-effort: surface the bundled ffmpeg version in main-process logs so
+  // future debugging immediately shows which build the app is using. Doesn't
+  // block startup — fires & forgets.
+  probeFfmpegVersion()
+    .then((line) => {
+      console.log(`[ffmpeg] bundled: ${line}`)
+    })
+    .catch((err) => {
+      console.warn('[ffmpeg] version probe failed:', err)
+    })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow()

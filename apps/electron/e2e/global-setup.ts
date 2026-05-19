@@ -5,7 +5,8 @@ import path from 'node:path'
 
 /**
  * Global setup:
- *   1. Resolve the bundled ffmpeg from node_modules/@ffmpeg-installer/ffmpeg.
+ *   1. Resolve the bundled ffmpeg from `ffmpeg-static` (formerly
+ *      `@ffmpeg-installer/ffmpeg`; swapped to a modern 6.x build in 0.2.0).
  *   2. Generate a deterministic 5s test clip in a path that the main process's
  *      ffmpeg security layer already allows (os.tmpdir() is on the allowlist).
  *
@@ -17,8 +18,12 @@ import path from 'node:path'
  */
 export default async function globalSetup(): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const installer = require('@ffmpeg-installer/ffmpeg') as { path: string }
-  const ffmpegPath = installer.path
+  const ffmpegPath = require('ffmpeg-static') as string | null
+  if (!ffmpegPath) {
+    throw new Error(
+      `[e2e setup] ffmpeg-static returned no path for ${process.platform}-${process.arch}`
+    )
+  }
   if (!existsSync(ffmpegPath)) {
     throw new Error(`[e2e setup] ffmpeg binary missing at ${ffmpegPath}`)
   }

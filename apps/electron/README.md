@@ -46,7 +46,6 @@ ffmpeg / ffprobe bundling:
 
 ### Known limitations (internal-use only)
 - **No code signing** — `signAndEditExecutable: false`, Windows SmartScreen will warn on first run ("Windows protected your PC → More info → Run anyway"). Expected; the build is for the internal team only.
-- **No auto-update yet** — `publish: null`. `electron-updater` is in deps but not wired. Phase 5 can flip it on once we settle on a release host (GitHub Releases / S3 / generic web).
 - **Windows x64 only** — `package` builds for `win --x64`. Mac / Linux builds are deferred (cross-compile from Windows hits symlink issues in the Mac signing toolchain).
 - The build pipeline disables Apple/Windows code-sign discovery via `signAndEditExecutable: false` + `CSC_IDENTITY_AUTO_DISCOVERY=false` so it works without admin / dev-mode on Windows.
 
@@ -56,6 +55,61 @@ ffmpeg / ffprobe bundling:
 - win-unpacked/ tree: ~330 MB (Electron 32 runtime + Chromium + ffmpeg/ffprobe)
 
 Largest contributors: Electron+Chromium runtime (~200 MB), bundled ffmpeg.exe (~79 MB), ffprobe.exe (~78 MB), renderer bundle (~1.1 MB).
+
+## Auto-update publishing (Phase 4.7)
+
+The app checks for updates 5 minutes after launch via `electron-updater`'s
+generic provider, configured to read from a Supabase Storage bucket:
+
+```
+https://mrpbovbxtablvawszhey.supabase.co/storage/v1/object/public/electron-releases/win/latest.yml
+```
+
+When a newer version is found, the package downloads in the background and the
+renderer shows a non-intrusive banner ("새 버전 X.Y.Z 다운로드 완료") with two
+actions: "지금 재시작" (calls `autoUpdater.quitAndInstall()`) and "나중에"
+(install runs automatically on next quit).
+
+### One-time bucket setup
+1. In Supabase dashboard → Storage, create a **public** bucket named
+   `electron-releases`.
+2. Allow public anonymous reads (the default for public buckets is fine).
+3. (Optional) Set a Storage policy that restricts writes to the service-role
+   key only — this is the default if you skip explicit policies.
+4. CORS: GET from any origin is already the default for public buckets.
+
+### Required env vars on the build/publish machine
+```
+$env:SUPABASE_SERVICE_ROLE_KEY = "eyJhbGciOi...<service role key>"
+```
+The service-role key lives in Supabase dashboard → Project Settings → API.
+It is **never** shipped in the binary — only the publish script uses it.
+
+### Releasing a new version
+```powershell
+pwsh apps/electron/scripts/publish-release.ps1 -Version 0.1.1
+```
+The script:
+1. Bumps `package.json` version to `0.1.1`.
+2. Runs `npm run build && electron-builder --win --x64 --publish never`.
+3. Uploads `release/latest.yml`, `release/Reels Studio Setup 0.1.1.exe`,
+   and the `.blockmap` to `electron-releases/win/`.
+
+Within ~5 minutes of next launch, existing 0.1.0 installs will:
+- check `latest.yml`, see 0.1.1 is newer,
+- download the installer (delta-update via blockmap when possible),
+- pop the in-app banner once download completes.
+
+### Useful publish-script flags
+- `-SkipBuild` reuses whatever's already in `release/` (faster iteration).
+- `-DryRun` prints the upload plan without making any network calls.
+
+### Verifying the manifest after publish
+```powershell
+curl https://mrpbovbxtablvawszhey.supabase.co/storage/v1/object/public/electron-releases/win/latest.yml
+```
+You should see a `version: 0.1.1` block. If you get a 400, the bucket doesn't
+exist or isn't public; double-check step 1 above.
 
 ## Bundled ffmpeg
 - Provider: [`ffmpeg-static`](https://github.com/eugeneware/ffmpeg-static) `^5.3.0`

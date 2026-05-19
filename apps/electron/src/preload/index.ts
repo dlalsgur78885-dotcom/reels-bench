@@ -23,6 +23,8 @@ import {
   type ProgressEvent,
   type SilenceDetectOptions,
   type SilenceRange,
+  type UpdateDownloadedPayload,
+  type UpdateDownloadProgressPayload,
   type WaveformOptions,
   type WaveformResult
 } from '../shared/ipc'
@@ -144,6 +146,35 @@ const api: ElectronApi = {
         url,
         suggestedName
       )
+  },
+  updater: {
+    installNow: (): Promise<boolean> =>
+      ipcRenderer.invoke(IPC_CHANNELS.updater.installNow),
+    onDownloaded: (
+      cb: (payload: UpdateDownloadedPayload) => void
+    ): (() => void) => {
+      const listener = (
+        _ev: IpcRendererEvent,
+        payload: UpdateDownloadedPayload
+      ): void => cb(payload)
+      ipcRenderer.on(IPC_CHANNELS.updater.downloaded, listener)
+      return () =>
+        ipcRenderer.removeListener(IPC_CHANNELS.updater.downloaded, listener)
+    },
+    onDownloadProgress: (
+      cb: (payload: UpdateDownloadProgressPayload) => void
+    ): (() => void) => {
+      const listener = (
+        _ev: IpcRendererEvent,
+        payload: UpdateDownloadProgressPayload
+      ): void => cb(payload)
+      ipcRenderer.on(IPC_CHANNELS.updater.downloadProgress, listener)
+      return () =>
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.updater.downloadProgress,
+          listener
+        )
+    }
   }
 }
 

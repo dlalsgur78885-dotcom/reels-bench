@@ -39,5 +39,9 @@
     "createStartMenuShortcut": true,
     "shortcutName": "Reels Studio"
   },
-  "publish": null
+  "publish": {
+    "provider": "generic",
+    "url": "https://mrpbovbxtablvawszhey.supabase.co/storage/v1/object/public/electron-releases/win",
+    "channel": "latest"
+  }
 }

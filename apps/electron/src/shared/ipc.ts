@@ -48,6 +48,11 @@ export const IPC_CHANNELS = {
   },
   download: {
     downloadVideoToTemp: 'download:downloadVideoToTemp'
+  },
+  updater: {
+    installNow: 'updater:installNow',
+    downloadProgress: 'updater:download-progress',
+    downloaded: 'updater:downloaded'
   }
 } as const
 
@@ -279,6 +284,40 @@ export type DownloadResult =
   | { ok: true; localPath: string; sizeBytes: number }
   | { ok: false; error: string; httpStatus?: number }
 
+// ---------------------------------------------------------------------------
+// Auto-update (Phase 4.7).
+// ---------------------------------------------------------------------------
+
+/**
+ * Payload pushed to the renderer when electron-updater finishes downloading
+ * a new package in the background. Mirrors the subset of fields the UI cares
+ * about from electron-updater's `UpdateDownloadedEvent`. We keep this typed
+ * narrow on purpose — renderer code should never have to import builder-util.
+ */
+export interface UpdateDownloadedPayload {
+  version: string
+  /** Optional human-readable release notes (string or html). */
+  releaseNotes?: string
+  /** ISO-8601 release date (if surfaced by the provider). */
+  releaseDate?: string
+}
+
+/**
+ * Periodic download-progress pushes while electron-updater pulls the
+ * package. The renderer can use these for an optional progress indicator
+ * before the "download complete" banner shows.
+ */
+export interface UpdateDownloadProgressPayload {
+  /** 0–100 percent transferred. */
+  percent: number
+  /** Bytes transferred so far. */
+  transferred: number
+  /** Total bytes to transfer. */
+  total: number
+  /** Current throughput in bytes/sec. */
+  bytesPerSecond: number
+}
+
 export interface ExportBuildPlanResult {
   ok: boolean
   /** Final ffmpeg argv as a single string (debug-friendly). */
@@ -382,6 +421,29 @@ export interface ElectronApi {
       url: string,
       suggestedName?: string
     ): Promise<DownloadResult>
+  }
+  updater: {
+    /**
+     * Trigger `autoUpdater.quitAndInstall()`. Called from the renderer when
+     * the user clicks "지금 재시작" in the update banner. Resolves immediately;
+     * the actual quit happens after the event loop returns.
+     *
+     * No-op in dev (`!app.isPackaged`) — returns false so the UI can decide
+     * to hide the banner rather than spin forever.
+     */
+    installNow(): Promise<boolean>
+    /**
+     * Subscribe to the `updater:downloaded` event. Fires once per
+     * downloaded update. Returns an unsubscribe function.
+     */
+    onDownloaded(cb: (payload: UpdateDownloadedPayload) => void): () => void
+    /**
+     * Subscribe to the periodic `updater:download-progress` events fired
+     * while electron-updater pulls the package. Returns an unsubscribe fn.
+     */
+    onDownloadProgress(
+      cb: (payload: UpdateDownloadProgressPayload) => void
+    ): () => void
   }
 }
 

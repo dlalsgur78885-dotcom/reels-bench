@@ -9,6 +9,7 @@ import { Editor } from './pages/Editor'
 import Login from './pages/Login'
 import { initProjectStore } from './store/project'
 import { useAuthStore } from './store/auth'
+import { UpdateBanner } from './components/UpdateBanner'
 
 const wrap: React.CSSProperties = {
   fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
@@ -311,7 +312,12 @@ export default function App(): JSX.Element {
   }
 
   if (view === 'editor') {
-    return <Editor onBack={() => setView('home')} />
+    return (
+      <>
+        <Editor onBack={() => setView('home')} />
+        <UpdateBanner />
+      </>
+    )
   }
 
   return (
@@ -343,6 +349,7 @@ export default function App(): JSX.Element {
         </button>
       </div>
       {isDev && hasBridge && <FfmpegSmokeTest />}
+      <UpdateBanner />
     </div>
   )
 }

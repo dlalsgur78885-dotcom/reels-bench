@@ -45,9 +45,19 @@ export interface TimelineUiStore {
   beats: number[]
   /** Manual BPM (used by computed-beats helper). */
   bpm: number
+  /**
+   * Origin of the current `beats[]`. `'metronome'` = generated from BPM by the
+   * Editor's effect (regenerated on bpm/duration change). `'detected'` = real
+   * timestamps from analysis prefill — should NOT be overwritten by the
+   * metronome generator. Defaults to `'metronome'`.
+   */
+  beatsSource: 'metronome' | 'detected'
   setBeatSnapEnabled(enabled: boolean): void
-  setBeats(beats: number[]): void
+  /** Replace beats. Optional source defaults to `'detected'` so explicit external callers don't accidentally fall under metronome auto-regen. The metronome effect passes `'metronome'`. */
+  setBeats(beats: number[], source?: 'metronome' | 'detected'): void
   setBpm(bpm: number): void
+  /** Mark the next beats[] regen as `'metronome'`-sourced (used when the user touches the BPM input). */
+  markBeatsAsMetronome(): void
 
   // ----- Waveform cache (Phase 2.5) -----
   /** Map media id → data: URI for the rendered waveform PNG. */
@@ -75,6 +85,7 @@ export const useTimelineUi = create<TimelineUiStore>((set, get) => ({
   beatSnapEnabled: false,
   beats: [],
   bpm: DEFAULT_BPM,
+  beatsSource: 'metronome',
   waveformUris: {},
 
   selectClip(clipId: string | null): void {
@@ -118,19 +129,22 @@ export const useTimelineUi = create<TimelineUiStore>((set, get) => ({
     const v = Boolean(enabled)
     if (v !== get().beatSnapEnabled) set({ beatSnapEnabled: v })
   },
-  setBeats(beats: number[]): void {
+  setBeats(beats: number[], source: 'metronome' | 'detected' = 'detected'): void {
     if (!Array.isArray(beats)) return
     const clean = beats
       .map((b) => Math.max(0, Math.round(Number(b))))
       .filter((b) => Number.isFinite(b))
       .sort((a, b) => a - b)
-    set({ beats: clean })
+    set({ beats: clean, beatsSource: source })
   },
   setBpm(bpm: number): void {
     const n = Number(bpm)
     if (!Number.isFinite(n)) return
     const clamped = Math.max(30, Math.min(300, Math.round(n)))
     if (clamped !== get().bpm) set({ bpm: clamped })
+  },
+  markBeatsAsMetronome(): void {
+    if (get().beatsSource !== 'metronome') set({ beatsSource: 'metronome' })
   },
   setWaveformUri(mediaId: string, uri: string): void {
     if (!mediaId || !uri) return

@@ -225,12 +225,16 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     [project]
   )
 
-  // Recompute beats whenever BPM or total duration changes.
+  // Recompute beats whenever BPM or total duration changes — but ONLY if
+  // current beats originated from the metronome. When prefill loads real
+  // detected beats (`beatsSource === 'detected'`), preserve them so the
+  // metronome doesn't overwrite real timestamps.
   useEffect(() => {
+    if (useTimelineUi.getState().beatsSource !== 'metronome') return
     const periodMs = (60 * 1000) / Math.max(1, bpm)
     const cap = Math.max(0, totalDuration)
     if (cap <= 0 || !Number.isFinite(periodMs) || periodMs <= 0) {
-      setBeats([])
+      setBeats([], 'metronome')
       return
     }
     const beats: number[] = []
@@ -238,7 +242,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     for (let t = 0; t <= cap && beats.length < MAX_BEATS; t += periodMs) {
       beats.push(Math.round(t))
     }
-    setBeats(beats)
+    setBeats(beats, 'metronome')
   }, [bpm, totalDuration, setBeats])
 
   const handleAddCaption = useCallback((): void => {
@@ -456,7 +460,12 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           max={300}
           step={1}
           value={bpm}
-          onChange={(e) => setBpm(Number(e.target.value))}
+          onChange={(e) => {
+            // User typing the BPM is an explicit request for metronome
+            // generation — flip the source so the regen effect runs.
+            useTimelineUi.getState().markBeatsAsMetronome()
+            setBpm(Number(e.target.value))
+          }}
           style={{ ...styles.playheadInput, width: 56 }}
           aria-label="BPM"
           data-testid="bpm-input"

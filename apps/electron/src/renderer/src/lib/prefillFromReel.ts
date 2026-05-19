@@ -342,7 +342,9 @@ export async function prefillFromReel(
   const sniffed = sniffProAudio(analysis.pro_audio)
   let beatsAdded = 0
   if (sniffed.beatTimesMs.length > 0) {
-    useTimelineUi.getState().setBeats(sniffed.beatTimesMs)
+    // Mark as 'detected' so the Editor's metronome regen effect won't
+    // overwrite real timestamps when bpm is set on the next line.
+    useTimelineUi.getState().setBeats(sniffed.beatTimesMs, 'detected')
     useTimelineUi.getState().setBeatSnapEnabled(true)
     beatsAdded = sniffed.beatTimesMs.length
   }

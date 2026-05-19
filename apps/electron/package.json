@@ -1,8 +1,12 @@
 {
   "name": "reels-studio-electron",
+  "productName": "Reels Studio",
   "version": "0.1.0",
   "private": true,
-  "description": "Reels Studio — Electron desktop shell (internal use)",
+  "description": "Short-form video editor for Reels Bench",
+  "author": {
+    "name": "Reels Bench"
+  },
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -11,7 +15,9 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "package": "npm run build && electron-builder --win --x64",
+    "package:portable": "npm run build && electron-builder --win portable --x64"
   },
   "dependencies": {
     "@ffprobe-installer/ffprobe": "^2.1.2",
@@ -30,6 +36,7 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^32.2.7",
+    "electron-builder": "^26.8.1",
     "electron-vite": "^2.3.0",
     "playwright": "^1.49.1",
     "react": "^18.3.1",

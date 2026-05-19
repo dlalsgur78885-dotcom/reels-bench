@@ -1,5 +1,5 @@
 {
-  "appId": "com.reels-studio.app",
+  "appId": "com.reelsbench.reelsstudio",
   "productName": "Reels Studio",
   "asar": true,
   "asarUnpack": [
@@ -12,16 +12,23 @@
     "!**/*.map"
   ],
   "directories": {
-    "output": "release"
+    "output": "release",
+    "buildResources": "build"
   },
   "win": {
-    "target": ["nsis"]
+    "target": [
+      { "target": "nsis", "arch": ["x64"] },
+      { "target": "portable", "arch": ["x64"] }
+    ],
+    "icon": "build/icon.ico",
+    "signAndEditExecutable": false
   },
-  "mac": {
-    "target": ["dmg"],
-    "category": "public.app-category.video"
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Reels Studio"
   },
-  "linux": {
-    "target": ["AppImage"]
-  }
+  "publish": null
 }

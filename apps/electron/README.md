@@ -21,6 +21,42 @@ pnpm build          # bundles main/preload/renderer into ./out
 pnpm start          # previews the built output
 ```
 
+## Package (Windows installer)
+Produces a real `.exe` installer + portable build under `./release/` via [electron-builder](https://www.electron.build/).
+
+```bash
+npm run package           # full Windows build → NSIS installer + portable
+npm run package:portable  # portable-only (single-file .exe, no install)
+```
+
+Outputs (after a successful run):
+- `release/Reels Studio Setup 0.1.0.exe` — NSIS installer (~120 MB). Installs to `C:\Program Files\Reels Studio\` (configurable), creates Start Menu + Desktop shortcuts.
+- `release/Reels Studio 0.1.0.exe` — portable single-file build (~120 MB). No install, just run.
+- `release/win-unpacked/Reels Studio.exe` — unpacked dev build (useful for smoke-testing without re-installing).
+
+App identity:
+- `appId`: `com.reelsbench.reelsstudio` (also set as Windows `AppUserModelId` in `src/main/index.ts` for taskbar grouping / toast notifications).
+- Icon source: `build/icon.png` (1024×1024) → `build/icon.ico` (multi-resolution: 16, 24, 32, 48, 64, 128, 256). Regenerate with `python` + `Pillow` (script lives in commit history).
+
+ffmpeg / ffprobe bundling:
+- Both binaries are `asarUnpack`ed to `release/win-unpacked/resources/app.asar.unpacked/node_modules/`:
+  - `ffmpeg-static/ffmpeg.exe`
+  - `@ffprobe-installer/win32-x64/ffprobe.exe`
+- They're executable in-place — no install-time fix-up required.
+
+### Known limitations (internal-use only)
+- **No code signing** — `signAndEditExecutable: false`, Windows SmartScreen will warn on first run ("Windows protected your PC → More info → Run anyway"). Expected; the build is for the internal team only.
+- **No auto-update yet** — `publish: null`. `electron-updater` is in deps but not wired. Phase 5 can flip it on once we settle on a release host (GitHub Releases / S3 / generic web).
+- **Windows x64 only** — `package` builds for `win --x64`. Mac / Linux builds are deferred (cross-compile from Windows hits symlink issues in the Mac signing toolchain).
+- The build pipeline disables Apple/Windows code-sign discovery via `signAndEditExecutable: false` + `CSC_IDENTITY_AUTO_DISCOVERY=false` so it works without admin / dev-mode on Windows.
+
+### Bundle size (approx., gzipped on disk)
+- NSIS installer .exe: ~120 MB
+- Portable .exe: ~120 MB
+- win-unpacked/ tree: ~330 MB (Electron 32 runtime + Chromium + ffmpeg/ffprobe)
+
+Largest contributors: Electron+Chromium runtime (~200 MB), bundled ffmpeg.exe (~79 MB), ffprobe.exe (~78 MB), renderer bundle (~1.1 MB).
+
 ## Bundled ffmpeg
 - Provider: [`ffmpeg-static`](https://github.com/eugeneware/ffmpeg-static) `^5.3.0`
 - Bundled binary: **ffmpeg 6.1.1** (Windows: gyan.dev essentials build; macOS/Linux: ffmpeg-static prebuilds via the same release tag `b6.1.1`)

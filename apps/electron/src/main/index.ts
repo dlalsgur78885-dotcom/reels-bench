@@ -9,6 +9,13 @@ import {
 
 app.setName('Reels Studio')
 
+// Windows: set the App User Model ID so taskbar grouping, jump lists, and
+// toast notifications attribute to "Reels Studio" rather than electron.exe.
+// Must run before `app.whenReady()`. Matches `appId` in electron-builder.json.
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.reelsbench.reelsstudio')
+}
+
 // Register custom `media://` scheme BEFORE app.whenReady(). Required so that
 // renderer-side <video>/<audio> elements with src="media://..." work under
 // sandbox:true + contextIsolation:true.

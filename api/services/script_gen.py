@@ -4567,13 +4567,23 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
     product_cap_fence = ""
     if (product_capability_out or "").strip():
         product_cap_fence = f"""
-## ⛔⛔⛔ 상품 capability fence — **절대 박지 말 것** (모든 USP·섹션·문장에 적용)
-이 상품 "{product_name}"이 **하지 않는 기능**:
+## ⛔⛔⛔ 최우선 룰 — 상품 capability fence (다른 모든 룰보다 우선)
+
+**이 룰은 chunk 의도·어절 패턴·ref 모방 등 다른 모든 writer 룰을 무력화합니다.**
+**키워드 회피를 위해 spec을 거꾸로 따라도 됩니다. 우회만 하세요.**
+
+이 상품 "{product_name}"의 **금지어** (false claim 키워드, 아래 어휘를 출력 텍스트에 절대 사용 금지):
 {product_capability_out.strip()}
 
-→ 위 키워드와 관련된 멘트는 무조건 false claim. 출력에 등장하면 검수 fail.
-→ 이 기능들이 가능하다는 암시조차 금지 ("간편하게", "한 번에", "자동으로" 같은 모호 표현도 위 기능 함의면 금지).
-→ 의심되면 다른 USP 셀링 포인트로 우회.
+처리 규칙:
+1. 위 키워드는 **기능 claim이든 아니든** 출력 텍스트에 등장하면 검수 자동 fail
+   - 예: "스팟"이 금지어면 "사진 스팟", "맛집 스팟", "야경 스팟" 등 **어떤 맥락에서도 금지**
+   - 예: "최적화"가 금지어면 "최적화된 코스", "최적화 추천" 등 **어떤 맥락에서도 금지**
+2. 의미·기능 함의도 금지 ("간편하게 처리", "한 번에 자동", "알아서 척척" 등이 위 기능 함의면 금지)
+3. 회피 표현으로 우회: 다른 USP/셀링포인트로 새 문장 작성
+4. 어절 패턴/chunk 의도 룰과 충돌하면 **fence 우선** — 어절 양보 OK
+
+위 키워드 한 글자라도 출력되면 **즉시 fail**. 다른 모든 룰을 깨더라도 fence를 지키세요.
 """
 
     return f"""당신은 한국어 광고 카피라이터입니다. 아래 outline에 따라 광고 카피를 작성.

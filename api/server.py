@@ -6210,6 +6210,241 @@ def figma_render_status(job_id: str, request: Request):
     return mockup_status(job_id, request)
 
 
+# ── Seedance Prompts / Characters 라이브러리 ──
+
+_SEEDANCE_CHAR_BUCKET = "seedance-characters"
+
+
+class SeedancePromptIn(BaseModel):
+    name: str | None = None
+    content: str
+    mode: str | None = None  # 'transition' | 'reference' | None
+
+
+@app.get("/api/seedance/prompts")
+def seedance_list_prompts(request: Request):
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.get(
+        f"{SUPA}/rest/v1/seedance_prompts?created_by=eq.{me['id']}&archived_at=is.null"
+        f"&select=*&order=created_at.desc",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+    )
+    return r.json() if r.status_code == 200 else []
+
+
+@app.post("/api/seedance/prompts")
+def seedance_create_prompt(body: SeedancePromptIn, request: Request):
+    me = auth_svc.require_user(request)
+    if not body.content.strip():
+        raise HTTPException(400, "content 필수")
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    row = {
+        "created_by": me["id"],
+        "name": (body.name or "").strip() or None,
+        "content": body.content.strip(),
+        "mode": body.mode if body.mode in ("transition", "reference") else None,
+    }
+    r = _r.post(
+        f"{SUPA}/rest/v1/seedance_prompts",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json=row, timeout=10,
+    )
+    if r.status_code not in (200, 201):
+        raise HTTPException(r.status_code, r.text[:300])
+    return r.json()[0] if r.json() else row
+
+
+class SeedancePromptPatch(BaseModel):
+    name: str | None = None
+    content: str | None = None
+    mode: str | None = None
+
+
+@app.patch("/api/seedance/prompts/{pid}")
+def seedance_update_prompt(pid: str, body: SeedancePromptPatch, request: Request):
+    me = auth_svc.require_user(request)
+    payload: dict = {"updated_at": "now()"}
+    if body.name is not None:
+        payload["name"] = body.name.strip() or None
+    if body.content is not None:
+        if not body.content.strip():
+            raise HTTPException(400, "content 비어있음")
+        payload["content"] = body.content.strip()
+    if body.mode is not None:
+        payload["mode"] = body.mode if body.mode in ("transition", "reference") else None
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.patch(
+        f"{SUPA}/rest/v1/seedance_prompts?id=eq.{pid}&created_by=eq.{me['id']}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json=payload, timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:300])
+    rows = r.json() if r.status_code == 200 else []
+    return {"updated": True, "row": rows[0] if rows else None}
+
+
+@app.delete("/api/seedance/prompts/{pid}")
+def seedance_delete_prompt(pid: str, request: Request):
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.patch(
+        f"{SUPA}/rest/v1/seedance_prompts?id=eq.{pid}&created_by=eq.{me['id']}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=minimal"},
+        json={"archived_at": "now()"}, timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:300])
+    return {"deleted": True}
+
+
+@app.post("/api/seedance/prompts/{pid}/used")
+def seedance_prompt_used(pid: str, request: Request):
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    cur = _r.get(
+        f"{SUPA}/rest/v1/seedance_prompts?id=eq.{pid}&created_by=eq.{me['id']}&select=use_count&limit=1",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+    ).json() or []
+    if not cur:
+        return {"ok": False}
+    n = (cur[0].get("use_count") or 0) + 1
+    _r.patch(
+        f"{SUPA}/rest/v1/seedance_prompts?id=eq.{pid}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=minimal"},
+        json={"use_count": n}, timeout=10,
+    )
+    return {"ok": True, "use_count": n}
+
+
+# ── Characters ──
+
+@app.get("/api/seedance/characters")
+def seedance_list_characters(request: Request):
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.get(
+        f"{SUPA}/rest/v1/seedance_characters?created_by=eq.{me['id']}&archived_at=is.null"
+        f"&select=*&order=created_at.desc",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+    )
+    return r.json() if r.status_code == 200 else []
+
+
+@app.post("/api/seedance/characters")
+async def seedance_create_character(request: Request):
+    me = auth_svc.require_user(request)
+    form = await request.form()
+    file = form.get("file")
+    name = ((form.get("name") or "")).strip() or None
+    description = ((form.get("description") or "")).strip() or None
+    if not file or not hasattr(file, "read"):
+        raise HTTPException(400, "file 필수 (multipart)")
+    content = await file.read()
+    if len(content) < 200:
+        raise HTTPException(400, f"이미지 너무 작음 ({len(content)} bytes)")
+
+    supabase.storage_create_bucket(_SEEDANCE_CHAR_BUCKET, public=True)
+    import uuid as _uuid
+    cid = str(_uuid.uuid4())
+    ext = ".jpg"
+    fn = getattr(file, "filename", "") or ""
+    if fn.lower().endswith((".png", ".webp", ".jpeg", ".jpg")):
+        ext = "." + fn.lower().rsplit(".", 1)[1].replace("jpeg", "jpg")
+    path = f"{me['id']}/{cid}{ext}"
+    ct = getattr(file, "content_type", None) or ("image/png" if ext == ".png" else "image/jpeg")
+    ok, err = supabase.storage_upload(_SEEDANCE_CHAR_BUCKET, path, content,
+                                       content_type=ct, upsert=True)
+    if not ok:
+        raise HTTPException(500, f"Storage 업로드 실패: {err}")
+    image_url = supabase.storage_public_url(_SEEDANCE_CHAR_BUCKET, path)
+
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    row = {
+        "id": cid,
+        "created_by": me["id"],
+        "name": name,
+        "description": description,
+        "image_url": image_url,
+        "meta": {"file_size": len(content), "filename": fn},
+    }
+    ins = _r.post(
+        f"{SUPA}/rest/v1/seedance_characters",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json=row, timeout=15,
+    )
+    if ins.status_code not in (200, 201):
+        raise HTTPException(ins.status_code, ins.text[:300])
+    return ins.json()[0] if ins.json() else row
+
+
+class SeedanceCharacterPatch(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+@app.patch("/api/seedance/characters/{cid}")
+def seedance_update_character(cid: str, body: SeedanceCharacterPatch, request: Request):
+    me = auth_svc.require_user(request)
+    payload: dict = {}
+    if body.name is not None:
+        payload["name"] = body.name.strip() or None
+    if body.description is not None:
+        payload["description"] = body.description.strip() or None
+    if not payload:
+        return {"updated": False}
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.patch(
+        f"{SUPA}/rest/v1/seedance_characters?id=eq.{cid}&created_by=eq.{me['id']}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json=payload, timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:300])
+    rows = r.json() if r.status_code == 200 else []
+    return {"updated": True, "row": rows[0] if rows else None}
+
+
+@app.delete("/api/seedance/characters/{cid}")
+def seedance_delete_character(cid: str, request: Request):
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.patch(
+        f"{SUPA}/rest/v1/seedance_characters?id=eq.{cid}&created_by=eq.{me['id']}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=minimal"},
+        json={"archived_at": "now()"}, timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:300])
+    return {"deleted": True}
+
+
 # ── Serve built frontend (must be last: catches all non-API routes) ──
 _PUBLIC_DIR = Path(__file__).parent.parent / "web" / "dist"
 

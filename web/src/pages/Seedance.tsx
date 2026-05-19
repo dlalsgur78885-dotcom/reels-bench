@@ -58,6 +58,11 @@ export default function Seedance() {
   const [saving, setSaving] = useState(false)
   const [savedId, setSavedId] = useState<string | null>(null)
   const [saveName, setSaveName] = useState('')
+  // 프롬프트 저장 (sub-dialog)
+  const [savingPrompt, setSavingPrompt] = useState(false)
+  const [promptSaved, setPromptSaved] = useState(false)
+  // 라이브러리에서 가져온 인물 (reference 모드 시작 슬롯에 대입)
+  const [pendingCharacterUrl, setPendingCharacterUrl] = useState<string>('')
   // 마지막 생성 메타 (저장 시 같이 보냄)
   const lastMetaRef = useRef<{ startUrl: string; endUrl: string }>({ startUrl: '', endUrl: '' })
 
@@ -70,6 +75,32 @@ export default function Seedance() {
     if (pollerRef.current) window.clearInterval(pollerRef.current)
     if (startPreview) URL.revokeObjectURL(startPreview)
     if (endPreview) URL.revokeObjectURL(endPreview)
+  }, [])
+
+  // sessionStorage 에 저장된 pending (라이브러리에서 "사용 →" 누르고 넘어온 경우) 처리
+  useEffect(() => {
+    const pendingMode = sessionStorage.getItem('seedance_pending_mode') as GenMode | null
+    const pendingPrompt = sessionStorage.getItem('seedance_pending_prompt')
+    const pendingChar = sessionStorage.getItem('seedance_pending_character')
+    if (pendingMode === 'transition' || pendingMode === 'reference') {
+      setGenMode(pendingMode)
+    }
+    if (pendingPrompt) {
+      setPrompt(pendingPrompt)
+      setPromptTouched(true)
+    }
+    if (pendingChar) {
+      try {
+        const obj = JSON.parse(pendingChar)
+        if (obj?.image_url) {
+          setPendingCharacterUrl(obj.image_url)
+          setGenMode('reference')
+        }
+      } catch {}
+    }
+    sessionStorage.removeItem('seedance_pending_mode')
+    sessionStorage.removeItem('seedance_pending_prompt')
+    sessionStorage.removeItem('seedance_pending_character')
   }, [])
 
   const onPickFile = (slot: Slot, f: File | null) => {
@@ -152,12 +183,14 @@ export default function Seedance() {
 
     let startInput = ''
     let endInput = ''
+    // reference 모드에서 라이브러리 인물이 지정돼있으면 그걸 시작(인물)로 강제
+    const useLibChar = genMode === 'reference' && !!pendingCharacterUrl
     if (mode === 'blog') {
-      if (!startSrc) { setError(genMode === 'reference' ? '인물 이미지를 선택하세요' : '시작 이미지를 선택하세요'); return }
-      startInput = startSrc
+      if (!useLibChar && !startSrc) { setError(genMode === 'reference' ? '인물 이미지를 선택하세요' : '시작 이미지를 선택하세요'); return }
+      startInput = useLibChar ? pendingCharacterUrl : startSrc
       endInput = endSrc
     } else {
-      if (!startFile) { setError(genMode === 'reference' ? '인물 이미지를 업로드하세요' : '시작 이미지를 업로드하세요'); return }
+      if (!useLibChar && !startFile) { setError(genMode === 'reference' ? '인물 이미지를 업로드하세요' : '시작 이미지를 업로드하세요'); return }
     }
     if (genMode === 'reference') {
       const hasSecond = mode === 'blog' ? !!endSrc : !!endFile
@@ -166,8 +199,10 @@ export default function Seedance() {
 
     try {
       startTicker()
-      setStatus(mode === 'blog' ? 'importing' : 'uploading')
-      const startUrl = mode === 'blog'
+      setStatus(mode === 'blog' || useLibChar ? 'importing' : 'uploading')
+      // 라이브러리 인물 사용 시 — 이미 우리 Supabase Storage public URL, fal에 직접 넘겨도 됨.
+      // 일관성 위해 import-image 거쳐 fal storage로 옮긴다 (fal-fetchable URL 보장).
+      const startUrl = (mode === 'blog' || useLibChar)
         ? await importRemoteImage(startInput)
         : await uploadLocalFile(startFile!)
       let endUrl = ''
@@ -284,6 +319,23 @@ export default function Seedance() {
             : '시작 → 끝 전환 영상 — 이미지 2장을 부드럽게 잇는 영상. 1080p 4초 ≈ 4–5분.'}
         </p>
       </div>
+
+      {/* 라이브러리에서 가져온 인물 배지 */}
+      {pendingCharacterUrl && genMode === 'reference' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 10, marginBottom: 12,
+          background: 'rgba(99,102,241,0.10)', border: '1px solid var(--accent)', borderRadius: 6 }}>
+          <img src={pendingCharacterUrl} alt="인물"
+            style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 4 }} />
+          <div style={{ flex: 1, fontSize: 12 }}>
+            <div style={{ fontWeight: 700, color: 'var(--accent)' }}>라이브러리 인물 사용 중</div>
+            <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>인물은 이걸 쓰고, 아래에선 배경만 선택하면 됩니다.</div>
+          </div>
+          <button onClick={() => setPendingCharacterUrl('')}
+            style={{ padding: '4px 10px', fontSize: 11,
+              background: 'transparent', color: 'var(--text-secondary)',
+              border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer' }}>해제</button>
+        </div>
+      )}
 
       {/* 생성 모드 토글 */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
@@ -407,9 +459,38 @@ export default function Seedance() {
           )}
 
           <div style={{ marginTop: 14 }}>
-            <Label>프롬프트</Label>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+              <Label>프롬프트</Label>
+              <button type="button"
+                onClick={async () => {
+                  if (!prompt.trim() || savingPrompt) return
+                  setSavingPrompt(true)
+                  try {
+                    const r = await authedFetch('/api/seedance/prompts', {
+                      method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ content: prompt, mode: genMode }),
+                    })
+                    if (!r.ok) throw new Error(await r.text())
+                    setPromptSaved(true)
+                    setTimeout(() => setPromptSaved(false), 2000)
+                  } catch (e: any) {
+                    alert('프롬프트 저장 실패: ' + (e?.message || e))
+                  } finally { setSavingPrompt(false) }
+                }}
+                disabled={!prompt.trim() || savingPrompt || busy}
+                style={{
+                  fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 4,
+                  background: promptSaved ? 'rgba(34,197,94,0.15)' : 'transparent',
+                  color: promptSaved ? 'var(--success, #10b981)' : 'var(--accent)',
+                  border: `1px solid ${promptSaved ? 'var(--success, #10b981)' : 'var(--accent)'}`,
+                  cursor: (busy || savingPrompt || !prompt.trim()) ? 'not-allowed' : 'pointer',
+                  opacity: (busy || !prompt.trim()) ? 0.5 : 1,
+                }}>
+                {savingPrompt ? '저장…' : promptSaved ? '✓ 저장됨' : '📝 라이브러리에 저장'}
+              </button>
+            </div>
             <textarea value={prompt}
-              onChange={e => { setPrompt(e.target.value); setPromptTouched(true) }} disabled={busy}
+              onChange={e => { setPrompt(e.target.value); setPromptTouched(true); setPromptSaved(false) }} disabled={busy}
               rows={3} style={textareaSt} />
           </div>
 

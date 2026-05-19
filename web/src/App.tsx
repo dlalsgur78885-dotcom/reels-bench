@@ -35,6 +35,8 @@ const FbSearchAds = lazy(() => import('./pages/FbSearchAds'))
 const FbAdImportPage = lazy(() => import('./pages/FbAdImportPage'))
 const Seedance = lazy(() => import('./pages/Seedance'))
 const SeedanceLibrary = lazy(() => import('./pages/SeedanceLibrary'))
+const SeedancePrompts = lazy(() => import('./pages/SeedancePrompts'))
+const SeedanceCharacters = lazy(() => import('./pages/SeedanceCharacters'))
 const Mockup = lazy(() => import('./pages/Mockup'))
 const FigmaMockup = lazy(() => import('./pages/FigmaMockup'))
 
@@ -297,6 +299,8 @@ export default function App() {
           <Route path="/my-scripts/:pid/:sid" element={<MyScriptDetail />} />
           <Route path="/seedance" element={<Seedance />} />
           <Route path="/seedance/library" element={<SeedanceLibrary />} />
+          <Route path="/seedance/prompts" element={<SeedancePrompts />} />
+          <Route path="/seedance/characters" element={<SeedanceCharacters />} />
           <Route path="/mockup" element={<Mockup />} />
           <Route path="/figma-mockup" element={<FigmaMockup />} />
           <Route path="/login" element={<Navigate to="/" replace />} />
@@ -362,6 +366,8 @@ function UserMenu({ me }: { me: UserProfile | null }) {
       >내 상품</button>
       <button onClick={() => navigate('/seedance')} style={{ ...btnSt, marginBottom: 6 }}>🎞 영상 생성</button>
       <button onClick={() => navigate('/seedance/library')} style={{ ...btnSt, marginBottom: 6 }}>📁 영상 라이브러리</button>
+      <button onClick={() => navigate('/seedance/prompts')} style={{ ...btnSt, marginBottom: 6 }}>📝 프롬프트</button>
+      <button onClick={() => navigate('/seedance/characters')} style={{ ...btnSt, marginBottom: 6 }}>🧑 인물</button>
       <button onClick={() => navigate('/mockup')} style={{ ...btnSt, marginBottom: 6 }}>📱 앱 목업</button>
       <button onClick={() => navigate('/figma-mockup')} style={{ ...btnSt, marginBottom: 6 }}>🎨 Figma 목업</button>
       <button onClick={logout} style={btnSt}>로그아웃</button>

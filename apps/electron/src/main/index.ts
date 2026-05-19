@@ -6,6 +6,10 @@ import {
   registerMediaProtocolHandler,
   registerMediaSchemePrivileges
 } from './mediaProtocol'
+import {
+  registerAppProtocolHandler,
+  registerAppSchemePrivileges
+} from './appProtocol'
 import { initAutoUpdate } from './auto-update'
 
 app.setName('Reels Studio')
@@ -21,6 +25,10 @@ if (process.platform === 'win32') {
 // renderer-side <video>/<audio> elements with src="media://..." work under
 // sandbox:true + contextIsolation:true.
 registerMediaSchemePrivileges()
+// Register `app://` scheme so the production renderer loads from a non-`file://`
+// origin. `file://` triggers Chromium's media-element URL safety check which
+// rejects `media://` video/audio sources.
+registerAppSchemePrivileges()
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -47,6 +55,7 @@ function applySessionHardening(): void {
 app.whenReady().then(() => {
   applySessionHardening()
   registerMediaProtocolHandler()
+  registerAppProtocolHandler()
   registerIpcHandlers()
   const mainWin = createMainWindow()
 

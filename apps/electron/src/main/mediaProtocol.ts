@@ -57,7 +57,7 @@ function decodeMediaUrl(rawUrl: string): string | null {
 
 /** Construct the media:// URL for an absolute path. Mirrored on the renderer. */
 export function buildMediaUrl(absPath: string): string {
-  return `${MEDIA_PROTOCOL}:///${encodeURIComponent(absPath)}`
+  return `${MEDIA_PROTOCOL}://r/${encodeURIComponent(absPath)}`
 }
 
 /**

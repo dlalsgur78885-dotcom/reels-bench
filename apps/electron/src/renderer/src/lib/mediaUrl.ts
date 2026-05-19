@@ -9,5 +9,7 @@
  */
 export function toMediaUrl(absPath: string): string {
   if (!absPath) return ''
-  return `media:///${encodeURIComponent(absPath)}`
+  // Explicit host (`r`) so the URL parses as a standard scheme. Chromium's
+  // media URL safety check rejects host-less custom-scheme URLs.
+  return `media://r/${encodeURIComponent(absPath)}`
 }

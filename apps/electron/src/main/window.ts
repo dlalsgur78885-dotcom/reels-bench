@@ -1,5 +1,6 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
+import { getRendererLoadUrl } from './appProtocol'
 
 const ALLOWED_EXTERNAL_HOSTS = new Set<string>([
   'supabase.co',
@@ -36,7 +37,9 @@ export function createMainWindow(): BrowserWindow {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
-      devTools: !app.isPackaged
+      // Internal-use app — DevTools available in packaged builds too so we
+      // can diagnose runtime issues in the field. Ctrl+Shift+I to open.
+      devTools: true
     }
   })
 
@@ -52,7 +55,7 @@ export function createMainWindow(): BrowserWindow {
   win.webContents.on('will-navigate', (event, url) => {
     const devUrl = process.env.ELECTRON_RENDERER_URL
     if (devUrl && url.startsWith(devUrl)) return
-    if (url.startsWith('file://')) return
+    if (url.startsWith('app://')) return
     event.preventDefault()
     if (isAllowedExternal(url)) void shell.openExternal(url)
   })
@@ -60,7 +63,10 @@ export function createMainWindow(): BrowserWindow {
   if (process.env.ELECTRON_RENDERER_URL) {
     void win.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
-    void win.loadFile(join(__dirname, '../renderer/index.html'))
+    // Production: load via `app://` so the renderer origin is not `file://`.
+    // `file://` triggers Chromium's media URL safety check which rejects
+    // `media://` video/audio sources.
+    void win.loadURL(getRendererLoadUrl())
   }
 
   return win

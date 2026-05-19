@@ -1520,6 +1520,9 @@ class ScriptRefineRequest(BaseModel):
     variant: str = "default"  # 'default' (기본 다듬기) | 'strong' (강한 변주 — 어휘 더 크게 변경)
     # 페르소나 anchor — variant=strong(humanize) 적용 시 페르소나 시그널 보존용
     target_persona: dict | None = None
+    # 상품 fence — writer prompt와 동일 (다듬기 중 환각 재발 차단)
+    product_name: str | None = None
+    product_capability_out: str | None = None
 
 
 @app.post("/api/script/refine")
@@ -1574,7 +1577,7 @@ def refine_script(req: ScriptRefineRequest):
                 logger.info("[refine] vocab repeats: %s", {k: v for k, v in list(vocab_repeats.items())[:5]})
         except Exception as e:
             logger.warning("[refine] vocab repeat detection failed: %s", e)
-        prompt = script_gen.build_refine_prompt(req.draft, unified.get("city"), ref_info=ref_info, usps=req.usps, awkward_info=awkward_info, vocab_repeats=vocab_repeats, target_persona=req.target_persona)
+        prompt = script_gen.build_refine_prompt(req.draft, unified.get("city"), ref_info=ref_info, usps=req.usps, awkward_info=awkward_info, vocab_repeats=vocab_repeats, target_persona=req.target_persona, product_name=req.product_name, product_capability_out=req.product_capability_out)
         # variant: strong = 기본 refine + humanize-korean 룰 추가 (AI 티 제거)
         variant = req.variant if req.variant in ("default", "strong") else "default"
         if variant == "strong":
@@ -2105,12 +2108,14 @@ def refine_saved_script(pid: int, sid: str, body: SavedRefineRequest, request: R
         raise HTTPException(400, f"{('A' if target_key == 'alt_a' else 'B')}원고 이미 있음 — 재생성 불가")
     cur_sents = base_sents
 
-    # 매핑된 상품 USPs 로드 (refine prompt 입력)
+    # 매핑된 상품 USPs + capability_out 로드 (refine prompt 입력)
     prod_rows = _r.get(
-        f"{SUPA}/rest/v1/my_products?id=eq.{pid}&select=usps&limit=1",
+        f"{SUPA}/rest/v1/my_products?id=eq.{pid}&select=name,usps,capability_out&limit=1",
         headers=H, timeout=10,
     ).json() or []
     usps = (prod_rows[0].get("usps") if prod_rows else []) or []
+    saved_product_name = prod_rows[0].get("name") if prod_rows else None
+    saved_capability_out = prod_rows[0].get("capability_out") if prod_rows else None
 
     ref_shortcode = row.get("ref_shortcode")
     try:
@@ -2140,7 +2145,7 @@ def refine_saved_script(pid: int, sid: str, body: SavedRefineRequest, request: R
         draft = {"sentences": cur_sents}
         # 저장된 대본 meta에 target_persona 저장돼 있으면 활용 (페르소나 anchor 보존용)
         saved_persona = ((row.get("meta") or {}).get("target_persona")) or None
-        prompt = script_gen.build_refine_prompt(draft, unified.get("city"), ref_info=ref_info, usps=usps, awkward_info=awkward_info, vocab_repeats=vocab_repeats, target_persona=saved_persona)
+        prompt = script_gen.build_refine_prompt(draft, unified.get("city"), ref_info=ref_info, usps=usps, awkward_info=awkward_info, vocab_repeats=vocab_repeats, target_persona=saved_persona, product_name=saved_product_name, product_capability_out=saved_capability_out)
         if variant == "strong":
             prompt += """
 
@@ -5386,13 +5391,12 @@ def _extract_blog_images(url: str) -> list[dict]:
         if not src or src.startswith("data:"):
             return
         abs_url = urljoin(base, src)
-        # Naver 이미지 — `?type=wN` 으로 CDN이 리사이즈. 원본 받으려면 query 제거.
-        # 추출 단계에선 base URL로 통일 → import-image 시점에서 ?type=w3840 으로 재요청해 최대 해상도 받음.
-        if "pstatic.net" in abs_url:
-            abs_url = abs_url.split("?")[0]
-        if abs_url in seen:
+        # Naver 이미지 URL — `?type=wN` query를 그대로 유지 (떼면 mblogthumb-phinf는 404).
+        # 디듑은 base path만 (같은 이미지 다른 사이즈 중복 제거).
+        dedup_key = abs_url.split("?")[0] if "pstatic.net" in abs_url else abs_url
+        if dedup_key in seen:
             return
-        seen.add(abs_url)
+        seen.add(dedup_key)
         candidates.append({"url": abs_url, "alt": (alt or "").strip()[:120]})
 
     # 네이버 SmartEditor 우선
@@ -5450,22 +5454,31 @@ def seedance_import_image(body: SeedanceImportImageReq, request: Request):
     elif "pstatic.net" in body.url:
         headers["Referer"] = "https://blog.naver.com/"
     # Naver: CDN에서 max 해상도 명시 요청 (param 없으면 종종 작은 thumb 줌)
-    fetch_url = body.url
-    if "pstatic.net" in fetch_url and "?" not in fetch_url:
-        fetch_url = fetch_url + "?type=w3840"
-    try:
-        rr = requests.get(fetch_url, headers=headers, timeout=20, stream=False)
-        rr.raise_for_status()
-    except Exception as e:
-        # max 사이즈 실패하면 원본 URL로 fallback
-        if fetch_url != body.url:
-            try:
-                rr = requests.get(body.url, headers=headers, timeout=20)
-                rr.raise_for_status()
-            except Exception as e2:
-                raise HTTPException(502, f"이미지 download 실패: {e2}")
-        else:
-            raise HTTPException(502, f"이미지 download 실패: {e}")
+    # Naver: 호스트별 유효 사이즈 다름. fallback 체인으로 최대 화질 시도.
+    # - blogfiles/postfiles: 원본(query 없음) 또는 w3840 까지 가능
+    # - mblogthumb-phinf: 최대 w966 (w1200+ 404)
+    # 시도 순서: 원본 URL → w3840 → w966 → 마지막 수단
+    candidates = [body.url]
+    if "pstatic.net" in body.url:
+        base_url = body.url.split("?")[0]
+        for sz in ("w3840", "w966", "w773"):
+            cand = f"{base_url}?type={sz}"
+            if cand not in candidates:
+                candidates.append(cand)
+    rr = None
+    last_err = None
+    for cand_url in candidates:
+        try:
+            r2 = requests.get(cand_url, headers=headers, timeout=20)
+            if r2.status_code == 200 and len(r2.content) > 200:
+                rr = r2
+                fetch_url = cand_url
+                break
+            last_err = f"HTTP {r2.status_code}"
+        except Exception as e:
+            last_err = str(e)
+    if rr is None:
+        raise HTTPException(502, f"이미지 download 실패: {last_err}")
     content = rr.content
     if len(content) < 200:
         raise HTTPException(400, f"이미지 너무 작음 ({len(content)} bytes)")

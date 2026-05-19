@@ -1,5 +1,6 @@
 import { ulid } from 'ulid'
-import { create } from 'zustand'
+import { create, useStore } from 'zustand'
+import { temporal, type TemporalState } from 'zundo'
 import {
   ASPECT_RATIO_DIMENSIONS,
   DEFAULT_DUCKING_DB,
@@ -219,13 +220,105 @@ export interface ProjectStore {
   _hydrateFromDisk(project: Project): void
 }
 
-export const useProjectStore = create<ProjectStore>((set, get) => ({
+// ---------------------------------------------------------------------------
+// Undo/redo (Phase 4.3) — zundo middleware.
+//
+// We track ONLY `state.project` (the persistent doc). UI ephemera
+// (selectedClipIds, playheadMs, bpm, etc.) lives in a separate store
+// (timelineUi) and is intentionally excluded.
+//
+// "Noisy" async-generated fields on media (thumbnailPath, waveformPath) are
+// stripped before equality comparison so that thumbnail/waveform jobs that
+// land 200–800ms after import don't pollute the history stack.
+// ---------------------------------------------------------------------------
+const UNDO_LIMIT = 100
+const UNDO_THROTTLE_MS = 200
+
+/** Minimal throttle: leading-edge with trailing flush. Avoids pulling in lodash. */
+function makeThrottle<F extends (...args: never[]) => void>(fn: F, wait: number): F {
+  let last = 0
+  let pending: Parameters<F> | null = null
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const flush = (): void => {
+    if (pending) {
+      last = Date.now()
+      const args = pending
+      pending = null
+      timer = null
+      fn(...args)
+    } else {
+      timer = null
+    }
+  }
+  return ((...args: Parameters<F>) => {
+    const now = Date.now()
+    const remaining = wait - (now - last)
+    if (remaining <= 0) {
+      last = now
+      pending = null
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+      fn(...args)
+    } else {
+      pending = args
+      if (!timer) timer = setTimeout(flush, remaining)
+    }
+  }) as F
+}
+
+interface ProjectSnapshot {
+  project: Project
+}
+
+/**
+ * Strip noisy async-generated metadata before equality comparison. We do NOT
+ * use partialize for this — partialize would PERMANENTLY drop the fields
+ * (undoing would unset thumbnails/waveforms). Instead we compare normalized
+ * shapes so thumbnail-only deltas don't create a history entry.
+ */
+function stripNoisy(s: ProjectSnapshot): unknown {
+  const p = s.project
+  return {
+    ...p,
+    // updatedAt changes on every touch() call but isn't user-visible mutation.
+    updatedAt: 0,
+    media: Object.fromEntries(
+      Object.entries(p.media).map(([id, m]) => [
+        id,
+        { ...m, thumbnailPath: undefined, waveformPath: undefined }
+      ])
+    )
+  }
+}
+
+function snapshotsEqual(a: ProjectSnapshot, b: ProjectSnapshot): boolean {
+  // JSON.stringify is plenty fast at this scale (a 100-clip project
+  // serializes in <2ms; we only run this on each mutating set, throttled to
+  // 200ms minimum). If it ever shows up in a profile, swap in fast-deep-equal.
+  return JSON.stringify(stripNoisy(a)) === JSON.stringify(stripNoisy(b))
+}
+
+export const useProjectStore = create<ProjectStore>()(
+  temporal(
+    (set, get) => ({
   project: freshProject(),
   hydrated: false,
 
   createNew(): void {
     set({ project: freshProject() })
     schedulePersist(get().project)
+    // A brand-new project should be the new baseline; previous history
+    // shouldn't be undo-able. Defer to next tick so the just-issued
+    // set() lands before clear (avoids the new project itself sneaking into
+    // pastStates).
+    // Push past the throttle window so any in-flight trailing-edge entry
+    // for the just-issued set() lands before we wipe the stack.
+    setTimeout(
+      () => useProjectStore.temporal.getState().clear(),
+      UNDO_THROTTLE_MS + 50
+    )
   },
 
   setName(name: string): void {
@@ -865,8 +958,93 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
   _hydrateFromDisk(project: Project): void {
     set({ project: migrateLoadedProject(project), hydrated: true })
+    // A loaded project IS the new baseline — nothing before this point
+    // should be undo-able. Defer to next tick so the set() above lands first.
+    // Push past the throttle window so any in-flight trailing-edge entry
+    // for the just-issued set() lands before we wipe the stack.
+    setTimeout(
+      () => useProjectStore.temporal.getState().clear(),
+      UNDO_THROTTLE_MS + 50
+    )
   }
-}))
+    }),
+    {
+      limit: UNDO_LIMIT,
+      // Track only the project doc. `hydrated` is bootstrap state, not user
+      // mutation; everything else (UI ephemera, action refs) is excluded.
+      partialize: (state): ProjectSnapshot => ({ project: state.project }),
+      // Skip history entries where only the noisy fields differ (thumbnail
+      // paths, waveform paths, updatedAt timestamps).
+      equality: snapshotsEqual,
+      // Throttle rapid mutations (drags, scrubs) into one entry per
+      // UNDO_THROTTLE_MS window. The leading edge captures the first state
+      // change instantly; subsequent changes within the window are coalesced
+      // into a single trailing entry.
+      //
+      // Note: zundo internally curries `handleSet` with 4 args (past, replace,
+      // current, delta), but its TS type narrows to the 1-2-arg StoreApi
+      // setState shape. We pass args through opaquely.
+      handleSet: (handleSet) => {
+        const throttled = makeThrottle(
+          (...args: unknown[]) => {
+            ;(handleSet as unknown as (...a: unknown[]) => void)(...args)
+          },
+          UNDO_THROTTLE_MS
+        )
+        return throttled as unknown as typeof handleSet
+      }
+    }
+  )
+)
+
+/**
+ * Hook to subscribe a component reactively to the undo/redo state.
+ * `pastStates.length` / `futureStates.length` are derived (canUndo/canRedo).
+ */
+export interface UndoRedoApi {
+  undo: () => void
+  redo: () => void
+  clear: () => void
+  canUndo: boolean
+  canRedo: boolean
+  pastCount: number
+  futureCount: number
+}
+
+export function useUndoRedo(): UndoRedoApi {
+  // Subscribe to scalar primitives only so each useStore call uses Object.is
+  // safely. Returning an aggregated object from a single selector would
+  // create a new reference each render and infinite-loop React.
+  const pastCount = useStore(
+    useProjectStore.temporal,
+    (s: TemporalState<ProjectSnapshot>) => s.pastStates.length
+  )
+  const futureCount = useStore(
+    useProjectStore.temporal,
+    (s: TemporalState<ProjectSnapshot>) => s.futureStates.length
+  )
+  const undo = useStore(
+    useProjectStore.temporal,
+    (s: TemporalState<ProjectSnapshot>) => s.undo
+  )
+  const redo = useStore(
+    useProjectStore.temporal,
+    (s: TemporalState<ProjectSnapshot>) => s.redo
+  )
+  const clear = useStore(
+    useProjectStore.temporal,
+    (s: TemporalState<ProjectSnapshot>) => s.clear
+  )
+  return {
+    undo,
+    redo,
+    clear,
+    canUndo: pastCount > 0,
+    canRedo: futureCount > 0,
+    pastCount,
+    futureCount
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Init: try to load the persisted project once when this module is imported.
@@ -897,6 +1075,13 @@ export function initProjectStore(): Promise<void> {
       // Only enable persistence AFTER hydration so we never overwrite a
       // valid on-disk project with the default in-memory blank.
       persistEnabled = true
+      // Wipe any history accumulated during the hydrate set() calls — the
+      // post-hydrate state is the user's baseline, not undo-able.
+      try {
+        useProjectStore.temporal.getState().clear()
+      } catch {
+        /* defensive — temporal should always exist post-init */
+      }
     })
 }
 

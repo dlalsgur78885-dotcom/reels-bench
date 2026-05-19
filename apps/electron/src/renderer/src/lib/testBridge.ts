@@ -86,6 +86,12 @@ export function installTestBridge(): void {
       __reelsTimelineUi: typeof useTimelineUi
     }).__reelsTimelineUi = useTimelineUi
 
+    // Phase 4.3 — expose the temporal (undo/redo) sub-store so e2e tests can
+    // call undo/redo/clear and inspect pastStates/futureStates counts.
+    ;(window as unknown as {
+      __reelsUndoRedo: typeof useProjectStore.temporal
+    }).__reelsUndoRedo = useProjectStore.temporal
+
     // Phase 3 — expose the api client + auth helpers so tests can call
     // them without dynamic imports (which break on the bundled production
     // build). All surfaces are read-only / call-through.

@@ -9,7 +9,7 @@ import { ExportDialog } from '../components/ExportDialog'
 import { PrefillDialog } from '../components/PrefillDialog'
 import { Toast, type ToastVariant } from '../components/Toast'
 import type { PrefillResult } from '../lib/prefillFromReel'
-import { getTotalDurationMs, useProjectStore } from '../store/project'
+import { getTotalDurationMs, useProjectStore, useUndoRedo } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import {
   isMediaClip,
@@ -146,6 +146,41 @@ const styles = {
     padding: '4px 8px',
     fontSize: 11,
     width: 90
+  } as React.CSSProperties,
+  undoBtn: {
+    background: 'transparent',
+    color: '#cbd5e1',
+    border: '1px solid #2a2a2a',
+    borderRadius: 6,
+    padding: '4px 8px',
+    fontSize: 14,
+    lineHeight: 1,
+    cursor: 'pointer',
+    minWidth: 32,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4
+  } as React.CSSProperties,
+  undoBtnDisabled: {
+    background: 'transparent',
+    color: '#3f3f46',
+    border: '1px solid #1f1f1f',
+    borderRadius: 6,
+    padding: '4px 8px',
+    fontSize: 14,
+    lineHeight: 1,
+    cursor: 'not-allowed',
+    minWidth: 32,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4
+  } as React.CSSProperties,
+  undoBadge: {
+    fontSize: 9,
+    color: '#94a3b8',
+    fontVariantNumeric: 'tabular-nums'
   } as React.CSSProperties
 }
 
@@ -155,6 +190,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   const setName = useProjectStore((s) => s.setName)
   const setAspectRatio = useProjectStore((s) => s.setAspectRatio)
   const removeClip = useProjectStore((s) => s.removeClip)
+  const { undo, redo, canUndo, canRedo, pastCount, futureCount } = useUndoRedo()
 
   // Phase 2.2: playhead lives in the timelineUi store so Transport's rAF
   // loop and PreviewCanvas's <video>/<audio> sync share a single source of
@@ -302,6 +338,29 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         return
       }
 
+      // Ctrl/Cmd+Shift+Z OR Ctrl/Cmd+Y → redo. Check redo BEFORE plain
+      // Ctrl+Z so the shift combo isn't swallowed.
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        ((e.shiftKey && (e.key === 'z' || e.key === 'Z' || e.key === 'ㅋ')) ||
+          (e.key === 'y' || e.key === 'Y' || e.key === 'ㅛ'))
+      ) {
+        e.preventDefault()
+        useProjectStore.temporal.getState().redo()
+        return
+      }
+
+      // Ctrl/Cmd+Z (no shift) → undo.
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        !e.shiftKey &&
+        (e.key === 'z' || e.key === 'Z' || e.key === 'ㅋ')
+      ) {
+        e.preventDefault()
+        useProjectStore.temporal.getState().undo()
+        return
+      }
+
       // Ctrl/Cmd+E → open export dialog.
       if ((e.ctrlKey || e.metaKey) && (e.key === 'e' || e.key === 'E')) {
         e.preventDefault()
@@ -438,6 +497,33 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         </div>
 
         <div style={styles.flex1} />
+
+        <button
+          type="button"
+          style={canUndo ? styles.undoBtn : styles.undoBtnDisabled}
+          onClick={() => undo()}
+          disabled={!canUndo}
+          aria-label="실행 취소"
+          title="실행 취소 (Ctrl+Z)"
+          data-testid="undo-button"
+          data-can-undo={canUndo ? 'true' : 'false'}
+        >
+          <span aria-hidden>↶</span>
+          {pastCount > 0 && <span style={styles.undoBadge}>{pastCount}</span>}
+        </button>
+        <button
+          type="button"
+          style={canRedo ? styles.undoBtn : styles.undoBtnDisabled}
+          onClick={() => redo()}
+          disabled={!canRedo}
+          aria-label="다시 실행"
+          title="다시 실행 (Ctrl+Shift+Z)"
+          data-testid="redo-button"
+          data-can-redo={canRedo ? 'true' : 'false'}
+        >
+          <span aria-hidden>↷</span>
+          {futureCount > 0 && <span style={styles.undoBadge}>{futureCount}</span>}
+        </button>
 
         <input
           style={styles.playheadInput}

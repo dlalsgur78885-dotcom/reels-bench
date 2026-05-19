@@ -3135,15 +3135,23 @@ def build_refine_prompt(draft: dict, unified_city: str | None, ref_info: dict | 
     if (product_capability_out or "").strip():
         pname = product_name or "이 상품"
         cap_fence_block = f"""
-## ⛔⛔⛔ 상품 capability fence — **절대 박지 말 것** (전체 문장에 적용)
-"{pname}"이 **하지 않는 기능 (false claim 키워드)**:
+## ⛔⛔⛔ 최우선 룰 — 상품 capability fence (다른 모든 룰보다 우선)
+
+**이 룰은 "1차 카피 보존", "음절 ±15%", "텍스트만 다듬기" 등 다른 모든 다듬기 룰을 무력화합니다.**
+**키워드 제거를 위해 문장을 통째로 바꿔도 됩니다. 의미만 우회해서 보존하세요.**
+
+"{pname}"이 **절대 하지 않는 기능** (false claim 키워드):
 {product_capability_out.strip()}
 
-→ 위 키워드와 관련된 멘트는 무조건 false claim. 다듬기 결과에 등장하면 검수 fail.
-→ **1차 카피의 `⚠️FENCE⚠️` 마커가 붙은 sentence는 키워드 들어있는 문장입니다.**
-   해당 sentence는 키워드를 완전히 제거한 새 문장으로 재작성하세요 (다른 USP·셀링포인트로 우회).
-→ 의미는 보존하되 false claim 단어는 절대 출력 금지. 모호한 표현 ("간편하게", "한 번에", "자동으로")도 위 기능 함의면 금지.
-→ ⚠️FENCE⚠️ 마커 자체는 출력 결과에 포함 X (입력 표시용).
+처리 규칙:
+1. 1차 카피의 `⚠️FENCE⚠️` 마커가 붙은 sentence = 위 키워드 들어있음
+2. 그 sentence는 **키워드 완전 삭제한 새 문장**으로 재작성
+3. 음절·어절 룰 무시 OK. 의미 다듬기 룰 무시 OK. 키워드 제거가 최우선.
+4. 다른 USP·셀링포인트로 자연 우회 (예: 예약 멘트 → "여행 일정 미리 정리" 같은 다른 가치)
+5. 모호 표현도 위 기능 함의면 금지 ("간편하게 끝", "한 번에 처리" 등)
+6. ⚠️FENCE⚠️ 마커 자체는 출력 X (입력 표시용)
+
+위 키워드 출력하면 **검수 자동 fail**. 다른 모든 룰을 깨더라도 fence를 지키세요.
 """
 
     target_n = (ref_info or {}).get("sentence_count") or len(sentences)

@@ -8,6 +8,7 @@ import {
   IPC_CHANNELS,
   type BeatDetectOptions,
   type BeatMarker,
+  type DownloadResult,
   type ElectronApi,
   type ExportBuildPlanResult,
   type ExportPresetKey,
@@ -132,6 +133,17 @@ const api: ElectronApi = {
       ipcRenderer.invoke(IPC_CHANNELS.exporter.revealFile, filePath),
     openFile: (filePath: string): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.exporter.openFile, filePath)
+  },
+  download: {
+    downloadVideoToTemp: (
+      url: string,
+      suggestedName?: string
+    ): Promise<DownloadResult> =>
+      ipcRenderer.invoke(
+        IPC_CHANNELS.download.downloadVideoToTemp,
+        url,
+        suggestedName
+      )
   }
 }
 

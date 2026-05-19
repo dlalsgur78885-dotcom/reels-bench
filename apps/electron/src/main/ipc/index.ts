@@ -5,6 +5,7 @@ import { registerMediaHandlers } from './media'
 import { registerCaptionHandlers } from './captions'
 import { registerAudioHandlers } from './audio'
 import { registerExportHandlers } from './export'
+import { registerDownloadHandlers } from './download'
 
 export function registerIpcHandlers(): void {
   registerFfmpegHandlers()
@@ -14,4 +15,5 @@ export function registerIpcHandlers(): void {
   registerCaptionHandlers()
   registerAudioHandlers()
   registerExportHandlers()
+  registerDownloadHandlers()
 }

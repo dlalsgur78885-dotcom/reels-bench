@@ -198,6 +198,13 @@ export interface ProjectStore {
   // --- Captions (Phase 2.4) ---
   /** Append a caption clip to the caption track. */
   addCaption(caption: CaptionClip): void
+  /**
+   * Bulk-append caption clips in a single atomic store update.
+   * Phase 3.3 prefill flow may add 50+ captions — using addCaption in a
+   * loop would trigger N re-renders; this method coalesces to one.
+   * Caption clips with a non-caption trackId are silently filtered out.
+   */
+  addCaptions(captions: CaptionClip[]): void
   /** Generic partial update for a caption clip. */
   updateCaption(captionId: string, partial: Partial<Omit<CaptionClip, 'id' | 'kind' | 'trackId'>>): void
   /** Remove a caption clip (alias of removeClip with kind guard). */
@@ -778,6 +785,31 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   addCaption(caption: CaptionClip): void {
     // Delegate to addClip; addClip validates track-kind compatibility.
     get().addClip(caption)
+  },
+
+  addCaptions(captions: CaptionClip[]): void {
+    if (!Array.isArray(captions) || captions.length === 0) return
+    const project = get().project
+    // Find caption track once. If there's no caption track, this is a no-op
+    // (matches addCaption's silent failure mode).
+    const captionTrackIdx = project.tracks.findIndex((t) => t.kind === 'caption')
+    if (captionTrackIdx === -1) return
+    const captionTrackId = project.tracks[captionTrackIdx].id
+    // Filter + reassign trackId defensively. Caller can supply any trackId,
+    // but bulk insert MUST land on the caption track to match addCaption.
+    const accepted: CaptionClip[] = []
+    for (const c of captions) {
+      if (!c || c.kind !== 'caption') continue
+      accepted.push(c.trackId === captionTrackId ? c : { ...c, trackId: captionTrackId })
+    }
+    if (accepted.length === 0) return
+    const tracks = project.tracks.map((t, i) => {
+      if (i !== captionTrackIdx) return t
+      return { ...t, clips: [...t.clips, ...accepted] }
+    })
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
   },
 
   updateCaption(captionId, partial): void {

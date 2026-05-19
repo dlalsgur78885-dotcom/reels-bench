@@ -45,6 +45,9 @@ export const IPC_CHANNELS = {
     buildPlan: 'exporter:buildPlan',
     revealFile: 'exporter:revealFile',
     openFile: 'exporter:openFile'
+  },
+  download: {
+    downloadVideoToTemp: 'download:downloadVideoToTemp'
   }
 } as const
 
@@ -254,6 +257,15 @@ export interface ExportRunResult {
   debugLogPath?: string
 }
 
+// ---------------------------------------------------------------------------
+// Download pipeline (Phase 3.3 prefill).
+// ---------------------------------------------------------------------------
+
+/** Discriminated result of a video download to local userData/imports. */
+export type DownloadResult =
+  | { ok: true; localPath: string; sizeBytes: number }
+  | { ok: false; error: string; httpStatus?: number }
+
 export interface ExportBuildPlanResult {
   ok: boolean
   /** Final ffmpeg argv as a single string (debug-friendly). */
@@ -345,6 +357,18 @@ export interface ElectronApi {
     revealFile(filePath: string): Promise<void>
     /** Open the file with the OS default player. */
     openFile(filePath: string): Promise<void>
+  }
+  download: {
+    /**
+     * Download a remote https video to `userData/imports/<sanitized>.mp4`.
+     * Returns the local path on success; surfaces httpStatus for 403/etc.
+     * Renderer should fall back to `getReelVideoUrl(shortcode)` re-scrape
+     * when the URL expires (common for FB ad reels).
+     */
+    downloadVideoToTemp(
+      url: string,
+      suggestedName?: string
+    ): Promise<DownloadResult>
   }
 }
 

@@ -6,6 +6,9 @@ import { Timeline } from '../components/Timeline'
 import { Transport } from '../components/Transport'
 import { CaptionEditor } from '../components/CaptionEditor'
 import { ExportDialog } from '../components/ExportDialog'
+import { PrefillDialog } from '../components/PrefillDialog'
+import { Toast, type ToastVariant } from '../components/Toast'
+import type { PrefillResult } from '../lib/prefillFromReel'
 import { getTotalDurationMs, useProjectStore } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import {
@@ -181,6 +184,34 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     null
   )
   const [exportOpen, setExportOpen] = useState(false)
+  const [prefillOpen, setPrefillOpen] = useState(false)
+  const [toast, setToast] = useState<{
+    message: string
+    variant: ToastVariant
+    id: number
+  } | null>(null)
+
+  const handlePrefillComplete = useCallback((result: PrefillResult): void => {
+    if (result.ok) {
+      const parts = [`릴스 ${result.shortcode}의 분석 결과를 가져왔습니다`]
+      const inner: string[] = []
+      inner.push(`자막 ${result.captionsAdded}개`)
+      if (result.beatsAdded > 0) inner.push(`비트 ${result.beatsAdded}개`)
+      if (result.bgmSegmentsDetected > 0) {
+        inner.push(`BGM 구간 ${result.bgmSegmentsDetected}개 감지`)
+      }
+      const message = `${parts[0]} (${inner.join(', ')})`
+      setToast({ message, variant: 'success', id: Date.now() })
+      setPrefillOpen(false)
+    } else {
+      setToast({
+        message: `가져오기 실패: ${result.error}`,
+        variant: 'error',
+        id: Date.now()
+      })
+      // Keep dialog open on error so the user can retry.
+    }
+  }, [])
 
   // Phase 2.5 — manual BPM + beat snap UI.
   const bpm = useTimelineUi((s) => s.bpm)
@@ -271,6 +302,13 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'e' || e.key === 'E')) {
         e.preventDefault()
         setExportOpen(true)
+        return
+      }
+
+      // Ctrl/Cmd+I → open prefill (분석 결과 가져오기) dialog.
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'i' || e.key === 'I')) {
+        e.preventDefault()
+        setPrefillOpen(true)
         return
       }
 
@@ -440,6 +478,14 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
 
         <button
           style={styles.primaryBtn}
+          onClick={() => setPrefillOpen(true)}
+          data-testid="open-prefill-dialog"
+          title="분석 결과 가져오기 (Ctrl+I)"
+        >
+          분석 결과 가져오기
+        </button>
+        <button
+          style={styles.primaryBtn}
           onClick={handleAddCaption}
           data-testid="add-caption-button"
         >
@@ -552,6 +598,19 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
       )}
       {exportOpen && (
         <ExportDialog project={project} onClose={() => setExportOpen(false)} />
+      )}
+      <PrefillDialog
+        open={prefillOpen}
+        onClose={() => setPrefillOpen(false)}
+        onComplete={handlePrefillComplete}
+      />
+      {toast && (
+        <Toast
+          key={toast.id}
+          message={toast.message}
+          variant={toast.variant}
+          onClose={() => setToast(null)}
+        />
       )}
     </div>
   )

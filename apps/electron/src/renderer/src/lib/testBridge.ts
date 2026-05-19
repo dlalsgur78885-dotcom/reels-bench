@@ -15,6 +15,7 @@ import {
   listMyReels,
   authedFetch
 } from './api'
+import { prefillFromReel } from './prefillFromReel'
 import { newId, useProjectStore } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import { emailToUserIdLabel, idToEmail } from '../store/auth'
@@ -42,6 +43,8 @@ export function installTestBridge(): void {
         updateMediaWaveform: Store['updateMediaWaveform']
         setClipTransitionIn: Store['setClipTransitionIn']
         setClipFilter: Store['setClipFilter']
+        addCaption: Store['addCaption']
+        addCaptions: Store['addCaptions']
         newId: () => string
       }
     }).__reelsStore = {
@@ -75,6 +78,8 @@ export function installTestBridge(): void {
         useProjectStore.getState().setClipTransitionIn(id, kind, dur),
       setClipFilter: (id, preset, intensity) =>
         useProjectStore.getState().setClipFilter(id, preset, intensity),
+      addCaption: (cap) => useProjectStore.getState().addCaption(cap),
+      addCaptions: (caps) => useProjectStore.getState().addCaptions(caps),
       newId
     }
     ;(window as unknown as {
@@ -91,13 +96,15 @@ export function installTestBridge(): void {
         getReelMetadata: typeof getReelMetadata
         getReelVideoUrl: typeof getReelVideoUrl
         authedFetch: typeof authedFetch
+        prefillFromReel: typeof prefillFromReel
       }
     }).__reelsApi = {
       listMyReels,
       getReelAnalysis,
       getReelMetadata,
       getReelVideoUrl,
-      authedFetch
+      authedFetch,
+      prefillFromReel
     }
     ;(window as unknown as {
       __reelsAuthHelpers: {

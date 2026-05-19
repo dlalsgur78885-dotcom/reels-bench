@@ -2976,7 +2976,7 @@ JSON만. 설명 X."""
     return []
 
 
-def build_refine_prompt(draft: dict, unified_city: str | None, ref_info: dict | None = None, usps: list[dict] | None = None, awkward_info: list[dict] | None = None, vocab_repeats: dict[str, list[int]] | None = None, target_persona: dict | None = None) -> str:
+def build_refine_prompt(draft: dict, unified_city: str | None, ref_info: dict | None = None, usps: list[dict] | None = None, awkward_info: list[dict] | None = None, vocab_repeats: dict[str, list[int]] | None = None, target_persona: dict | None = None, product_name: str | None = None, product_capability_out: str | None = None) -> str:
     """1차 결과를 다듬기 위한 검토 프롬프트.
 
     ref_info가 있으면 길이 매칭 + 리뷰 내용 조정 추가.
@@ -3120,9 +3120,22 @@ def build_refine_prompt(draft: dict, unified_city: str | None, ref_info: dict | 
                 + "→ tone_hint 어조 보존 (humanize 룰이 이를 덮어쓰지 않게 함).\n"
             )
 
+    # 상품 capability fence — writer prompt와 동일. 다듬기 중 환각 재발 차단.
+    cap_fence_block = ""
+    if (product_capability_out or "").strip():
+        pname = product_name or "이 상품"
+        cap_fence_block = f"""
+## ⛔⛔⛔ 상품 capability fence — **절대 박지 말 것** (전체 문장에 적용)
+"{pname}"이 **하지 않는 기능**:
+{product_capability_out.strip()}
+
+→ 위 키워드와 관련된 멘트는 무조건 false claim. 다듬기 결과에 등장하면 검수 fail.
+→ 1차 카피에 이 키워드가 있더라도 다듬기 시 다른 표현으로 우회 (의미 보존하되 false claim 제거).
+"""
+
     target_n = (ref_info or {}).get("sentence_count") or len(sentences)
     return f"""당신은 한국어 광고 카피 에디터입니다. 아래 1차 카피를 검토하고 다듬어 최종본을 만드세요.
-{persona_block}
+{cap_fence_block}{persona_block}
 ## 1차 카피
 {sent_text}
 

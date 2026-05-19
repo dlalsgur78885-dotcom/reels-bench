@@ -3146,7 +3146,7 @@ def build_refine_prompt(draft: dict, unified_city: str | None, ref_info: dict | 
 - **각 문장 음절 = 참고 ±15% 이내** — 위치별로 참고 음절수에 맞춰 다듬기
 - **마케터 톤 어휘 제거** ("최고잖아요/딱이죠/찾거든요/어때요/도와줘요/줍니다/입니다" → 자연 일상 어휘)
 - **참고 시그니처(끝 어구)는 같은 카테고리 punchy 어미면 OK** — 정확 매칭 X. 카테고리: 존댓말 punchy(잖아요/거든요/예요/네요/라요/더라구요/죠) / 반말 punchy(있지/이지/지롱/잖아) / 약속(보여줄게/알려줄게). 카테고리 외로 빠지면 원복
-- emotion·delivery·direction은 1차 값 유지 (텍스트만 다듬기){"" if not persona_block else chr(10) + "- **페르소나 시그널 보존** — 위 anchor의 pain_scene/desire_scene/identity 어휘가 humanize 후에도 식별 가능해야 함"}
+- emotion·delivery·direction은 1차 값 유지 (텍스트만 다듬기){"" if not persona_block else chr(10) + "- **페르소나 시그널 보존** — 위 anchor의 pain_scene/desire_scene/identity 어휘가 humanize 후에도 식별 가능해야 함"}{"" if not (product_capability_out or "").strip() else chr(10) + f"- ⛔ **상품 capability fence 강제** — 1차 카피에 '{product_capability_out.strip()}' 키워드 등장해도 다듬기 시 모두 제거 (의미만 보존하되 다른 표현으로 우회). 절대 false claim 출력 금지"}
 {awkward_block}{vocab_block}
 ## 검토·다듬기 규칙
 {city_rule}- 어색한 한국어 어미·동사 조합 교체

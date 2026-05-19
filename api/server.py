@@ -5555,6 +5555,10 @@ def seedance_extract_images(url: str, request: Request):
 
 def _fal_key() -> str:
     k = (os.getenv("SEEDANCE_API_KEY") or os.getenv("FAL_KEY") or "").strip()
+    # Vercel env에 echo 등으로 literal "\n" / "\r" (2 chars) 박히는 경우 방어
+    while k.endswith("\\n") or k.endswith("\\r"):
+        k = k[:-2]
+    k = k.strip()
     if not k:
         raise HTTPException(500, "SEEDANCE_API_KEY 미설정")
     return k

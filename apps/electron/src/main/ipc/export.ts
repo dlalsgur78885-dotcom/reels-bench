@@ -51,6 +51,11 @@ import {
 } from '../../shared/project'
 import { resolveFfmpegPath } from '../ffmpeg/binary'
 import { allowPath, assertPathAllowed } from '../ffmpeg/security'
+import {
+  renderCaptionToFile,
+  resetCaptionRenderStats,
+  getCaptionRenderStats
+} from '../captions/render'
 
 // ---------------------------------------------------------------------------
 // Preset table (kept in sync with renderer's exportPresets.ts — main-process
@@ -289,7 +294,14 @@ interface VideoSegment {
   track: Track
   /** Input index in the ffmpeg argv. */
   inputIdx: number
-  /** Caption overlays whose time range intersects this clip (any caption track). */
+  /**
+   * Caption overlays whose time range intersects this clip (any caption
+   * track). NOTE: when the PNG-overlay path is in use (sharp available),
+   * captions are composited *after* segment stitching using ffmpeg's
+   * `overlay` filter — see `stitchCaptions()`. We still keep this array on
+   * the segment for the drawtext fallback path, which applies captions
+   * inside each segment chain via `drawtext`.
+   */
   captions: CaptionClip[]
   /** Time-on-timeline of segment start/end (clip.startMs / clip.endMs copy). */
   startMs: number
@@ -298,6 +310,24 @@ interface VideoSegment {
   transitionInMs: number
   transitionKind: string
 }
+
+/**
+ * Mapping from `caption.id` → pre-rendered PNG path + assigned ffmpeg input
+ * index. When this map is non-empty, the export pipeline uses the PNG-overlay
+ * path; when empty, the drawtext fallback runs (which is the legacy code path
+ * preserved for fontconfig-only systems or when sharp's native binding is
+ * unavailable).
+ */
+interface CaptionPng {
+  pngPath: string
+  inputIdx: number
+  /** From the original caption clip — preserved for overlay positioning. */
+  startMs: number
+  endMs: number
+  cached: boolean
+}
+
+type CaptionPngMap = Map<string, CaptionPng>
 
 interface AudioSegment {
   clip: VideoAudioClip
@@ -451,10 +481,20 @@ function atempoChain(speed: number): string {
   return parts.join(',')
 }
 
-/** Build the per-clip video filter chain (excluding the xfade join). */
+/**
+ * Build the per-clip video filter chain (excluding the xfade join).
+ *
+ * When `captionPngMap` is provided AND contains the caption's id, the
+ * drawtext fallback is skipped for that caption — the PNG overlay path
+ * handles it post-stitching in `stitchCaptions()`. Captions absent from the
+ * map fall back to drawtext (this lets a mixed scenario work: e.g. sharp
+ * succeeded for 3 of 5 captions, failed for 2 — those 2 still render via
+ * drawtext rather than vanishing).
+ */
 function buildVideoSegmentChain(
   seg: VideoSegment,
-  preset: MainPreset
+  preset: MainPreset,
+  captionPngMap?: CaptionPngMap
 ): {
   /** Filter chain label (output pad name). */
   out: string
@@ -508,9 +548,12 @@ function buildVideoSegmentChain(
   // 5. Caption drawtext overlays. Each caption clip becomes one drawtext
   //    filter that's only enabled during its time-on-timeline (relative to
   //    this segment after we reset PTS, segment_t = timeline_t - clip.startMs).
+  //    Captions handled by the PNG-overlay path (captionPngMap) are skipped
+  //    here — they'll be composited onto the stitched final video.
   if (seg.captions.length > 0) {
     const drawtexts: string[] = []
     for (const cap of seg.captions) {
+      if (captionPngMap && captionPngMap.has(cap.id)) continue
       // Compute the visible window relative to this segment's local time (0..segDurSec).
       const localStart = Math.max(0, (cap.startMs - seg.startMs) / 1000)
       const localEnd = Math.min(segDurSec, (cap.endMs - seg.startMs) / 1000)
@@ -624,12 +667,13 @@ function buildAudioSegmentChain(
 function stitchVideo(
   segments: VideoSegment[],
   preset: MainPreset,
-  xfadeAvailable = true
+  xfadeAvailable = true,
+  captionPngMap?: CaptionPngMap
 ): { graph: string; finalLabel: string } {
   const fragments: string[] = []
   const segOutputs: string[] = []
   for (const seg of segments) {
-    const { out, fragment } = buildVideoSegmentChain(seg, preset)
+    const { out, fragment } = buildVideoSegmentChain(seg, preset, captionPngMap)
     fragments.push(fragment)
     segOutputs.push(out)
   }
@@ -685,6 +729,45 @@ function stitchVideo(
   // Rename final label to vfinal for consistency.
   fragments.push(`[${prevLabel}]null[vfinal]`)
   return { graph: fragments.join(';'), finalLabel: 'vfinal' }
+}
+
+/**
+ * Append a chain of `overlay` filters that composite caption PNGs onto the
+ * stitched video. Each caption is sourced from its own ffmpeg input (`-i
+ * captionN.png`) and gated by `enable='between(t,startSec,endSec)'`.
+ *
+ * The PNG is full-canvas — caption position was baked into the SVG during
+ * rendering, so the overlay simply pastes at (0,0).
+ *
+ * Returns the new final label + filter fragments. When the map is empty,
+ * returns the input label unchanged (no-op chain).
+ */
+function stitchCaptions(
+  inputVideoLabel: string,
+  captionPngMap: CaptionPngMap
+): { graph: string; finalLabel: string } {
+  if (captionPngMap.size === 0) {
+    return { graph: '', finalLabel: inputVideoLabel }
+  }
+  const fragments: string[] = []
+  let prevLabel = inputVideoLabel
+  // Sort caption inputs by inputIdx for deterministic graph output (helps
+  // diffing in last-export-cmd.txt and matches the order they were added to
+  // the inputs[] array).
+  const ordered = Array.from(captionPngMap.values()).sort(
+    (a, b) => a.inputIdx - b.inputIdx
+  )
+  for (let i = 0; i < ordered.length; i++) {
+    const cap = ordered[i]
+    const startSec = (cap.startMs / 1000).toFixed(3)
+    const endSec = (cap.endMs / 1000).toFixed(3)
+    const newLabel = i === ordered.length - 1 ? 'vcaptioned' : `vcap${i}`
+    fragments.push(
+      `[${prevLabel}][${cap.inputIdx}:v]overlay=0:0:enable='between(t,${startSec},${endSec})'[${newLabel}]`
+    )
+    prevLabel = newLabel
+  }
+  return { graph: fragments.join(';'), finalLabel: prevLabel }
 }
 
 /** Stitch all audio: per-segment chains then amix across the lot. */
@@ -819,6 +902,15 @@ function buildExportPlan(
      * change is encoder-specific only around -preset / -q:v.
      */
     codec?: AllowedCodec
+    /**
+     * Pre-rendered caption PNGs keyed by `caption.id`. Each entry contributes
+     * a `-loop 1 -t <dur> -i <pngPath>` input followed by an `overlay` filter
+     * (see `stitchCaptions`). The map's `inputIdx` MUST match the actual
+     * argv input ordering — the caller is responsible for assigning indices
+     * based on `inputs.length` BEFORE registering them here. The plan-only
+     * IPC omits this map (drawtext fallback path runs).
+     */
+    captionPngs?: CaptionPngMap
   } = {}
 ): ExportPlan {
   const preset = PRESETS[presetKey]
@@ -830,11 +922,19 @@ function buildExportPlan(
   }
 
   const xfadeAvailable = options.xfadeAvailable ?? true
-  const { graph: videoGraph, finalLabel: videoLabel } = stitchVideo(
+  const captionPngs = options.captionPngs
+  const { graph: videoGraph, finalLabel: stitchedVideoLabel } = stitchVideo(
     videoSegments,
     preset,
-    xfadeAvailable
+    xfadeAvailable,
+    captionPngs
   )
+  // Composite caption PNGs onto the stitched video. No-op when captionPngs
+  // is undefined / empty — in that case all captions used the drawtext path
+  // and are already baked into per-segment frames.
+  const { graph: captionGraph, finalLabel: videoLabel } = captionPngs
+    ? stitchCaptions(stitchedVideoLabel, captionPngs)
+    : { graph: '', finalLabel: stitchedVideoLabel }
   const inputsWithAudio = options.inputsWithAudio
   const inputHasAudio = inputsWithAudio
     ? (idx: number): boolean => inputsWithAudio.has(idx)
@@ -849,6 +949,7 @@ function buildExportPlan(
   // mobile players that expect both tracks.
   const filterFragments: string[] = []
   if (videoGraph) filterFragments.push(videoGraph)
+  if (captionGraph) filterFragments.push(captionGraph)
   if (audioGraph) filterFragments.push(audioGraph)
 
   let useAudioLabel = audioLabel
@@ -879,6 +980,23 @@ function buildExportPlan(
   argv.push('-hide_banner', '-y', '-nostdin')
   for (const p of inputs) {
     argv.push('-i', p)
+  }
+  // Caption PNG inputs. Each PNG is treated as a 1-frame still that we loop
+  // with `-loop 1` so ffmpeg generates a video stream from it; `-t <dur>`
+  // bounds how long the loop is sourced for. The actual visibility window
+  // is enforced by the overlay's `enable=between(t,...)` expression, so the
+  // -t value just needs to be ≥ the caption's endMs to avoid stream EOF
+  // before the overlay's last enabled frame. We use the caption's endSec to
+  // keep things tight (a much larger value works too but wastes nothing).
+  if (captionPngs) {
+    // Sort by inputIdx so argv matches expected ordering.
+    const ordered = Array.from(captionPngs.values()).sort(
+      (a, b) => a.inputIdx - b.inputIdx
+    )
+    for (const cap of ordered) {
+      const durSec = Math.max(0.1, cap.endMs / 1000)
+      argv.push('-loop', '1', '-t', durSec.toFixed(3), '-i', cap.pngPath)
+    }
   }
   argv.push('-filter_complex', filterGraph)
   argv.push('-map', `[${videoLabel}]`)
@@ -1049,12 +1167,66 @@ async function runExport(
     }
   }
 
+  // Pre-render caption PNGs. Each PNG is canvas-sized and includes the
+  // caption baked into its final visual position. Failures degrade
+  // gracefully — captions whose render failed (or all captions when sharp
+  // is unavailable) fall back to drawtext via the legacy code path. The
+  // PNG inputs are appended AFTER the media inputs so the existing input
+  // indices for video/audio segments remain stable.
+  resetCaptionRenderStats()
+  const captionPngs: CaptionPngMap = new Map()
+  try {
+    const preset = PRESETS[options.presetKey]
+    if (preset) {
+      const canvasW = preset.width
+      const canvasH = preset.height
+      // Gather all caption clips from all caption tracks.
+      const allCaptions: CaptionClip[] = []
+      for (const t of project.tracks) {
+        if (t.kind !== 'caption') continue
+        for (const c of t.clips) {
+          if (isCaptionClip(c)) allCaptions.push(c)
+        }
+      }
+      // Caption inputs follow media inputs. Walk in deterministic order.
+      let nextInputIdx = probedInputs.length
+      for (const cap of allCaptions) {
+        const result = await renderCaptionToFile(cap, canvasW, canvasH)
+        if (!result) continue // sharp unavailable / render error — drawtext fallback
+        // Allow the rendered PNG path so ffmpeg's security layer accepts it.
+        allowPath(result.pngPath)
+        captionPngs.set(cap.id, {
+          pngPath: result.pngPath,
+          inputIdx: nextInputIdx++,
+          startMs: cap.startMs,
+          endMs: cap.endMs,
+          cached: result.cached
+        })
+      }
+    }
+  } catch (err) {
+    // Render-side errors must NEVER fail the whole export. Log + continue
+    // with the empty map (drawtext fallback handles every caption).
+    console.warn(
+      '[export] caption pre-render encountered an error; falling back to drawtext:',
+      err instanceof Error ? err.message : String(err)
+    )
+    captionPngs.clear()
+  }
+  if (captionPngs.size > 0) {
+    const stats = getCaptionRenderStats()
+    console.log(
+      `[export] captions: ${captionPngs.size} rendered, cacheHits=${stats.cacheHits}, misses=${stats.cacheMisses}, errors=${stats.errors}`
+    )
+  }
+
   let plan: ExportPlan
   try {
     plan = buildExportPlan(project, options.presetKey, safeOutput, {
       xfadeAvailable,
       inputsWithAudio,
-      codec: chosenCodec
+      codec: chosenCodec,
+      captionPngs: captionPngs.size > 0 ? captionPngs : undefined
     })
   } catch (err) {
     return {
@@ -1315,6 +1487,7 @@ export const __test = {
   collectSegments,
   stitchVideo,
   stitchAudio,
+  stitchCaptions,
   mapPresetForCodec,
   presetFlagForCodec
 }

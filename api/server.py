@@ -5519,6 +5519,9 @@ def seedance_import_image(body: SeedanceImportImageReq, request: Request):
         raise
     except Exception as e:
         logger.exception("[seedance/import-image] fal upload failed")
+        msg = str(e)
+        if "Exhausted balance" in msg or "User is locked" in msg:
+            raise HTTPException(402, "fal.ai 잔액 소진 — fal.ai/dashboard/billing 에서 충전 후 재시도")
         raise HTTPException(500, f"fal 업로드 실패: {e}")
 
 
@@ -5582,6 +5585,9 @@ async def seedance_upload(request: Request):
         raise
     except Exception as e:
         logger.exception("[seedance/upload] failed")
+        msg = str(e)
+        if "Exhausted balance" in msg or "User is locked" in msg:
+            raise HTTPException(402, "fal.ai 잔액 소진 — fal.ai/dashboard/billing 에서 충전 후 재시도")
         raise HTTPException(500, f"upload 실패: {e}")
 
 
@@ -5620,7 +5626,10 @@ def seedance_submit(body: SeedanceSubmitReq, request: Request):
     )
     if r.status_code not in (200, 202):
         logger.warning("[seedance/submit] HTTP %s: %s", r.status_code, r.text[:300])
-        raise HTTPException(r.status_code, r.text[:300])
+        body_txt = r.text[:300]
+        if "Exhausted balance" in body_txt or "User is locked" in body_txt:
+            raise HTTPException(402, "fal.ai 잔액 소진 — fal.ai/dashboard/billing 에서 충전 후 재시도")
+        raise HTTPException(r.status_code, body_txt)
     data = r.json()
     return {
         "request_id": data.get("request_id"),

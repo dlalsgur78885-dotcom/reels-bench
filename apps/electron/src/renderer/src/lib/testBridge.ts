@@ -19,6 +19,7 @@ import { prefillFromReel } from './prefillFromReel'
 import { newId, useProjectStore } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import { emailToUserIdLabel, idToEmail } from '../store/auth'
+import { getPreviewAudioGraph } from './audioGraph'
 
 export function installTestBridge(): void {
   if (typeof window !== 'undefined') {
@@ -118,5 +119,28 @@ export function installTestBridge(): void {
         emailToUserIdLabel: typeof emailToUserIdLabel
       }
     }).__reelsAuthHelpers = { idToEmail, emailToUserIdLabel }
+
+    // Phase 4-WebAudio — expose the preview audio graph for tests to read
+    // current track gains, source counts, and AudioContext state without
+    // having to introspect the live AudioParam nodes through DevTools.
+    ;(window as unknown as {
+      __previewAudioGraph: {
+        getState: () => AudioContextState | 'unavailable'
+        isReady: () => boolean
+        sourceCount: () => number
+        /** Target gains (most recent setTrackGain values). */
+        trackGains: () => Record<string, number>
+        /** Live AudioParam.value snapshot (for ramp-progress probing). */
+        liveTrackGains: () => Record<string, number>
+        resume: () => Promise<void>
+      }
+    }).__previewAudioGraph = {
+      getState: () => getPreviewAudioGraph().getState(),
+      isReady: () => getPreviewAudioGraph().isReady(),
+      sourceCount: () => getPreviewAudioGraph().readSourceCount(),
+      trackGains: () => getPreviewAudioGraph().readTrackGains(),
+      liveTrackGains: () => getPreviewAudioGraph().readLiveTrackGains(),
+      resume: () => getPreviewAudioGraph().resume()
+    }
   }
 }

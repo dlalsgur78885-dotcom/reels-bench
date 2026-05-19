@@ -16,6 +16,7 @@
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@ffprobe-installer/ffprobe": "^2.1.2",
+    "@supabase/supabase-js": "^2.106.0",
     "electron-updater": "^6.3.9",
     "tree-kill": "^1.2.2",
     "ulid": "^3.0.2",

@@ -8,8 +8,16 @@
  * surface is read-mostly; tests that need to mutate via real user input
  * should still drive the DOM.
  */
+import {
+  getReelAnalysis,
+  getReelMetadata,
+  getReelVideoUrl,
+  listMyReels,
+  authedFetch
+} from './api'
 import { newId, useProjectStore } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
+import { emailToUserIdLabel, idToEmail } from '../store/auth'
 
 export function installTestBridge(): void {
   if (typeof window !== 'undefined') {
@@ -72,5 +80,30 @@ export function installTestBridge(): void {
     ;(window as unknown as {
       __reelsTimelineUi: typeof useTimelineUi
     }).__reelsTimelineUi = useTimelineUi
+
+    // Phase 3 — expose the api client + auth helpers so tests can call
+    // them without dynamic imports (which break on the bundled production
+    // build). All surfaces are read-only / call-through.
+    ;(window as unknown as {
+      __reelsApi: {
+        listMyReels: typeof listMyReels
+        getReelAnalysis: typeof getReelAnalysis
+        getReelMetadata: typeof getReelMetadata
+        getReelVideoUrl: typeof getReelVideoUrl
+        authedFetch: typeof authedFetch
+      }
+    }).__reelsApi = {
+      listMyReels,
+      getReelAnalysis,
+      getReelMetadata,
+      getReelVideoUrl,
+      authedFetch
+    }
+    ;(window as unknown as {
+      __reelsAuthHelpers: {
+        idToEmail: typeof idToEmail
+        emailToUserIdLabel: typeof emailToUserIdLabel
+      }
+    }).__reelsAuthHelpers = { idToEmail, emailToUserIdLabel }
   }
 }

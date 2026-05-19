@@ -6,7 +6,9 @@ import type {
   ProgressEvent
 } from '../../shared/ipc'
 import { Editor } from './pages/Editor'
+import Login from './pages/Login'
 import { initProjectStore } from './store/project'
+import { useAuthStore } from './store/auth'
 
 const wrap: React.CSSProperties = {
   fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
@@ -240,8 +242,45 @@ function FfmpegSmokeTest(): JSX.Element {
 
 type View = 'home' | 'editor'
 
+const topbar: React.CSSProperties = {
+  position: 'fixed',
+  top: 0,
+  right: 0,
+  padding: '12px 16px',
+  display: 'flex',
+  gap: 12,
+  alignItems: 'center',
+  fontSize: 12,
+  color: '#9aa0a6'
+}
+
+const signOutBtn: React.CSSProperties = {
+  background: '#1f2937',
+  color: '#f5f5f5',
+  border: '1px solid #374151',
+  borderRadius: 6,
+  padding: '6px 12px',
+  fontSize: 12,
+  cursor: 'pointer'
+}
+
+const splashSt: React.CSSProperties = {
+  minHeight: '100vh',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  background: '#0d0d0d',
+  color: '#9aa0a6',
+  fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+  fontSize: 14
+}
+
 export default function App(): JSX.Element {
   const [view, setView] = useState<View>('home')
+  const initialized = useAuthStore((s) => s.initialized)
+  const user = useAuthStore((s) => s.user)
+  const userIdLabel = user?.userIdLabel ?? ''
+  const signOut = useAuthStore((s) => s.signOut)
 
   // Kick off project hydration once at mount. Safe to call multiple times —
   // initProjectStore guards against duplicates internally.
@@ -252,9 +291,24 @@ export default function App(): JSX.Element {
   const handleAnalysis = (): void => console.log('[App] Analysis clicked')
   const handleScript = (): void => console.log('[App] Script clicked')
   const handleEditor = (): void => setView('editor')
+  const handleSignOut = (): void => {
+    void signOut().then(() => setView('home'))
+  }
 
   const hasBridge = typeof window !== 'undefined' && Boolean(window.electron)
   const isDev = import.meta.env.DEV
+
+  // Auth gate. Show splash while hydrating, then Login if no session.
+  if (!initialized) {
+    return (
+      <div style={splashSt} data-testid="auth-splash">
+        로딩...
+      </div>
+    )
+  }
+  if (!user) {
+    return <Login />
+  }
 
   if (view === 'editor') {
     return <Editor onBack={() => setView('home')} />
@@ -262,6 +316,17 @@ export default function App(): JSX.Element {
 
   return (
     <div style={wrap}>
+      <div style={topbar} data-testid="app-topbar">
+        <span data-testid="current-user">{userIdLabel}</span>
+        <button
+          type="button"
+          style={signOutBtn}
+          onClick={handleSignOut}
+          data-testid="signout-button"
+        >
+          로그아웃
+        </button>
+      </div>
       <div style={title}>Reels Studio — Electron shell ready</div>
       <div style={subtitle}>
         Preload bridge: {hasBridge ? 'window.electron exposed' : 'not available'}

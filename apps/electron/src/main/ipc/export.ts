@@ -27,12 +27,14 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
   IPC_CHANNELS,
+  type AllowedCodec,
   type ExportBuildPlanResult,
   type ExportPresetKey,
   type ExportRunOptions,
   type ExportRunResult,
   type FfmpegRunSpec
 } from '../../shared/ipc'
+import { probeCapabilities } from '../ffmpeg/capabilities'
 import {
   filterPresetToFfmpeg,
   transitionKindToXfade
@@ -54,6 +56,17 @@ import { allowPath, assertPathAllowed } from '../ffmpeg/security'
 // Preset table (kept in sync with renderer's exportPresets.ts — main-process
 // copy lets the IPC validate without round-tripping the renderer's bundle).
 // ---------------------------------------------------------------------------
+type Libx264Preset =
+  | 'ultrafast'
+  | 'superfast'
+  | 'veryfast'
+  | 'faster'
+  | 'fast'
+  | 'medium'
+  | 'slow'
+  | 'slower'
+  | 'veryslow'
+
 interface MainPreset {
   width: number
   height: number
@@ -61,16 +74,76 @@ interface MainPreset {
   vBitrateKbps: number
   aBitrateKbps: number
   codec: 'libx264'
-  preset:
-    | 'ultrafast'
-    | 'superfast'
-    | 'veryfast'
-    | 'faster'
-    | 'fast'
-    | 'medium'
-    | 'slow'
-    | 'slower'
-    | 'veryslow'
+  preset: Libx264Preset
+}
+
+/**
+ * Map a libx264-style preset name to the equivalent for a given encoder. HW
+ * encoders advertise their own preset vocabularies; using the wrong one is
+ * either rejected at session init or silently ignored (depending on the
+ * encoder). See README/Phase 4.2 notes for the source mapping.
+ *
+ * Returns `null` to mean "do not pass -preset at all" (used by VideoToolbox).
+ */
+export function mapPresetForCodec(
+  preset: Libx264Preset,
+  codec: AllowedCodec
+): string | null {
+  switch (codec) {
+    case 'libx264':
+    case 'libx265':
+      return preset
+    case 'h264_amf':
+    case 'hevc_amf': {
+      // amf usage: -quality {quality|balanced|speed}
+      if (preset === 'slow' || preset === 'slower' || preset === 'veryslow') {
+        return 'quality'
+      }
+      if (
+        preset === 'veryfast' ||
+        preset === 'superfast' ||
+        preset === 'ultrafast' ||
+        preset === 'faster' ||
+        preset === 'fast'
+      ) {
+        return 'speed'
+      }
+      return 'balanced'
+    }
+    case 'h264_nvenc':
+    case 'hevc_nvenc': {
+      // nvenc usage: -preset p1..p7 (p7 = highest quality / slowest)
+      if (preset === 'ultrafast' || preset === 'superfast') return 'p1'
+      if (preset === 'veryfast') return 'p1'
+      if (preset === 'faster') return 'p2'
+      if (preset === 'fast') return 'p3'
+      if (preset === 'medium') return 'p4'
+      if (preset === 'slow') return 'p7'
+      if (preset === 'slower') return 'p7'
+      if (preset === 'veryslow') return 'p7'
+      return 'p4'
+    }
+    case 'h264_qsv':
+    case 'hevc_qsv':
+      // qsv accepts x264-style preset names natively (veryfast..veryslow).
+      return preset
+    case 'h264_videotoolbox':
+    case 'hevc_videotoolbox':
+      // VideoToolbox doesn't accept -preset; quality is set via -q:v instead.
+      return null
+    default:
+      return preset
+  }
+}
+
+/**
+ * AMD AMF expects `-quality {...}` rather than `-preset {...}`. Returns the
+ * argv flag that should precede the mapped preset string. Most encoders use
+ * `-preset`, AMF (and only AMF) uses `-quality`.
+ */
+export function presetFlagForCodec(codec: AllowedCodec): '-preset' | '-quality' {
+  if (codec === 'h264_amf' || codec === 'hevc_amf') return '-quality'
+  return '-preset'
 }
 
 const PRESETS: Record<ExportPresetKey, MainPreset> = {
@@ -738,6 +811,14 @@ function buildExportPlan(
      * stream-spec validation doesn't blow up.
      */
     inputsWithAudio?: Set<number>
+    /**
+     * Override the video encoder. Default = preset.codec (libx264). When
+     * set to a HW encoder (h264_amf/nvenc/qsv/videotoolbox), the argv is
+     * adjusted: preset name is mapped, and we switch from CRF to VBR. Even
+     * the CPU path uses VBR today (the original code never set CRF), so the
+     * change is encoder-specific only around -preset / -q:v.
+     */
+    codec?: AllowedCodec
   } = {}
 ): ExportPlan {
   const preset = PRESETS[presetKey]
@@ -790,6 +871,10 @@ function buildExportPlan(
   //   But extraArgs allow-list rejects `-map`. We'll use an ad-hoc spawn
   // in runExport() that mirrors the runner's safety checks.
   // For the *plan* we just record argv-preview.
+  const codec: AllowedCodec = options.codec ?? preset.codec
+  const mappedPreset = mapPresetForCodec(preset.preset, codec)
+  const presetFlag = presetFlagForCodec(codec)
+
   const argv: string[] = []
   argv.push('-hide_banner', '-y', '-nostdin')
   for (const p of inputs) {
@@ -798,8 +883,26 @@ function buildExportPlan(
   argv.push('-filter_complex', filterGraph)
   argv.push('-map', `[${videoLabel}]`)
   argv.push('-map', `[${useAudioLabel}]`)
-  argv.push('-c:v', preset.codec)
-  argv.push('-preset', preset.preset)
+  argv.push('-c:v', codec)
+  if (mappedPreset !== null) {
+    argv.push(presetFlag, mappedPreset)
+  } else if (codec === 'h264_videotoolbox' || codec === 'hevc_videotoolbox') {
+    // VideoToolbox uses -q:v 1-100 (lower = better). Map x264 preset roughly:
+    //   veryfast → 70, medium → 60, slow → 50. Default 60.
+    let qv = 60
+    if (
+      preset.preset === 'veryfast' ||
+      preset.preset === 'faster' ||
+      preset.preset === 'fast' ||
+      preset.preset === 'superfast' ||
+      preset.preset === 'ultrafast'
+    ) {
+      qv = 70
+    } else if (preset.preset === 'slow' || preset.preset === 'slower' || preset.preset === 'veryslow') {
+      qv = 50
+    }
+    argv.push('-q:v', String(qv))
+  }
   argv.push('-b:v', `${preset.vBitrateKbps}k`)
   argv.push('-maxrate', `${Math.round(preset.vBitrateKbps * 1.2)}k`)
   argv.push('-bufsize', `${preset.vBitrateKbps * 2}k`)
@@ -912,6 +1015,20 @@ async function runExport(
   allowPath(options.outputPath)
   const safeOutput = assertPathAllowed(options.outputPath, 'output')
 
+  // Decide encoder. If the renderer asked for HW accel, probe capabilities
+  // and use the preferred HW encoder; otherwise stick with libx264. We also
+  // fall back to libx264 when the probe says the preferred encoder IS
+  // libx264 (no HW found) — so the renderer can flip the flag freely.
+  let chosenCodec: AllowedCodec = 'libx264'
+  if (options.useHardwareAccel) {
+    try {
+      const caps = await probeCapabilities()
+      chosenCodec = caps.preferred ?? 'libx264'
+    } catch {
+      chosenCodec = 'libx264'
+    }
+  }
+
   const xfadeAvailable = await probeXfadeAvailable(ffmpegPath)
 
   // Probe each unique input path for audio presence. We do this in the
@@ -936,13 +1053,15 @@ async function runExport(
   try {
     plan = buildExportPlan(project, options.presetKey, safeOutput, {
       xfadeAvailable,
-      inputsWithAudio
+      inputsWithAudio,
+      codec: chosenCodec
     })
   } catch (err) {
     return {
       jobId: options.jobId,
       ok: false,
-      error: err instanceof Error ? err.message : String(err)
+      error: err instanceof Error ? err.message : String(err),
+      usedEncoder: chosenCodec
     }
   }
 
@@ -969,7 +1088,8 @@ async function runExport(
       jobId: options.jobId,
       ok: false,
       error: result.error ?? 'export failed',
-      debugLogPath: logPath
+      debugLogPath: logPath,
+      usedEncoder: chosenCodec
     }
   }
   if (!existsSync(safeOutput)) {
@@ -977,7 +1097,8 @@ async function runExport(
       jobId: options.jobId,
       ok: false,
       error: 'output file missing after run',
-      debugLogPath: logPath
+      debugLogPath: logPath,
+      usedEncoder: chosenCodec
     }
   }
   const probe = await probeOutput(ffmpegPath, safeOutput)
@@ -990,7 +1111,8 @@ async function runExport(
     height: probe.height,
     vBitrate: probe.vBitrate,
     aBitrate: probe.aBitrate,
-    debugLogPath: logPath
+    debugLogPath: logPath,
+    usedEncoder: chosenCodec
   }
 }
 
@@ -1192,5 +1314,7 @@ export const __test = {
   atempoChain,
   collectSegments,
   stitchVideo,
-  stitchAudio
+  stitchAudio,
+  mapPresetForCodec,
+  presetFlagForCodec
 }

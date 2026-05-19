@@ -560,4 +560,125 @@ test.describe('@phase-2-export transitions / filters / export pipeline', () => {
     expect(existsSync(outPath)).toBe(true)
     expect(statSync(outPath).size).toBeGreaterThan(1024)
   })
+
+  // ---------------------------------------------------------------------------
+  // 6. Hardware-encoder toggle (Phase 4.2).
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Mock the renderer's `window.electron.ffmpeg.capabilities` call so we can
+   * exercise the dialog's toggle UI without depending on the host's actual
+   * HW encoders. We monkey-patch the bridge in the renderer process; the
+   * actual IPC isn't touched. Must be invoked BEFORE the ExportDialog mounts
+   * (its `useEffect` reads capabilities exactly once on mount).
+   */
+  async function stubCapabilities(
+    encoders: string[],
+    preferred: string
+  ): Promise<void> {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    // contextBridge-exposed `window.electron.*` is frozen and can't be
+    // monkey-patched. The dialog instead reads `window.__E2E_CAPABILITIES__`
+    // when present (see ExportDialog.tsx mount-time useEffect).
+    await page.evaluate(
+      ({ encoders, preferred }) => {
+        ;(
+          window as unknown as {
+            __E2E_CAPABILITIES__: { encoders: string[]; preferred: string }
+          }
+        ).__E2E_CAPABILITIES__ = { encoders, preferred }
+      },
+      { encoders, preferred }
+    )
+  }
+
+  test('HW toggle is enabled and ON by default when a HW encoder is preferred', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    await openEditor()
+    await stubCapabilities(['h264_nvenc', 'libx264'], 'h264_nvenc')
+    await page.locator('[data-testid="open-export-dialog"]').click()
+    const row = page.locator('[data-testid="export-hw-toggle-row"]')
+    await expect(row).toBeVisible()
+    await expect(row).toHaveAttribute('data-hw-available', 'true', {
+      timeout: 4_000
+    })
+    await expect(row).toHaveAttribute('data-preferred-encoder', 'h264_nvenc')
+    const toggle = page.locator('[data-testid="export-hw-toggle"]')
+    await expect(toggle).toBeEnabled()
+    await expect(toggle).toBeChecked()
+    const label = page.locator('[data-testid="export-hw-toggle-label"]')
+    await expect(label).toContainText('h264_nvenc')
+    await expect(label).toContainText('하드웨어 가속 사용')
+  })
+
+  test('HW toggle is disabled and shows "사용 불가" when only libx264 is available', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    await openEditor()
+    await stubCapabilities(['libx264'], 'libx264')
+    await page.locator('[data-testid="open-export-dialog"]').click()
+    const row = page.locator('[data-testid="export-hw-toggle-row"]')
+    await expect(row).toBeVisible()
+    await expect(row).toHaveAttribute('data-hw-available', 'false', {
+      timeout: 4_000
+    })
+    const toggle = page.locator('[data-testid="export-hw-toggle"]')
+    await expect(toggle).toBeDisabled()
+    await expect(toggle).not.toBeChecked()
+    const label = page.locator('[data-testid="export-hw-toggle-label"]')
+    await expect(label).toContainText('사용 불가')
+    const hint = page.locator('[data-testid="export-hw-hint"]')
+    await expect(hint).toBeVisible()
+    await expect(hint).toContainText('하드웨어 가속 인코더가 없습니다')
+  })
+
+  test('exporter:run with useHardwareAccel=true on a libx264-only system silently falls back to libx264', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    await openEditor()
+    const { mediaId, durationMs } = await addFixtureMedia()
+    await addVideoClip(mediaId, durationMs, 0)
+
+    const outDir = path.join(os.tmpdir(), 'reels-studio-e2e', 'out')
+    if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true })
+    const outPath = path.join(outDir, `hw-flag-${Date.now()}.mp4`)
+    if (existsSync(outPath)) {
+      try {
+        rmSync(outPath)
+      } catch {
+        /* ignore */
+      }
+    }
+    await page.evaluate(async (p) => {
+      await window.electron.fs.allowPath(p)
+    }, outPath)
+
+    const r = await page.evaluate(
+      async ({ outputPath }) => {
+        const reels = (
+          window as unknown as { __reelsStore: { state: () => unknown } }
+        ).__reelsStore
+        const project = (reels.state() as { project: unknown }).project
+        return await window.electron.exporter.run(project, {
+          jobId: `e2e-hw-${Date.now()}`,
+          presetKey: 'instagram-reels',
+          outputPath,
+          useHardwareAccel: true
+        })
+      },
+      { outputPath: outPath }
+    )
+    expect(r.ok, `expected export to succeed, error: ${r.error ?? ''}`).toBe(true)
+    expect(existsSync(outPath)).toBe(true)
+    expect(statSync(outPath).size).toBeGreaterThan(1024)
+    // usedEncoder must be set regardless of HW vs fallback path.
+    expect(r.usedEncoder).toBeTruthy()
+    // On a libx264-only system the fallback resolves to libx264; on a real
+    // HW box (this Windows machine has h264_amf) it resolves to that. Both
+    // are acceptable for this regression test.
+    const allowed = ['libx264', 'h264_amf', 'h264_nvenc', 'h264_qsv', 'h264_videotoolbox']
+    expect(allowed).toContain(r.usedEncoder as string)
+  })
 })

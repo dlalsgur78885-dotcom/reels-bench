@@ -241,6 +241,14 @@ export interface ExportRunOptions {
   jobId: string
   presetKey: ExportPresetKey
   outputPath: string
+  /**
+   * When true, the export pipeline will use the system's preferred hardware
+   * encoder (e.g. h264_nvenc / h264_amf / h264_qsv / h264_videotoolbox) if
+   * one is available. When false or omitted, the export falls back to the
+   * libx264 CPU encoder. If true but no HW encoder is available, libx264 is
+   * used silently (the result.usedEncoder field reflects the actual choice).
+   */
+  useHardwareAccel?: boolean
 }
 
 export interface ExportRunResult {
@@ -255,6 +263,11 @@ export interface ExportRunResult {
   error?: string
   /** Path to the persisted last-export-cmd.txt for diagnostics. */
   debugLogPath?: string
+  /**
+   * The encoder actually used for this run, e.g. `h264_amf` or `libx264`.
+   * Set even on failure (best-effort) so the UI can show what was attempted.
+   */
+  usedEncoder?: AllowedCodec
 }
 
 // ---------------------------------------------------------------------------

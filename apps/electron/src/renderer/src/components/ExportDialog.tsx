@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
+  AllowedCodec,
   ExportPresetKey,
   ExportRunResult,
+  FfmpegCapabilities,
   ProgressEvent
 } from '../../../shared/ipc'
 import type { Project } from '../../../shared/project'
@@ -164,7 +166,67 @@ const styles = {
     fontSize: 11,
     fontFamily: 'ui-monospace, Menlo, Consolas, monospace',
     wordBreak: 'break-all' as const
+  } as React.CSSProperties,
+  hwToggleRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '8px 10px',
+    background: '#0d1318',
+    border: '1px solid #1f2937',
+    borderRadius: 6,
+    marginBottom: 12,
+    fontSize: 12
+  } as React.CSSProperties,
+  hwToggleRowDisabled: {
+    opacity: 0.55,
+    cursor: 'not-allowed'
+  } as React.CSSProperties,
+  hwBadge: {
+    fontSize: 10,
+    background: '#0f3a2a',
+    color: '#34d399',
+    border: '1px solid #10b981',
+    borderRadius: 4,
+    padding: '1px 6px',
+    marginLeft: 'auto'
+  } as React.CSSProperties,
+  hwHint: {
+    fontSize: 10,
+    color: '#9aa0a6',
+    marginTop: 4
   } as React.CSSProperties
+}
+
+/** Friendly description of a hardware encoder for the tooltip / success line. */
+function encoderHumanLabel(codec: AllowedCodec | string): string {
+  switch (codec) {
+    case 'h264_nvenc':
+      return 'NVIDIA NVENC'
+    case 'h264_qsv':
+      return 'Intel Quick Sync'
+    case 'h264_amf':
+      return 'AMD AMF'
+    case 'h264_videotoolbox':
+      return 'Apple VideoToolbox'
+    case 'libx264':
+      return 'CPU (libx264)'
+    default:
+      return codec
+  }
+}
+
+function isHardwareEncoder(codec: AllowedCodec | string): boolean {
+  return (
+    codec === 'h264_nvenc' ||
+    codec === 'h264_qsv' ||
+    codec === 'h264_amf' ||
+    codec === 'h264_videotoolbox' ||
+    codec === 'hevc_nvenc' ||
+    codec === 'hevc_qsv' ||
+    codec === 'hevc_amf' ||
+    codec === 'hevc_videotoolbox'
+  )
 }
 
 function defaultOutputName(projectName: string): string {
@@ -186,10 +248,17 @@ export function ExportDialog({ project, onClose }: ExportDialogProps): JSX.Eleme
   const [progress, setProgress] = useState<ProgressEvent | null>(null)
   const [result, setResult] = useState<ExportRunResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [capabilities, setCapabilities] = useState<FfmpegCapabilities | null>(null)
+  const [capsLoaded, setCapsLoaded] = useState(false)
+  const [useHardwareAccel, setUseHardwareAccel] = useState<boolean>(false)
   const jobIdRef = useRef<string | null>(null)
 
   const totalDurationMs = useMemo(() => getTotalDurationMs(project), [project])
   const sizeBytes = estimateFileSizeBytes(presetKey, totalDurationMs)
+
+  const hwAvailable =
+    capabilities !== null && isHardwareEncoder(capabilities.preferred)
+  const preferredEncoder = capabilities?.preferred ?? 'libx264'
 
   useEffect(() => {
     if (!window.electron?.ffmpeg?.onProgress) return
@@ -197,6 +266,44 @@ export function ExportDialog({ project, onClose }: ExportDialogProps): JSX.Eleme
       if (ev.jobId === jobIdRef.current) setProgress(ev)
     })
     return off
+  }, [])
+
+  // Probe encoder capabilities once on mount. The toggle defaults to ON when
+  // a HW encoder is available, OFF otherwise.
+  useEffect(() => {
+    let cancelled = false
+    const run = async (): Promise<void> => {
+      // E2E override hook: tests can set window.__E2E_CAPABILITIES__ to bypass
+      // the IPC probe (the contextBridge-exposed window.electron object is
+      // frozen, so direct method stubbing isn't possible from the renderer).
+      const e2eOverride = (
+        window as unknown as { __E2E_CAPABILITIES__?: FfmpegCapabilities }
+      ).__E2E_CAPABILITIES__
+      if (e2eOverride) {
+        setCapabilities(e2eOverride)
+        setUseHardwareAccel(isHardwareEncoder(e2eOverride.preferred))
+        setCapsLoaded(true)
+        return
+      }
+      if (!window.electron?.ffmpeg?.capabilities) {
+        if (!cancelled) setCapsLoaded(true)
+        return
+      }
+      try {
+        const caps = await window.electron.ffmpeg.capabilities()
+        if (cancelled) return
+        setCapabilities(caps)
+        setUseHardwareAccel(isHardwareEncoder(caps.preferred))
+      } catch {
+        // Probe failed — leave caps null, toggle disabled, libx264 used.
+      } finally {
+        if (!cancelled) setCapsLoaded(true)
+      }
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const handlePickPath = async (): Promise<void> => {
@@ -226,7 +333,8 @@ export function ExportDialog({ project, onClose }: ExportDialogProps): JSX.Eleme
       const r = await window.electron.exporter.run(project, {
         jobId,
         presetKey,
-        outputPath
+        outputPath,
+        useHardwareAccel: useHardwareAccel && hwAvailable
       })
       setResult(r)
       if (!r.ok) {
@@ -331,6 +439,47 @@ export function ExportDialog({ project, onClose }: ExportDialogProps): JSX.Eleme
           </div>
         </div>
 
+        <div
+          style={{
+            ...styles.hwToggleRow,
+            ...(hwAvailable ? {} : styles.hwToggleRowDisabled)
+          }}
+          data-testid="export-hw-toggle-row"
+          data-hw-available={hwAvailable ? 'true' : 'false'}
+          data-preferred-encoder={preferredEncoder}
+          title={
+            hwAvailable
+              ? `하드웨어 가속을 사용하면 GPU(${encoderHumanLabel(preferredEncoder)})로 인코딩하여 CPU 대비 5~10배 빠르고 발열·전력 소비가 줄어듭니다. 화질은 동일한 비트레이트 기준 살짝 떨어질 수 있습니다.`
+              : '이 시스템에는 하드웨어 가속 인코더가 없습니다'
+          }
+        >
+          <input
+            type="checkbox"
+            id="export-hw-toggle"
+            checked={hwAvailable && useHardwareAccel}
+            disabled={running || !capsLoaded || !hwAvailable}
+            onChange={(e) => setUseHardwareAccel(e.target.checked)}
+            data-testid="export-hw-toggle"
+            style={{ cursor: hwAvailable ? 'pointer' : 'not-allowed' }}
+          />
+          <label
+            htmlFor="export-hw-toggle"
+            style={{ cursor: hwAvailable ? 'pointer' : 'not-allowed' }}
+            data-testid="export-hw-toggle-label"
+          >
+            하드웨어 가속 사용{' '}
+            <span style={{ color: '#9aa0a6' }}>
+              ({hwAvailable ? preferredEncoder : '사용 불가'})
+            </span>
+          </label>
+          {hwAvailable && <span style={styles.hwBadge}>5~10× 빠름</span>}
+        </div>
+        {!hwAvailable && capsLoaded && (
+          <div style={styles.hwHint} data-testid="export-hw-hint">
+            이 시스템에는 하드웨어 가속 인코더가 없습니다
+          </div>
+        )}
+
         <div style={styles.meta} data-testid="export-meta">
           예상 길이 {formatDurationMs(totalDurationMs)} · 예상 용량{' '}
           {formatBytes(sizeBytes)}
@@ -341,8 +490,13 @@ export function ExportDialog({ project, onClose }: ExportDialogProps): JSX.Eleme
             <div style={styles.progressOuter}>
               <div style={styles.progressInner(progress.percent)} />
             </div>
-            <div style={{ fontSize: 11, color: '#9aa0a6', marginTop: 6 }}>
-              {progress.percent.toFixed(1)}%
+            <div
+              style={{ fontSize: 11, color: '#9aa0a6', marginTop: 6 }}
+              data-testid="export-progress-status"
+            >
+              인코딩 중:{' '}
+              {useHardwareAccel && hwAvailable ? preferredEncoder : 'libx264'} ·
+              진행률 {progress.percent.toFixed(1)}%
               {progress.fps !== undefined ? ` · ${progress.fps.toFixed(1)} fps` : ''}
               {progress.speed !== undefined ? ` · ${progress.speed}x` : ''}
               {progress.done ? ' · 완료' : ''}
@@ -358,8 +512,19 @@ export function ExportDialog({ project, onClose }: ExportDialogProps): JSX.Eleme
         )}
 
         {result?.ok && (
-          <div style={styles.successBox} data-testid="export-success">
-            완료: {result.outputPath}
+          <div
+            style={styles.successBox}
+            data-testid="export-success"
+            data-used-encoder={result.usedEncoder ?? ''}
+          >
+            출력 완료
+            {result.usedEncoder
+              ? isHardwareEncoder(result.usedEncoder)
+                ? ` (${result.usedEncoder}로 가속됨)`
+                : ' (libx264 CPU 인코딩)'
+              : ''}
+            <br />
+            {result.outputPath}
             <br />
             {result.width && result.height
               ? `${result.width}×${result.height}`

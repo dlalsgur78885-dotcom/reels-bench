@@ -38,9 +38,10 @@ logger = logging.getLogger(__name__)
 AUTHORIZE_URL = "https://www.figma.com/oauth"
 TOKEN_URL     = "https://api.figma.com/v1/oauth/token"
 REFRESH_URL   = "https://api.figma.com/v1/oauth/refresh"
-# 2024-2025 신 scope 체계 — 옛 'files:read' 통합 scope는 새 앱에서 거부됨
-# files API + 인증 사용자 정보만 필요
-SCOPES        = "file_content:read current_user:read"
+# files API + 인증 사용자 정보. legacy 'files:read'가 /v1/files 기본 엔드포인트의
+# 실제 게이트 — 'file_content:read' 만으로는 403 Request denied. 둘 다 요청해야
+# 새 앱에서도 옛 앱에서도 동작.
+SCOPES        = "files:read file_content:read file_metadata:read current_user:read"
 
 
 def _client_id() -> str:

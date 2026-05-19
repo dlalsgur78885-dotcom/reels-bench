@@ -198,6 +198,16 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   const playheadMs = useTimelineUi((s) => s.playheadMs)
   const setPlayheadMs = useTimelineUi((s) => s.setPlayheadMs)
 
+  // Auto-pause playback when the editor unmounts (e.g., user clicks ← 홈).
+  // Without this, `playing` stays true in the store, the rAF loop keeps
+  // advancing the playhead while no video element exists, and remounting the
+  // editor doesn't auto-resume due to a src-set/play() race.
+  useEffect(() => {
+    return () => {
+      useTimelineUi.getState().setPlaying(false)
+    }
+  }, [])
+
   // Local mirror so the input feels responsive; flush to store on blur/enter.
   const [draftName, setDraftName] = useState(project.name)
   useEffect(() => {

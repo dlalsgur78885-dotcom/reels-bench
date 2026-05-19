@@ -2985,10 +2985,20 @@ def build_refine_prompt(draft: dict, unified_city: str | None, ref_info: dict | 
     target_persona가 있으면 페르소나 시그널 보존 anchor 추가 — variant=strong(humanize)에서 페르소나 희석 방지.
     """
     sentences = draft.get("sentences", [])
-    sent_text = "\n".join(
-        f'  [{s.get("start",0):.1f}~{s.get("end",0):.1f}s] ({s.get("direction","")}) ({s.get("emotion","")} {int((s.get("intensity") or 0)*100)}%) "{s.get("text","")}"'
-        for s in sentences
-    )
+    # forbidden 키워드 등장 sentence에 ⚠️ 마킹 — refine이 그 줄 강제 재작성하도록
+    forbidden_kws = []
+    if (product_capability_out or "").strip():
+        # 콤마/줄바꿈/슬래시로 split
+        import re as _re
+        for kw in _re.split(r"[,\n/、]", product_capability_out):
+            kw = kw.strip()
+            if kw and len(kw) >= 1:
+                forbidden_kws.append(kw)
+    def _mark(s):
+        text = s.get("text", "")
+        flag = "⚠️FENCE⚠️ " if any(kw in text for kw in forbidden_kws) else ""
+        return f'  {flag}[{s.get("start",0):.1f}~{s.get("end",0):.1f}s] ({s.get("direction","")}) ({s.get("emotion","")} {int((s.get("intensity") or 0)*100)}%) "{text}"'
+    sent_text = "\n".join(_mark(s) for s in sentences)
     city_rule = f"- 시나리오 도시는 반드시 \"{unified_city}\" 하나로 통일. 다른 도시명 등장 시 \"{unified_city}\"로 교체.\n" if unified_city else ""
 
     # 어색 문장 강제 교정 블록 (Flash 검출 결과 기반)
@@ -3126,11 +3136,14 @@ def build_refine_prompt(draft: dict, unified_city: str | None, ref_info: dict | 
         pname = product_name or "이 상품"
         cap_fence_block = f"""
 ## ⛔⛔⛔ 상품 capability fence — **절대 박지 말 것** (전체 문장에 적용)
-"{pname}"이 **하지 않는 기능**:
+"{pname}"이 **하지 않는 기능 (false claim 키워드)**:
 {product_capability_out.strip()}
 
 → 위 키워드와 관련된 멘트는 무조건 false claim. 다듬기 결과에 등장하면 검수 fail.
-→ 1차 카피에 이 키워드가 있더라도 다듬기 시 다른 표현으로 우회 (의미 보존하되 false claim 제거).
+→ **1차 카피의 `⚠️FENCE⚠️` 마커가 붙은 sentence는 키워드 들어있는 문장입니다.**
+   해당 sentence는 키워드를 완전히 제거한 새 문장으로 재작성하세요 (다른 USP·셀링포인트로 우회).
+→ 의미는 보존하되 false claim 단어는 절대 출력 금지. 모호한 표현 ("간편하게", "한 번에", "자동으로")도 위 기능 함의면 금지.
+→ ⚠️FENCE⚠️ 마커 자체는 출력 결과에 포함 X (입력 표시용).
 """
 
     target_n = (ref_info or {}).get("sentence_count") or len(sentences)

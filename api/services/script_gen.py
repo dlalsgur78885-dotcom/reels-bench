@@ -4076,7 +4076,7 @@ def _detect_speech_level(texts: list[str]) -> str:
     return "혼합"
 
 
-def _build_section_writer_prompt(section: dict, product_name: str, target_persona: dict | None, usps: list[dict], pain: str, desire: str, speech_level: str = "혼합", section_chunks: list[dict] | None = None, section_roles: dict | None = None, prev_chunks: list[dict] | None = None, chunk_to_user_usps: dict[str, list[int]] | None = None, chunk_to_reason: dict[str, str] | None = None, product_capability_out: str | None = None) -> str:
+def _build_section_writer_prompt(section: dict, product_name: str, target_persona: dict | None, usps: list[dict], pain: str, desire: str, speech_level: str = "혼합", section_chunks: list[dict] | None = None, section_roles: dict | None = None, prev_chunks: list[dict] | None = None, chunk_to_user_usps: dict[str, list[int]] | None = None, chunk_to_reason: dict[str, str] | None = None) -> str:
     """섹션별 작성자 prompt — outline 받아 문장 N개 작성. 섹션 타입별 가이드 추가.
 
     v4-2: chunk 의도(role/topic/summary/relation_to_prev) + section_roles 주입.
@@ -4086,7 +4086,8 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
         Writer에게 직전 흐름 텍스트로 전달 (자연 연결).
     chunk_to_user_usps: chunk.section → user_usp_ids[] (multi). Writer가 multi-USP 통합 호소 인지.
     chunk_to_reason: chunk.section → 매핑 reason (Pre-Planner가 작성한 컨텍스트). Writer 의도 가이드.
-    product_capability_out: 상품 전체 fence — "절대 박지 말 것" 기능 목록. prompt 맨 앞에 강조 prepend.
+
+    NOTE: capability_out fence는 writer에 적용 안 함 — refine 단계가 단독 책임.
     """
     section_name = section.get("name", "")
     sentences_spec = section.get("sentences") or []
@@ -4563,31 +4564,11 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
             if desc_parsed_all["raw"]:
                 all_usps_dict += f"  설명: {desc_parsed_all['raw'][:300]}\n"
 
-    # 상품 전체 capability fence — 최강 우선순위 (writer가 없는 기능 만들어내는 환각 차단)
-    product_cap_fence = ""
-    if (product_capability_out or "").strip():
-        product_cap_fence = f"""
-## ⛔⛔⛔ 최우선 룰 — 상품 capability fence (다른 모든 룰보다 우선)
-
-**이 룰은 chunk 의도·어절 패턴·ref 모방 등 다른 모든 writer 룰을 무력화합니다.**
-**키워드 회피를 위해 spec을 거꾸로 따라도 됩니다. 우회만 하세요.**
-
-이 상품 "{product_name}"의 **금지어** (false claim 키워드, 아래 어휘를 출력 텍스트에 절대 사용 금지):
-{product_capability_out.strip()}
-
-처리 규칙:
-1. 위 키워드는 **기능 claim이든 아니든** 출력 텍스트에 등장하면 검수 자동 fail
-   - 예: "스팟"이 금지어면 "사진 스팟", "맛집 스팟", "야경 스팟" 등 **어떤 맥락에서도 금지**
-   - 예: "최적화"가 금지어면 "최적화된 코스", "최적화 추천" 등 **어떤 맥락에서도 금지**
-2. 의미·기능 함의도 금지 ("간편하게 처리", "한 번에 자동", "알아서 척척" 등이 위 기능 함의면 금지)
-3. 회피 표현으로 우회: 다른 USP/셀링포인트로 새 문장 작성
-4. 어절 패턴/chunk 의도 룰과 충돌하면 **fence 우선** — 어절 양보 OK
-
-위 키워드 한 글자라도 출력되면 **즉시 fail**. 다른 모든 룰을 깨더라도 fence를 지키세요.
-"""
+    # capability_out fence는 writer에 적용 안 함 — refine 단계가 단독 책임 (2026-05-19).
+    # writer는 자유 생성 → forbidden 키워드 박혀도 OK. 다듬기 버튼이 환각 제거.
 
     return f"""당신은 한국어 광고 카피라이터입니다. 아래 outline에 따라 광고 카피를 작성.
-{product_cap_fence}
+
 ⚠️⚠️ **direction 필드는 TTS 연기 cue 한 줄 (6자 이내)** ⚠️⚠️
 - ✅ 허용: "자연스럽게", "친근하게 묻듯", "확신에 차서", "공감하듯", "장난스럽게", "단호하게", "속삭이듯"
 - ❌ 절대 금지: 마케팅 지시문 ("X를 강조하여 공감을 유도하세요", "USP를 부각시키고...", "도입부를 작성하세요" 등)
@@ -6086,7 +6067,6 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
             prev_chunks=prev_chunks or [],
             chunk_to_user_usps=chunk_to_user_usps,
             chunk_to_reason=chunk_to_reason,
-            product_capability_out=product_capability_out,
         )
         spec_list = sec.get("sentences") or []
         n_required = len(spec_list)

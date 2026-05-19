@@ -584,7 +584,8 @@ export default function ScriptGenWizard() {
         await Promise.all(Object.entries(out).map(async ([name, draft]) => {
           try {
             const persona = (draft as any)._target_persona || null
-            const refined = await api.refineScript(draft, cleanUsps, shortcode, skipOpts, 'default', persona)
+            const refined = await api.refineScript(draft, cleanUsps, shortcode, skipOpts, 'default', persona,
+              { name: mapping.product.name, capability_out: (mapping.product as any).capability_out || null })
             if (refined && refined.sentences) {
               refinedOut[name] = {
                 ...draft,
@@ -905,6 +906,10 @@ export default function ScriptGenWizard() {
           usps={(mapping?.product?.usps || []).map((u: any) => ({
             usp: u.usp || '', description: u.description, reviews: u.reviews || [],
           }))}
+          productFence={{
+            name: mapping?.product?.name,
+            capability_out: (mapping?.product as any)?.capability_out || null,
+          }}
           onRefined={(tabName, refined) => {
             setGenResult(prev => ({ ...prev, [tabName]: refined }))
           }}
@@ -2312,7 +2317,7 @@ function StepPersona({
 
 function StepDone({
   result, refChunks, chunkUspMapping, onRestart, onBackToPersona, onBackToMapping, onSkipChunkSection,
-  productId, shortcode, source, usps, onRefined, skipOpts,
+  productId, shortcode, source, usps, productFence, onRefined, skipOpts,
 }: {
   result: Record<string, GeneratedScript>
   refChunks: MappingPreview['section_chunks']
@@ -2325,6 +2330,7 @@ function StepDone({
   shortcode: string
   source: 'reels' | 'youtube'
   usps: Array<{ usp: string; description?: string; reviews?: string[] }>
+  productFence?: { name?: string; capability_out?: string | null }
   onRefined: (tabName: string, refined: GeneratedScript) => void
   skipOpts: { skip_chunk_sections?: string[]; skip_sentence_starts?: number[] }
 }) {
@@ -2598,7 +2604,7 @@ function StepDone({
                           const baseSents = stages.find(s => s.key === 'base')?.sentences || cur.sentences || []
                           // 페르소나 anchor 전달 (variant=strong humanize 시 페르소나 시그널 보존용)
                           const persona = (cur as any)._target_persona || null
-                          const refined = await api.refineScript({ ...cur, sentences: baseSents }, usps, shortcode || undefined, skipOpts, v, persona)
+                          const refined = await api.refineScript({ ...cur, sentences: baseSents }, usps, shortcode || undefined, skipOpts, v, persona, productFence)
                           if (refined && refined.sentences) {
                             // direction/emotion/delivery 같은 TTS 메타를 base에서 1:1 merge (LLM 응답에 빠지면 base 유지)
                             // — rs.direction이 빈 문자열("")일 때도 base로 fallback (??는 null/undefined만 fallback)

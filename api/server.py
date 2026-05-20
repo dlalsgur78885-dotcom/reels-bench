@@ -6236,16 +6236,25 @@ def _seedance_shared_ids(share_table: str, target_col: str, me_id: str) -> dict:
 
 
 def _seedance_my_group_shares(me_id: str) -> list[dict]:
-    """내가 받은 그룹 share: [{owner_id, group_name, permission}, ...]."""
+    """내가 받은 그룹 share: [{owner_id, group_name, permission}, ...].
+    seedance_group_shares 테이블이 없거나(404) 에러 시 빈 리스트로 fallback."""
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
-    rows = _r.get(
-        f"{SUPA}/rest/v1/seedance_group_shares?shared_with_id=eq.{me_id}"
-        f"&select=owner_id,group_name,permission",
-        headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
-    ).json() or []
-    return rows
+    try:
+        r = _r.get(
+            f"{SUPA}/rest/v1/seedance_group_shares?shared_with_id=eq.{me_id}"
+            f"&select=owner_id,group_name,permission",
+            headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+        )
+        if r.status_code != 200:
+            logger.warning("[seedance_group_shares] %s %s", r.status_code, r.text[:200])
+            return []
+        rows = r.json()
+        return rows if isinstance(rows, list) else []
+    except Exception as e:
+        logger.warning("[seedance_group_shares] fetch failed: %s", e)
+        return []
 
 
 def _seedance_group_inherited_video_perms(me_id: str) -> dict:

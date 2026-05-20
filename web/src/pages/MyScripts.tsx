@@ -40,7 +40,13 @@ export default function MyScripts() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'done'>('all')
   // 그룹 필터: null=전체, '__unclassified__'=미분류, 그 외 group_name
   const [groupFilter, setGroupFilter] = useState<string | null>(null)
+  // 새로 생성했지만 아직 어떤 대본에도 할당되지 않은 그룹 (만들자마자 칩으로 보이도록 임시 유지)
+  const [pendingGroups, setPendingGroups] = useState<string[]>([])
   const [savingMetaId, setSavingMetaId] = useState<string | null>(null)
+  // 인라인 제목 수정 — 편집 중인 카드의 script id (열려있을 때만 set)
+  const [titleEditSid, setTitleEditSid] = useState<string | null>(null)
+  const [titleDraft, setTitleDraft] = useState('')
+  const [savingTitleId, setSavingTitleId] = useState<string | null>(null)
   // 그룹 picker: 클릭한 카드의 script id (열려있을 때만 set)
   const [groupPickerSid, setGroupPickerSid] = useState<string | null>(null)
   const [newGroupInput, setNewGroupInput] = useState('')
@@ -114,6 +120,10 @@ export default function MyScripts() {
         if (groupFilter !== '__unclassified__' && g !== groupFilter) return false
       }
       return true
+    }).sort((a, b) => {
+      const ta = new Date(a.created_at).getTime()
+      const tb = new Date(b.created_at).getTime()
+      return tb - ta
     })
   }, [scripts, productFilter, sourceFilter, statusFilter, groupFilter])
 
@@ -129,18 +139,89 @@ export default function MyScripts() {
     return { all: base.length, pending, done }
   }, [scripts, productFilter, sourceFilter])
 
-  // 사용자가 만든 그룹 (unique group_name)
+  // 사용자가 만든 그룹 (unique group_name) — 실제 할당된 + pending
   const userGroups = useMemo(() => {
     const set = new Set<string>()
     scripts.forEach(s => {
       const g = getGroup(s)
       if (g) set.add(g)
     })
+    pendingGroups.forEach(g => set.add(g))
     return Array.from(set).sort()
-  }, [scripts])
+  }, [scripts, pendingGroups])
 
   const unclassifiedCount = useMemo(() => scripts.filter(s => !getGroup(s)).length, [scripts])
   const groupCount = (gname: string) => scripts.filter(s => getGroup(s) === gname).length
+
+  // 그룹 일괄 이름 변경 — 해당 그룹의 모든 대본을 새 이름으로 update
+  const renameGroup = async (oldName: string, newName: string) => {
+    const trimmed = newName.trim()
+    if (!trimmed || trimmed === oldName) return
+    const targets = scripts.filter(s => getGroup(s) === oldName)
+    try {
+      // 미할당(pending) 그룹이면 API 호출 없이 이름만 교체
+      if (targets.length === 0) {
+        setPendingGroups(prev => {
+          const filtered = prev.filter(g => g !== oldName)
+          return filtered.includes(trimmed) ? filtered : [...filtered, trimmed]
+        })
+      } else {
+        await Promise.all(targets.map(s =>
+          api.updateGenScript(s.product_id, s.id, { group_name: trimmed }),
+        ))
+        setScripts(prev => prev.map(s =>
+          getGroup(s) === oldName
+            ? { ...s, meta: { ...(s.meta || {}), group_name: trimmed } }
+            : s,
+        ))
+        setPendingGroups(prev => prev.filter(g => g !== oldName && g !== trimmed))
+      }
+      if (groupFilter === oldName) setGroupFilter(trimmed)
+    } catch (e: any) {
+      alert('그룹 이름 변경 실패: ' + (e.message || e))
+    }
+  }
+
+  // 그룹 삭제 — 그룹에 속한 모든 대본을 미분류로 만들고 chip 제거 (대본 자체는 유지)
+  const deleteGroup = async (name: string) => {
+    const targets = scripts.filter(s => getGroup(s) === name)
+    if (!confirm(`"${name}" 그룹을 삭제할까요? (대본 ${targets.length}개는 미분류로 이동)`)) return
+    try {
+      if (targets.length > 0) {
+        await Promise.all(targets.map(s =>
+          api.updateGenScript(s.product_id, s.id, { group_name: '' }),
+        ))
+        setScripts(prev => prev.map(s => {
+          if (getGroup(s) !== name) return s
+          const m = { ...(s.meta || {}) }
+          delete m.group_name
+          return { ...s, meta: m }
+        }))
+      }
+      setPendingGroups(prev => prev.filter(g => g !== name))
+      if (groupFilter === name) setGroupFilter(null)
+    } catch (e: any) {
+      alert('그룹 삭제 실패: ' + (e.message || e))
+    }
+  }
+
+  const saveTitle = async (s: Script) => {
+    const newTitle = titleDraft.trim()
+    if (!newTitle || newTitle === s.title) {
+      setTitleEditSid(null)
+      return
+    }
+    setSavingTitleId(s.id)
+    try {
+      await api.updateGenScript(s.product_id, s.id, { title: newTitle })
+      setScripts(prev => prev.map(x => x.id === s.id ? { ...x, title: newTitle } : x))
+      setTitleEditSid(null)
+    } catch (e: any) {
+      alert('제목 저장 실패: ' + (e.message || e))
+    } finally {
+      setSavingTitleId(null)
+    }
+  }
 
   const updateScriptMeta = async (s: Script, patch: { status?: 'pending' | 'done'; group_name?: string }) => {
     setSavingMetaId(s.id)
@@ -148,6 +229,11 @@ export default function MyScripts() {
       await api.updateGenScript(s.product_id, s.id, patch)
       const newMeta = { ...(s.meta || {}), ...patch }
       setScripts(prev => prev.map(x => x.id === s.id ? { ...x, meta: newMeta } : x))
+      // 할당된 그룹은 이제 실제 데이터로 존재하므로 pending에서 제거
+      if (patch.group_name) {
+        const gn = patch.group_name
+        setPendingGroups(prev => prev.filter(g => g !== gn))
+      }
     } catch (e: any) {
       alert('상태 저장 실패: ' + (e.message || e))
     } finally {
@@ -339,24 +425,50 @@ export default function MyScripts() {
         {userGroups.map(g => {
           const active = groupFilter === g
           return (
-            <button key={g} type="button" onClick={() => setGroupFilter(active ? null : g)}
-              style={{
-                padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
-                borderRadius: 6, border: '1px solid var(--border)',
-                background: active ? 'var(--accent)' : 'var(--bg-surface)',
-                color: active ? '#fff' : 'var(--text-body)',
-              }}>
-              {g} ({groupCount(g)})
-            </button>
+            <div key={g} style={{
+              display: 'inline-flex', alignItems: 'stretch',
+              borderRadius: 6, border: '1px solid var(--border)', overflow: 'hidden',
+              background: active ? 'var(--accent)' : 'var(--bg-surface)',
+            }}>
+              <button type="button" onClick={() => setGroupFilter(active ? null : g)}
+                style={{
+                  padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                  border: 'none', background: 'transparent',
+                  color: active ? '#fff' : 'var(--text-body)',
+                }}>
+                {g} ({groupCount(g)})
+              </button>
+              <button type="button"
+                title="그룹 이름 변경"
+                onClick={() => {
+                  const next = prompt(`"${g}" 그룹의 새 이름:`, g)
+                  if (next != null) renameGroup(g, next)
+                }}
+                style={{
+                  padding: '4px 6px', fontSize: 10, cursor: 'pointer',
+                  border: 'none', borderLeft: '1px solid var(--border)',
+                  background: 'transparent',
+                  color: active ? '#fff' : 'var(--text-muted)',
+                }}>✎</button>
+              <button type="button"
+                title="그룹 삭제"
+                onClick={() => deleteGroup(g)}
+                style={{
+                  padding: '4px 6px', fontSize: 10, cursor: 'pointer',
+                  border: 'none', borderLeft: '1px solid var(--border)',
+                  background: 'transparent',
+                  color: active ? '#fff' : 'var(--text-muted)',
+                }}>✕</button>
+            </div>
           )
         })}
         <button type="button"
           onClick={() => {
             const name = prompt('새 그룹 이름:')?.trim()
             if (!name) return
-            // 그룹은 script에 할당될 때 생성됨 — 빈 그룹은 만들 수 없음. 사용자가 카드 클릭 후 "그룹 지정"으로 적용.
-            setGroupFilter(name)
-            alert(`"${name}" 그룹 필터 활성화. 아래 대본 카드의 "그룹 지정" 버튼으로 할당하세요.`)
+            // 즉시 칩으로 노출하고, 필터는 켜지 않음 (할당 전이라 비어 있으면 혼란스러움).
+            // 어느 대본에든 실제 할당되면 pendingGroups에서 자동 제거됨.
+            setPendingGroups(prev => prev.includes(name) ? prev : [...prev, name])
           }}
           style={{
             padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
@@ -380,12 +492,16 @@ export default function MyScripts() {
         <div style={{ display: 'grid', gap: 8 }}>
           {filtered.map(s => (
             <div key={s.id}
-              onClick={() => navigate(`/my-scripts/${s.product_id}/${s.id}`)}
+              onClick={() => {
+                if (titleEditSid === s.id) return
+                navigate(`/my-scripts/${s.product_id}/${s.id}`)
+              }}
               style={{
                 background: selected?.sid === s.id ? 'var(--accent-light)' : 'var(--bg-surface)',
                 border: `1px solid ${selected?.sid === s.id ? 'var(--accent)' : 'var(--border)'}`,
                 borderRadius: 'var(--radius-md)', padding: 12,
-                cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10,
+                cursor: titleEditSid === s.id ? 'default' : 'pointer',
+                display: 'flex', alignItems: 'center', gap: 10,
               }}>
               <span style={{
                 fontSize: 10, fontWeight: 700, padding: '2px 8px',
@@ -521,8 +637,62 @@ export default function MyScripts() {
                   border: '1px solid var(--accent)',
                 }}>공유받음 ({s._permission === 'edit' ? '편집' : '보기'})</span>
               )}
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>{s.title}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                {titleEditSid === s.id ? (
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+                    <input
+                      autoFocus
+                      type="text"
+                      value={titleDraft}
+                      onChange={e => setTitleDraft(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') { e.preventDefault(); saveTitle(s) }
+                        else if (e.key === 'Escape') { e.preventDefault(); setTitleEditSid(null) }
+                      }}
+                      disabled={savingTitleId === s.id}
+                      style={{
+                        flex: 1, padding: '4px 8px', fontSize: 13, fontWeight: 600,
+                        border: '1px solid var(--accent)', borderRadius: 4,
+                        background: 'var(--bg-base)', color: 'var(--text-primary)',
+                      }}
+                    />
+                    <button type="button"
+                      onClick={e => { e.stopPropagation(); saveTitle(s) }}
+                      disabled={savingTitleId === s.id}
+                      style={{
+                        padding: '4px 10px', fontSize: 11, fontWeight: 600,
+                        background: 'var(--accent)', color: '#fff', border: 'none',
+                        borderRadius: 4, cursor: savingTitleId === s.id ? 'wait' : 'pointer',
+                        opacity: savingTitleId === s.id ? 0.7 : 1,
+                      }}>{savingTitleId === s.id ? '저장중…' : '저장'}</button>
+                    <button type="button"
+                      onClick={e => { e.stopPropagation(); setTitleEditSid(null) }}
+                      style={{
+                        padding: '4px 10px', fontSize: 11,
+                        background: 'transparent', color: 'var(--text-muted)',
+                        border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer',
+                      }}>취소</button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {s.title}
+                    </div>
+                    <button type="button"
+                      title="제목 수정"
+                      onClick={e => {
+                        e.stopPropagation()
+                        setTitleEditSid(s.id)
+                        setTitleDraft(s.title || '')
+                      }}
+                      style={{
+                        padding: '2px 6px', fontSize: 10, fontWeight: 600,
+                        background: 'transparent', color: 'var(--text-muted)',
+                        border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer',
+                        flexShrink: 0,
+                      }}>✎</button>
+                  </div>
+                )}
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
                   <span style={{ color: 'var(--accent)', fontWeight: 600 }}>
                     {productById.get(s.product_id) || `상품 #${s.product_id}`}

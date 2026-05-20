@@ -41,19 +41,27 @@ export default function SeedanceLibrary() {
   const [groupFilter, setGroupFilter] = useState<string | null>(null)
   // 그룹 picker가 열린 카드 id
   const [groupPickerVid, setGroupPickerVid] = useState<string | null>(null)
+  // 카드의 overflow:hidden을 피하기 위해 viewport 기준 좌표로 picker 표시
+  const [pickerCoords, setPickerCoords] = useState<{ top: number; left: number } | null>(null)
   const [newGroupInput, setNewGroupInput] = useState('')
   const [savingMetaId, setSavingMetaId] = useState<string | null>(null)
   const pickerCloseRef = useRef<(() => void) | null>(null)
 
   useEffect(() => { load() }, [])
 
-  // picker 열려있을 때 document 클릭으로 닫기
+  // picker 열려있을 때 document 클릭/스크롤/리사이즈로 닫기 (스크롤 시 좌표가 어긋나므로 닫음)
   useEffect(() => {
     if (!groupPickerVid) return
     const t = setTimeout(() => {
-      const close = () => setGroupPickerVid(null)
+      const close = () => { setGroupPickerVid(null); setPickerCoords(null) }
       document.addEventListener('click', close)
-      pickerCloseRef.current = () => document.removeEventListener('click', close)
+      window.addEventListener('scroll', close, true)
+      window.addEventListener('resize', close)
+      pickerCloseRef.current = () => {
+        document.removeEventListener('click', close)
+        window.removeEventListener('scroll', close, true)
+        window.removeEventListener('resize', close)
+      }
     }, 0)
     return () => {
       clearTimeout(t)
@@ -161,10 +169,13 @@ export default function SeedanceLibrary() {
         </button>
       </div>
 
-      {/* 그룹 필터 */}
+      {/* 그룹 필터 — 칩이 많으면 줄바꿈, 그래도 안 맞으면 가로 스크롤 fallback */}
       {videos.length > 0 && (
-        <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-          <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginRight: 4 }}>그룹:</span>
+        <div style={{
+          display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center',
+          maxWidth: '100%', overflowX: 'auto',
+        }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginRight: 4, flexShrink: 0 }}>그룹:</span>
           <FilterBtn active={groupFilter === null} onClick={() => setGroupFilter(null)}>
             전체 ({videos.length})
           </FilterBtn>
@@ -187,7 +198,8 @@ export default function SeedanceLibrary() {
             }}
             style={{ padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
               borderRadius: 6, border: '1px dashed var(--accent)',
-              background: 'transparent', color: 'var(--accent)' }}>
+              background: 'transparent', color: 'var(--accent)',
+              flexShrink: 0, whiteSpace: 'nowrap' }}>
             + 그룹 만들기
           </button>
         </div>
@@ -253,14 +265,21 @@ export default function SeedanceLibrary() {
                         </span>
                       )}
                     </div>
-                    {/* 그룹 picker */}
-                    <div style={{ position: 'relative' }}>
+                    {/* 그룹 picker — 카드의 overflow:hidden 회피 위해 position:fixed로 viewport 기준 표시 */}
+                    <div>
                       <button type="button"
                         disabled={savingMetaId === v.id}
                         onClick={(e) => {
                           e.stopPropagation()
-                          setGroupPickerVid(isOpen ? null : v.id)
-                          setNewGroupInput('')
+                          if (isOpen) {
+                            setGroupPickerVid(null)
+                            setPickerCoords(null)
+                          } else {
+                            const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+                            setPickerCoords({ top: r.bottom + 4, left: r.left })
+                            setGroupPickerVid(v.id)
+                            setNewGroupInput('')
+                          }
                         }}
                         style={{
                           fontSize: 10, fontWeight: 700, padding: '2px 8px',
@@ -272,11 +291,11 @@ export default function SeedanceLibrary() {
                         }}>
                         {g || '+ 그룹'}
                       </button>
-                      {isOpen && (
+                      {isOpen && pickerCoords && (
                         <div onClick={e => e.stopPropagation()}
                           style={{
-                            position: 'absolute', top: '100%', left: 0, marginTop: 4,
-                            minWidth: 200, zIndex: 100,
+                            position: 'fixed', top: pickerCoords.top, left: pickerCoords.left,
+                            minWidth: 200, zIndex: 1000,
                             background: 'var(--bg-surface)', border: '1px solid var(--border)',
                             borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.16)',
                             padding: 6,
@@ -498,7 +517,7 @@ function FilterBtn({ children, active, onClick, dashed }: {
     <button type="button" onClick={onClick}
       style={{
         padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
-        borderRadius: 6,
+        borderRadius: 6, flexShrink: 0, whiteSpace: 'nowrap',
         border: `1px ${dashed ? 'dashed' : 'solid'} var(--border)`,
         background: active ? 'var(--accent)' : 'var(--bg-surface)',
         color: active ? '#fff' : 'var(--text-body)',

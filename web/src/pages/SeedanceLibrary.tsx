@@ -45,6 +45,8 @@ export default function SeedanceLibrary() {
   const [groupPickerVid, setGroupPickerVid] = useState<string | null>(null)
   // 카드의 overflow:hidden을 피하기 위해 viewport 기준 좌표로 picker 표시
   const [pickerCoords, setPickerCoords] = useState<{ top: number; left: number } | null>(null)
+  // 상세 패널의 "변경" picker 열림 상태
+  const [detailPickerOpen, setDetailPickerOpen] = useState(false)
   const [newGroupInput, setNewGroupInput] = useState('')
   const [savingMetaId, setSavingMetaId] = useState<string | null>(null)
   const pickerCloseRef = useRef<(() => void) | null>(null)
@@ -71,6 +73,23 @@ export default function SeedanceLibrary() {
       pickerCloseRef.current = null
     }
   }, [groupPickerVid])
+
+  // 상세 패널 picker는 카드 picker와 별도로 document 클릭으로 닫기
+  useEffect(() => {
+    if (!detailPickerOpen) return
+    let close: (() => void) | null = null
+    const t = setTimeout(() => {
+      close = () => setDetailPickerOpen(false)
+      document.addEventListener('click', close)
+    }, 0)
+    return () => {
+      clearTimeout(t)
+      if (close) document.removeEventListener('click', close)
+    }
+  }, [detailPickerOpen])
+
+  // 선택 영상 바뀌면 picker 닫기
+  useEffect(() => { setDetailPickerOpen(false) }, [selected?.id])
 
   const load = async () => {
     setLoading(true)
@@ -402,19 +421,70 @@ export default function SeedanceLibrary() {
 
             <div style={{ marginBottom: 10 }}>
               <Label>그룹</Label>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', position: 'relative' }}>
                 <span style={{ fontSize: 12, padding: '4px 10px', borderRadius: 4,
                   background: getGroup(selected) ? 'var(--accent-light)' : 'transparent',
                   color: getGroup(selected) ? 'var(--accent)' : 'var(--text-muted)',
                   border: `1px ${getGroup(selected) ? 'solid' : 'dashed'} var(--border)` }}>
                   {getGroup(selected) || '미분류'}
                 </span>
-                <button onClick={() => {
-                  const name = prompt('그룹 이름 (비우면 미분류):', getGroup(selected))?.trim()
-                  if (name === undefined) return
-                  updateGroup(selected, name)
+                <button onClick={(e) => {
+                  e.stopPropagation()
+                  setDetailPickerOpen(v => !v)
+                  setNewGroupInput('')
                 }}
                   style={{ ...smBtnGhost, padding: '4px 10px' }}>변경</button>
+                {detailPickerOpen && (
+                  <div onClick={e => e.stopPropagation()}
+                    style={{
+                      position: 'absolute', top: '100%', left: 0, marginTop: 4,
+                      minWidth: 220, zIndex: 100,
+                      background: 'var(--bg-surface)', border: '1px solid var(--border)',
+                      borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.16)',
+                      padding: 6,
+                    }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', padding: '4px 8px' }}>
+                      그룹 선택
+                    </div>
+                    <button type="button"
+                      onClick={() => { updateGroup(selected, ''); setDetailPickerOpen(false) }}
+                      style={pickerItemSt(!getGroup(selected))}>미분류</button>
+                    {userGroups.map(gn => (
+                      <button key={gn} type="button"
+                        onClick={() => { updateGroup(selected, gn); setDetailPickerOpen(false) }}
+                        style={pickerItemSt(getGroup(selected) === gn)}>{gn}</button>
+                    ))}
+                    <div style={{ borderTop: '1px solid var(--border)', marginTop: 4, paddingTop: 4 }}>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <input type="text"
+                          value={newGroupInput}
+                          onChange={e => setNewGroupInput(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                              const val = newGroupInput.trim()
+                              if (val) { updateGroup(selected, val); setDetailPickerOpen(false) }
+                            }
+                          }}
+                          placeholder="새 그룹 이름"
+                          style={{ flex: 1, padding: '4px 6px', fontSize: 11,
+                            border: '1px solid var(--border)', borderRadius: 4,
+                            background: 'var(--bg-base)', color: 'var(--text-body)' }} />
+                        <button type="button"
+                          disabled={!newGroupInput.trim()}
+                          onClick={() => {
+                            const val = newGroupInput.trim()
+                            if (val) { updateGroup(selected, val); setDetailPickerOpen(false) }
+                          }}
+                          style={{
+                            padding: '4px 10px', fontSize: 11, fontWeight: 600,
+                            background: 'var(--accent)', color: '#fff', border: 'none',
+                            borderRadius: 4, cursor: newGroupInput.trim() ? 'pointer' : 'not-allowed',
+                            opacity: newGroupInput.trim() ? 1 : 0.5,
+                          }}>+</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 

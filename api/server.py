@@ -5765,9 +5765,10 @@ def seedance_list_videos(request: Request):
     _r = supabase.get_session()
     H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
     perm_by_id = _seedance_shared_ids("seedance_video_shares", "video_id", me["id"])
-    shared_ids = list(perm_by_id.keys())
-    if shared_ids:
-        sids_csv = ",".join(f'"{x}"' for x in shared_ids)
+    group_perm_by_id = _seedance_group_inherited_video_perms(me["id"])
+    all_extra_ids = list(set(perm_by_id.keys()) | set(group_perm_by_id.keys()))
+    if all_extra_ids:
+        sids_csv = ",".join(f'"{x}"' for x in all_extra_ids)
         flt = f"or=(created_by.eq.{me['id']},id.in.({sids_csv}))"
     else:
         flt = f"created_by=eq.{me['id']}"
@@ -5777,7 +5778,7 @@ def seedance_list_videos(request: Request):
         headers=H, timeout=10,
     )
     rows = r.json() if r.status_code == 200 else []
-    return _seedance_attach_creators(rows, me["id"], perm_by_id)
+    return _seedance_attach_creators(rows, me["id"], perm_by_id, group_perm_by_id)
 
 
 class SeedanceVideoPatch(BaseModel):
@@ -6234,10 +6235,54 @@ def _seedance_shared_ids(share_table: str, target_col: str, me_id: str) -> dict:
     return {r[target_col]: r["permission"] for r in rows}
 
 
-def _seedance_attach_creators(rows: list, me_id: str, perm_by_id: dict):
-    """rows 에 _creator_name, _creator_email, _shared, _permission 부착."""
+def _seedance_my_group_shares(me_id: str) -> list[dict]:
+    """내가 받은 그룹 share: [{owner_id, group_name, permission}, ...]."""
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    rows = _r.get(
+        f"{SUPA}/rest/v1/seedance_group_shares?shared_with_id=eq.{me_id}"
+        f"&select=owner_id,group_name,permission",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+    ).json() or []
+    return rows
+
+
+def _seedance_group_inherited_video_perms(me_id: str) -> dict:
+    """내가 받은 group shares로 inherit된 (video_id → permission) 매핑.
+    각 owner마다 그 owner의 영상 메타를 fetch해서 group_name 매칭."""
+    group_shares = _seedance_my_group_shares(me_id)
+    if not group_shares:
+        return {}
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    # owner_id → {group_name → permission}
+    by_owner: dict = {}
+    for gs in group_shares:
+        by_owner.setdefault(gs["owner_id"], {})[gs["group_name"]] = gs["permission"]
+    result: dict = {}
+    for owner_id, gmap in by_owner.items():
+        rows = _r.get(
+            f"{SUPA}/rest/v1/seedance_videos?archived_at=is.null"
+            f"&created_by=eq.{owner_id}&select=id,meta",
+            headers=H, timeout=10,
+        ).json() or []
+        for v in rows:
+            gn = ((v.get("meta") or {}).get("group_name") or "").strip()
+            if gn in gmap and v["id"] not in result:
+                result[v["id"]] = gmap[gn]
+    return result
+
+
+def _seedance_attach_creators(rows: list, me_id: str, perm_by_id: dict,
+                              group_perm_by_id: dict | None = None):
+    """rows 에 _creator_name, _creator_email, _shared, _permission, _via_group 부착.
+    permission 우선순위: direct share(perm_by_id) > group share(group_perm_by_id) > 'view'."""
     if not rows:
         return rows
+    gpb = group_perm_by_id or {}
     creator_ids = list({r["created_by"] for r in rows if r.get("created_by") and r["created_by"] != me_id})
     creator_by_id: dict = {}
     if creator_ids:
@@ -6257,12 +6302,16 @@ def _seedance_attach_creators(rows: list, me_id: str, perm_by_id: dict):
             r["_creator_name"] = p.get("display_name") or ""
             r["_creator_email"] = p.get("email") or ""
             r["_shared"] = True
-            r["_permission"] = perm_by_id.get(r["id"], "view")
+            direct = perm_by_id.get(r["id"])
+            r["_permission"] = direct or gpb.get(r["id"], "view")
+            if not direct and r["id"] in gpb:
+                r["_via_group"] = True
     return rows
 
 
 def _seedance_check_share_perm(main_table: str, item_id: str, me: dict, edit: bool = False) -> dict:
-    """item 접근권: owner / admin / share. edit=True면 owner/admin/edit-share만 허용. 못 보면 403/404."""
+    """item 접근권: owner / admin / direct share / (video한정) group share.
+    edit=True면 edit 권한 보유 시에만 통과. 못 보면 403/404."""
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
@@ -6288,11 +6337,27 @@ def _seedance_check_share_perm(main_table: str, item_id: str, me: dict, edit: bo
         f"{SUPA}/rest/v1/{st}?{tc}=eq.{item_id}&shared_with_id=eq.{me['id']}&select=permission&limit=1",
         headers=H, timeout=10,
     ).json() or []
-    if not s:
-        raise HTTPException(403, "권한 없음")
-    if edit and s[0].get("permission") != "edit":
-        raise HTTPException(403, "편집 권한 없음")
-    return row
+    if s:
+        if edit and s[0].get("permission") != "edit":
+            raise HTTPException(403, "편집 권한 없음")
+        return row
+    # video에 한해 group share fallback — owner+group_name 매칭 시 통과
+    if main_table == "seedance_videos":
+        gn = ((row.get("meta") or {}).get("group_name") or "").strip()
+        if gn:
+            gs = _r.get(
+                f"{SUPA}/rest/v1/seedance_group_shares"
+                f"?owner_id=eq.{row['created_by']}"
+                f"&group_name=eq.{gn}"
+                f"&shared_with_id=eq.{me['id']}"
+                f"&select=permission&limit=1",
+                headers=H, timeout=10,
+            ).json() or []
+            if gs:
+                if edit and gs[0].get("permission") != "edit":
+                    raise HTTPException(403, "편집 권한 없음")
+                return row
+    raise HTTPException(403, "권한 없음")
 
 
 def _seedance_assert_owner(main_table: str, item_id: str, me_id: str):
@@ -6419,6 +6484,88 @@ def seedance_char_share_add(cid: str, body: SeedanceShareIn, request: Request):
 @app.delete("/api/seedance/characters/{cid}/shares/{share_id}")
 def seedance_char_share_del(cid: str, share_id: str, request: Request):
     return _chars_shares[2](cid, share_id, auth_svc.require_user(request))
+
+
+class SeedanceGroupShareIn(BaseModel):
+    group_name: str
+    shared_with_id: str
+    permission: str = "view"
+
+
+@app.get("/api/seedance/group-shares")
+def seedance_group_shares_list(group_name: str, request: Request):
+    """내 그룹의 share 목록 — group_name=쿼리 (한글/공백 OK, URL encoding은 client가)."""
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    gn = group_name.strip()
+    if not gn:
+        return []
+    shares = _r.get(
+        f"{SUPA}/rest/v1/seedance_group_shares"
+        f"?owner_id=eq.{me['id']}&group_name=eq.{gn}"
+        f"&select=id,shared_with_id,permission,created_at&order=created_at.desc",
+        headers=H, timeout=10,
+    ).json() or []
+    if not shares:
+        return []
+    ids = [s["shared_with_id"] for s in shares]
+    prof = _r.get(
+        f"{SUPA}/rest/v1/profiles?id=in.({','.join(ids)})&select=id,email,display_name",
+        headers=H, timeout=10,
+    ).json() or []
+    pmap = {p["id"]: p for p in prof}
+    for s in shares:
+        p = pmap.get(s["shared_with_id"]) or {}
+        s["display_name"] = p.get("display_name") or (p.get("email") or "").split("@")[0]
+        s["email"] = p.get("email")
+    return shares
+
+
+@app.post("/api/seedance/group-shares")
+def seedance_group_share_add(body: SeedanceGroupShareIn, request: Request):
+    me = auth_svc.require_user(request)
+    gn = (body.group_name or "").strip()
+    if not gn:
+        raise HTTPException(400, "group_name 비어있음")
+    if body.shared_with_id == me["id"]:
+        raise HTTPException(400, "본인에게는 공유할 수 없습니다")
+    perm = body.permission if body.permission in ("view", "edit") else "view"
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.post(
+        f"{SUPA}/rest/v1/seedance_group_shares"
+        f"?on_conflict=owner_id,group_name,shared_with_id",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json",
+                 "Prefer": "resolution=merge-duplicates,return=representation"},
+        json={"owner_id": me["id"], "group_name": gn,
+              "shared_with_id": body.shared_with_id,
+              "shared_by": me["id"], "permission": perm},
+        timeout=10,
+    )
+    if r.status_code not in (200, 201):
+        raise HTTPException(r.status_code, r.text[:300])
+    return r.json()[0] if r.json() else {}
+
+
+@app.delete("/api/seedance/group-shares/{share_id}")
+def seedance_group_share_del(share_id: str, request: Request):
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    _r.delete(
+        f"{SUPA}/rest/v1/seedance_group_shares"
+        f"?id=eq.{share_id}&owner_id=eq.{me['id']}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Prefer": "return=minimal"},
+        timeout=10,
+    )
+    return {"deleted": True}
 
 
 # ── Seedance Prompts / Characters 라이브러리 ──

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { authedFetch } from '../api'
 import { useMe } from '../auth'
 import SeedanceShareModal from '../components/SeedanceShareModal'
+import SeedanceGroupShareModal from '../components/SeedanceGroupShareModal'
 
 type Video = {
   id: string
@@ -32,6 +33,7 @@ export default function SeedanceLibrary() {
   const me = useMe()
   const [videos, setVideos] = useState<Video[]>([])
   const [shareModalFor, setShareModalFor] = useState<Video | null>(null)
+  const [groupShareModalFor, setGroupShareModalFor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<Video | null>(null)
@@ -202,6 +204,17 @@ export default function SeedanceLibrary() {
               flexShrink: 0, whiteSpace: 'nowrap' }}>
             + 그룹 만들기
           </button>
+          {groupFilter && groupFilter !== UNCLASSIFIED && userGroups.includes(groupFilter) && (
+            <button type="button"
+              onClick={() => setGroupShareModalFor(groupFilter)}
+              title={`"${groupFilter}" 그룹 전체를 한 번에 공유 — 이후 추가되는 영상도 자동 inherit`}
+              style={{ padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                borderRadius: 6, border: '1px solid var(--accent)',
+                background: 'var(--accent)', color: '#fff',
+                flexShrink: 0, whiteSpace: 'nowrap', marginLeft: 4 }}>
+              👥 이 그룹 공유
+            </button>
+          )}
         </div>
       )}
 
@@ -464,6 +477,14 @@ export default function SeedanceLibrary() {
           resourceId={shareModalFor.id}
           resourceLabel={shareModalFor.name || shareModalFor.prompt?.slice(0, 40) || '제목 없음'}
           onClose={() => setShareModalFor(null)}
+        />
+      )}
+
+      {groupShareModalFor && (
+        <SeedanceGroupShareModal
+          groupName={groupShareModalFor}
+          videoCount={videos.filter(v => ((v.meta?.group_name || '') as string).trim() === groupShareModalFor).length}
+          onClose={() => setGroupShareModalFor(null)}
         />
       )}
     </div>

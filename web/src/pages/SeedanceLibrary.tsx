@@ -41,6 +41,8 @@ export default function SeedanceLibrary() {
   const [nameDraft, setNameDraft] = useState('')
   // 그룹 필터: null = 전체, '__unclassified__' = 미분류, 그 외 = 그룹명
   const [groupFilter, setGroupFilter] = useState<string | null>(null)
+  // 새로 생성했지만 아직 어떤 영상에도 할당되지 않은 그룹 (만들자마자 chip으로 보이도록 임시 유지)
+  const [pendingGroups, setPendingGroups] = useState<string[]>([])
   // 그룹 picker가 열린 카드 id
   const [groupPickerVid, setGroupPickerVid] = useState<string | null>(null)
   // 카드의 overflow:hidden을 피하기 위해 viewport 기준 좌표로 picker 표시
@@ -111,8 +113,9 @@ export default function SeedanceLibrary() {
   const userGroups = useMemo(() => {
     const s = new Set<string>()
     videos.forEach(v => { const g = getGroup(v); if (g) s.add(g) })
+    pendingGroups.forEach(g => s.add(g))
     return Array.from(s).sort()
-  }, [videos])
+  }, [videos, pendingGroups])
 
   const unclassifiedCount = useMemo(
     () => videos.filter(v => !getGroup(v)).length, [videos]
@@ -139,6 +142,8 @@ export default function SeedanceLibrary() {
       else delete newMeta.group_name
       setVideos(prev => prev.map(x => x.id === v.id ? { ...x, meta: newMeta } : x))
       if (selected?.id === v.id) setSelected({ ...selected, meta: newMeta })
+      // 할당된 그룹은 이제 실제 데이터로 존재하므로 pending에서 제거
+      if (gn) setPendingGroups(prev => prev.filter(g => g !== gn))
     } catch (e: any) {
       alert('그룹 변경 실패: ' + (e?.message || e))
     } finally {
@@ -214,8 +219,9 @@ export default function SeedanceLibrary() {
             onClick={() => {
               const name = prompt('새 그룹 이름:')?.trim()
               if (!name) return
-              setGroupFilter(name)
-              alert(`"${name}" 그룹 필터 활성화. 영상 카드의 "+ 그룹" 버튼으로 할당하세요.`)
+              // 즉시 chip으로 노출, 필터는 자동으로 켜지 않음(빈 그룹이라 혼란스러움).
+              // 어느 영상에든 실제 할당되면 pendingGroups에서 자동 제거됨.
+              setPendingGroups(prev => prev.includes(name) ? prev : [...prev, name])
             }}
             style={{ padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
               borderRadius: 6, border: '1px dashed var(--accent)',

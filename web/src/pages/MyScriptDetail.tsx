@@ -173,8 +173,11 @@ export default function MyScriptDetail() {
 
   const startEdit = () => {
     if (!data) return
+    // 현재 보고 있는 stage(base / alt_a / alt_b)의 sentences로 초기화
+    const view: StageKey = stageView || (stages[0]?.key || 'base')
+    const currentSents = stages.find(s => s.key === view)?.sentences ?? data.sentences ?? []
     setDraftTitle(data.title || '')
-    setDraftSents((data.sentences || []).map((s: any) => ({ ...s })))
+    setDraftSents(currentSents.map((s: any) => ({ ...s })))
     setEditing(true)
   }
   const cancelEdit = () => { setEditing(false); setDraftSents([]) }

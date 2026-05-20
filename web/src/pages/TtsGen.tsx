@@ -72,6 +72,49 @@ function resolveAudioUrl(url: string, bust: number): string {
   return /^https?:\/\//i.test(url) ? withBust : `${TTS_BASE}${withBust}`
 }
 
+function formatSrtTime(sec: number): string {
+  const t = Math.max(0, sec)
+  const h = Math.floor(t / 3600)
+  const m = Math.floor((t % 3600) / 60)
+  const s = Math.floor(t % 60)
+  const ms = Math.round((t - Math.floor(t)) * 1000)
+  const pad = (n: number, w = 2) => String(n).padStart(w, '0')
+  return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms, 3)}`
+}
+
+function buildSrt(sentences: SegmentMeta[], totalDuration: number): string {
+  const blocks: string[] = []
+  let idx = 1
+  for (let i = 0; i < sentences.length; i++) {
+    const s = sentences[i]
+    const text = (s.text || '').trim()
+    if (!text) continue
+    let start = Number.isFinite(s.start) ? s.start : 0
+    let end = Number.isFinite(s.end) ? s.end : start
+    // end가 비정상(<=start)이면 다음 sentence.start 또는 total로 폴백
+    if (end <= start) {
+      const next = sentences[i + 1]
+      end = next && Number.isFinite(next.start) ? next.start : Math.max(start + 1, totalDuration)
+    }
+    blocks.push(`${idx}\n${formatSrtTime(start)} --> ${formatSrtTime(end)}\n${text}\n`)
+    idx++
+  }
+  return blocks.join('\n')
+}
+
+function downloadTextFile(filename: string, content: string, mime = 'text/plain') {
+  // UTF-8 BOM — Windows 메모장/일부 플레이어 호환
+  const blob = new Blob(['﻿', content], { type: `${mime};charset=utf-8` })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 const LEVELS = [-2, -1, 0, 1, 2] as const
 const DEFAULT_LABELS = ['매우약', '약', '기본', '강', '매우강']
 
@@ -705,14 +748,36 @@ export default function TtsGen() {
                   src={resolveAudioUrl(job.final_url, audioBust)}
                   style={{ width: '100%', marginBottom: 12 }}
                 />
-                <a
-                  href={resolveAudioUrl(job.final_url, audioBust)}
-                  download={`${job.job_id}.mp3`}
-                  style={{
-                    display: 'inline-block', padding: '8px 16px', fontSize: 13, fontWeight: 600,
-                    background: 'var(--accent)', color: '#fff', borderRadius: 6, textDecoration: 'none',
-                  }}
-                >⬇ 다운로드</a>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <a
+                    href={resolveAudioUrl(job.final_url, audioBust)}
+                    download={`${(title || job.job_id).replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) || job.job_id}.mp3`}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      padding: '10px 18px', fontSize: 13, fontWeight: 600, lineHeight: 1,
+                      background: 'var(--accent)', color: '#fff',
+                      border: '1px solid var(--accent)', borderRadius: 6, textDecoration: 'none',
+                    }}
+                  >⬇ MP3 다운로드</a>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const srt = buildSrt(job.sentences, job.total_duration)
+                      const base = (title || job.job_id).replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) || job.job_id
+                      downloadTextFile(`${base}.srt`, srt, 'application/x-subrip')
+                    }}
+                    disabled={!job.sentences?.length}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      padding: '10px 18px', fontSize: 13, fontWeight: 600, lineHeight: 1,
+                      background: '#16a34a', color: '#fff',
+                      border: '1px solid #16a34a', borderRadius: 6,
+                      cursor: job.sentences?.length ? 'pointer' : 'not-allowed',
+                      opacity: job.sentences?.length ? 1 : 0.5,
+                    }}
+                    title="현재 final.mp3 timing 기준 (Whisper 정렬)"
+                  >⬇ SRT 다운로드</button>
+                </div>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
                   {job.is_supabase
                     ? <>☁ Supabase Storage 저장 — 영구 URL ({job.job_id})</>

@@ -297,32 +297,45 @@ export default function SeedanceLibrary() {
                         </span>
                       )}
                     </div>
-                    {/* 그룹 picker — 카드의 overflow:hidden 회피 위해 position:fixed로 viewport 기준 표시 */}
+                    {/* 그룹 picker — 카드의 overflow:hidden 회피 위해 position:fixed로 viewport 기준 표시.
+                        공유받은 영상(_shared)은 그룹 변경 불가 — 그룹은 owner의 분류이고 받는 쪽이 변경하면
+                        group share inherit 효과가 깨짐. 따라서 읽기 전용 표시. */}
                     <div>
-                      <button type="button"
-                        disabled={savingMetaId === v.id}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          if (isOpen) {
-                            setGroupPickerVid(null)
-                            setPickerCoords(null)
-                          } else {
-                            const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
-                            setPickerCoords({ top: r.bottom + 4, left: r.left })
-                            setGroupPickerVid(v.id)
-                            setNewGroupInput('')
-                          }
-                        }}
-                        style={{
-                          fontSize: 10, fontWeight: 700, padding: '2px 8px',
-                          background: g ? 'var(--accent-light)' : 'transparent',
-                          color: g ? 'var(--accent)' : 'var(--text-muted)',
-                          border: `1px ${g ? 'solid' : 'dashed'} var(--border)`,
-                          borderRadius: 4, cursor: 'pointer',
-                          opacity: savingMetaId === v.id ? 0.5 : 1,
-                        }}>
-                        {g || '+ 그룹'}
-                      </button>
+                      {v._shared ? (
+                        g ? (
+                          <span title="공유받은 영상의 그룹은 변경할 수 없습니다 (소유자의 분류)"
+                            style={{
+                              display: 'inline-block', fontSize: 10, fontWeight: 700, padding: '2px 8px',
+                              background: 'var(--accent-light)', color: 'var(--accent)',
+                              border: '1px solid var(--border)', borderRadius: 4,
+                            }}>{g}</span>
+                        ) : null
+                      ) : (
+                        <button type="button"
+                          disabled={savingMetaId === v.id}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (isOpen) {
+                              setGroupPickerVid(null)
+                              setPickerCoords(null)
+                            } else {
+                              const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+                              setPickerCoords({ top: r.bottom + 4, left: r.left })
+                              setGroupPickerVid(v.id)
+                              setNewGroupInput('')
+                            }
+                          }}
+                          style={{
+                            fontSize: 10, fontWeight: 700, padding: '2px 8px',
+                            background: g ? 'var(--accent-light)' : 'transparent',
+                            color: g ? 'var(--accent)' : 'var(--text-muted)',
+                            border: `1px ${g ? 'solid' : 'dashed'} var(--border)`,
+                            borderRadius: 4, cursor: 'pointer',
+                            opacity: savingMetaId === v.id ? 0.5 : 1,
+                          }}>
+                          {g || '+ 그룹'}
+                        </button>
+                      )}
                       {isOpen && pickerCoords && (
                         <div onClick={e => e.stopPropagation()}
                           style={{
@@ -428,13 +441,21 @@ export default function SeedanceLibrary() {
                   border: `1px ${getGroup(selected) ? 'solid' : 'dashed'} var(--border)` }}>
                   {getGroup(selected) || '미분류'}
                 </span>
-                <button onClick={(e) => {
-                  e.stopPropagation()
-                  setDetailPickerOpen(v => !v)
-                  setNewGroupInput('')
-                }}
-                  style={{ ...smBtnGhost, padding: '4px 10px' }}>변경</button>
-                {detailPickerOpen && (
+                {!selected._shared && (
+                  <button onClick={(e) => {
+                    e.stopPropagation()
+                    setDetailPickerOpen(v => !v)
+                    setNewGroupInput('')
+                  }}
+                    style={{ ...smBtnGhost, padding: '4px 10px' }}>변경</button>
+                )}
+                {selected._shared && (
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}
+                    title="공유받은 영상의 그룹은 변경할 수 없습니다 (소유자의 분류)">
+                    🔒 소유자만 변경
+                  </span>
+                )}
+                {!selected._shared && detailPickerOpen && (
                   <div onClick={e => e.stopPropagation()}
                     style={{
                       position: 'absolute', top: '100%', left: 0, marginTop: 4,

@@ -51,6 +51,23 @@ export interface ClipTransition {
   durationMs: number
 }
 
+// -----------------------------------------------------------------------------
+// Phase 3 — static per-clip transform. Canvas-relative.
+//   - x/y: translation as a FRACTION of canvas width/height; origin = canvas
+//     center; +x = right, +y = down.
+//   - scale: multiplier on the clip's aspect-fit ("contain") size. 1 = identity.
+//   - rotation: degrees clockwise about the clip's own center.
+//   - opacity: 0..1.
+// Absent / partially-absent transform = identity (full backwards-compat).
+// -----------------------------------------------------------------------------
+export interface ClipTransform {
+  x: number
+  y: number
+  scale: number
+  rotation: number
+  opacity: number
+}
+
 export type FilterPreset =
   | 'none'
   | 'cinematic'
@@ -101,6 +118,11 @@ export interface VideoAudioClip {
   filterPreset?: FilterPreset
   /** 0..1 intensity for the filter. Default 1 (full). */
   filterIntensity?: number
+  // -----------------------------------------------------------------
+  // Phase 3 — static transform + layer compositing (optional, BC-safe).
+  // -----------------------------------------------------------------
+  /** Static canvas-relative transform. Absent = identity (centered, 1x, 0°, opaque). */
+  transform?: ClipTransform
 }
 
 /** Visual preset for a caption block. */
@@ -258,6 +280,26 @@ export const FILTER_PRESETS: readonly FilterPreset[] = [
   'golden-hour'
 ]
 
+// ---------------------------------------------------------------------------
+// Transform / layer-compositing constants (Phase 3).
+// ---------------------------------------------------------------------------
+export const IDENTITY_TRANSFORM: ClipTransform = {
+  x: 0,
+  y: 0,
+  scale: 1,
+  rotation: 0,
+  opacity: 1
+}
+export const MIN_TRANSFORM_SCALE = 0.05
+export const MAX_TRANSFORM_SCALE = 8
+export const MIN_TRANSFORM_ROTATION = -180
+export const MAX_TRANSFORM_ROTATION = 180
+/** x/y are unbounded in principle, but UI/clamp keeps them sane. */
+export const MIN_TRANSFORM_OFFSET = -2
+export const MAX_TRANSFORM_OFFSET = 2
+/** Hard cap on the number of video tracks (layer count). */
+export const MAX_VIDEO_TRACKS = 6
+
 export interface ProbeResult {
   durationMs: number
   width: number
@@ -311,4 +353,32 @@ export function isMediaClip(clip: Clip): clip is VideoAudioClip {
 /** Type-narrowed predicate: is this clip a caption clip? */
 export function isCaptionClip(clip: Clip): clip is CaptionClip {
   return clip.kind === 'caption'
+}
+
+// ---------------------------------------------------------------------------
+// Transform helpers (Phase 3) — pure, importable from any layer.
+// ---------------------------------------------------------------------------
+
+/** Resolve a clip's effective transform, filling identity for any missing field. */
+export function getClipTransform(clip: VideoAudioClip): ClipTransform {
+  const t = clip.transform
+  if (!t) return { ...IDENTITY_TRANSFORM }
+  return {
+    x: Number.isFinite(t.x) ? t.x : 0,
+    y: Number.isFinite(t.y) ? t.y : 0,
+    scale: Number.isFinite(t.scale) ? t.scale : 1,
+    rotation: Number.isFinite(t.rotation) ? t.rotation : 0,
+    opacity: Number.isFinite(t.opacity) ? t.opacity : 1
+  }
+}
+
+/** True iff the transform is meaningfully non-identity (callers can skip work when false). */
+export function isIdentityTransform(t: ClipTransform): boolean {
+  return (
+    t.x === 0 &&
+    t.y === 0 &&
+    t.scale === 1 &&
+    t.rotation === 0 &&
+    t.opacity === 1
+  )
 }

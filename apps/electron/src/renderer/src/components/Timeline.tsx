@@ -3,8 +3,11 @@ import { ulid } from 'ulid'
 import {
   getClipDuration,
   getClipSourceText,
+  getClipTransform,
   isCaptionClip,
+  isIdentityTransform,
   isMediaClip,
+  MAX_VIDEO_TRACKS,
   MIN_CLIP_MS,
   type Clip,
   type MediaAsset,
@@ -359,6 +362,10 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const setClipSpeed = useProjectStore((s) => s.setClipSpeed)
   const setClipTransitionIn = useProjectStore((s) => s.setClipTransitionIn)
   const setClipFilter = useProjectStore((s) => s.setClipFilter)
+  const setClipTransform = useProjectStore((s) => s.setClipTransform)
+  const resetClipTransform = useProjectStore((s) => s.resetClipTransform)
+  const addVideoTrack = useProjectStore((s) => s.addVideoTrack)
+  const removeVideoTrack = useProjectStore((s) => s.removeVideoTrack)
   const addClip = useProjectStore((s) => s.addClip)
   const updateCaption = useProjectStore((s) => s.updateCaption)
   const setTrackMuted = useProjectStore((s) => s.setTrackMuted)
@@ -381,6 +388,12 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const maxEnd = allClips.reduce((acc, c) => Math.max(acc, c.endMs), 10_000)
   const totalSeconds = Math.ceil(maxEnd / 1000) + 5
   const laneWidth = totalSeconds * pps
+
+  // Video-track count — gates the "+ 비디오 트랙" button and the per-track
+  // "×" remove button (the last remaining video track can't be removed).
+  const videoTrackCount = project.tracks.filter(
+    (t) => t.kind === 'video'
+  ).length
 
   const bodyRef = useRef<HTMLDivElement | null>(null)
 
@@ -739,6 +752,25 @@ export function Timeline(props: TimelineProps): JSX.Element {
         >
           +
         </button>
+        <button
+          style={{
+            ...styles.zoomBtn,
+            marginLeft: 16,
+            opacity: videoTrackCount >= MAX_VIDEO_TRACKS ? 0.4 : 1,
+            cursor:
+              videoTrackCount >= MAX_VIDEO_TRACKS ? 'not-allowed' : 'pointer'
+          }}
+          onClick={() => addVideoTrack()}
+          disabled={videoTrackCount >= MAX_VIDEO_TRACKS}
+          title={
+            videoTrackCount >= MAX_VIDEO_TRACKS
+              ? `비디오 트랙은 최대 ${MAX_VIDEO_TRACKS}개까지 추가할 수 있습니다`
+              : '비디오 트랙 추가'
+          }
+          data-testid="add-video-track-button"
+        >
+          + 비디오 트랙
+        </button>
         <div style={{ marginLeft: 16 }}>
           Ctrl/Cmd + 휠로 확대·축소 · Alt 누르면 스냅 해제
         </div>
@@ -783,6 +815,21 @@ export function Timeline(props: TimelineProps): JSX.Element {
             >
               <div style={styles.trackHeaderRow}>
                 <span style={styles.trackHeaderName}>{track.name}</span>
+                {track.kind === 'video' && videoTrackCount > 1 && (
+                  <button
+                    type="button"
+                    title="비디오 트랙 삭제"
+                    style={styles.trackBtn}
+                    data-testid="remove-video-track-btn"
+                    data-track-id={track.id}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      removeVideoTrack(track.id)
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
               </div>
               {track.kind !== 'caption' && (
                 <div style={styles.trackHeaderRow}>
@@ -1003,6 +1050,32 @@ export function Timeline(props: TimelineProps): JSX.Element {
                         FX
                       </div>
                     )}
+                    {/* Transform indicator (Phase 3) — small tag when the
+                        clip has a non-identity static transform. */}
+                    {isMediaClip(clip) &&
+                      clip.transform &&
+                      !isIdentityTransform(getClipTransform(clip)) && (
+                        <div
+                          data-testid="transform-indicator"
+                          data-clip-id={clip.id}
+                          style={{
+                            position: 'absolute',
+                            right: 4,
+                            bottom: 4,
+                            padding: '1px 5px',
+                            borderRadius: 3,
+                            background: 'rgba(99, 102, 241, 0.9)',
+                            color: '#f5f5f5',
+                            fontSize: 9,
+                            fontWeight: 700,
+                            pointerEvents: 'none',
+                            zIndex: 4
+                          }}
+                          title="변형 적용됨"
+                        >
+                          ⤢
+                        </div>
+                      )}
                   </div>
                 )
               })}
@@ -1043,6 +1116,20 @@ export function Timeline(props: TimelineProps): JSX.Element {
             isMediaClip(ctxClip)
               ? (preset, intensity): void => {
                   setClipFilter(ctxClip.id, preset, intensity)
+                }
+              : undefined
+          }
+          onTransformChange={
+            isMediaClip(ctxClip)
+              ? (partial): void => {
+                  setClipTransform(ctxClip.id, partial)
+                }
+              : undefined
+          }
+          onTransformReset={
+            isMediaClip(ctxClip)
+              ? (): void => {
+                  resetClipTransform(ctxClip.id)
                 }
               : undefined
           }

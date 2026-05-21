@@ -167,7 +167,10 @@ test.describe('@phase-2-timeline timeline + preview + transport', () => {
     await expect(page.locator('[data-testid="track-lane-video"]')).toBeVisible()
     // Phase 2.5 adds a BGM track, so audio lanes are now 2x. Verify ≥ 1 visible.
     await expect(page.locator('[data-testid="track-lane-audio"]').first()).toBeVisible()
-    await expect(page.locator('[data-testid="preview-video"]')).toHaveCount(1)
+    // Phase 3: data-testid="preview-video" now lands only on the top ACTIVE
+    // layer — with no clips there is no active layer. Every video track still
+    // mounts a <video> carrying data-preview-video-layer; default project = 1.
+    await expect(page.locator('[data-preview-video-layer="true"]')).toHaveCount(1)
     await expect(page.locator('[data-testid="preview-audio"]')).toHaveCount(1)
   })
 
@@ -504,7 +507,7 @@ test.describe('@phase-2-timeline timeline + preview + transport', () => {
   // -------------------------------------------------------------------------
   // media:// URL helper smoke test (renderer).
   // -------------------------------------------------------------------------
-  test('toMediaUrl helper produces media:/// URLs with URI-encoded paths', async () => {
+  test('toMediaUrl helper produces media:// URLs with URI-encoded paths', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
     await page.locator('[data-testid="open-editor-button"]').click()
@@ -573,12 +576,21 @@ test.describe('@phase-2-timeline timeline + preview + transport', () => {
       ui.getState().setPlayheadMs(500)
     }, fixture)
 
-    // Wait for the PreviewCanvas src-swap rAF to flush.
-    await page.waitForTimeout(120)
+    // Wait for the PreviewCanvas src-swap rAF to set the active layer's src.
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector('[data-testid="preview-video"]')
+        return ((el?.getAttribute('src') ?? '') as string).startsWith('media://')
+      },
+      null,
+      { timeout: 5_000 }
+    )
     const src = await page
       .locator('[data-testid="preview-video"]')
       .evaluate((el) => (el as HTMLVideoElement).getAttribute('src') ?? '')
-    expect(src.startsWith('media:///')).toBe(true)
+    // toMediaUrl uses an explicit host: media://r/<encoded-path> (commit
+    // f1ebb1dc — Chromium rejects host-less custom-scheme URLs).
+    expect(src.startsWith('media://r/')).toBe(true)
     // Path is URI-encoded; backslashes & ':' are percent-escaped on Windows.
     expect(src).toContain(encodeURIComponent(fixture).slice(0, 8))
   })

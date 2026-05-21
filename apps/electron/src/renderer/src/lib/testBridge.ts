@@ -44,6 +44,10 @@ export function installTestBridge(): void {
         updateMediaWaveform: Store['updateMediaWaveform']
         setClipTransitionIn: Store['setClipTransitionIn']
         setClipFilter: Store['setClipFilter']
+        setClipTransform: Store['setClipTransform']
+        resetClipTransform: Store['resetClipTransform']
+        addVideoTrack: Store['addVideoTrack']
+        removeVideoTrack: Store['removeVideoTrack']
         addCaption: Store['addCaption']
         addCaptions: Store['addCaptions']
         newId: () => string
@@ -79,6 +83,13 @@ export function installTestBridge(): void {
         useProjectStore.getState().setClipTransitionIn(id, kind, dur),
       setClipFilter: (id, preset, intensity) =>
         useProjectStore.getState().setClipFilter(id, preset, intensity),
+      setClipTransform: (id, partial) =>
+        useProjectStore.getState().setClipTransform(id, partial),
+      resetClipTransform: (id) =>
+        useProjectStore.getState().resetClipTransform(id),
+      addVideoTrack: () => useProjectStore.getState().addVideoTrack(),
+      removeVideoTrack: (tid) =>
+        useProjectStore.getState().removeVideoTrack(tid),
       addCaption: (cap) => useProjectStore.getState().addCaption(cap),
       addCaptions: (caps) => useProjectStore.getState().addCaptions(caps),
       newId

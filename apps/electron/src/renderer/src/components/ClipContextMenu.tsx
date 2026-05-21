@@ -1,17 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
 import type {
   Clip,
+  ClipTransform,
   FilterPreset,
   TransitionKind
 } from '../../../shared/project'
 import {
   DEFAULT_TRANSITION_MS,
   FILTER_PRESETS,
+  getClipTransform,
   isCaptionClip,
   isMediaClip,
   MAX_CLIP_SPEED,
+  MAX_TRANSFORM_OFFSET,
+  MAX_TRANSFORM_ROTATION,
+  MAX_TRANSFORM_SCALE,
   MAX_TRANSITION_MS,
   MIN_CLIP_SPEED,
+  MIN_TRANSFORM_OFFSET,
+  MIN_TRANSFORM_ROTATION,
+  MIN_TRANSFORM_SCALE,
   MIN_TRANSITION_MS,
   TRANSITION_KINDS
 } from '../../../shared/project'
@@ -40,6 +48,10 @@ interface ClipContextMenuProps {
   onTransitionChange?: (kind: TransitionKind, durationMs: number) => void
   /** Apply a filter preset + intensity. Media clips only. */
   onFilterChange?: (preset: FilterPreset, intensity: number) => void
+  /** Merge a partial transform onto the clip. Media clips only. */
+  onTransformChange?: (partial: Partial<ClipTransform>) => void
+  /** Reset the clip's transform to identity. Media clips only. */
+  onTransformReset?: () => void
   onClose: () => void
 }
 
@@ -125,6 +137,28 @@ const styles = {
     fontSize: 11,
     width: 56,
     textAlign: 'right' as const
+  } as React.CSSProperties,
+  transformRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6
+  } as React.CSSProperties,
+  transformLabel: {
+    width: 48,
+    fontSize: 11,
+    color: '#9aa0a6',
+    flexShrink: 0
+  } as React.CSSProperties,
+  transformResetBtn: {
+    background: '#1f2937',
+    color: '#f5f5f5',
+    border: '1px solid #374151',
+    borderRadius: 4,
+    padding: '3px 10px',
+    fontSize: 11,
+    cursor: 'pointer',
+    width: '100%'
   } as React.CSSProperties
 }
 
@@ -178,12 +212,15 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
     onSpeedChange,
     onTransitionChange,
     onFilterChange,
+    onTransformChange,
+    onTransformReset,
     onClose
   } = props
   const ref = useRef<HTMLDivElement>(null)
   const [showSpeed, setShowSpeed] = useState(false)
   const [showTransition, setShowTransition] = useState(false)
   const [showFilter, setShowFilter] = useState(false)
+  const [showTransform, setShowTransform] = useState(false)
 
   // Always recompute on each render so playhead/clip changes drive the gate.
   const rows = isCaptionClip(clip) ? captionRows() : mediaRows(clip, playheadMs)
@@ -200,6 +237,11 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
     ? clip.filterPreset ?? 'none'
     : 'none'
   const filterIntensity = isMediaClip(clip) ? clip.filterIntensity ?? 1 : 1
+  // Current transform — always resolved via getClipTransform (identity
+  // fallback), never read off clip.transform directly.
+  const transform: ClipTransform = isMediaClip(clip)
+    ? getClipTransform(clip)
+    : { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 }
 
   useEffect(() => {
     const onDown = (e: MouseEvent): void => {
@@ -434,6 +476,210 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                   {Math.round(filterIntensity * 100)}%
                 </span>
               </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Transform sub-menu — media clips only. Numeric panel is the
+          committed UI for Phase 3 (on-canvas drag handles deferred). */}
+      {isMediaClip(clip) && onTransformChange && (
+        <>
+          <div style={styles.separator} />
+          <div
+            role="menuitem"
+            data-testid="menu-transform"
+            style={styles.item}
+            onMouseEnter={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = '#2a2a2a'
+            }}
+            onMouseLeave={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = 'transparent'
+            }}
+            onClick={() => setShowTransform((v) => !v)}
+          >
+            <span>변형{showTransform ? '' : '…'}</span>
+            <span style={styles.shortcut}>
+              {transform.scale.toFixed(2)}×
+            </span>
+          </div>
+          {showTransform && (
+            <div style={styles.speedPanel} data-testid="menu-transform-panel">
+              {/* Scale */}
+              <div style={styles.transformRow}>
+                <span style={styles.transformLabel}>크기</span>
+                <input
+                  type="range"
+                  min={MIN_TRANSFORM_SCALE}
+                  max={MAX_TRANSFORM_SCALE}
+                  step={0.05}
+                  value={transform.scale}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onTransformChange({ scale: v })
+                  }}
+                  style={styles.slider}
+                  data-testid="menu-transform-scale"
+                  aria-label="크기"
+                />
+                <input
+                  type="number"
+                  min={MIN_TRANSFORM_SCALE}
+                  max={MAX_TRANSFORM_SCALE}
+                  step={0.05}
+                  value={Number(transform.scale.toFixed(2))}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onTransformChange({ scale: v })
+                  }}
+                  style={styles.speedInput}
+                  aria-label="크기 숫자"
+                />
+              </div>
+              {/* Rotation */}
+              <div style={styles.transformRow}>
+                <span style={styles.transformLabel}>회전</span>
+                <input
+                  type="range"
+                  min={MIN_TRANSFORM_ROTATION}
+                  max={MAX_TRANSFORM_ROTATION}
+                  step={1}
+                  value={transform.rotation}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onTransformChange({ rotation: v })
+                  }}
+                  style={styles.slider}
+                  data-testid="menu-transform-rotation"
+                  aria-label="회전"
+                />
+                <input
+                  type="number"
+                  min={MIN_TRANSFORM_ROTATION}
+                  max={MAX_TRANSFORM_ROTATION}
+                  step={1}
+                  value={Number(transform.rotation.toFixed(0))}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onTransformChange({ rotation: v })
+                  }}
+                  style={styles.speedInput}
+                  aria-label="회전 숫자"
+                />
+              </div>
+              {/* Opacity */}
+              <div style={styles.transformRow}>
+                <span style={styles.transformLabel}>불투명</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={transform.opacity}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onTransformChange({ opacity: v })
+                  }}
+                  style={styles.slider}
+                  data-testid="menu-transform-opacity"
+                  aria-label="불투명도"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={Number(transform.opacity.toFixed(2))}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onTransformChange({ opacity: v })
+                  }}
+                  style={styles.speedInput}
+                  aria-label="불투명도 숫자"
+                />
+              </div>
+              {/* X offset */}
+              <div style={styles.transformRow}>
+                <span style={styles.transformLabel}>X 위치</span>
+                <input
+                  type="range"
+                  min={MIN_TRANSFORM_OFFSET}
+                  max={MAX_TRANSFORM_OFFSET}
+                  step={0.01}
+                  value={transform.x}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onTransformChange({ x: v })
+                  }}
+                  style={styles.slider}
+                  data-testid="menu-transform-x"
+                  aria-label="X 위치"
+                />
+                <input
+                  type="number"
+                  min={MIN_TRANSFORM_OFFSET}
+                  max={MAX_TRANSFORM_OFFSET}
+                  step={0.01}
+                  value={Number(transform.x.toFixed(2))}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onTransformChange({ x: v })
+                  }}
+                  style={styles.speedInput}
+                  aria-label="X 위치 숫자"
+                />
+              </div>
+              {/* Y offset */}
+              <div style={styles.transformRow}>
+                <span style={styles.transformLabel}>Y 위치</span>
+                <input
+                  type="range"
+                  min={MIN_TRANSFORM_OFFSET}
+                  max={MAX_TRANSFORM_OFFSET}
+                  step={0.01}
+                  value={transform.y}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onTransformChange({ y: v })
+                  }}
+                  style={styles.slider}
+                  data-testid="menu-transform-y"
+                  aria-label="Y 위치"
+                />
+                <input
+                  type="number"
+                  min={MIN_TRANSFORM_OFFSET}
+                  max={MAX_TRANSFORM_OFFSET}
+                  step={0.01}
+                  value={Number(transform.y.toFixed(2))}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onTransformChange({ y: v })
+                  }}
+                  style={styles.speedInput}
+                  aria-label="Y 위치 숫자"
+                />
+              </div>
+              {onTransformReset && (
+                <button
+                  type="button"
+                  style={styles.transformResetBtn}
+                  data-testid="menu-transform-reset"
+                  onClick={() => onTransformReset()}
+                >
+                  초기화
+                </button>
+              )}
             </div>
           )}
         </>

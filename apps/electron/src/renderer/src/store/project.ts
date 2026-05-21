@@ -7,20 +7,30 @@ import {
   DEFAULT_TRANSITION_MS,
   MAX_CLIP_SPEED,
   MAX_GAIN_DB,
+  MAX_TRANSFORM_OFFSET,
+  MAX_TRANSFORM_ROTATION,
+  MAX_TRANSFORM_SCALE,
   MAX_TRANSITION_MS,
+  MAX_VIDEO_TRACKS,
   MIN_CLIP_MS,
   MIN_CLIP_SPEED,
   MIN_GAIN_DB,
+  MIN_TRANSFORM_OFFSET,
+  MIN_TRANSFORM_ROTATION,
+  MIN_TRANSFORM_SCALE,
   MIN_TRANSITION_MS,
   type AspectRatio,
   type CaptionClip,
   type Clip,
+  type ClipTransform,
   type FilterPreset,
   type MediaAsset,
   type Project,
   type TransitionKind,
   type VideoAudioClip,
+  getClipTransform,
   isCaptionClip,
+  isIdentityTransform,
   isMediaClip
 } from '../../../shared/project'
 import type { SilenceRange } from '../../../shared/ipc'
@@ -81,6 +91,11 @@ function migrateLoadedProject(p: Project): Project {
       return c
     })
   }))
+  // Phase 3 — `transform` is an optional field on media clips. No migration
+  // logic is needed: a missing/partial transform is back-filled lazily by
+  // `getClipTransform` (identity fallback). Multi-video-track projects also
+  // load as-is — `tracks` is already a generic list, so extra video tracks
+  // simply round-trip through persistence untouched.
   // Ensure a caption track exists. If none, append one.
   const hasCaption = tracks.some((t) => t.kind === 'caption')
   const migratedTracks = hasCaption
@@ -195,6 +210,24 @@ export interface ProjectStore {
   ): void
   /** Set the filter preset + intensity (0..1) on a media clip. */
   setClipFilter(clipId: string, preset: FilterPreset, intensity?: number): void
+
+  // --- Transform + layer compositing (Phase 3, media clips only) ---
+  /**
+   * Merge a partial transform onto a media clip, clamping each field. If the
+   * merged result is identity, `transform` is set to `undefined` (keeps
+   * persisted JSON + undo snapshots lean). No-op for caption clips and for
+   * non-finite inputs.
+   */
+  setClipTransform(clipId: string, partial: Partial<ClipTransform>): void
+  /** Clear a media clip's transform (back to identity). */
+  resetClipTransform(clipId: string): void
+  /**
+   * Append a video track immediately after the last existing video track.
+   * Returns the new track's id, or null if already at MAX_VIDEO_TRACKS.
+   */
+  addVideoTrack(): string | null
+  /** Remove a video track. No-op if it is the only video track. */
+  removeVideoTrack(trackId: string): void
 
   // --- Captions (Phase 2.4) ---
   /** Append a caption clip to the caption track. */
@@ -870,6 +903,121 @@ export const useProjectStore = create<ProjectStore>()(
       return { ...t, clips }
     })
     if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // --------------------------------------------------------------------
+  // Transform + layer compositing (Phase 3) — media clips only.
+  // --------------------------------------------------------------------
+  setClipTransform(clipId, partial): void {
+    if (!partial || typeof partial !== 'object') return
+    // Reject any non-finite numeric input outright (caller bug → no-op).
+    for (const v of Object.values(partial)) {
+      if (v !== undefined && !Number.isFinite(v)) return
+    }
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      // Transform is a media-only concept; silently ignore captions.
+      if (!isMediaClip(c)) return t
+      const merged: ClipTransform = { ...getClipTransform(c), ...partial }
+      // Clamp each field to its allowed range.
+      merged.scale = Math.max(
+        MIN_TRANSFORM_SCALE,
+        Math.min(MAX_TRANSFORM_SCALE, merged.scale)
+      )
+      merged.rotation = Math.max(
+        MIN_TRANSFORM_ROTATION,
+        Math.min(MAX_TRANSFORM_ROTATION, merged.rotation)
+      )
+      merged.opacity = Math.max(0, Math.min(1, merged.opacity))
+      merged.x = Math.max(
+        MIN_TRANSFORM_OFFSET,
+        Math.min(MAX_TRANSFORM_OFFSET, merged.x)
+      )
+      merged.y = Math.max(
+        MIN_TRANSFORM_OFFSET,
+        Math.min(MAX_TRANSFORM_OFFSET, merged.y)
+      )
+      const updated: VideoAudioClip = isIdentityTransform(merged)
+        ? { ...c, transform: undefined }
+        : { ...c, transform: merged }
+      const clips = [...t.clips]
+      clips[idx] = updated
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  resetClipTransform(clipId: string): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, transform: undefined }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  addVideoTrack(): string | null {
+    const project = get().project
+    const videoCount = project.tracks.filter((t) => t.kind === 'video').length
+    if (videoCount >= MAX_VIDEO_TRACKS) return null
+    const id = ulid()
+    const newTrack = {
+      id,
+      kind: 'video' as const,
+      name: `Video ${videoCount + 1}`,
+      clips: []
+    }
+    // Insert immediately AFTER the last existing video track — keeps video
+    // tracks contiguous; a later track renders on top (higher layer).
+    let lastVideoIdx = -1
+    for (let i = 0; i < project.tracks.length; i++) {
+      if (project.tracks[i].kind === 'video') lastVideoIdx = i
+    }
+    const tracks = [...project.tracks]
+    tracks.splice(lastVideoIdx + 1, 0, newTrack)
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+    return id
+  },
+
+  removeVideoTrack(trackId: string): void {
+    const project = get().project
+    const target = project.tracks.find((t) => t.id === trackId)
+    if (!target || target.kind !== 'video') return
+    // Refuse to remove the last remaining video track.
+    const videoCount = project.tracks.filter((t) => t.kind === 'video').length
+    if (videoCount <= 1) return
+    let touched = false
+    const tracks = project.tracks.filter((t) => {
+      if (t.id === trackId) {
+        touched = true
+        return false
+      }
+      return true
+    })
+    if (!touched) return
     const next = touch({ ...project, tracks })
     set({ project: next })
     schedulePersist(next)

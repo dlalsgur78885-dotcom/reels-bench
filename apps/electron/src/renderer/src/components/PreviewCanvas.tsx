@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  getClipTransform,
   isCaptionClip,
   isMediaClip,
   type CaptionClip,
@@ -47,18 +48,34 @@ interface PreviewCanvasProps {
 // ---------------------------------------------------------------------------
 // Active-clip resolution.
 // ---------------------------------------------------------------------------
-function videoClipAt(
-  project: Project,
-  ms: number
-): { clip: VideoAudioClip; track: Track } | null {
+
+/** A single resolved video layer at a given playhead position. */
+export interface VideoLayer {
+  clip: VideoAudioClip
+  track: Track
+  /** 0-based index in the bottom→top stack (= position among video tracks
+   *  that currently have an active clip). */
+  layerIndex: number
+}
+
+/**
+ * Resolve EVERY video-track media clip active at `ms`, in track order
+ * (bottom → top — later tracks render on top). At most one clip per track
+ * (first hit wins, mirroring the audio resolver's same-track determinism).
+ */
+function activeVideoLayers(project: Project, ms: number): VideoLayer[] {
+  const out: VideoLayer[] = []
   for (const t of project.tracks) {
     if (t.kind !== 'video') continue
     for (const c of t.clips) {
-      if (isMediaClip(c) && ms >= c.startMs && ms < c.endMs)
-        return { clip: c, track: t }
+      if (isMediaClip(c) && ms >= c.startMs && ms < c.endMs) {
+        out.push({ clip: c, track: t, layerIndex: out.length })
+        // First hit per track only — same-track overlap is degenerate.
+        break
+      }
     }
   }
-  return null
+  return out
 }
 
 /**
@@ -380,39 +397,72 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   const canvasAspect = project.width / Math.max(1, project.height)
   const fitted = useFittedRect(containerRef, canvasAspect)
 
-  const videoEl = useRef<HTMLVideoElement | null>(null)
   /**
-   * Background video element — same source as foreground, but rendered as
-   * a blurred cover behind so non-matching aspect ratios show the iconic
-   * "vertical TikTok" blurred gutters instead of black bars.
+   * One foreground <video> per VIDEO TRACK, indexed by trackId. A video
+   * element carries audio routed through the WebAudio graph, so — exactly
+   * like the per-audio-track elements — it must stay mounted across clip
+   * changes on its track to honor the wrap-once invariant.
+   */
+  const videoEls = useRef<Map<string, HTMLVideoElement>>(new Map())
+  /**
+   * Background video element — same source as the BOTTOM-most layer, but
+   * rendered as a blurred cover behind so non-matching aspect ratios show
+   * the iconic "vertical TikTok" blurred gutters instead of black bars.
    */
   const bgVideoEl = useRef<HTMLVideoElement | null>(null)
   /** One <audio> per audio track, indexed by trackId. */
   const audioEls = useRef<Map<string, HTMLAudioElement>>(new Map())
-  const loadedVideoId = useRef<string | null>(null)
+  /** Per-video-track currently-loaded media id (for src-change detection). */
+  const loadedVideoId = useRef<Map<string, string>>(new Map())
+  /** Media id loaded into the blurred-bg element (for src-change detection). */
+  const loadedBgId = useRef<string | null>(null)
   /** Per-track currently-loaded media id (for src-change detection). */
   const loadedAudioIds = useRef<Map<string, string>>(new Map())
   /** Per-track playing state (for play/pause sync without redundant calls). */
   const audioPlaying = useRef<Map<string, boolean>>(new Map())
   const swapRaf = useRef<number | null>(null)
 
-  const activeVideoHit = useMemo(
-    () => videoClipAt(project, playheadMs),
+  const videoLayers = useMemo(
+    () => activeVideoLayers(project, playheadMs),
     [project, playheadMs]
   )
   const audioHits = useMemo(
     () => activeAudioClips(project, playheadMs),
     [project, playheadMs]
   )
-  const activeVideo = activeVideoHit?.clip ?? null
-  const activeVideoTrack = activeVideoHit?.track
 
   const soloMode = useMemo(() => anyTrackSoloed(project), [project])
-  const videoAudible = trackAudible(activeVideoTrack, soloMode)
   const voiceOn = useMemo(
     () => voiceActiveAt(project, playheadMs),
     [project, playheadMs]
   )
+
+  // All video tracks in the project — we render one <video> element per
+  // track so the same WebAudio source survives across clip changes on that
+  // track (mirrors the per-audio-track strategy; wrap-once invariant).
+  const videoTracks = useMemo(
+    () => project.tracks.filter((t) => t.kind === 'video'),
+    [project]
+  )
+
+  // Map trackId → active video layer at the playhead (or undefined).
+  const layerByTrackId = useMemo(() => {
+    const map = new Map<string, VideoLayer>()
+    for (const l of videoLayers) map.set(l.track.id, l)
+    return map
+  }, [videoLayers])
+
+  // The TOP-most layer drives the legacy data-testid="preview-video"
+  // attribute (export.spec.ts queries it for data-filter-preset). The
+  // BOTTOM-most layer feeds the blurred background.
+  const topLayer = videoLayers.length > 0 ? videoLayers[videoLayers.length - 1] : null
+  const bottomLayer = videoLayers.length > 0 ? videoLayers[0] : null
+
+  // Caption overlay (and the empty-state placeholder) must sit above EVERY
+  // video layer. Layers occupy zIndex 1..(1 + videoTracks.length - 1), so the
+  // caption layer sits at 1 + videoTracks.length (≥ 2, matching the legacy
+  // single-track value when there is exactly one video track).
+  const captionZIndex = 1 + Math.max(1, videoTracks.length)
 
   const activeCaptions = useMemo(
     () => captionsAtTime(project, playheadMs),
@@ -451,16 +501,18 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   // -----------------------------------------------------------------------
   useEffect(() => {
     const graph = getPreviewAudioGraph()
-    // Re-attach video element (it carries audio too — embedded VO etc.).
-    if (videoEl.current && activeVideoTrack) {
-      graph.attach(videoEl.current, activeVideoTrack.id)
+    // Re-attach each <video> element (it carries audio too — embedded VO
+    // etc.) to its OWN video-track GainNode.
+    for (const t of videoTracks) {
+      const el = videoEls.current.get(t.id)
+      if (el) graph.attach(el, t.id)
     }
     // Re-attach each <audio> element to its track's GainNode.
     for (const t of audioTracks) {
       const el = audioEls.current.get(t.id)
       if (el) graph.attach(el, t.id)
     }
-  }, [audioTracks, activeVideoTrack])
+  }, [audioTracks, videoTracks])
 
   // -----------------------------------------------------------------------
   // Sync <video> / <audio> src + currentTime + playbackRate to the playhead.
@@ -475,20 +527,21 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
       swapRaf.current = null
       const graph = getPreviewAudioGraph()
 
-      // ----- VIDEO TRACK -----
-      const v = videoEl.current
-      const bg = bgVideoEl.current
-      if (v) {
-        if (activeVideo) {
+      // ----- VIDEO TRACKS — one <video> element per track (layer stack) -----
+      for (const track of videoTracks) {
+        const v = videoEls.current.get(track.id)
+        if (!v) continue
+        const layer = layerByTrackId.get(track.id)
+        // Always make sure this element is wired (cheap; cached).
+        graph.attach(v, track.id)
+
+        if (layer) {
+          const activeVideo = layer.clip
           const media = project.media[activeVideo.mediaId]
           if (media && media.kind !== 'audio') {
-            if (loadedVideoId.current !== media.id) {
+            if (loadedVideoId.current.get(track.id) !== media.id) {
               v.src = toMediaUrl(media.path)
-              if (bg) {
-                bg.src = toMediaUrl(media.path)
-                bg.muted = true
-              }
-              loadedVideoId.current = media.id
+              loadedVideoId.current.set(track.id, media.id)
             }
             if (media.kind !== 'image') {
               const target = clipSourceTimeSec(activeVideo, playheadMs)
@@ -500,34 +553,24 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                   // src may not be ready yet — ignored, will retry next tick.
                 }
               }
-              if (bg && Math.abs((bg.currentTime || 0) - target) > 0.05) {
-                try {
-                  bg.currentTime = Math.max(0, target)
-                } catch {
-                  // ignore
-                }
-              }
               const rate = clipPlaybackRate(activeVideo)
               if (Math.abs(v.playbackRate - rate) > 0.001) v.playbackRate = rate
-              if (bg && Math.abs(bg.playbackRate - rate) > 0.001) bg.playbackRate = rate
             }
-            // Route video element audio through the graph (track id = video
-            // track id). Idempotent if already attached.
-            if (activeVideoTrack) graph.attach(v, activeVideoTrack.id)
 
             // Compute effective video-track gain. Use the GainNode if the
             // graph is ready; otherwise fall back to `el.volume`.
+            const trackIsAudible = trackAudible(track, soloMode)
             const gain = clipGain(activeVideo, playheadMs)
-            const wantAudible = videoAudible && gain > 0
+            const wantAudible = trackIsAudible && gain > 0
             const effectiveGain = wantAudible ? gain : 0
-            if (activeVideoTrack && graph.isReady()) {
-              graph.setTrackGain(activeVideoTrack.id, effectiveGain, 20)
+            if (graph.isReady()) {
+              graph.setTrackGain(track.id, effectiveGain, 20)
               // WebAudio path uses unity passthrough on `el.volume` to avoid
               // double-attenuation. But we still mirror track-mute on
               // `el.muted` so legacy DOM-readers (e.g. audio.spec.ts) see
               // the expected muted=true. Setting el.muted=true on a wrapped
               // element silences both layers consistently.
-              const wantElMuted = !videoAudible
+              const wantElMuted = !trackIsAudible
               if (v.muted !== wantElMuted) v.muted = wantElMuted
               if (Math.abs(v.volume - 1) > 0.005) v.volume = 1
             } else {
@@ -536,25 +579,57 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               const targetVol = Math.max(0, Math.min(1, gain))
               if (Math.abs(v.volume - targetVol) > 0.005) v.volume = targetVol
             }
-          } else if (loadedVideoId.current !== null) {
+          } else if (loadedVideoId.current.has(track.id)) {
             v.removeAttribute('src')
             v.load()
-            if (bg) {
-              bg.removeAttribute('src')
-              bg.load()
-            }
-            loadedVideoId.current = null
+            loadedVideoId.current.delete(track.id)
           }
-        } else if (loadedVideoId.current !== null) {
+        } else if (loadedVideoId.current.has(track.id)) {
           v.pause()
           v.removeAttribute('src')
           v.load()
-          if (bg) {
+          loadedVideoId.current.delete(track.id)
+          if (graph.isReady()) graph.setTrackGain(track.id, 0, 20)
+        }
+      }
+
+      // ----- BLURRED BACKGROUND — follows the BOTTOM-most layer -----
+      {
+        const bg = bgVideoEl.current
+        if (bg) {
+          if (bottomLayer) {
+            const media = project.media[bottomLayer.clip.mediaId]
+            if (media && media.kind !== 'audio') {
+              if (loadedBgId.current !== media.id) {
+                bg.src = toMediaUrl(media.path)
+                bg.muted = true
+                loadedBgId.current = media.id
+              }
+              if (media.kind !== 'image') {
+                const target = clipSourceTimeSec(bottomLayer.clip, playheadMs)
+                if (Math.abs((bg.currentTime || 0) - target) > 0.05) {
+                  try {
+                    bg.currentTime = Math.max(0, target)
+                  } catch {
+                    // ignore
+                  }
+                }
+                const rate = clipPlaybackRate(bottomLayer.clip)
+                if (Math.abs(bg.playbackRate - rate) > 0.001) {
+                  bg.playbackRate = rate
+                }
+              }
+            } else if (loadedBgId.current !== null) {
+              bg.removeAttribute('src')
+              bg.load()
+              loadedBgId.current = null
+            }
+          } else if (loadedBgId.current !== null) {
             bg.pause()
             bg.removeAttribute('src')
             bg.load()
+            loadedBgId.current = null
           }
-          loadedVideoId.current = null
         }
       }
 
@@ -648,11 +723,11 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   }, [
     project,
     playheadMs,
-    activeVideo,
-    activeVideoTrack,
+    videoTracks,
+    layerByTrackId,
+    bottomLayer,
     audioTracks,
     hitByTrackId,
-    videoAudible,
     voiceOn,
     soloMode
   ])
@@ -663,15 +738,19 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   // lockstep with the playhead.
   // -----------------------------------------------------------------------
   useEffect(() => {
-    const v = videoEl.current
     const bg = bgVideoEl.current
     if (playing) {
-      if (v && loadedVideoId.current) {
-        v.play().catch(() => {
-          /* autoplay rejection / src not ready — silently ignored */
-        })
+      // Play every video-layer element that currently has a source.
+      for (const track of videoTracks) {
+        const v = videoEls.current.get(track.id)
+        if (!v) continue
+        if (loadedVideoId.current.get(track.id)) {
+          v.play().catch(() => {
+            /* autoplay rejection / src not ready — silently ignored */
+          })
+        }
       }
-      if (bg && loadedVideoId.current) {
+      if (bg && loadedBgId.current) {
         bg.play().catch(() => {
           /* ignore */
         })
@@ -688,7 +767,9 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
         }
       }
     } else {
-      v?.pause()
+      for (const track of videoTracks) {
+        videoEls.current.get(track.id)?.pause()
+      }
       bg?.pause()
       for (const track of audioTracks) {
         const a = audioEls.current.get(track.id)
@@ -696,7 +777,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
         audioPlaying.current.set(track.id, false)
       }
     }
-  }, [playing, audioTracks])
+  }, [playing, audioTracks, videoTracks])
 
   const hasFit = fitted.width > 0 && fitted.height > 0
   const fittedStyle: React.CSSProperties = hasFit
@@ -763,6 +844,41 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
     []
   )
 
+  // -----------------------------------------------------------------------
+  // Per-video-track <video> element ref callbacks. Identical strategy to
+  // getAudioRef above: <video> elements ALSO carry audio routed through the
+  // WebAudio graph, so they must be wrapped exactly once. A stable, cached
+  // ref callback per trackId prevents detach()/re-attach() churn (which
+  // would violate the wrap-once invariant of createMediaElementSource).
+  // -----------------------------------------------------------------------
+  const videoRefCache = useRef<
+    Map<string, (node: HTMLVideoElement | null) => void>
+  >(new Map())
+  const getVideoRef = useCallback(
+    (trackId: string): ((node: HTMLVideoElement | null) => void) => {
+      const cached = videoRefCache.current.get(trackId)
+      if (cached) return cached
+      const cb = (node: HTMLVideoElement | null): void => {
+        if (node) {
+          videoEls.current.set(trackId, node)
+        } else {
+          // Genuine unmount (video track removed). Detach to free graph slot.
+          const prev = videoEls.current.get(trackId)
+          if (prev) {
+            getPreviewAudioGraph().detach(prev)
+            videoEls.current.delete(trackId)
+          }
+          loadedVideoId.current.delete(trackId)
+          // Drop the cached ref callback so a re-added track gets a fresh one.
+          videoRefCache.current.delete(trackId)
+        }
+      }
+      videoRefCache.current.set(trackId, cb)
+      return cb
+    },
+    []
+  )
+
   return (
     <div
       ref={containerRef}
@@ -805,32 +921,67 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
             background: '#000'
           }}
         />
-        {/* <video> for the active video-track media. object-fit: contain
-            preserves the source aspect ratio inside the letterbox. z-index:1
-            so the caption overlay sits on top. */}
-        <video
-          ref={videoEl}
-          data-testid="preview-video"
-          data-track-audible={videoAudible ? 'true' : 'false'}
-          data-filter-preset={activeVideo?.filterPreset ?? 'none'}
-          playsInline
-          muted={false}
-          style={{
-            position: 'absolute',
-            inset: 0,
-            width: '100%',
-            height: '100%',
-            objectFit: 'contain',
-            background: 'transparent',
-            zIndex: 1,
-            filter: activeVideo
-              ? filterPresetToCss(
-                  activeVideo.filterPreset,
-                  activeVideo.filterIntensity ?? 1
-                ) || 'none'
-              : 'none'
-          }}
-        />
+        {/* Video layer stack — one <video> per video TRACK. object-fit:
+            contain preserves the source aspect ratio inside the letterbox.
+            zIndex = 1 + layerIndex so later tracks composite on top; the
+            caption overlay sits above all layers. Each element stays mounted
+            across clip changes (wrap-once invariant — see getVideoRef).
+            The TOP-most layer additionally carries the legacy
+            data-testid="preview-video" attribute so existing E2E selectors
+            (export.spec.ts → data-filter-preset) keep resolving. */}
+        {videoTracks.map((track, trackIdx) => {
+          const layer = layerByTrackId.get(track.id)
+          const isTop = topLayer?.track.id === track.id
+          const trackIsAudible = trackAudible(track, soloMode)
+          // zIndex: video tracks with no active clip still render a (blank)
+          // element — base it on the track's ordinal so the stack stays
+          // stable, but active layers always sit at 1 + layerIndex.
+          const zIndex = layer ? 1 + layer.layerIndex : 1 + trackIdx
+          const clip = layer?.clip
+          const t = clip ? getClipTransform(clip) : null
+          const cssTransform = t
+            ? `translate(${t.x * 100}%, ${t.y * 100}%) scale(${t.scale}) rotate(${t.rotation}deg)`
+            : undefined
+          return (
+            <video
+              key={track.id}
+              ref={getVideoRef(track.id)}
+              // The TOP-most active layer carries the legacy
+              // data-testid="preview-video" (export.spec.ts depends on it);
+              // every other layer carries data-testid="preview-video-layer".
+              // A separate `data-preview-video-layer` marker is set on ALL
+              // layers (incl. the top) so layer-counting tests can select the
+              // whole stack with [data-preview-video-layer].
+              data-testid={isTop ? 'preview-video' : 'preview-video-layer'}
+              data-preview-video-layer="true"
+              data-track-id={track.id}
+              data-layer-index={layer ? layer.layerIndex : -1}
+              data-track-audible={trackIsAudible ? 'true' : 'false'}
+              data-filter-preset={clip?.filterPreset ?? 'none'}
+              playsInline
+              muted={false}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                background: 'transparent',
+                zIndex,
+                display: layer ? undefined : 'none',
+                transformOrigin: 'center center',
+                transform: cssTransform,
+                opacity: t ? t.opacity : 1,
+                filter: clip
+                  ? filterPresetToCss(
+                      clip.filterPreset,
+                      clip.filterIntensity ?? 1
+                    ) || 'none'
+                  : 'none'
+              }}
+            />
+          )
+        })}
         {/* One <audio> per audio track. Wrapped exactly once by the
             WebAudio graph (see audioGraph.ts wrap-once invariant), so the
             element can stay mounted across clip-changes on that track.
@@ -868,8 +1019,8 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           />
         )}
 
-        {/* Placeholder when no video clip is at the playhead. */}
-        {!activeVideo && (
+        {/* Placeholder when no video clip is at the playhead on ANY layer. */}
+        {videoLayers.length === 0 && (
           <div
             style={{
               position: 'absolute',
@@ -879,7 +1030,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               justifyContent: 'center',
               color: '#1f2937',
               fontSize: 11,
-              zIndex: 2
+              zIndex: captionZIndex
             }}
             data-testid="preview-placeholder-empty"
           >
@@ -887,13 +1038,15 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           </div>
         )}
 
-        {/* Caption overlay — sits above video (z-index higher than the video). */}
+        {/* Caption overlay — sits above EVERY video layer. z-index is
+            recomputed off the layer count so adding video tracks never
+            buries the captions. */}
         <div
           style={{
             position: 'absolute',
             inset: 0,
             pointerEvents: 'none',
-            zIndex: 3
+            zIndex: captionZIndex
           }}
           data-testid="caption-overlay-layer"
         >

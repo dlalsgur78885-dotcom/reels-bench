@@ -44,6 +44,14 @@ import {
   DEFAULT_TRANSITION_MS,
   isCaptionClip,
   isMediaClip,
+  getClipTransform,
+  isIdentityTransform,
+  MAX_TRANSFORM_OFFSET,
+  MAX_TRANSFORM_ROTATION,
+  MAX_TRANSFORM_SCALE,
+  MIN_TRANSFORM_OFFSET,
+  MIN_TRANSFORM_ROTATION,
+  MIN_TRANSFORM_SCALE,
   type CaptionClip,
   type Project,
   type Track,
@@ -309,6 +317,12 @@ interface VideoSegment {
   /** Transition window with previous segment (used by both video and audio). */
   transitionInMs: number
   transitionKind: string
+  /**
+   * Layer (video track) index: 0 = bottom-most video track, increasing upward.
+   * Used to decide whether the blurred-background subgraph is emitted (base
+   * layer only) vs. transparent-pad path (upper layers).
+   */
+  layerIndex: number
 }
 
 /**
@@ -342,15 +356,27 @@ interface AudioSegment {
  * input indices. Each unique input file maps to one ffmpeg `-i`; if the same
  * media file is referenced by multiple clips we still re-add it because
  * different trim windows make stream cloning fragile.
+ *
+ * Returns per-track grouped layers (videoTrackLayers[i] = sorted segments for
+ * video track i, layerIndex 0 = bottom). A flat `videoSegments` convenience
+ * accessor (all segments across all layers) is also returned for callers that
+ * just need the count or audio wiring.
+ *
+ * IMPORTANT: transitionIn is resolved against the PREVIOUS CLIP ON THE SAME
+ * TRACK — not a global ordering — so multi-track layouts don't cross-pollinate.
  */
 function collectSegments(
   project: Project
-): { videoSegments: VideoSegment[]; audioSegments: AudioSegment[]; inputs: string[] } {
+): {
+  videoTrackLayers: VideoSegment[][]
+  videoSegments: VideoSegment[]
+  audioSegments: AudioSegment[]
+  inputs: string[]
+} {
   const inputs: string[] = []
-  const videoSegments: VideoSegment[] = []
   const audioSegments: AudioSegment[] = []
 
-  // Video tracks in declared order; clips sorted by startMs.
+  // Video tracks in declared order; clips sorted by startMs within each track.
   const videoTracks = project.tracks.filter((t) => t.kind === 'video')
   const allCaptionClips: CaptionClip[] = []
   for (const t of project.tracks) {
@@ -360,61 +386,73 @@ function collectSegments(
     }
   }
 
-  // Build a flat ordered list of media clips across all video tracks.
-  // We use a single composite video track in the output (timeline-ordered).
-  const flat: { clip: VideoAudioClip; track: Track }[] = []
-  for (const t of videoTracks) {
+  // Build per-track segment lists; each track gets its own layerIndex.
+  const videoTrackLayers: VideoSegment[][] = []
+
+  for (let layerIndex = 0; layerIndex < videoTracks.length; layerIndex++) {
+    const t = videoTracks[layerIndex]
+    const trackClips: { clip: VideoAudioClip; track: Track }[] = []
     for (const c of t.clips) {
       if (!isMediaClip(c)) continue
       const media = project.media[c.mediaId]
       if (!media) continue
-      flat.push({ clip: c, track: t })
+      trackClips.push({ clip: c, track: t })
     }
-  }
-  flat.sort((a, b) => a.clip.startMs - b.clip.startMs)
+    // Sort within this track by timeline start.
+    trackClips.sort((a, b) => a.clip.startMs - b.clip.startMs)
 
-  for (let i = 0; i < flat.length; i++) {
-    const { clip, track } = flat[i]
-    const media = project.media[clip.mediaId]
-    if (!media) continue
-    const inputIdx = inputs.length
-    inputs.push(media.path)
+    const layerSegments: VideoSegment[] = []
+    for (let i = 0; i < trackClips.length; i++) {
+      const { clip, track } = trackClips[i]
+      const media = project.media[clip.mediaId]
+      if (!media) continue
+      const inputIdx = inputs.length
+      inputs.push(media.path)
 
-    // Captions overlapping this clip's timeline range.
-    const captions = allCaptionClips.filter(
-      (c) => c.endMs > clip.startMs && c.startMs < clip.endMs
-    )
-
-    // Transition: defined on this clip (transitionIn) — only valid if there's
-    // a previous segment.
-    const prev = i > 0 ? flat[i - 1].clip : null
-    let transitionInMs = 0
-    let transitionKind = 'none'
-    if (prev && clip.transitionIn && clip.transitionIn.kind !== 'none') {
-      const want = Math.max(
-        100,
-        Math.min(
-          clip.transitionIn.durationMs ?? DEFAULT_TRANSITION_MS,
-          // can't exceed either clip's duration
-          (clip.endMs - clip.startMs) - 1,
-          (prev.endMs - prev.startMs) - 1
-        )
+      // Captions overlapping this clip's timeline range.
+      const captions = allCaptionClips.filter(
+        (c) => c.endMs > clip.startMs && c.startMs < clip.endMs
       )
-      transitionInMs = want
-      transitionKind = clip.transitionIn.kind
-    }
 
-    videoSegments.push({
-      clip,
-      track,
-      inputIdx,
-      captions,
-      startMs: clip.startMs,
-      endMs: clip.endMs,
-      transitionInMs,
-      transitionKind
-    })
+      // Transition: defined on this clip (transitionIn) — only valid if there
+      // is a previous segment ON THE SAME TRACK (not a global predecessor).
+      const prev = i > 0 ? trackClips[i - 1].clip : null
+      let transitionInMs = 0
+      let transitionKind = 'none'
+      if (prev && clip.transitionIn && clip.transitionIn.kind !== 'none') {
+        const want = Math.max(
+          100,
+          Math.min(
+            clip.transitionIn.durationMs ?? DEFAULT_TRANSITION_MS,
+            // can't exceed either clip's duration
+            (clip.endMs - clip.startMs) - 1,
+            (prev.endMs - prev.startMs) - 1
+          )
+        )
+        transitionInMs = want
+        transitionKind = clip.transitionIn.kind
+      }
+
+      layerSegments.push({
+        clip,
+        track,
+        inputIdx,
+        captions,
+        startMs: clip.startMs,
+        endMs: clip.endMs,
+        transitionInMs,
+        transitionKind,
+        layerIndex
+      })
+    }
+    videoTrackLayers.push(layerSegments)
   }
+
+  // Flat view (all segments, sorted globally by startMs then layerIndex for
+  // determinism) — used for audio wiring and videoSegmentCount.
+  const videoSegments: VideoSegment[] = videoTrackLayers
+    .flat()
+    .sort((a, b) => a.startMs - b.startMs || a.layerIndex - b.layerIndex)
 
   // Audio: collect from audio tracks AND from video-track clips (they carry
   // embedded audio). Each gets the same input index as the corresponding
@@ -441,7 +479,7 @@ function collectSegments(
     })
   }
 
-  return { videoSegments, audioSegments, inputs }
+  return { videoTrackLayers, videoSegments, audioSegments, inputs }
 }
 
 /** Escape text for ffmpeg `drawtext` text= option. */
@@ -490,11 +528,17 @@ function atempoChain(speed: number): string {
  * map fall back to drawtext (this lets a mixed scenario work: e.g. sharp
  * succeeded for 3 of 5 captions, failed for 2 — those 2 still render via
  * drawtext rather than vanishing).
+ *
+ * `isBaseLayer` — when true (layerIndex === 0) the blurred-bg opaque canvas
+ * subgraph is emitted (legacy behaviour, preserved exactly for single-track
+ * projects). When false (upper layers) a transparent-pad canvas frame is used
+ * instead so lower layers show through.
  */
 function buildVideoSegmentChain(
   seg: VideoSegment,
   preset: MainPreset,
-  captionPngMap?: CaptionPngMap
+  captionPngMap?: CaptionPngMap,
+  isBaseLayer = true
 ): {
   /** Filter chain label (output pad name). */
   out: string
@@ -520,36 +564,49 @@ function buildVideoSegmentChain(
   // 2. Filter preset (eq/hue chain).
   const fp = filterPresetToFfmpeg(seg.clip.filterPreset, seg.clip.filterIntensity ?? 1)
   if (fp) parts.push(fp)
-  // 3. fps normalization (so xfade durations line up cleanly).
+  // 3. fps normalization (so xfade durations line up cleanly, and all layers
+  //    share the same timebase before overlay).
   parts.push(`fps=${preset.fps}`)
 
-  // 4. Aspect-correct scale + blurred-background pad. Two-stage subgraph:
-  //    main (object-fit: contain) and bg (cover + blur) merged via overlay.
-  //    We use a single chain via split:
-  //      [v]split=2[mainSrc][bgSrc];
-  //      [bgSrc]scale=W:H:force_original_aspect_ratio=increase,crop=W:H,boxblur=20:1,eq=brightness=-0.2[bg];
-  //      [mainSrc]scale=W:H:force_original_aspect_ratio=decrease[main];
-  //      [bg][main]overlay=(W-w)/2:(H-h)/2,setsar=1[outLabel]
   const W = preset.width
   const H = preset.height
   const labelIn = `pre${seg.inputIdx}`
-  const labelBg = `bg${seg.inputIdx}`
-  const labelMain = `main${seg.inputIdx}`
   const preChain = parts.join(',')
 
-  // The "decorated" sub-fragment ends with [labelIn] then split→bg+main+overlay.
-  let fragment =
-    `[${seg.inputIdx}:v]${preChain}[${labelIn}];` +
-    `[${labelIn}]split=2[${labelMain}src][${labelBg}src];` +
-    `[${labelBg}src]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=20:1,eq=brightness=-0.2[${labelBg}];` +
-    `[${labelMain}src]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0[${labelMain}];` +
-    `[${labelBg}][${labelMain}]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1`
+  let fragment: string
+
+  if (isBaseLayer) {
+    // 4-BASE. Aspect-correct scale + blurred-background pad. Two-stage subgraph:
+    //   main (object-fit: contain) and bg (cover + blur) merged via overlay.
+    //   Opaque black canvas — same as original single-track path.
+    const labelBg = `bg${seg.inputIdx}`
+    const labelMain = `main${seg.inputIdx}`
+
+    fragment =
+      `[${seg.inputIdx}:v]${preChain}[${labelIn}];` +
+      `[${labelIn}]split=2[${labelMain}src][${labelBg}src];` +
+      `[${labelBg}src]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=20:1,eq=brightness=-0.2[${labelBg}];` +
+      `[${labelMain}src]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0[${labelMain}];` +
+      `[${labelBg}][${labelMain}]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1`
+  } else {
+    // 4-UPPER. Transparent-pad canvas frame: scale to contain, then pad with
+    // transparent gutters to fill canvas dimensions. Lower layers show through
+    // the transparent area.
+    fragment =
+      `[${seg.inputIdx}:v]${preChain}[${labelIn}];` +
+      `[${labelIn}]scale=${W}:${H}:force_original_aspect_ratio=decrease,` +
+      `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1`
+  }
 
   // 5. Caption drawtext overlays. Each caption clip becomes one drawtext
   //    filter that's only enabled during its time-on-timeline (relative to
   //    this segment after we reset PTS, segment_t = timeline_t - clip.startMs).
   //    Captions handled by the PNG-overlay path (captionPngMap) are skipped
   //    here — they'll be composited onto the stitched final video.
+  //
+  //    NOTE: drawtext captions are applied BEFORE the transform sub-chain so
+  //    they move and scale with the clip. This matches the mental model that
+  //    captions "belong" to the clip content.
   if (seg.captions.length > 0) {
     const drawtexts: string[] = []
     for (const cap of seg.captions) {
@@ -589,6 +646,69 @@ function buildVideoSegmentChain(
     }
     if (drawtexts.length > 0) {
       fragment += ',' + drawtexts.join(',')
+    }
+  }
+
+  // 6. Transform sub-chain — only when the clip has a non-identity transform.
+  //    ALWAYS use getClipTransform() — never read clip.transform directly.
+  //    Gated by isIdentityTransform so legacy/unmodified clips have zero
+  //    overhead and single-track identity graphs remain byte-identical.
+  //    getClipTransform coerces non-finite values to identity; we ALSO
+  //    range-clamp here because the `project` arg arrives over IPC unvalidated
+  //    — the main process must not trust the renderer to have clamped (a
+  //    finite-but-extreme scale would otherwise OOM ffmpeg). Same MIN/MAX
+  //    constants as the renderer store's setClipTransform clamp.
+  const rawXform = getClipTransform(seg.clip)
+  const clampField = (v: number, lo: number, hi: number): number =>
+    Math.min(hi, Math.max(lo, v))
+  const xform = {
+    x: clampField(rawXform.x, MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
+    y: clampField(rawXform.y, MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
+    scale: clampField(rawXform.scale, MIN_TRANSFORM_SCALE, MAX_TRANSFORM_SCALE),
+    rotation: clampField(
+      rawXform.rotation,
+      MIN_TRANSFORM_ROTATION,
+      MAX_TRANSFORM_ROTATION
+    ),
+    opacity: clampField(rawXform.opacity, 0, 1)
+  }
+  if (!isIdentityTransform(xform)) {
+    const { x, y, scale, rotation, opacity } = xform
+    // 6a. Convert to RGBA so rotation corners and opacity blend correctly.
+    fragment += `,format=rgba`
+
+    // 6b. Scale: scale then crop/pad back to canvas size.
+    if (Math.abs(scale - 1) > 1e-5) {
+      fragment += `,scale=iw*${scale.toFixed(6)}:ih*${scale.toFixed(6)}`
+      if (scale > 1) {
+        // Scaled beyond canvas — crop centred to canvas dimensions.
+        fragment += `,crop=${W}:${H}`
+      } else {
+        // Scaled below canvas — pad with transparent gutters.
+        fragment += `,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0`
+      }
+    }
+
+    // 6c. Rotation (degrees → radians; transparent fill for corners).
+    if (Math.abs(rotation) > 1e-5) {
+      const rad = (rotation * Math.PI) / 180
+      fragment += `,rotate=${rad.toFixed(6)}:c=black@0:ow=${W}:oh=${H}`
+    }
+
+    // 6d. Translation: x/y are fractions of canvas dimensions, centre-origin.
+    //     We bake the offset into a pad filter then crop to clamp back to canvas.
+    if (Math.abs(x) > 1e-6 || Math.abs(y) > 1e-6) {
+      const xPx = Math.round(x * W)
+      const yPx = Math.round(y * H)
+      // pad moves the frame right/down by the offset; (ow-iw)/2 centres first.
+      fragment += `,pad=${W}:${H}:${xPx}+(ow-iw)/2:${yPx}+(oh-ih)/2:color=black@0`
+      // Crop back to canvas size from origin to clamp.
+      fragment += `,crop=${W}:${H}:0:0`
+    }
+
+    // 6e. Opacity.
+    if (Math.abs(opacity - 1) > 1e-5) {
+      fragment += `,colorchannelmixer=aa=${opacity.toFixed(6)}`
     }
   }
 
@@ -656,36 +776,47 @@ function buildAudioSegmentChain(
 }
 
 /**
- * Stitch video segments together. Returns the final video output label and
- * the full filter graph for the video side.
+ * Stitch a single video track's segments into one labelled timeline stream.
  *
- * Strategy: if all transitions are 'none', use concat. If any transition is
- * set, use a sequential xfade chain — concat doesn't blend, so we accept
- * the cost of always falling back to xfade when at least one transition
- * is requested.
+ * Uses xfade when transitions are present (and xfade is available), concat
+ * otherwise. The `prevEndSec` xfade accumulator is LOCAL to this track —
+ * it must reset per track, which is why this is a per-track helper.
+ *
+ * Returns the output label and all filter graph fragments for this track.
+ * The output label is `vtrack${layerIndex}`.
  */
-function stitchVideo(
+function stitchVideoTrack(
   segments: VideoSegment[],
+  layerIndex: number,
   preset: MainPreset,
-  xfadeAvailable = true,
+  xfadeAvailable: boolean,
   captionPngMap?: CaptionPngMap
-): { graph: string; finalLabel: string } {
+): { fragments: string[]; trackLabel: string } {
+  const isBase = layerIndex === 0
   const fragments: string[] = []
   const segOutputs: string[] = []
+
   for (const seg of segments) {
-    const { out, fragment } = buildVideoSegmentChain(seg, preset, captionPngMap)
+    const { out, fragment } = buildVideoSegmentChain(seg, preset, captionPngMap, isBase)
     fragments.push(fragment)
     segOutputs.push(out)
   }
+
+  const trackLabel = `vtrack${layerIndex}`
+
   if (segments.length === 0) {
-    // Should be caught earlier — render a 1-second black frame as a fallback.
+    // Empty layer — emit a silent transparent frame so overlay doesn't choke.
+    // (Rare: an empty video track shouldn't reach this path.)
     fragments.push(
-      `color=c=black:s=${preset.width}x${preset.height}:d=1:r=${preset.fps}[vfinal]`
+      `color=c=black@0:s=${preset.width}x${preset.height}:d=0.001:r=${preset.fps}[${trackLabel}]`
     )
-    return { graph: fragments.join(';'), finalLabel: 'vfinal' }
+    return { fragments, trackLabel }
   }
+
   if (segments.length === 1) {
-    return { graph: fragments.join(';'), finalLabel: segOutputs[0] }
+    // Single segment: just alias the segment output to the track label.
+    fragments.push(`[${segOutputs[0]}]null[${trackLabel}]`)
+    return { fragments, trackLabel }
   }
 
   // Multi-segment: build sequential xfade or concat.
@@ -696,15 +827,14 @@ function stitchVideo(
     )
 
   if (!anyTransition) {
-    // Simple concat: [v0][v1]...concat=n=N:v=1:a=0[vfinal]
-    const inputs = segOutputs.map((l) => `[${l}]`).join('')
-    fragments.push(`${inputs}concat=n=${segments.length}:v=1:a=0[vfinal]`)
-    return { graph: fragments.join(';'), finalLabel: 'vfinal' }
+    // Simple concat: [v0][v1]...concat=n=N:v=1:a=0[vtrackN]
+    const inputPads = segOutputs.map((l) => `[${l}]`).join('')
+    fragments.push(`${inputPads}concat=n=${segments.length}:v=1:a=0[${trackLabel}]`)
+    return { fragments, trackLabel }
   }
 
-  // xfade chain: pairwise reduce. We need the cumulative output duration to
-  // compute each xfade's offset. Each xfade reduces total duration by its
-  // transition window (transitionInMs).
+  // xfade chain: pairwise reduce.
+  // prevEndSec RESETS per track — this is the key correctness requirement.
   let prevLabel = segOutputs[0]
   let prevEndSec = (segments[0].endMs - segments[0].startMs) / 1000
   for (let i = 1; i < segments.length; i++) {
@@ -719,16 +849,111 @@ function stitchVideo(
     const safeOffset = Math.max(0, offsetSec).toFixed(4)
     const safeDur =
       seg.transitionInMs > 0 ? Math.max(0.1, transSec).toFixed(4) : '0.001'
-    const newLabel = `vxf${i}`
+    const newLabel = `vxf${layerIndex}_${i}`
     fragments.push(
       `[${prevLabel}][${segOutputs[i]}]xfade=transition=${xfadeKind}:duration=${safeDur}:offset=${safeOffset}[${newLabel}]`
     )
     prevLabel = newLabel
     prevEndSec = prevEndSec + thisDurSec - (seg.transitionInMs > 0 ? transSec : 0)
   }
-  // Rename final label to vfinal for consistency.
-  fragments.push(`[${prevLabel}]null[vfinal]`)
-  return { graph: fragments.join(';'), finalLabel: 'vfinal' }
+  // Rename final xfade label to the track label.
+  fragments.push(`[${prevLabel}]null[${trackLabel}]`)
+  return { fragments, trackLabel }
+}
+
+/**
+ * Composite multiple per-track labels bottom→top using `overlay`.
+ *
+ * Returns new filter graph fragments + the final composited label.
+ * If only one track, no overlay is emitted — the base track label IS the
+ * final label.
+ *
+ * overlay options:
+ *   - `overlay=0:0` — transform was baked into each segment, so fixed origin.
+ *   - `eof_action=pass` — when an upper layer ends, base continues undisturbed.
+ *   - `shortest=0` — composite length follows the base layer, not the shortest.
+ *   - `format=auto` — lets ffmpeg handle RGBA→yuv alpha flattening correctly.
+ */
+function compositeLayers(
+  trackLabels: string[]
+): { fragments: string[]; compositeLabel: string } {
+  if (trackLabels.length === 1) {
+    return { fragments: [], compositeLabel: trackLabels[0] }
+  }
+
+  const fragments: string[] = []
+  // Start with base (layer 0) — it is the opaque bottom.
+  let prevLabel = trackLabels[0]
+  for (let i = 1; i < trackLabels.length; i++) {
+    const newLabel = i === trackLabels.length - 1 ? 'vcomp' : `vcomp${i}`
+    fragments.push(
+      `[${prevLabel}][${trackLabels[i]}]overlay=0:0:eof_action=pass:shortest=0:format=auto[${newLabel}]`
+    )
+    prevLabel = newLabel
+  }
+  return { fragments, compositeLabel: prevLabel }
+}
+
+/**
+ * Stitch all video track layers into a single final video stream.
+ *
+ * STAGE A: each track's segments are stitched via `stitchVideoTrack` (xfade or
+ * concat, per-track, with per-track xfade offset accumulator reset).
+ * STAGE B: per-track labels are composited bottom→top via `overlay`.
+ *
+ * Single video track with identity transforms → output is structurally
+ * identical to the old code (concat/xfade, same label `vfinal`), preserving
+ * byte-identical filter graphs for legacy projects.
+ */
+function stitchVideo(
+  videoTrackLayers: VideoSegment[][],
+  preset: MainPreset,
+  xfadeAvailable = true,
+  captionPngMap?: CaptionPngMap
+): { graph: string; finalLabel: string } {
+  const allFragments: string[] = []
+
+  if (videoTrackLayers.length === 0 || videoTrackLayers.every((l) => l.length === 0)) {
+    // Should be caught earlier — render a 1-second black frame as a fallback.
+    allFragments.push(
+      `color=c=black:s=${preset.width}x${preset.height}:d=1:r=${preset.fps}[vfinal]`
+    )
+    return { graph: allFragments.join(';'), finalLabel: 'vfinal' }
+  }
+
+  // STAGE A — per-track stitch. Skip empty layers.
+  const trackLabels: string[] = []
+  for (let layerIndex = 0; layerIndex < videoTrackLayers.length; layerIndex++) {
+    const layerSegs = videoTrackLayers[layerIndex]
+    if (layerSegs.length === 0) continue
+
+    const { fragments, trackLabel } = stitchVideoTrack(
+      layerSegs,
+      layerIndex,
+      preset,
+      xfadeAvailable,
+      captionPngMap
+    )
+    for (const f of fragments) allFragments.push(f)
+    trackLabels.push(trackLabel)
+  }
+
+  if (trackLabels.length === 0) {
+    allFragments.push(
+      `color=c=black:s=${preset.width}x${preset.height}:d=1:r=${preset.fps}[vfinal]`
+    )
+    return { graph: allFragments.join(';'), finalLabel: 'vfinal' }
+  }
+
+  // STAGE B — composite layers. Single-layer: no overlay emitted.
+  const { fragments: compFragments, compositeLabel } = compositeLayers(trackLabels)
+  for (const f of compFragments) allFragments.push(f)
+
+  // Always expose as `vfinal` for downstream consumers.
+  const finalLabel = 'vfinal'
+  allFragments.push(`[${compositeLabel}]null[${finalLabel}]`)
+
+  return { graph: allFragments.join(';'), finalLabel }
 }
 
 /**
@@ -916,7 +1141,7 @@ function buildExportPlan(
   const preset = PRESETS[presetKey]
   if (!preset) throw new Error(`[export] unknown preset: ${presetKey}`)
 
-  const { videoSegments, audioSegments, inputs } = collectSegments(project)
+  const { videoTrackLayers, videoSegments, audioSegments, inputs } = collectSegments(project)
   if (videoSegments.length === 0) {
     throw new Error('[export] no video clips on timeline')
   }
@@ -924,7 +1149,7 @@ function buildExportPlan(
   const xfadeAvailable = options.xfadeAvailable ?? true
   const captionPngs = options.captionPngs
   const { graph: videoGraph, finalLabel: stitchedVideoLabel } = stitchVideo(
-    videoSegments,
+    videoTrackLayers,
     preset,
     xfadeAvailable,
     captionPngs
@@ -1154,7 +1379,7 @@ async function runExport(
   // a representative filter graph for UI inspection; the real run, however,
   // must avoid `[N:a:0?]` (rejected by ffmpeg 6) and only emit chains for
   // inputs that actually have an audio stream.
-  const { inputs: probedInputs } = collectSegments(project)
+  const { inputs: probedInputs } = collectSegments(project) as { inputs: string[] }
   const inputsWithAudio = new Set<number>()
   for (let i = 0; i < probedInputs.length; i++) {
     const p = probedInputs[i]
@@ -1486,6 +1711,8 @@ export const __test = {
   atempoChain,
   collectSegments,
   stitchVideo,
+  stitchVideoTrack,
+  compositeLayers,
   stitchAudio,
   stitchCaptions,
   mapPresetForCodec,

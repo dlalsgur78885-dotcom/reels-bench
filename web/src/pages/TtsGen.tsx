@@ -73,6 +73,31 @@ function resolveAudioUrl(url: string, bust: number): string {
   return /^https?:\/\//i.test(url) ? withBust : `${TTS_BASE}${withBust}`
 }
 
+// 대본에서 "오디오 수정" 진입 시 — 현재 대본 문장(텍스트 최신)에 저장된 TTS의 감정/어절
+// 설정을 입힌다. 텍스트가 정확히 일치하는 문장만 감정 승계, 수정·추가된 문장은 텍스트만.
+function mergeScriptWithSavedTts(
+  scriptSents: InputSentence[],
+  savedSents: InputSentence[],
+): InputSentence[] {
+  const norm = (t?: string) => (t || '').replace(/\s+/g, ' ').trim()
+  const byText = new Map<string, InputSentence>()
+  for (const s of savedSents) {
+    const k = norm(s.text)
+    if (k && !byText.has(k)) byText.set(k, s)
+  }
+  return scriptSents.map((cur, i) => {
+    const k = norm(cur.text)
+    const idxMatch = savedSents[i] && norm(savedSents[i].text) === k ? savedSents[i] : null
+    const matched = byText.get(k) || idxMatch
+    if (matched) {
+      // 텍스트 동일 → 저장된 감정·어절(phrases) 승계, timing은 대본 기준
+      return { ...matched, start: cur.start ?? matched.start, end: cur.end ?? matched.end, text: cur.text }
+    }
+    // 수정/추가된 문장 → 대본 문구 그대로 (감정 미설정)
+    return { start: cur.start ?? 0, end: cur.end ?? 0, text: cur.text }
+  })
+}
+
 const LEVELS = [-2, -1, 0, 1, 2] as const
 const DEFAULT_LABELS = ['매우약', '약', '기본', '강', '매우강']
 
@@ -91,16 +116,22 @@ const primaryBtnSt: React.CSSProperties = {
 }
 
 export default function TtsGen() {
-  const { state } = useLocation() as { state?: { sentences?: InputSentence[]; title?: string; voice?: string; personaGender?: 'male' | 'female' | 'unknown'; persona?: any; from?: { path: string; label: string }; scriptId?: string; productId?: number; savedTts?: any } }
+  const { state } = useLocation() as { state?: { sentences?: InputSentence[]; title?: string; voice?: string; personaGender?: 'male' | 'female' | 'unknown'; persona?: any; from?: { path: string; label: string }; scriptId?: string; productId?: number; savedTts?: any; scriptSentences?: InputSentence[] } }
   const navigate = useNavigate()
   // 대본에서 "오디오 수정"으로 진입한 경우 — 저장된 TTS 작업 복원.
   // inputSentences 우선: job.sentences(SegmentMeta)에는 sentence_emotion(전체 감정)이
   // 빠져 있으므로, 저장 시 함께 담아둔 편집 sentences를 복원에 사용.
   const saved = state?.savedTts
-  const initialSentences: InputSentence[] =
-    (saved?.inputSentences as InputSentence[])
-    || (saved?.job?.sentences as InputSentence[])
-    || state?.sentences || []
+  const initialSentences: InputSentence[] = (() => {
+    const savedSents = (saved?.inputSentences as InputSentence[])
+      || (saved?.job?.sentences as InputSentence[])
+    const scriptSents = state?.scriptSentences
+    // 저장 후 대본이 수정됐을 수 있음 — 텍스트는 최신 대본, 감정은 저장본에서 머지
+    if (saved && scriptSents && scriptSents.length) {
+      return savedSents ? mergeScriptWithSavedTts(scriptSents, savedSents) : scriptSents
+    }
+    return savedSents || state?.sentences || []
+  })()
   const title = state?.title || ''
   const from = state?.from
   // 대본 귀속 — 있으면 "이 대본에 음성 저장" 가능

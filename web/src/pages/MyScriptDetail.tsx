@@ -584,6 +584,9 @@ export default function MyScriptDetail() {
               : `${TTS_BASE}${fjob.final_url || ''}`
             const editAudio = () => navigate('/tts', { state: {
               savedTts: tts,
+              // 현재 대본 문장 — 저장 후 대본을 수정했으면 그 최신 문구가 반영되도록.
+              // TtsGen이 텍스트는 이걸로, 감정/voice 설정은 savedTts에서 머지.
+              scriptSentences: displayedSents,
               scriptId: data.id,
               productId: pid,
               title: data.title || '',

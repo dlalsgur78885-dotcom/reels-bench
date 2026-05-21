@@ -14,6 +14,11 @@ const RESOLUTIONS = ['480p', '720p', '1080p'] as const
 const DURATIONS = ['4', '5', '6', '8', '10', '12', '15'] as const
 const ASPECTS = ['9:16', '16:9', '1:1', '4:3', '3:4', '21:9', 'auto'] as const
 
+// 인물 사진 각도 라벨 — 인물 라이브러리(_CHAR_ANGLES)와 동일
+const ANGLE_LABEL: Record<string, string> = {
+  front: '정면', side: '측면', three_quarter: '반측', back: '뒷모습',
+}
+
 export default function Seedance() {
   const [mode, setMode] = useState<Mode>('blog')
   const [genMode, setGenMode] = useState<GenMode>('transition')
@@ -64,6 +69,14 @@ export default function Seedance() {
   // 라이브러리에서 가져온 인물 (reference 모드 시작 슬롯에 대입)
   const [pendingCharacterUrls, setPendingCharacterUrls] = useState<string[]>([])
   const pendingCharacterUrl = pendingCharacterUrls[0] || ''
+  // 인물 사진별 각도 매핑 (url → front|side|three_quarter|back)
+  const [pendingCharacterAngles, setPendingCharacterAngles] = useState<Record<string, string>>({})
+  // 영상에 쓰지 않을 인물 사진 (체크 해제) — 기본은 전부 사용
+  const [excludedCharUrls, setExcludedCharUrls] = useState<string[]>([])
+  // 실제 영상에 쓸 인물 사진 (체크된 것만)
+  const chosenCharacterUrls = pendingCharacterUrls.filter(u => !excludedCharUrls.includes(u))
+  const toggleCharUrl = (u: string) =>
+    setExcludedCharUrls(prev => prev.includes(u) ? prev.filter(x => x !== u) : [...prev, u])
   // 마지막 생성 메타 (저장 시 같이 보냄)
   const lastMetaRef = useRef<{ startUrl: string; endUrl: string }>({ startUrl: '', endUrl: '' })
 
@@ -98,6 +111,8 @@ export default function Seedance() {
           : (obj?.image_url ? [obj.image_url] : [])
         if (urls.length > 0) {
           setPendingCharacterUrls(urls)
+          setPendingCharacterAngles((obj?.angles && typeof obj.angles === 'object') ? obj.angles : {})
+          setExcludedCharUrls([])
           setGenMode('reference')
         }
       } catch {}
@@ -200,16 +215,19 @@ export default function Seedance() {
       const hasSecond = mode === 'blog' ? !!endSrc : !!endFile
       if (!hasSecond) { setError('배경 이미지도 선택/업로드하세요'); return }
     }
+    if (useLibChar && chosenCharacterUrls.length === 0) {
+      setError('영상에 쓸 인물 사진을 최소 1장 선택하세요'); return
+    }
 
     try {
       startTicker()
       setStatus(mode === 'blog' || useLibChar ? 'importing' : 'uploading')
 
-      // 라이브러리 인물 멀티 — pendingCharacterUrls 전부 import 후 ref 배열로 함께 전달
+      // 라이브러리 인물 멀티 — 체크된 사진(chosenCharacterUrls)만 import 후 ref 배열로 전달
       let charUrls: string[] = []
-      if (useLibChar && pendingCharacterUrls.length > 0) {
+      if (useLibChar && chosenCharacterUrls.length > 0) {
         // reference-to-video 는 최대 9장이라 잘림 (8 + 배경 1)
-        const slice = pendingCharacterUrls.slice(0, 8)
+        const slice = chosenCharacterUrls.slice(0, 8)
         for (const u of slice) {
           charUrls.push(await importRemoteImage(u))
         }
@@ -338,35 +356,46 @@ export default function Seedance() {
         </p>
       </div>
 
-      {/* 라이브러리에서 가져온 인물 배지 */}
+      {/* 라이브러리에서 가져온 인물 — 각도별 사진 선택 */}
       {pendingCharacterUrl && genMode === 'reference' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 10, marginBottom: 12,
+        <div style={{ padding: 12, marginBottom: 12,
           background: 'rgba(99,102,241,0.10)', border: '1px solid var(--accent)', borderRadius: 6 }}>
-          <div style={{ display: 'flex', gap: 2 }}>
-            {pendingCharacterUrls.slice(0, 4).map((u, i) => (
-              <img key={u + i} src={u} alt=""
-                style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 4 }} />
-            ))}
-            {pendingCharacterUrls.length > 4 && (
-              <span style={{ width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 11, fontWeight: 700, background: 'var(--bg-base)',
-                border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-muted)' }}>
-                +{pendingCharacterUrls.length - 4}
-              </span>
-            )}
-          </div>
-          <div style={{ flex: 1, fontSize: 12 }}>
-            <div style={{ fontWeight: 700, color: 'var(--accent)' }}>
-              라이브러리 인물 사용 중 ({pendingCharacterUrls.length}장)
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent)' }}>
+              라이브러리 인물 — 영상에 쓸 사진 선택 ({chosenCharacterUrls.length}/{pendingCharacterUrls.length}장)
             </div>
-            <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
-              인물 reference로 모두 전달, 배경만 아래에서 골라주세요.
-            </div>
+            <button onClick={() => { setPendingCharacterUrls([]); setExcludedCharUrls([]) }}
+              style={{ padding: '4px 10px', fontSize: 11,
+                background: 'transparent', color: 'var(--text-secondary)',
+                border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer' }}>해제</button>
           </div>
-          <button onClick={() => setPendingCharacterUrls([])}
-            style={{ padding: '4px 10px', fontSize: 11,
-              background: 'transparent', color: 'var(--text-secondary)',
-              border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer' }}>해제</button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {pendingCharacterUrls.map((u, i) => {
+              const angle = pendingCharacterAngles[u]
+              const checked = !excludedCharUrls.includes(u)
+              return (
+                <label key={u + i} title={checked ? '클릭해서 제외' : '클릭해서 포함'}
+                  style={{ position: 'relative', cursor: 'pointer', display: 'block' }}>
+                  <img src={u} alt=""
+                    style={{ width: 66, height: 66, objectFit: 'cover', borderRadius: 6,
+                      border: checked ? '2px solid var(--accent)' : '2px solid var(--border)',
+                      opacity: checked ? 1 : 0.4 }} />
+                  <input type="checkbox" checked={checked} onChange={() => toggleCharUrl(u)}
+                    style={{ position: 'absolute', top: 3, left: 3, cursor: 'pointer' }} />
+                  {angle && ANGLE_LABEL[angle] && (
+                    <span style={{ position: 'absolute', bottom: 2, left: 2, padding: '1px 4px',
+                      fontSize: 8, fontWeight: 700, borderRadius: 2,
+                      background: 'rgba(0,0,0,0.72)', color: '#fff' }}>
+                      {ANGLE_LABEL[angle]}
+                    </span>
+                  )}
+                </label>
+              )
+            })}
+          </div>
+          <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 8 }}>
+            체크한 각도 사진만 인물 reference로 전달됩니다 (최대 8장). 배경은 아래에서 선택하세요.
+          </div>
         </div>
       )}
 

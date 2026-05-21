@@ -25,6 +25,25 @@ function imageList(c: Character): string[] {
   return arr.filter(Boolean)
 }
 
+// 인물 사진 각도 — 백엔드 _CHAR_ANGLES와 동일 (front/side/three_quarter/back)
+type Angle = 'front' | 'side' | 'three_quarter' | 'back'
+const ANGLES: { value: Angle; label: string }[] = [
+  { value: 'front', label: '정면' },
+  { value: 'side', label: '측면' },
+  { value: 'three_quarter', label: '반측' },
+  { value: 'back', label: '뒷모습' },
+]
+const ANGLE_LABEL: Record<string, string> = Object.fromEntries(ANGLES.map(a => [a.value, a.label]))
+
+function getAngle(c: Character, url: string): Angle | '' {
+  const a = c.meta?.angles?.[url]
+  return (a && ANGLE_LABEL[a]) ? (a as Angle) : ''
+}
+
+function canEdit(c: Character): boolean {
+  return !c._shared || c._permission === 'edit'
+}
+
 export default function SeedanceCharacters() {
   const navigate = useNavigate()
   const me = useMe()
@@ -42,8 +61,11 @@ export default function SeedanceCharacters() {
   const [uploadPreview, setUploadPreview] = useState('')
   const [uploadName, setUploadName] = useState('')
   const [uploadDesc, setUploadDesc] = useState('')
+  const [uploadAngle, setUploadAngle] = useState<Angle>('front')
   const [uploading, setUploading] = useState(false)
   const [addingImage, setAddingImage] = useState(false)
+  // 상세 패널 "사진 추가" 시 적용할 각도
+  const [addImageAngle, setAddImageAngle] = useState<Angle>('side')
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => { load() }, [])
@@ -74,6 +96,7 @@ export default function SeedanceCharacters() {
       fd.append('file', uploadFile)
       if (uploadName.trim()) fd.append('name', uploadName.trim())
       if (uploadDesc.trim()) fd.append('description', uploadDesc.trim())
+      fd.append('angle', uploadAngle)
       const r = await authedFetch('/api/seedance/characters', { method: 'POST', body: fd })
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`)
       const row: Character = await r.json()
@@ -81,6 +104,7 @@ export default function SeedanceCharacters() {
       // reset form
       if (uploadPreview) URL.revokeObjectURL(uploadPreview)
       setUploadFile(null); setUploadPreview(''); setUploadName(''); setUploadDesc('')
+      setUploadAngle('front')
       if (fileInputRef.current) fileInputRef.current.value = ''
     } catch (e: any) {
       alert('등록 실패: ' + (e?.message || e))
@@ -120,12 +144,13 @@ export default function SeedanceCharacters() {
     if (selected?.id === updated.id) setSelected(updated)
   }
 
-  const addImage = async (c: Character, file: File) => {
+  const addImage = async (c: Character, file: File, angle: Angle) => {
     if (addingImage) return
     setAddingImage(true)
     try {
       const fd = new FormData()
       fd.append('file', file)
+      fd.append('angle', angle)
       const r = await authedFetch(`/api/seedance/characters/${c.id}/images`, { method: 'POST', body: fd })
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`)
       const data = await r.json()
@@ -133,6 +158,20 @@ export default function SeedanceCharacters() {
     } catch (e: any) {
       alert('사진 추가 실패: ' + (e?.message || e))
     } finally { setAddingImage(false) }
+  }
+
+  const setAngle = async (c: Character, url: string, angle: Angle | '') => {
+    try {
+      const r = await authedFetch(`/api/seedance/characters/${c.id}/images/angle`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, angle: angle || null }),
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`)
+      const data = await r.json()
+      if (data.row) replaceCharacter(data.row as Character)
+    } catch (e: any) {
+      alert('각도 변경 실패: ' + (e?.message || e))
+    }
   }
 
   const removeImage = async (c: Character, url: string) => {
@@ -168,6 +207,7 @@ export default function SeedanceCharacters() {
     const urls = imageList(c)
     sessionStorage.setItem('seedance_pending_character', JSON.stringify({
       id: c.id, image_url: c.image_url, image_urls: urls, name: c.name,
+      angles: (c.meta?.angles && typeof c.meta.angles === 'object') ? c.meta.angles : {},
     }))
     sessionStorage.setItem('seedance_pending_mode', 'reference')
     navigate('/seedance')
@@ -222,6 +262,16 @@ export default function SeedanceCharacters() {
             <input value={uploadName} onChange={e => setUploadName(e.target.value)}
               placeholder="이름 (예: 20대 여성 모델 A) — 선택"
               disabled={uploading} style={inputSt} />
+            <div style={{ height: 8 }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', flexShrink: 0 }}>
+                사진 각도
+              </span>
+              <select value={uploadAngle} onChange={e => setUploadAngle(e.target.value as Angle)}
+                disabled={uploading} style={{ ...inputSt, width: 'auto', flex: 1 }}>
+                {ANGLES.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
+              </select>
+            </div>
             <div style={{ height: 8 }} />
             <textarea value={uploadDesc} onChange={e => setUploadDesc(e.target.value)}
               placeholder="메모 (인물 특성, 사용 톤 등) — 선택"
@@ -307,70 +357,130 @@ export default function SeedanceCharacters() {
           <div style={{ ...cardSt, padding: 14, alignSelf: 'start', position: 'sticky', top: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
               {editingName ? (
-                <div style={{ flex: 1, marginRight: 8 }}>
+                <div style={{ flex: 1, marginRight: 8, display: 'flex', gap: 6,
+                  alignItems: 'center', flexWrap: 'wrap' }}>
                   <input value={nameDraft} onChange={e => setNameDraft(e.target.value)} autoFocus
-                    style={{ ...inputSt, fontSize: 14, fontWeight: 700 }} />
+                    placeholder="인물 이름"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') { e.preventDefault(); saveMeta(selected) }
+                      else if (e.key === 'Escape') {
+                        setEditingName(false)
+                        setNameDraft(selected.name || '')
+                        setDescDraft(selected.description || '')
+                      }
+                    }}
+                    style={{ ...inputSt, fontSize: 14, fontWeight: 700, flex: 1, minWidth: 120 }} />
+                  <button onClick={() => saveMeta(selected)}
+                    style={{ ...smBtn, flexShrink: 0 }}>저장하기</button>
+                  <button onClick={() => {
+                      setEditingName(false)
+                      setNameDraft(selected.name || '')
+                      setDescDraft(selected.description || '')
+                    }}
+                    style={{ ...smBtnGhost, flexShrink: 0 }}>취소</button>
                 </div>
               ) : (
                 <strong style={{ fontSize: 14, flex: 1 }}>
                   {selected.name || <span style={{ color: 'var(--text-muted)', fontWeight: 500 }}>(이름 없음)</span>}
-                  <button onClick={() => setEditingName(true)}
+                  <button onClick={() => setEditingName(true)} title="이름 수정"
                     style={{ marginLeft: 8, fontSize: 10, color: 'var(--accent)', background: 'none',
-                      border: 'none', cursor: 'pointer' }}>✎</button>
+                      border: 'none', cursor: 'pointer' }}>✎ 수정</button>
                 </strong>
               )}
-              <button onClick={() => setSelected(null)}
-                style={{ background: 'transparent', border: 'none', cursor: 'pointer',
-                  color: 'var(--text-muted)', fontSize: 18 }}>×</button>
+              {!editingName && (
+                <button onClick={() => setSelected(null)}
+                  style={{ background: 'transparent', border: 'none', cursor: 'pointer',
+                    color: 'var(--text-muted)', fontSize: 18 }}>×</button>
+              )}
             </div>
 
             <img src={selected.image_url} alt={selected.name || ''}
               style={{ width: '100%', borderRadius: 8, background: '#000', marginBottom: 8 }} />
 
             <div style={{ marginBottom: 10 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4, gap: 8 }}>
                 <Label>사진 ({imageList(selected).length}장)</Label>
-                <label htmlFor={`add-img-${selected.id}`}
-                  style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)',
-                    border: '1px solid var(--accent)', borderRadius: 4,
-                    padding: '3px 8px', cursor: addingImage ? 'wait' : 'pointer',
-                    opacity: addingImage ? 0.5 : 1 }}>
-                  {addingImage ? '추가 중…' : '+ 사진 추가'}
-                </label>
-                <input id={`add-img-${selected.id}`} type="file" accept="image/*"
-                  disabled={addingImage}
-                  onChange={e => {
-                    const f = e.target.files?.[0]
-                    if (f) addImage(selected, f)
-                    e.target.value = ''
-                  }}
-                  style={{ display: 'none' }} />
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(68px, 1fr))', gap: 6 }}>
-                {imageList(selected).map((u, i) => (
-                  <div key={u + i} style={{ position: 'relative' }}>
-                    <img src={u} alt=""
-                      onClick={() => u !== selected.image_url && setPrimary(selected, u)}
-                      title={u === selected.image_url ? '대표 사진' : '클릭해서 대표로 지정'}
-                      style={{ width: '100%', aspectRatio: '1', objectFit: 'cover',
-                        border: u === selected.image_url ? '2px solid var(--accent)' : '1px solid var(--border)',
-                        borderRadius: 4, background: '#000',
-                        cursor: u === selected.image_url ? 'default' : 'pointer' }} />
-                    {u === selected.image_url && (
-                      <span style={{ position: 'absolute', top: 2, left: 2, padding: '1px 4px',
-                        fontSize: 8, fontWeight: 700, borderRadius: 2,
-                        background: 'var(--accent)', color: '#fff' }}>대표</span>
-                    )}
-                    {imageList(selected).length > 1 && (
-                      <button onClick={() => removeImage(selected, u)}
-                        title="이 사진 제거"
-                        style={{ position: 'absolute', top: 2, right: 2, padding: '0 4px',
-                          fontSize: 10, fontWeight: 700, lineHeight: '14px',
-                          background: 'rgba(0,0,0,0.6)', color: '#fff',
-                          border: 'none', borderRadius: 2, cursor: 'pointer' }}>×</button>
-                    )}
+                {canEdit(selected) && (
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    <select value={addImageAngle} onChange={e => setAddImageAngle(e.target.value as Angle)}
+                      disabled={addingImage}
+                      title="추가할 사진의 각도"
+                      style={{ fontSize: 10, padding: '2px 4px', borderRadius: 4,
+                        border: '1px solid var(--border)', background: 'var(--bg-base)',
+                        color: 'var(--text-body)' }}>
+                      {ANGLES.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
+                    </select>
+                    <label htmlFor={`add-img-${selected.id}`}
+                      style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)',
+                        border: '1px solid var(--accent)', borderRadius: 4,
+                        padding: '3px 8px', cursor: addingImage ? 'wait' : 'pointer',
+                        opacity: addingImage ? 0.5 : 1 }}>
+                      {addingImage ? '추가 중…' : '+ 사진 추가'}
+                    </label>
+                    <input id={`add-img-${selected.id}`} type="file" accept="image/*"
+                      disabled={addingImage}
+                      onChange={e => {
+                        const f = e.target.files?.[0]
+                        if (f) addImage(selected, f, addImageAngle)
+                        e.target.value = ''
+                      }}
+                      style={{ display: 'none' }} />
                   </div>
-                ))}
+                )}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(72px, 1fr))', gap: 6 }}>
+                {imageList(selected).map((u, i) => {
+                  const editable = canEdit(selected)
+                  return (
+                    <div key={u + i}>
+                      <div style={{ position: 'relative' }}>
+                        <img src={u} alt=""
+                          onClick={() => editable && u !== selected.image_url && setPrimary(selected, u)}
+                          title={u === selected.image_url ? '대표 사진' : (editable ? '클릭해서 대표로 지정' : '')}
+                          style={{ width: '100%', aspectRatio: '1', objectFit: 'cover',
+                            border: u === selected.image_url ? '2px solid var(--accent)' : '1px solid var(--border)',
+                            borderRadius: 4, background: '#000',
+                            cursor: (editable && u !== selected.image_url) ? 'pointer' : 'default' }} />
+                        {u === selected.image_url && (
+                          <span style={{ position: 'absolute', top: 2, left: 2, padding: '1px 4px',
+                            fontSize: 8, fontWeight: 700, borderRadius: 2,
+                            background: 'var(--accent)', color: '#fff' }}>대표</span>
+                        )}
+                        {getAngle(selected, u) && (
+                          <span style={{ position: 'absolute', bottom: 2, left: 2, padding: '1px 4px',
+                            fontSize: 8, fontWeight: 700, borderRadius: 2,
+                            background: 'rgba(0,0,0,0.7)', color: '#fff' }}>
+                            {ANGLE_LABEL[getAngle(selected, u)]}
+                          </span>
+                        )}
+                        {editable && imageList(selected).length > 1 && (
+                          <button onClick={() => removeImage(selected, u)}
+                            title="이 사진 제거"
+                            style={{ position: 'absolute', top: 2, right: 2, padding: '0 4px',
+                              fontSize: 10, fontWeight: 700, lineHeight: '14px',
+                              background: 'rgba(0,0,0,0.6)', color: '#fff',
+                              border: 'none', borderRadius: 2, cursor: 'pointer' }}>×</button>
+                        )}
+                      </div>
+                      {editable ? (
+                        <select value={getAngle(selected, u)}
+                          onChange={e => setAngle(selected, u, e.target.value as Angle | '')}
+                          title="이 사진의 각도"
+                          style={{ width: '100%', fontSize: 9, padding: '1px 2px', marginTop: 2,
+                            borderRadius: 3, border: '1px solid var(--border)',
+                            background: 'var(--bg-base)', color: 'var(--text-body)' }}>
+                          <option value="">미지정</option>
+                          {ANGLES.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
+                        </select>
+                      ) : (
+                        <div style={{ fontSize: 9, textAlign: 'center', marginTop: 2,
+                          color: 'var(--text-muted)' }}>
+                          {ANGLE_LABEL[getAngle(selected, u)] || '–'}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             </div>
 
@@ -384,28 +494,20 @@ export default function SeedanceCharacters() {
               </div>
             )}
 
-            <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {editingName ? (
-                <>
-                  <button onClick={() => saveMeta(selected)} style={smBtn}>저장</button>
-                  <button onClick={() => { setEditingName(false); setNameDraft(selected.name || ''); setDescDraft(selected.description || '') }}
-                    style={smBtnGhost}>취소</button>
-                </>
-              ) : (
-                <>
-                  <button onClick={() => useInGen(selected)} style={smBtn}>🧑 인물로 사용 →</button>
-                  <button onClick={() => { navigator.clipboard.writeText(selected.image_url); alert('URL 복사됨') }}
-                    style={smBtnGhost}>URL 복사</button>
-                  {!selected._shared && me && selected.created_by === me.id && (
-                    <button onClick={() => setShareModalFor(selected)} style={smBtnGhost}>👥 공유</button>
-                  )}
-                  {!selected._shared && (
-                    <button onClick={() => remove(selected)}
-                      style={{ ...smBtnGhost, color: 'var(--error)', borderColor: 'var(--error)' }}>삭제</button>
-                  )}
-                </>
-              )}
-            </div>
+            {!editingName && (
+              <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button onClick={() => useInGen(selected)} style={smBtn}>🧑 인물로 사용 →</button>
+                <button onClick={() => { navigator.clipboard.writeText(selected.image_url); alert('URL 복사됨') }}
+                  style={smBtnGhost}>URL 복사</button>
+                {!selected._shared && me && selected.created_by === me.id && (
+                  <button onClick={() => setShareModalFor(selected)} style={smBtnGhost}>👥 공유</button>
+                )}
+                {!selected._shared && (
+                  <button onClick={() => remove(selected)}
+                    style={{ ...smBtnGhost, color: 'var(--error)', borderColor: 'var(--error)' }}>삭제</button>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

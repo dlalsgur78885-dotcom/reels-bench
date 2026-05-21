@@ -36,6 +36,7 @@ import {
 } from '../../shared/ipc'
 import { probeCapabilities } from '../ffmpeg/capabilities'
 import {
+  colorAdjustToFfmpeg,
   filterPresetToFfmpeg,
   transitionKindToXfade
 } from '../../shared/filterPresets'
@@ -45,6 +46,7 @@ import {
   isCaptionClip,
   isMediaClip,
   getClipTransform,
+  getClipColorAdjust,
   isIdentityTransform,
   hasTransformKeyframes,
   getClipCropRect,
@@ -663,6 +665,14 @@ function buildVideoSegmentChain(
   // 2. Filter preset (eq/hue chain).
   const fp = filterPresetToFfmpeg(seg.clip.filterPreset, seg.clip.filterIntensity ?? 1)
   if (fp) parts.push(fp)
+  // 2.5. MANUAL COLOR ADJUST (Phase 3.7). Stacks AFTER the filter preset
+  //      (preset look first, manual brightness/contrast/saturation/temperature
+  //      second) — same order as the PreviewCanvas CSS composition.
+  //      CRITICAL INVARIANT: getClipColorAdjust returns null for an absent OR
+  //      neutral adjust → colorAdjustToFfmpeg returns '' → the `if` is skipped
+  //      and `parts` stays byte-identical to the pre-Phase-3.7 graph.
+  const ca = colorAdjustToFfmpeg(getClipColorAdjust(seg.clip))
+  if (ca) parts.push(ca)
   // 3. fps normalization (so xfade durations line up cleanly, and all layers
   //    share the same timebase before overlay).
   parts.push(`fps=${preset.fps}`)

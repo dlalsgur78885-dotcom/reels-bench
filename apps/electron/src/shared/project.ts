@@ -95,6 +95,24 @@ export interface CropRect {
   h: number
 }
 
+/**
+ * Phase 3.7 — static per-clip manual color adjustment. Four normalized signed
+ * sliders, range -100..100, 0 = neutral (no-op). STACKS on top of
+ * `filterPreset` (preset look applied first, manual adjust second). STATIC
+ * ONLY — color-adjust keyframing is out of scope. Absent / partially-absent =
+ * neutral; back-filled lazily by `getClipColorAdjust` (null = neutral).
+ *   - brightness:  -100 dark        .. +100 bright
+ *   - contrast:    -100 flat        .. +100 harsh
+ *   - saturation:  -100 grayscale   .. +100 oversaturated
+ *   - temperature: -100 cool/blue   .. +100 warm/orange
+ */
+export interface ColorAdjust {
+  brightness: number
+  contrast: number
+  saturation: number
+  temperature: number
+}
+
 export type FilterPreset =
   | 'none'
   | 'cinematic'
@@ -169,6 +187,15 @@ export interface VideoAudioClip {
    * malformed rect is back-filled lazily by `getClipCropRect` (null = no crop).
    */
   cropRect?: CropRect
+  // -----------------------------------------------------------------
+  // Phase 3.7 — static manual color adjustment (optional, BC-safe).
+  // -----------------------------------------------------------------
+  /**
+   * Static manual color-adjust sliders. Absent = neutral (no adjustment).
+   * STACKS with `filterPreset`: preset applied first, then this. STATIC ONLY.
+   * Back-filled lazily by `getClipColorAdjust` (null = neutral). No migration.
+   */
+  colorAdjust?: ColorAdjust
 }
 
 /** Visual preset for a caption block. */
@@ -361,6 +388,20 @@ export const MIN_KEYFRAME_GAP_MS = 30
 export const IDENTITY_CROP: CropRect = { x: 0, y: 0, w: 1, h: 1 }
 /** Smallest allowed crop edge as a fraction of the source dimension. */
 export const MIN_CROP_SIZE = 0.05
+
+// ---------------------------------------------------------------------------
+// Manual color-adjust constants (Phase 3.7).
+// ---------------------------------------------------------------------------
+/** Neutral color adjustment = identity (no-op). */
+export const NEUTRAL_COLOR_ADJUST: ColorAdjust = {
+  brightness: 0,
+  contrast: 0,
+  saturation: 0,
+  temperature: 0
+}
+/** Min/max for every color-adjust field (signed, 0 = neutral). */
+export const MIN_COLOR_ADJUST = -100
+export const MAX_COLOR_ADJUST = 100
 
 export interface ProbeResult {
   durationMs: number
@@ -558,4 +599,40 @@ export function getClipCropRect(clip: VideoAudioClip): CropRect | null {
   y = Math.max(0, y)
   const rect = { x, y, w, h }
   return isIdentityCrop(rect) ? null : rect
+}
+
+// ---------------------------------------------------------------------------
+// Color-adjust helpers (Phase 3.7) — pure, importable from any layer.
+// ---------------------------------------------------------------------------
+
+/** True iff every field is neutral (0) — callers can cheaply skip work. */
+export function isNeutralColorAdjust(c: ColorAdjust): boolean {
+  return (
+    c.brightness === 0 &&
+    c.contrast === 0 &&
+    c.saturation === 0 &&
+    c.temperature === 0
+  )
+}
+
+/**
+ * Resolve a clip's effective color adjustment, or null when neutral. Defensive:
+ * the clip may arrive over IPC unvalidated, so every field is coerced finite
+ * (non-finite → 0) and clamped to [MIN_COLOR_ADJUST, MAX_COLOR_ADJUST]. A
+ * neutral (all-zero) result returns null so callers skip work.
+ */
+export function getClipColorAdjust(clip: VideoAudioClip): ColorAdjust | null {
+  const c = clip.colorAdjust
+  if (!c) return null
+  const f = (v: number): number => {
+    const n = Number.isFinite(v) ? v : 0
+    return Math.min(MAX_COLOR_ADJUST, Math.max(MIN_COLOR_ADJUST, n))
+  }
+  const adj: ColorAdjust = {
+    brightness: f(c.brightness),
+    contrast: f(c.contrast),
+    saturation: f(c.saturation),
+    temperature: f(c.temperature)
+  }
+  return isNeutralColorAdjust(adj) ? null : adj
 }

@@ -5,7 +5,7 @@
  * Preview values are deliberately cheap; the real "look" is applied at export
  * via the `toFfmpegFilter()` helper which builds eq/hue/curves chains.
  */
-import type { FilterPreset } from './project'
+import type { ColorAdjust, FilterPreset } from './project'
 
 /** CSS `filter` string for the preview canvas. Returns empty for 'none'. */
 export function filterPresetToCss(
@@ -172,4 +172,80 @@ export function transitionKindToXfade(kind: string): string {
     default:
       return 'fade'
   }
+}
+
+// ---------------------------------------------------------------------------
+// Manual color adjustment (Phase 3.7) — shared CSS / ffmpeg translation.
+// brightness/contrast/saturation/temperature are -100..100, 0 = neutral.
+// Preview (CSS) and export (ffmpeg) MUST agree — keep the maths in lockstep.
+// ---------------------------------------------------------------------------
+
+export const COLOR_ADJUST_LABELS: Record<keyof ColorAdjust, string> = {
+  brightness: '밝기',
+  contrast: '대비',
+  saturation: '채도',
+  temperature: '색온도'
+}
+
+/**
+ * CSS `filter` fragment for a manual color adjustment. Returns '' for a
+ * neutral / null adjust. The caller concatenates this AFTER filterPresetToCss
+ * output (preset look first, manual adjust second). CSS has no native colour
+ * temperature — it is approximated with sepia/hue-rotate (coarse by design).
+ */
+export function colorAdjustToCss(adj: ColorAdjust | null | undefined): string {
+  if (!adj) return ''
+  const parts: string[] = []
+  if (adj.brightness !== 0) {
+    parts.push(`brightness(${(1 + adj.brightness / 200).toFixed(3)})`)
+  }
+  if (adj.contrast !== 0) {
+    parts.push(`contrast(${(1 + adj.contrast / 200).toFixed(3)})`)
+  }
+  if (adj.saturation !== 0) {
+    parts.push(`saturate(${(1 + adj.saturation / 100).toFixed(3)})`)
+  }
+  if (adj.temperature > 0) {
+    parts.push(
+      `sepia(${((adj.temperature / 100) * 0.5).toFixed(3)})`,
+      `saturate(${(1 + (adj.temperature / 100) * 0.15).toFixed(3)})`
+    )
+  } else if (adj.temperature < 0) {
+    parts.push(
+      `hue-rotate(${((adj.temperature / 100) * 25).toFixed(2)}deg)`,
+      `saturate(${(1 - (Math.abs(adj.temperature) / 100) * 0.1).toFixed(3)})`
+    )
+  }
+  return parts.join(' ')
+}
+
+/**
+ * ffmpeg filter-chain fragment for a manual color adjustment. No leading /
+ * trailing comma — caller chains it. Returns '' for a neutral / null adjust.
+ * brightness/contrast/saturation → one `eq=`; temperature → `colortemperature=`
+ * (standard ffmpeg ≥ 4.3; lower Kelvin = warmer). The caller places this
+ * AFTER filterPresetToFfmpeg output.
+ */
+export function colorAdjustToFfmpeg(
+  adj: ColorAdjust | null | undefined
+): string {
+  if (!adj) return ''
+  const chain: string[] = []
+  const eqParams: string[] = []
+  if (adj.brightness !== 0) {
+    eqParams.push(`brightness=${(adj.brightness / 200).toFixed(4)}`)
+  }
+  if (adj.contrast !== 0) {
+    eqParams.push(`contrast=${(1 + adj.contrast / 100).toFixed(4)}`)
+  }
+  if (adj.saturation !== 0) {
+    eqParams.push(`saturation=${(1 + adj.saturation / 100).toFixed(4)}`)
+  }
+  if (eqParams.length > 0) chain.push(`eq=${eqParams.join(':')}`)
+  if (adj.temperature !== 0) {
+    // Map -100..100 → 9000K..4000K (neutral 6500K at 0). n>0 warmer = lower K.
+    const kelvin = Math.round(6500 - (adj.temperature / 100) * 2500)
+    chain.push(`colortemperature=temperature=${kelvin}`)
+  }
+  return chain.join(',')
 }

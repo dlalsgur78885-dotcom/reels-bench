@@ -7,6 +7,7 @@ import {
   DEFAULT_TRANSITION_MS,
   IDENTITY_CROP,
   MAX_CLIP_SPEED,
+  MAX_COLOR_ADJUST,
   MAX_GAIN_DB,
   MAX_KEYFRAMES_PER_CLIP,
   MAX_TRANSFORM_OFFSET,
@@ -16,6 +17,7 @@ import {
   MAX_VIDEO_TRACKS,
   MIN_CLIP_MS,
   MIN_CLIP_SPEED,
+  MIN_COLOR_ADJUST,
   MIN_CROP_SIZE,
   MIN_GAIN_DB,
   MIN_KEYFRAME_GAP_MS,
@@ -23,9 +25,11 @@ import {
   MIN_TRANSFORM_ROTATION,
   MIN_TRANSFORM_SCALE,
   MIN_TRANSITION_MS,
+  NEUTRAL_COLOR_ADJUST,
   type AspectRatio,
   type CaptionClip,
   type Clip,
+  type ColorAdjust,
   type ClipTransform,
   type CropRect,
   type FilterPreset,
@@ -41,7 +45,8 @@ import {
   isCaptionClip,
   isIdentityCrop,
   isIdentityTransform,
-  isMediaClip
+  isMediaClip,
+  isNeutralColorAdjust
 } from '../../../shared/project'
 import type { SilenceRange } from '../../../shared/ipc'
 
@@ -126,6 +131,25 @@ function clampCropRect(c: CropRect): CropRect {
 }
 
 /**
+ * Clamp a color adjust — clamps every field to [MIN_COLOR_ADJUST,
+ * MAX_COLOR_ADJUST] and coerces non-finite values to 0 (neutral). Used by
+ * `setClipColorAdjust` so the stored object is already canonical
+ * (getClipColorAdjust is then idempotent). Mirrors `clampCropRect`.
+ */
+function clampColorAdjust(c: ColorAdjust): ColorAdjust {
+  const f = (v: number): number => {
+    const n = Number.isFinite(v) ? v : 0
+    return Math.min(MAX_COLOR_ADJUST, Math.max(MIN_COLOR_ADJUST, n))
+  }
+  return {
+    brightness: f(c.brightness),
+    contrast: f(c.contrast),
+    saturation: f(c.saturation),
+    temperature: f(c.temperature)
+  }
+}
+
+/**
  * Normalize a keyframe list (Phase 3.5): clamp each keyframe transform, sort
  * ascending by atMs, then dedup — keyframes within MIN_KEYFRAME_GAP_MS of the
  * previously-kept one REPLACE it (last write wins). The result is the
@@ -176,6 +200,8 @@ function migrateLoadedProject(p: Project): Project {
   // simply round-trip through persistence untouched.
   // Phase 3.6 — `cropRect` is likewise optional + back-filled lazily by
   // `getClipCropRect` (null = no crop). No migration step needed.
+  // Phase 3.7 — `colorAdjust` is optional, back-filled lazily by
+  // `getClipColorAdjust` (null = neutral). No migration step needed.
   // Ensure a caption track exists. If none, append one.
   const hasCaption = tracks.some((t) => t.kind === 'caption')
   const migratedTracks = hasCaption
@@ -313,6 +339,17 @@ export interface ProjectStore {
   setClipCrop(clipId: string, partial: Partial<CropRect>): void
   /** Clear a media clip's crop (back to full frame). */
   resetClipCrop(clipId: string): void
+
+  // --- Manual color adjustment (Phase 3.7, media clips only) ---
+  /**
+   * Merge a partial color adjust onto a media clip, clamping each field to
+   * [MIN_COLOR_ADJUST, MAX_COLOR_ADJUST]. If the merged result is neutral
+   * (all zero), `colorAdjust` is set to `undefined` (keeps persisted JSON +
+   * undo snapshots lean). No-op for caption clips and for non-finite inputs.
+   */
+  setClipColorAdjust(clipId: string, partial: Partial<ColorAdjust>): void
+  /** Clear a media clip's color adjustment (back to neutral). */
+  resetClipColorAdjust(clipId: string): void
 
   // --- Transform keyframe animation (Phase 3.5, media clips only) ---
   /**
@@ -1208,6 +1245,60 @@ export const useProjectStore = create<ProjectStore>()(
       if (!isMediaClip(c)) return t
       const clips = [...t.clips]
       clips[idx] = { ...c, cropRect: undefined }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // --------------------------------------------------------------------
+  // Manual color adjustment (Phase 3.7) — media clips only.
+  // --------------------------------------------------------------------
+  setClipColorAdjust(clipId, partial): void {
+    if (!partial || typeof partial !== 'object') return
+    // Reject any non-finite numeric input outright (caller bug → no-op).
+    for (const v of Object.values(partial)) {
+      if (v !== undefined && !Number.isFinite(v)) return
+    }
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      // Color adjust is a media-only concept; silently ignore captions.
+      if (!isMediaClip(c)) return t
+      const merged = clampColorAdjust({
+        ...(c.colorAdjust ?? NEUTRAL_COLOR_ADJUST),
+        ...partial
+      })
+      const updated: VideoAudioClip = isNeutralColorAdjust(merged)
+        ? { ...c, colorAdjust: undefined }
+        : { ...c, colorAdjust: merged }
+      const clips = [...t.clips]
+      clips[idx] = updated
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  resetClipColorAdjust(clipId: string): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, colorAdjust: undefined }
       changed = true
       return { ...t, clips }
     })

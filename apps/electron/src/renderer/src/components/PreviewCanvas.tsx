@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  getClipColorAdjust,
   getClipCropRect,
   getTransformAt,
   isCaptionClip,
@@ -12,7 +13,7 @@ import {
   type Track,
   type VideoAudioClip
 } from '../../../shared/project'
-import { filterPresetToCss } from '../../../shared/filterPresets'
+import { colorAdjustToCss, filterPresetToCss } from '../../../shared/filterPresets'
 import { useTimelineUi } from '../store/timelineUi'
 import { toMediaUrl } from '../lib/mediaUrl'
 import {
@@ -953,6 +954,20 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           // the <video> is rendered exactly as before (no wrapper) so the DOM
           // stays byte-identical for the regression-critical specs.
           const cr = clip ? getClipCropRect(clip) : null
+          // Phase 3.7 — manual color-adjust STACKS on top of the filter
+          // preset. Compute the combined CSS `filter` string ONCE here so the
+          // cropped + non-cropped paths stay in lockstep. INVARIANT: for a
+          // clip with no `colorAdjust`, colorAdjustToCss(null) === '' → it is
+          // dropped → the string is byte-identical to the prior preset-only
+          // value (regression-critical — see export.spec.ts).
+          const combinedFilter = clip
+            ? [
+                filterPresetToCss(clip.filterPreset, clip.filterIntensity ?? 1),
+                colorAdjustToCss(getClipColorAdjust(clip))
+              ]
+                .filter((s) => s.length > 0)
+                .join(' ') || 'none'
+            : 'none'
           const videoEl = (
             <video
               key={track.id}
@@ -969,6 +984,9 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               data-layer-index={layer ? layer.layerIndex : -1}
               data-track-audible={trackIsAudible ? 'true' : 'false'}
               data-filter-preset={clip?.filterPreset ?? 'none'}
+              data-color-adjust={
+                clip && getClipColorAdjust(clip) ? 'true' : 'false'
+              }
               playsInline
               muted={false}
               style={
@@ -984,12 +1002,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                       top: `${(-cr.y * 100) / cr.h}%`,
                       objectFit: 'contain',
                       background: 'transparent',
-                      filter: clip
-                        ? filterPresetToCss(
-                            clip.filterPreset,
-                            clip.filterIntensity ?? 1
-                          ) || 'none'
-                        : 'none'
+                      filter: combinedFilter
                     }
                   : {
                       position: 'absolute',
@@ -1003,12 +1016,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                       transformOrigin: 'center center',
                       transform: cssTransform,
                       opacity: t ? t.opacity : 1,
-                      filter: clip
-                        ? filterPresetToCss(
-                            clip.filterPreset,
-                            clip.filterIntensity ?? 1
-                          ) || 'none'
-                        : 'none'
+                      filter: combinedFilter
                     }
               }
             />

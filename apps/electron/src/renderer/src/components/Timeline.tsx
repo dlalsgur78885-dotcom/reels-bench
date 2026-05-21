@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ulid } from 'ulid'
 import {
+  getClipColorAdjust,
   getClipCropRect,
   getClipDuration,
   getClipSourceText,
@@ -390,6 +391,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const resetClipTransform = useProjectStore((s) => s.resetClipTransform)
   const setClipCrop = useProjectStore((s) => s.setClipCrop)
   const resetClipCrop = useProjectStore((s) => s.resetClipCrop)
+  const setClipColorAdjust = useProjectStore((s) => s.setClipColorAdjust)
+  const resetClipColorAdjust = useProjectStore((s) => s.resetClipColorAdjust)
   const addTransformKeyframe = useProjectStore((s) => s.addTransformKeyframe)
   const updateTransformKeyframe = useProjectStore(
     (s) => s.updateTransformKeyframe
@@ -1235,6 +1238,35 @@ export function Timeline(props: TimelineProps): JSX.Element {
                           ▢
                         </div>
                       )}
+                    {/* Color-adjust indicator (Phase 3.7) — pink badge just
+                        below the filter FX badge (top-right). Distinct
+                        position so it never collides with the transform
+                        (bottom-right), keyframe (bottom-left), crop
+                        (top-left) or filter FX (top-right) badges. Shown when
+                        the clip has a non-neutral manual color adjustment. */}
+                    {isMediaClip(clip) &&
+                      getClipColorAdjust(clip) !== null && (
+                        <div
+                          data-testid="coloradjust-indicator"
+                          data-clip-id={clip.id}
+                          style={{
+                            position: 'absolute',
+                            right: 4,
+                            top: 22,
+                            padding: '1px 5px',
+                            borderRadius: 3,
+                            background: 'rgba(236, 72, 153, 0.95)',
+                            color: '#f5f5f5',
+                            fontSize: 9,
+                            fontWeight: 700,
+                            pointerEvents: 'none',
+                            zIndex: 4
+                          }}
+                          title="색보정 적용됨"
+                        >
+                          ◐
+                        </div>
+                      )}
                     {/* Keyframe marker row (Phase 3.5) — one diamond per
                         keyframe, positioned by clip-relative atMs. Click →
                         seek; horizontal drag → re-time; right/Alt-click →
@@ -1382,6 +1414,22 @@ export function Timeline(props: TimelineProps): JSX.Element {
                   }
                   return undefined
                 })()
+              : undefined
+          }
+          onColorAdjustChange={
+            isMediaClip(ctxClip)
+              ? (partial): void => {
+                  // Color adjust is STATIC — no keyframe redirect. Goes
+                  // straight to the store action.
+                  setClipColorAdjust(ctxClip.id, partial)
+                }
+              : undefined
+          }
+          onColorAdjustReset={
+            isMediaClip(ctxClip)
+              ? (): void => {
+                  resetClipColorAdjust(ctxClip.id)
+                }
               : undefined
           }
           onAddKeyframe={

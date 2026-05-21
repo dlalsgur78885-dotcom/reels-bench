@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type {
   Clip,
   ClipTransform,
+  ColorAdjust,
   CropRect,
   FilterPreset,
   TransitionKind
@@ -9,25 +10,30 @@ import type {
 import {
   DEFAULT_TRANSITION_MS,
   FILTER_PRESETS,
+  getClipColorAdjust,
   getClipCropRect,
   getTransformAt,
   IDENTITY_CROP,
   isCaptionClip,
   isMediaClip,
   MAX_CLIP_SPEED,
+  MAX_COLOR_ADJUST,
   MAX_TRANSFORM_OFFSET,
   MAX_TRANSFORM_ROTATION,
   MAX_TRANSFORM_SCALE,
   MAX_TRANSITION_MS,
   MIN_CLIP_SPEED,
+  MIN_COLOR_ADJUST,
   MIN_CROP_SIZE,
   MIN_TRANSFORM_OFFSET,
   MIN_TRANSFORM_ROTATION,
   MIN_TRANSFORM_SCALE,
   MIN_TRANSITION_MS,
+  NEUTRAL_COLOR_ADJUST,
   TRANSITION_KINDS
 } from '../../../shared/project'
 import {
+  COLOR_ADJUST_LABELS,
   FILTER_PRESET_LABELS,
   TRANSITION_LABELS,
   filterPresetToCss
@@ -63,6 +69,11 @@ interface ClipContextMenuProps {
   onCropReset?: () => void
   /** Source media aspect ratio (width / height) — drives the crop presets. */
   sourceAspect?: number
+  // --- Phase 3.7 manual color adjustment (media clips only) ---
+  /** Merge a partial color adjust onto the clip. Media clips only. */
+  onColorAdjustChange?: (partial: Partial<ColorAdjust>) => void
+  /** Reset the clip's color adjustment to neutral. Media clips only. */
+  onColorAdjustReset?: () => void
   // --- Phase 3.5 keyframe editing (media clips only) ---
   /** Add (or update) a transform keyframe at the current playhead. */
   onAddKeyframe?: () => void
@@ -296,6 +307,8 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
     onCropChange,
     onCropReset,
     sourceAspect,
+    onColorAdjustChange,
+    onColorAdjustReset,
     onAddKeyframe,
     onRemoveKeyframeAtPlayhead,
     keyframeCount,
@@ -308,6 +321,7 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
   const [showFilter, setShowFilter] = useState(false)
   const [showTransform, setShowTransform] = useState(false)
   const [showCrop, setShowCrop] = useState(false)
+  const [showColorAdjust, setShowColorAdjust] = useState(false)
 
   // Always recompute on each render so playhead/clip changes drive the gate.
   const rows = isCaptionClip(clip) ? captionRows() : mediaRows(clip, playheadMs)
@@ -334,6 +348,10 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
   const cropRect: CropRect = isMediaClip(clip)
     ? getClipCropRect(clip) ?? IDENTITY_CROP
     : IDENTITY_CROP
+  // Phase 3.7 — current color adjust (neutral identity when none set).
+  const colorAdjust: ColorAdjust = isMediaClip(clip)
+    ? getClipColorAdjust(clip) ?? NEUTRAL_COLOR_ADJUST
+    : NEUTRAL_COLOR_ADJUST
   // Source aspect ratio (W/H). Fall back to 1 when unknown so the centered
   // max-area preset math stays finite.
   const srcAspect =
@@ -999,6 +1017,90 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                   style={styles.transformResetBtn}
                   data-testid="menu-crop-reset"
                   onClick={() => onCropReset()}
+                >
+                  초기화
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Color-adjust sub-menu (Phase 3.7) — media clips only. Static
+          per-clip manual brightness/contrast/saturation/temperature
+          sliders; STACKS on top of the 필터 preset. Modeled on the 크롭
+          sub-menu. */}
+      {isMediaClip(clip) && onColorAdjustChange && (
+        <>
+          <div style={styles.separator} />
+          <div
+            role="menuitem"
+            data-testid="menu-coloradjust"
+            style={styles.item}
+            onMouseEnter={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = '#2a2a2a'
+            }}
+            onMouseLeave={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = 'transparent'
+            }}
+            onClick={() => setShowColorAdjust((v) => !v)}
+          >
+            <span>조정{showColorAdjust ? '' : '…'}</span>
+            <span style={styles.shortcut}>
+              {
+                (['brightness', 'contrast', 'saturation', 'temperature'] as const).filter(
+                  (k) => colorAdjust[k] !== 0
+                ).length
+              }
+            </span>
+          </div>
+          {showColorAdjust && (
+            <div style={styles.speedPanel} data-testid="menu-coloradjust-panel">
+              {(
+                ['brightness', 'contrast', 'saturation', 'temperature'] as const
+              ).map((k) => (
+                <div key={k} style={styles.transformRow}>
+                  <span style={styles.transformLabel}>
+                    {COLOR_ADJUST_LABELS[k]}
+                  </span>
+                  <input
+                    type="range"
+                    min={MIN_COLOR_ADJUST}
+                    max={MAX_COLOR_ADJUST}
+                    step={1}
+                    value={colorAdjust[k]}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10)
+                      if (!Number.isFinite(v)) return
+                      onColorAdjustChange({ [k]: v })
+                    }}
+                    style={styles.slider}
+                    data-testid={`menu-coloradjust-${k}`}
+                    aria-label={COLOR_ADJUST_LABELS[k]}
+                  />
+                  <input
+                    type="number"
+                    min={MIN_COLOR_ADJUST}
+                    max={MAX_COLOR_ADJUST}
+                    step={1}
+                    value={colorAdjust[k]}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10)
+                      if (!Number.isFinite(v)) return
+                      onColorAdjustChange({ [k]: v })
+                    }}
+                    style={styles.speedInput}
+                    data-testid={`menu-coloradjust-${k}-input`}
+                    aria-label={`${COLOR_ADJUST_LABELS[k]} 숫자`}
+                  />
+                </div>
+              ))}
+              {onColorAdjustReset && (
+                <button
+                  type="button"
+                  style={styles.transformResetBtn}
+                  data-testid="menu-coloradjust-reset"
+                  onClick={() => onColorAdjustReset()}
                 >
                   초기화
                 </button>

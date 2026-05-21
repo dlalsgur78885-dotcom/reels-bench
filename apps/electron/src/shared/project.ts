@@ -80,6 +80,21 @@ export interface TransformKeyframe {
   transform: ClipTransform
 }
 
+/**
+ * Phase 3.6 — static per-clip SOURCE crop. A rectangle of the clip's SOURCE
+ * frame to KEEP; everything outside is discarded. Coordinates are FRACTIONS
+ * of source width/height: x/y = top-left (0..1), w/h = size (0..1). Crop
+ * changes the source SAMPLING rectangle — it does NOT move the result on the
+ * canvas (that is `transform`'s job); the cropped region is re-fit into the
+ * canvas slot where the full frame used to sit. Absent = no crop.
+ */
+export interface CropRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
 export type FilterPreset =
   | 'none'
   | 'cinematic'
@@ -145,6 +160,15 @@ export interface VideoAudioClip {
    * clip-relative; the store keeps entries sorted ascending and deduped.
    */
   transformKeyframes?: TransformKeyframe[]
+  // -----------------------------------------------------------------
+  // Phase 3.6 — static SOURCE crop (optional, BC-safe).
+  // -----------------------------------------------------------------
+  /**
+   * Static source-crop rectangle (fractions of source W/H). Absent = no crop
+   * (full frame). STATIC ONLY — crop keyframing is out of scope. A missing /
+   * malformed rect is back-filled lazily by `getClipCropRect` (null = no crop).
+   */
+  cropRect?: CropRect
 }
 
 /** Visual preset for a caption block. */
@@ -330,6 +354,14 @@ export const MAX_KEYFRAMES_PER_CLIP = 24
 /** Two keyframes closer than this (clip-relative ms) are deduped/merged. */
 export const MIN_KEYFRAME_GAP_MS = 30
 
+// ---------------------------------------------------------------------------
+// Crop constants (Phase 3.6).
+// ---------------------------------------------------------------------------
+/** Full-frame crop = identity (no crop). */
+export const IDENTITY_CROP: CropRect = { x: 0, y: 0, w: 1, h: 1 }
+/** Smallest allowed crop edge as a fraction of the source dimension. */
+export const MIN_CROP_SIZE = 0.05
+
 export interface ProbeResult {
   durationMs: number
   width: number
@@ -486,4 +518,44 @@ export function getTransformAt(
     rotation: lerp(a.rotation, b.rotation),
     opacity: lerp(a.opacity, b.opacity)
   })
+}
+
+// ---------------------------------------------------------------------------
+// Crop helpers (Phase 3.6) — pure, importable from any layer.
+// ---------------------------------------------------------------------------
+
+/** True iff the rect keeps the whole source frame (no crop). */
+export function isIdentityCrop(c: CropRect): boolean {
+  const EPS = 1e-4
+  return (
+    Math.abs(c.x) < EPS &&
+    Math.abs(c.y) < EPS &&
+    Math.abs(c.w - 1) < EPS &&
+    Math.abs(c.h - 1) < EPS
+  )
+}
+
+/**
+ * Resolve a clip's effective crop rectangle, or null when the clip has no
+ * meaningful crop. Defensive: the clip may arrive over IPC unvalidated, so
+ * every field is coerced finite, clamped to [0,1], w/h floored at
+ * MIN_CROP_SIZE, and the rect pushed inside the source frame (x+w<=1,
+ * y+h<=1). An identity (full-frame) result returns null so callers can
+ * cheaply skip work.
+ */
+export function getClipCropRect(clip: VideoAudioClip): CropRect | null {
+  const c = clip.cropRect
+  if (!c) return null
+  const clamp01 = (v: number, d: number): number =>
+    Math.min(1, Math.max(0, Number.isFinite(v) ? v : d))
+  const w = Math.max(MIN_CROP_SIZE, clamp01(c.w, 1))
+  const h = Math.max(MIN_CROP_SIZE, clamp01(c.h, 1))
+  let x = clamp01(c.x, 0)
+  let y = clamp01(c.y, 0)
+  if (x + w > 1) x = 1 - w
+  if (y + h > 1) y = 1 - h
+  x = Math.max(0, x)
+  y = Math.max(0, y)
+  const rect = { x, y, w, h }
+  return isIdentityCrop(rect) ? null : rect
 }

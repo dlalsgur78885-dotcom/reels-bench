@@ -47,6 +47,7 @@ import {
   getClipTransform,
   isIdentityTransform,
   hasTransformKeyframes,
+  getClipCropRect,
   MAX_TRANSFORM_OFFSET,
   MAX_TRANSFORM_ROTATION,
   MAX_TRANSFORM_SCALE,
@@ -665,6 +666,23 @@ function buildVideoSegmentChain(
   // 3. fps normalization (so xfade durations line up cleanly, and all layers
   //    share the same timebase before overlay).
   parts.push(`fps=${preset.fps}`)
+
+  // 3.5. SOURCE CROP (Phase 3.6). crop samples the source frame; it MUST run
+  //      before the step-4 aspect-fit + blurred-bg pad so the blurred gutters
+  //      and the contain-fit both derive from the cropped region.
+  //      CRITICAL INVARIANT: getClipCropRect returns null for an absent OR
+  //      identity crop — the `if` is skipped and `parts` stays byte-identical.
+  const cropRect = getClipCropRect(seg.clip)
+  if (cropRect) {
+    const cw = cropRect.w.toFixed(6)
+    const ch = cropRect.h.toFixed(6)
+    const cx = cropRect.x.toFixed(6)
+    const cy = cropRect.y.toFixed(6)
+    // floor(iw*w/2)*2 → even width (yuv420p safeguard); same for height.
+    parts.push(
+      `crop=w=floor(iw*${cw}/2)*2:h=floor(ih*${ch}/2)*2:x=iw*${cx}:y=ih*${cy}`
+    )
+  }
 
   const W = preset.width
   const H = preset.height

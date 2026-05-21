@@ -2,13 +2,16 @@ import { useEffect, useRef, useState } from 'react'
 import type {
   Clip,
   ClipTransform,
+  CropRect,
   FilterPreset,
   TransitionKind
 } from '../../../shared/project'
 import {
   DEFAULT_TRANSITION_MS,
   FILTER_PRESETS,
+  getClipCropRect,
   getTransformAt,
+  IDENTITY_CROP,
   isCaptionClip,
   isMediaClip,
   MAX_CLIP_SPEED,
@@ -17,6 +20,7 @@ import {
   MAX_TRANSFORM_SCALE,
   MAX_TRANSITION_MS,
   MIN_CLIP_SPEED,
+  MIN_CROP_SIZE,
   MIN_TRANSFORM_OFFSET,
   MIN_TRANSFORM_ROTATION,
   MIN_TRANSFORM_SCALE,
@@ -52,6 +56,13 @@ interface ClipContextMenuProps {
   onTransformChange?: (partial: Partial<ClipTransform>) => void
   /** Reset the clip's transform to identity. Media clips only. */
   onTransformReset?: () => void
+  // --- Phase 3.6 static source crop (media clips only) ---
+  /** Merge a partial crop rect onto the clip. Media clips only. */
+  onCropChange?: (partial: Partial<CropRect>) => void
+  /** Reset the clip's crop to the full frame. Media clips only. */
+  onCropReset?: () => void
+  /** Source media aspect ratio (width / height) — drives the crop presets. */
+  sourceAspect?: number
   // --- Phase 3.5 keyframe editing (media clips only) ---
   /** Add (or update) a transform keyframe at the current playhead. */
   onAddKeyframe?: () => void
@@ -206,6 +217,32 @@ const styles = {
 
 const SPEED_PRESETS = [0.5, 1, 1.5, 2]
 
+// Phase 3.6 — crop aspect presets. `free` is a no-op affordance; the others
+// carry a target aspect ratio (W/H) that drives a centered max-area crop.
+const CROP_PRESETS: ReadonlyArray<{ id: string; aspect: number | null }> = [
+  { id: 'free', aspect: null },
+  { id: '1:1', aspect: 1 },
+  { id: '4:5', aspect: 4 / 5 },
+  { id: '9:16', aspect: 9 / 16 },
+  { id: '16:9', aspect: 16 / 9 }
+]
+
+/**
+ * Compute a centered, maximum-area crop rect (source fractions) for a target
+ * aspect ratio `aR` (W/H) within a source of aspect `srcAspect` (W/H).
+ */
+function centeredCropForAspect(aR: number, srcAspect: number): CropRect {
+  if (aR >= srcAspect) {
+    // Target is wider (relative to its height) than the source → full width,
+    // shorter height.
+    const h = srcAspect / aR
+    return { x: 0, y: (1 - h) / 2, w: 1, h }
+  }
+  // Target is taller → full height, narrower width.
+  const w = aR / srcAspect
+  return { x: (1 - w) / 2, y: 0, w, h: 1 }
+}
+
 interface MenuRow {
   key: string
   label: string
@@ -256,6 +293,9 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
     onFilterChange,
     onTransformChange,
     onTransformReset,
+    onCropChange,
+    onCropReset,
+    sourceAspect,
     onAddKeyframe,
     onRemoveKeyframeAtPlayhead,
     keyframeCount,
@@ -267,6 +307,7 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
   const [showTransition, setShowTransition] = useState(false)
   const [showFilter, setShowFilter] = useState(false)
   const [showTransform, setShowTransform] = useState(false)
+  const [showCrop, setShowCrop] = useState(false)
 
   // Always recompute on each render so playhead/clip changes drive the gate.
   const rows = isCaptionClip(clip) ? captionRows() : mediaRows(clip, playheadMs)
@@ -289,6 +330,16 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
   const transform: ClipTransform = isMediaClip(clip)
     ? getTransformAt(clip, playheadMs ?? clip.startMs)
     : { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 }
+  // Phase 3.6 — current crop rect (full-frame identity when no crop set).
+  const cropRect: CropRect = isMediaClip(clip)
+    ? getClipCropRect(clip) ?? IDENTITY_CROP
+    : IDENTITY_CROP
+  // Source aspect ratio (W/H). Fall back to 1 when unknown so the centered
+  // max-area preset math stays finite.
+  const srcAspect =
+    sourceAspect && Number.isFinite(sourceAspect) && sourceAspect > 0
+      ? sourceAspect
+      : 1
 
   useEffect(() => {
     const onDown = (e: MouseEvent): void => {
@@ -757,6 +808,197 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                   style={styles.transformResetBtn}
                   data-testid="menu-transform-reset"
                   onClick={() => onTransformReset()}
+                >
+                  초기화
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Crop sub-menu (Phase 3.6) — media clips only. Static per-clip
+          source crop; no keyframes. Modeled on the 변형 sub-menu. */}
+      {isMediaClip(clip) && onCropChange && (
+        <>
+          <div style={styles.separator} />
+          <div
+            role="menuitem"
+            data-testid="menu-crop"
+            style={styles.item}
+            onMouseEnter={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = '#2a2a2a'
+            }}
+            onMouseLeave={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = 'transparent'
+            }}
+            onClick={() => setShowCrop((v) => !v)}
+          >
+            <span>크롭{showCrop ? '' : '…'}</span>
+            <span style={styles.shortcut}>
+              {`${Math.round(cropRect.w * 100)}×${Math.round(
+                cropRect.h * 100
+              )}%`}
+            </span>
+          </div>
+          {showCrop && (
+            <div style={styles.speedPanel} data-testid="menu-crop-panel">
+              {/* Aspect preset row. */}
+              <div style={styles.presetRow}>
+                {CROP_PRESETS.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    style={styles.preset}
+                    data-testid={`menu-crop-preset-${p.id}`}
+                    onClick={() => {
+                      // `free` is a no-op affordance — keeps the current rect.
+                      if (p.aspect === null) return
+                      onCropChange(centeredCropForAspect(p.aspect, srcAspect))
+                    }}
+                  >
+                    {p.id === 'free' ? '자유' : p.id}
+                  </button>
+                ))}
+              </div>
+              {/* X */}
+              <div style={styles.transformRow}>
+                <span style={styles.transformLabel}>X</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={cropRect.x}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onCropChange({ x: v })
+                  }}
+                  style={styles.slider}
+                  data-testid="menu-crop-x"
+                  aria-label="크롭 X"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={Number(cropRect.x.toFixed(2))}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onCropChange({ x: v })
+                  }}
+                  style={styles.speedInput}
+                  aria-label="크롭 X 숫자"
+                />
+              </div>
+              {/* Y */}
+              <div style={styles.transformRow}>
+                <span style={styles.transformLabel}>Y</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={cropRect.y}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onCropChange({ y: v })
+                  }}
+                  style={styles.slider}
+                  data-testid="menu-crop-y"
+                  aria-label="크롭 Y"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={Number(cropRect.y.toFixed(2))}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onCropChange({ y: v })
+                  }}
+                  style={styles.speedInput}
+                  aria-label="크롭 Y 숫자"
+                />
+              </div>
+              {/* W */}
+              <div style={styles.transformRow}>
+                <span style={styles.transformLabel}>너비</span>
+                <input
+                  type="range"
+                  min={MIN_CROP_SIZE}
+                  max={1}
+                  step={0.01}
+                  value={cropRect.w}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onCropChange({ w: v })
+                  }}
+                  style={styles.slider}
+                  data-testid="menu-crop-w"
+                  aria-label="크롭 너비"
+                />
+                <input
+                  type="number"
+                  min={MIN_CROP_SIZE}
+                  max={1}
+                  step={0.01}
+                  value={Number(cropRect.w.toFixed(2))}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onCropChange({ w: v })
+                  }}
+                  style={styles.speedInput}
+                  aria-label="크롭 너비 숫자"
+                />
+              </div>
+              {/* H */}
+              <div style={styles.transformRow}>
+                <span style={styles.transformLabel}>높이</span>
+                <input
+                  type="range"
+                  min={MIN_CROP_SIZE}
+                  max={1}
+                  step={0.01}
+                  value={cropRect.h}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onCropChange({ h: v })
+                  }}
+                  style={styles.slider}
+                  data-testid="menu-crop-h"
+                  aria-label="크롭 높이"
+                />
+                <input
+                  type="number"
+                  min={MIN_CROP_SIZE}
+                  max={1}
+                  step={0.01}
+                  value={Number(cropRect.h.toFixed(2))}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onCropChange({ h: v })
+                  }}
+                  style={styles.speedInput}
+                  aria-label="크롭 높이 숫자"
+                />
+              </div>
+              {onCropReset && (
+                <button
+                  type="button"
+                  style={styles.transformResetBtn}
+                  data-testid="menu-crop-reset"
+                  onClick={() => onCropReset()}
                 >
                   초기화
                 </button>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ulid } from 'ulid'
 import {
+  getClipCropRect,
   getClipDuration,
   getClipSourceText,
   getClipTransform,
@@ -387,6 +388,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const setClipFilter = useProjectStore((s) => s.setClipFilter)
   const setClipTransform = useProjectStore((s) => s.setClipTransform)
   const resetClipTransform = useProjectStore((s) => s.resetClipTransform)
+  const setClipCrop = useProjectStore((s) => s.setClipCrop)
+  const resetClipCrop = useProjectStore((s) => s.resetClipCrop)
   const addTransformKeyframe = useProjectStore((s) => s.addTransformKeyframe)
   const updateTransformKeyframe = useProjectStore(
     (s) => s.updateTransformKeyframe
@@ -1204,6 +1207,34 @@ export function Timeline(props: TimelineProps): JSX.Element {
                         ◆
                       </div>
                     )}
+                    {/* Crop indicator (Phase 3.6) — teal badge in the
+                        TOP-LEFT corner so it never collides with the
+                        transform badge (right/bottom) or the keyframe badge
+                        (left/bottom). Shown when the clip has a non-identity
+                        source crop. */}
+                    {isMediaClip(clip) &&
+                      getClipCropRect(clip) !== null && (
+                        <div
+                          data-testid="crop-indicator"
+                          data-clip-id={clip.id}
+                          style={{
+                            position: 'absolute',
+                            left: 4,
+                            top: 4,
+                            padding: '1px 5px',
+                            borderRadius: 3,
+                            background: 'rgba(20, 184, 166, 0.95)',
+                            color: '#04231a',
+                            fontSize: 9,
+                            fontWeight: 700,
+                            pointerEvents: 'none',
+                            zIndex: 4
+                          }}
+                          title="크롭 적용됨"
+                        >
+                          ▢
+                        </div>
+                      )}
                     {/* Keyframe marker row (Phase 3.5) — one diamond per
                         keyframe, positioned by clip-relative atMs. Click →
                         seek; horizontal drag → re-time; right/Alt-click →
@@ -1324,6 +1355,33 @@ export function Timeline(props: TimelineProps): JSX.Element {
               ? (): void => {
                   resetClipTransform(ctxClip.id)
                 }
+              : undefined
+          }
+          onCropChange={
+            isMediaClip(ctxClip)
+              ? (partial): void => {
+                  // Crop is STATIC — no keyframe redirect. Goes straight to
+                  // the store action.
+                  setClipCrop(ctxClip.id, partial)
+                }
+              : undefined
+          }
+          onCropReset={
+            isMediaClip(ctxClip)
+              ? (): void => {
+                  resetClipCrop(ctxClip.id)
+                }
+              : undefined
+          }
+          sourceAspect={
+            isMediaClip(ctxClip)
+              ? ((): number | undefined => {
+                  const m = project.media[ctxClip.mediaId]
+                  if (m && m.width > 0 && m.height > 0) {
+                    return m.width / m.height
+                  }
+                  return undefined
+                })()
               : undefined
           }
           onAddKeyframe={

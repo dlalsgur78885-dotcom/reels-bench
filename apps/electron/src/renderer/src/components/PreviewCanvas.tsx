@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  getClipCropRect,
   getTransformAt,
   isCaptionClip,
   isMediaClip,
@@ -901,7 +902,9 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
       >
         {/* Blurred background <video> — fills (object-fit: cover), heavy blur
             + dimmed brightness so the aspect-mismatched gutters get the
-            iconic "vertical TikTok" look instead of black bars. z-index: 0. */}
+            iconic "vertical TikTok" look instead of black bars. z-index: 0.
+            Phase 3.6 — the blurred bg intentionally does NOT reflect a clip's
+            cropRect (it samples the full frame); the export DOES crop the bg. */}
         <video
           ref={bgVideoEl}
           data-testid="preview-video-bg"
@@ -945,7 +948,12 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           const cssTransform = t
             ? `translate(${t.x * 100}%, ${t.y * 100}%) scale(${t.scale}) rotate(${t.rotation}deg)`
             : undefined
-          return (
+          // Phase 3.6 — a non-null crop rect means we must show ONLY the
+          // sub-region. cr is null for un-cropped clips (identity/absent) →
+          // the <video> is rendered exactly as before (no wrapper) so the DOM
+          // stays byte-identical for the regression-critical specs.
+          const cr = clip ? getClipCropRect(clip) : null
+          const videoEl = (
             <video
               key={track.id}
               ref={getVideoRef(track.id)}
@@ -963,26 +971,74 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               data-filter-preset={clip?.filterPreset ?? 'none'}
               playsInline
               muted={false}
+              style={
+                cr
+                  ? {
+                      // Cropped path: the <video> is oversized + translated
+                      // inside the crop wrapper so the kept sub-rect fills it.
+                      // CSS transform + opacity move ONTO the wrapper instead.
+                      position: 'absolute',
+                      width: `${100 / cr.w}%`,
+                      height: `${100 / cr.h}%`,
+                      left: `${(-cr.x * 100) / cr.w}%`,
+                      top: `${(-cr.y * 100) / cr.h}%`,
+                      objectFit: 'contain',
+                      background: 'transparent',
+                      filter: clip
+                        ? filterPresetToCss(
+                            clip.filterPreset,
+                            clip.filterIntensity ?? 1
+                          ) || 'none'
+                        : 'none'
+                    }
+                  : {
+                      position: 'absolute',
+                      inset: 0,
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'contain',
+                      background: 'transparent',
+                      zIndex,
+                      display: layer ? undefined : 'none',
+                      transformOrigin: 'center center',
+                      transform: cssTransform,
+                      opacity: t ? t.opacity : 1,
+                      filter: clip
+                        ? filterPresetToCss(
+                            clip.filterPreset,
+                            clip.filterIntensity ?? 1
+                          ) || 'none'
+                        : 'none'
+                    }
+              }
+            />
+          )
+          if (!cr) return videoEl
+          // Cropped path: wrap the <video> in an overflow:hidden div. The
+          // wrapper carries the layer zIndex + the CSS transform/opacity; the
+          // inner <video> (unchanged ref + data-* attrs — the WebAudio graph
+          // wraps the element, not the div) is sized/translated above so only
+          // the crop sub-rect is visible. Outermost node keyed with track.id
+          // so React reconciliation stays stable across crop on/off toggles.
+          return (
+            <div
+              key={track.id}
+              data-testid="preview-crop-wrapper"
+              data-track-id={track.id}
+              data-crop-active="true"
               style={{
                 position: 'absolute',
                 inset: 0,
-                width: '100%',
-                height: '100%',
-                objectFit: 'contain',
-                background: 'transparent',
+                overflow: 'hidden',
                 zIndex,
                 display: layer ? undefined : 'none',
                 transformOrigin: 'center center',
                 transform: cssTransform,
-                opacity: t ? t.opacity : 1,
-                filter: clip
-                  ? filterPresetToCss(
-                      clip.filterPreset,
-                      clip.filterIntensity ?? 1
-                    ) || 'none'
-                  : 'none'
+                opacity: t ? t.opacity : 1
               }}
-            />
+            >
+              {videoEl}
+            </div>
           )
         })}
         {/* One <audio> per audio track. Wrapped exactly once by the

@@ -5,6 +5,7 @@ import {
   ASPECT_RATIO_DIMENSIONS,
   DEFAULT_DUCKING_DB,
   DEFAULT_TRANSITION_MS,
+  IDENTITY_CROP,
   MAX_CLIP_SPEED,
   MAX_GAIN_DB,
   MAX_KEYFRAMES_PER_CLIP,
@@ -15,6 +16,7 @@ import {
   MAX_VIDEO_TRACKS,
   MIN_CLIP_MS,
   MIN_CLIP_SPEED,
+  MIN_CROP_SIZE,
   MIN_GAIN_DB,
   MIN_KEYFRAME_GAP_MS,
   MIN_TRANSFORM_OFFSET,
@@ -25,6 +27,7 @@ import {
   type CaptionClip,
   type Clip,
   type ClipTransform,
+  type CropRect,
   type FilterPreset,
   type MediaAsset,
   type Project,
@@ -36,6 +39,7 @@ import {
   getTransformAt,
   hasTransformKeyframes,
   isCaptionClip,
+  isIdentityCrop,
   isIdentityTransform,
   isMediaClip
 } from '../../../shared/project'
@@ -102,6 +106,26 @@ function clampClipTransform(t: ClipTransform): ClipTransform {
 }
 
 /**
+ * Clamp a crop rect — the SAME logic `getClipCropRect` applies defensively:
+ * clamp each field to [0,1], floor w/h at MIN_CROP_SIZE, then push x/y so the
+ * rect stays inside the source frame (x+w<=1, y+h<=1). Used by `setClipCrop`
+ * so the stored rect is already canonical (getClipCropRect is then idempotent).
+ */
+function clampCropRect(c: CropRect): CropRect {
+  const clamp01 = (v: number, d: number): number =>
+    Math.min(1, Math.max(0, Number.isFinite(v) ? v : d))
+  const w = Math.max(MIN_CROP_SIZE, clamp01(c.w, 1))
+  const h = Math.max(MIN_CROP_SIZE, clamp01(c.h, 1))
+  let x = clamp01(c.x, 0)
+  let y = clamp01(c.y, 0)
+  if (x + w > 1) x = 1 - w
+  if (y + h > 1) y = 1 - h
+  x = Math.max(0, x)
+  y = Math.max(0, y)
+  return { x, y, w, h }
+}
+
+/**
  * Normalize a keyframe list (Phase 3.5): clamp each keyframe transform, sort
  * ascending by atMs, then dedup — keyframes within MIN_KEYFRAME_GAP_MS of the
  * previously-kept one REPLACE it (last write wins). The result is the
@@ -150,6 +174,8 @@ function migrateLoadedProject(p: Project): Project {
   // `getClipTransform` (identity fallback). Multi-video-track projects also
   // load as-is — `tracks` is already a generic list, so extra video tracks
   // simply round-trip through persistence untouched.
+  // Phase 3.6 — `cropRect` is likewise optional + back-filled lazily by
+  // `getClipCropRect` (null = no crop). No migration step needed.
   // Ensure a caption track exists. If none, append one.
   const hasCaption = tracks.some((t) => t.kind === 'caption')
   const migratedTracks = hasCaption
@@ -275,6 +301,18 @@ export interface ProjectStore {
   setClipTransform(clipId: string, partial: Partial<ClipTransform>): void
   /** Clear a media clip's transform (back to identity). */
   resetClipTransform(clipId: string): void
+
+  // --- Static source crop (Phase 3.6, media clips only) ---
+  /**
+   * Merge a partial crop rect onto a media clip, clamping with the SAME logic
+   * as `getClipCropRect` (clamp to [0,1], floor w/h at MIN_CROP_SIZE, push
+   * x/y inside the source frame). If the clamped result is identity (full
+   * frame), `cropRect` is set to `undefined` (keeps persisted JSON + undo
+   * snapshots lean). No-op for caption clips and for non-finite inputs.
+   */
+  setClipCrop(clipId: string, partial: Partial<CropRect>): void
+  /** Clear a media clip's crop (back to full frame). */
+  resetClipCrop(clipId: string): void
 
   // --- Transform keyframe animation (Phase 3.5, media clips only) ---
   /**
@@ -661,6 +699,9 @@ export const useProjectStore = create<ProjectStore>()(
         rightStaticTransform = isIdentityTransform(baked) ? undefined : baked
       }
     }
+    // Phase 3.6 — `cropRect` is a SOURCE-fraction rect, so the {...orig}
+    // spread below carries it unchanged to both halves (every same-source
+    // descendant samples the identical sub-region). No crop-specific handling.
     const left: VideoAudioClip = {
       ...orig,
       endMs: atMs,
@@ -1116,6 +1157,57 @@ export const useProjectStore = create<ProjectStore>()(
       if (!isMediaClip(c)) return t
       const clips = [...t.clips]
       clips[idx] = { ...c, transform: undefined }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // --------------------------------------------------------------------
+  // Static source crop (Phase 3.6) — media clips only.
+  // --------------------------------------------------------------------
+  setClipCrop(clipId, partial): void {
+    if (!partial || typeof partial !== 'object') return
+    // Reject any non-finite numeric input outright (caller bug → no-op).
+    for (const v of Object.values(partial)) {
+      if (v !== undefined && !Number.isFinite(v)) return
+    }
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      // Crop is a media-only concept; silently ignore captions.
+      if (!isMediaClip(c)) return t
+      const merged = clampCropRect({ ...(c.cropRect ?? IDENTITY_CROP), ...partial })
+      const updated: VideoAudioClip = isIdentityCrop(merged)
+        ? { ...c, cropRect: undefined }
+        : { ...c, cropRect: merged }
+      const clips = [...t.clips]
+      clips[idx] = updated
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  resetClipCrop(clipId: string): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, cropRect: undefined }
       changed = true
       return { ...t, clips }
     })

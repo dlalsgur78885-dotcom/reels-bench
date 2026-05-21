@@ -6105,6 +6105,45 @@ def delete_character_group(gid: str, request: Request):
     return {"deleted": True}
 
 
+# ── 영상 편집기 (Reels Studio Electron 앱) 다운로드 ──
+
+_EDITOR_RELEASE_BASE = (
+    "https://mrpbovbxtablvawszhey.supabase.co/storage/v1/object/public"
+    "/electron-releases/win"
+)
+
+
+@app.get("/api/editor/latest")
+def editor_latest_release(request: Request):
+    """영상 편집기(Reels Studio) 최신 릴리스 정보 — Supabase Storage의 latest.yml 파싱."""
+    auth_svc.require_user(request)
+    from urllib.parse import quote
+    try:
+        r = requests.get(f"{_EDITOR_RELEASE_BASE}/latest.yml", timeout=10)
+    except Exception as e:
+        raise HTTPException(502, f"릴리스 정보 조회 실패: {e}")
+    if r.status_code != 200:
+        raise HTTPException(404, "게시된 영상 편집기 릴리스가 없습니다")
+    txt = r.text
+
+    def _m(pat):
+        x = re.search(pat, txt, re.M)
+        return x.group(1).strip().strip("'\"") if x else None
+
+    path = _m(r'^path:\s*(.+)$')
+    if not path:
+        raise HTTPException(502, "릴리스 파일명을 찾을 수 없습니다")
+    sm = re.search(r'^\s+size:\s*(\d+)', txt, re.M)
+    return {
+        "version": _m(r'^version:\s*(.+)$'),
+        "filename": path,
+        "download_url": f"{_EDITOR_RELEASE_BASE}/{quote(path)}",
+        "release_date": _m(r'^releaseDate:\s*(.+)$'),
+        "size": int(sm.group(1)) if sm else None,
+        "platform": "windows",
+    }
+
+
 @app.get("/api/seedance/status")
 def seedance_status(request_id: str, request: Request):
     """fal 상태 조회. COMPLETED 면 result 도 같이 fetch 해서 video_url 반환."""

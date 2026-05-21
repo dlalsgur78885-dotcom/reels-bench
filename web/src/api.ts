@@ -666,6 +666,10 @@ export const api = {
     del<{ deleted: boolean }>(`/api/seedance/character-groups/${gid}`),
   listSeedanceCharacters: () =>
     get<Array<{ id: string; name: string | null; image_url: string | null }>>('/api/seedance/characters'),
+  // 영상 편집기 (Reels Studio) 다운로드
+  editorLatest: () =>
+    get<{ version: string | null; filename: string; download_url: string; release_date: string | null; size: number | null; platform: string }>(
+      '/api/editor/latest'),
 }
 
 export interface CharacterGroup {

@@ -36,6 +36,7 @@ const FbAdImportPage = lazy(() => import('./pages/FbAdImportPage'))
 const Seedance = lazy(() => import('./pages/Seedance'))
 const SeedanceLibrary = lazy(() => import('./pages/SeedanceLibrary'))
 const SeedanceVideoSelect = lazy(() => import('./pages/SeedanceVideoSelect'))
+const DownloadEditor = lazy(() => import('./pages/DownloadEditor'))
 const SeedancePrompts = lazy(() => import('./pages/SeedancePrompts'))
 const SeedanceCharacters = lazy(() => import('./pages/SeedanceCharacters'))
 const Mockup = lazy(() => import('./pages/Mockup'))
@@ -301,6 +302,7 @@ export default function App() {
           <Route path="/seedance" element={<Seedance />} />
           <Route path="/seedance/library" element={<SeedanceLibrary />} />
           <Route path="/seedance/select" element={<SeedanceVideoSelect />} />
+          <Route path="/editor" element={<DownloadEditor />} />
           <Route path="/seedance/prompts" element={<SeedancePrompts />} />
           <Route path="/seedance/characters" element={<SeedanceCharacters />} />
           <Route path="/mockup" element={<Mockup />} />
@@ -372,6 +374,7 @@ function UserMenu({ me }: { me: UserProfile | null }) {
       <button onClick={() => navigate('/seedance/characters')} style={{ ...btnSt, marginBottom: 6 }}>🧑 인물</button>
       <button onClick={() => navigate('/mockup')} style={{ ...btnSt, marginBottom: 6 }}>📱 앱 목업</button>
       <button onClick={() => navigate('/figma-mockup')} style={{ ...btnSt, marginBottom: 6 }}>🎨 Figma 목업</button>
+      <button onClick={() => navigate('/editor')} style={{ ...btnSt, marginBottom: 6 }}>🎬 영상 편집기 다운로드</button>
       <button onClick={logout} style={btnSt}>로그아웃</button>
       {me?.role === 'admin' && (
         <button onClick={() => navigate('/settings')} style={{ ...btnSt, marginTop: 6 }}>설정</button>

@@ -1924,10 +1924,16 @@ class GenScriptPatch(BaseModel):
     pinned_comment: str | None = None
     sentences: list[dict] | None = None
     shooting_plan_url: str | None = None
-    status: str | None = None  # 'pending' | 'done'
+    status: str | None = None  # 'pending' | 'in_progress' | 'done' | 'hold'
+    work_stage: str | None = None  # 제작 단계: script|tts|plan|source|edit|upload
     group_name: str | None = None  # 사용자 정의 그룹
     stages: list[dict] | None = None  # meta.stages 통째 갱신 (key 기반: base/alt_a/alt_b)
     tts: dict | None = None  # 저장된 TTS 작업 (음성 결과 + 재생성 입력). {} 빈 dict면 삭제
+
+
+# 대본 작업 상태 4종 / 제작 단계 6종 — MyScripts 진행 추적
+_SCRIPT_STATUSES = ("pending", "in_progress", "done", "hold")
+_SCRIPT_STAGES = ("script", "tts", "plan", "source", "edit", "upload")
 
 
 class GenScriptShareIn(BaseModel):
@@ -2037,7 +2043,13 @@ def update_gen_script(pid: int, sid: str, body: GenScriptPatch, request: Request
     if body.shooting_plan_url is not None:
         cur_meta["shooting_plan_url"] = body.shooting_plan_url
     if body.status is not None:
-        cur_meta["status"] = "done" if body.status == "done" else "pending"
+        cur_meta["status"] = body.status if body.status in _SCRIPT_STATUSES else "pending"
+    if body.work_stage is not None:
+        ws = (body.work_stage or "").strip()
+        if ws in _SCRIPT_STAGES:
+            cur_meta["work_stage"] = ws
+        else:
+            cur_meta.pop("work_stage", None)  # 빈값/미지정 = 단계 해제
     if body.group_name is not None:
         gn = body.group_name.strip()
         if gn:
@@ -2051,7 +2063,7 @@ def update_gen_script(pid: int, sid: str, body: GenScriptPatch, request: Request
             cur_meta["tts"] = body.tts
         else:
             cur_meta.pop("tts", None)  # 빈 dict = 저장된 음성 삭제
-    if any(x is not None for x in [body.caption, body.pinned_comment, body.shooting_plan_url, body.status, body.group_name, body.stages, body.tts]):
+    if any(x is not None for x in [body.caption, body.pinned_comment, body.shooting_plan_url, body.status, body.work_stage, body.group_name, body.stages, body.tts]):
         payload["meta"] = cur_meta
     if not payload:
         return {"updated": False, "row": row}
@@ -2413,19 +2425,23 @@ def list_all_my_scripts(request: Request):
         or_filter = f"or=(and(product_id.in.({ids_csv}),created_by.eq.{me['id']}),id.in.({sids_csv}))"
     else:
         or_filter = f"product_id=in.({ids_csv})&created_by=eq.{me['id']}"
-    # 리스트 카드에서 실제 쓰는 meta 키는 status/group_name 둘뿐.
+    # 리스트 카드에서 실제 쓰는 meta 키는 status/work_stage/group_name.
     # meta JSONB 전체(caption/pinned_comment/_cost/생성로그) 대신 필요한 키만 PostgREST JSON path로 뽑아 응답 크기 축소.
     scripts = _r.get(
         f"{SUPA}/rest/v1/generated_scripts?archived_at=is.null&{or_filter}"
         f"&select=id,product_id,ref_shortcode,source_type,persona_name,title,"
-        f"_status:meta->>status,_group_name:meta->>group_name,"
+        f"_status:meta->>status,_work_stage:meta->>work_stage,_group_name:meta->>group_name,"
         f"created_at,created_by"
         f"&order=created_at.desc",
         headers=H, timeout=15,
     ).json() or []
     # 클라이언트 호환 위해 meta 객체 재조립
     for s in scripts:
-        s["meta"] = {"status": s.pop("_status", None), "group_name": s.pop("_group_name", None)}
+        s["meta"] = {
+            "status": s.pop("_status", None),
+            "work_stage": s.pop("_work_stage", None),
+            "group_name": s.pop("_group_name", None),
+        }
 
     # ── Phase 3: 보충 호출 병렬 (extra products + creator profiles) ──
     prod_id_set = {p["id"] for p in prod}

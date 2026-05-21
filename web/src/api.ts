@@ -532,7 +532,7 @@ export const api = {
   // 생성된 대본 저장·관리
   saveGenScript: (pid: number, input: { ref_shortcode?: string; source_type?: 'insta' | 'youtube' | 'fb_ads'; persona_name?: string; title?: string; sentences: any[]; meta?: any; caption?: string; pinned_comment?: string }) =>
     post<{ id: string; product_id: number; title: string }>(`/api/my-products/${pid}/scripts`, input),
-  updateGenScript: (pid: number, sid: string, input: { title?: string; caption?: string; pinned_comment?: string; sentences?: any[]; shooting_plan_url?: string; status?: 'pending' | 'done'; group_name?: string; stages?: any[] }) =>
+  updateGenScript: (pid: number, sid: string, input: { title?: string; caption?: string; pinned_comment?: string; sentences?: any[]; shooting_plan_url?: string; status?: 'pending' | 'in_progress' | 'done' | 'hold'; work_stage?: string; group_name?: string; stages?: any[]; tts?: any }) =>
     patch<{ updated: boolean; row: any }>(`/api/my-products/${pid}/scripts/${sid}`, input),
   refineSavedScript: (pid: number, sid: string, variant: 'default' | 'strong' = 'default') =>
     post<{ refined: boolean; key: 'alt_a' | 'alt_b'; row: any }>(`/api/my-products/${pid}/scripts/${sid}/refine`, { variant }),

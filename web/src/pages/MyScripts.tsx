@@ -27,6 +27,29 @@ const sourceLabel: Record<string, string> = {
   fb_ads: 'FB Ads',
 }
 
+// 작업 상태 4종 — 백엔드 _SCRIPT_STATUSES와 동일
+type ScriptStatus = 'pending' | 'in_progress' | 'done' | 'hold'
+const STATUSES: { value: ScriptStatus; label: string; bg: string }[] = [
+  { value: 'pending', label: '대기', bg: '#9ca3af' },
+  { value: 'in_progress', label: '진행', bg: '#3b82f6' },
+  { value: 'done', label: '완료', bg: '#10b981' },
+  { value: 'hold', label: '보류', bg: '#f59e0b' },
+]
+const STATUS_BG: Record<string, string> = Object.fromEntries(STATUSES.map(s => [s.value, s.bg]))
+const STATUS_LABEL: Record<string, string> = Object.fromEntries(STATUSES.map(s => [s.value, s.label]))
+
+// 제작 단계 6종 — 백엔드 _SCRIPT_STAGES와 동일 (대본→TTS→기획→소스→편집→업로드)
+type WorkStage = 'script' | 'tts' | 'plan' | 'source' | 'edit' | 'upload'
+const STAGES: { value: WorkStage; label: string }[] = [
+  { value: 'script', label: '대본' },
+  { value: 'tts', label: 'TTS' },
+  { value: 'plan', label: '기획' },
+  { value: 'source', label: '소스' },
+  { value: 'edit', label: '편집' },
+  { value: 'upload', label: '업로드' },
+]
+const STAGE_LABEL: Record<string, string> = Object.fromEntries(STAGES.map(s => [s.value, s.label]))
+
 export default function MyScripts() {
   const navigate = useNavigate()
   const me = useMe()
@@ -36,8 +59,10 @@ export default function MyScripts() {
   const [error, setError] = useState('')
   const [productFilter, setProductFilter] = useState<number | 'all'>('all')
   const [sourceFilter, setSourceFilter] = useState<string>('all')
-  // 상태 필터: 전체 / 대기 / 완료
-  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'done'>('all')
+  // 상태 필터: 전체 / 대기 / 진행 / 완료 / 보류
+  const [statusFilter, setStatusFilter] = useState<'all' | ScriptStatus>('all')
+  // 단계 필터: null=전체, 그 외 WorkStage
+  const [stageFilter, setStageFilter] = useState<WorkStage | null>(null)
   // 그룹 필터: null=전체, '__unclassified__'=미분류, 그 외 group_name
   const [groupFilter, setGroupFilter] = useState<string | null>(null)
   // 새로 생성했지만 아직 어떤 대본에도 할당되지 않은 그룹 (만들자마자 칩으로 보이도록 임시 유지)
@@ -47,8 +72,10 @@ export default function MyScripts() {
   const [titleEditSid, setTitleEditSid] = useState<string | null>(null)
   const [titleDraft, setTitleDraft] = useState('')
   const [savingTitleId, setSavingTitleId] = useState<string | null>(null)
-  // 그룹 picker: 클릭한 카드의 script id (열려있을 때만 set)
+  // 그룹/상태/단계 picker: 클릭한 카드의 script id (열려있을 때만 set)
   const [groupPickerSid, setGroupPickerSid] = useState<string | null>(null)
+  const [statusPickerSid, setStatusPickerSid] = useState<string | null>(null)
+  const [stagePickerSid, setStagePickerSid] = useState<string | null>(null)
   const [newGroupInput, setNewGroupInput] = useState('')
   const [selected, setSelected] = useState<{ pid: number; sid: string; data: any } | null>(null)
   const [caption, setCaption] = useState('')
@@ -103,9 +130,13 @@ export default function MyScripts() {
     return m
   }, [products])
 
-  const getStatus = (s: Script): 'pending' | 'done' => {
+  const getStatus = (s: Script): ScriptStatus => {
     const v = (s.meta?.status || 'pending').toString()
-    return v === 'done' ? 'done' : 'pending'
+    return (STATUS_LABEL[v] ? v : 'pending') as ScriptStatus
+  }
+  const getStage = (s: Script): WorkStage | '' => {
+    const v = (s.meta?.work_stage || '').toString()
+    return (STAGE_LABEL[v] ? v : '') as WorkStage | ''
   }
   const getGroup = (s: Script): string => (s.meta?.group_name || '').toString().trim()
 
@@ -114,6 +145,7 @@ export default function MyScripts() {
       if (productFilter !== 'all' && s.product_id !== productFilter) return false
       if (sourceFilter !== 'all' && s.source_type !== sourceFilter) return false
       if (statusFilter !== 'all' && getStatus(s) !== statusFilter) return false
+      if (stageFilter !== null && getStage(s) !== stageFilter) return false
       if (groupFilter !== null) {
         const g = getGroup(s)
         if (groupFilter === '__unclassified__' && g) return false
@@ -125,18 +157,30 @@ export default function MyScripts() {
       const tb = new Date(b.created_at).getTime()
       return tb - ta
     })
-  }, [scripts, productFilter, sourceFilter, statusFilter, groupFilter])
+  }, [scripts, productFilter, sourceFilter, statusFilter, stageFilter, groupFilter])
 
-  // 카운트 계산
+  // 상태별 카운트
   const counts = useMemo(() => {
     const base = scripts.filter(s => {
       if (productFilter !== 'all' && s.product_id !== productFilter) return false
       if (sourceFilter !== 'all' && s.source_type !== sourceFilter) return false
       return true
     })
-    const pending = base.filter(s => getStatus(s) === 'pending').length
-    const done = base.filter(s => getStatus(s) === 'done').length
-    return { all: base.length, pending, done }
+    const byStatus: Record<string, number> = { all: base.length }
+    for (const st of STATUSES) byStatus[st.value] = base.filter(s => getStatus(s) === st.value).length
+    return byStatus
+  }, [scripts, productFilter, sourceFilter])
+
+  // 단계별 카운트
+  const stageCounts = useMemo(() => {
+    const base = scripts.filter(s => {
+      if (productFilter !== 'all' && s.product_id !== productFilter) return false
+      if (sourceFilter !== 'all' && s.source_type !== sourceFilter) return false
+      return true
+    })
+    const m: Record<string, number> = {}
+    for (const st of STAGES) m[st.value] = base.filter(s => getStage(s) === st.value).length
+    return m
   }, [scripts, productFilter, sourceFilter])
 
   // 사용자가 만든 그룹 (unique group_name) — 실제 할당된 + pending
@@ -223,7 +267,7 @@ export default function MyScripts() {
     }
   }
 
-  const updateScriptMeta = async (s: Script, patch: { status?: 'pending' | 'done'; group_name?: string }) => {
+  const updateScriptMeta = async (s: Script, patch: { status?: ScriptStatus; work_stage?: string; group_name?: string }) => {
     setSavingMetaId(s.id)
     try {
       await api.updateGenScript(s.product_id, s.id, patch)
@@ -381,22 +425,46 @@ export default function MyScripts() {
         </div>
       </div>
 
-      {/* 상태 필터 */}
+      {/* 상태 필터 — 대기/진행/완료/보류 */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginRight: 4 }}>상태:</span>
-        {([
-          ['all', '전체', counts.all],
-          ['pending', '대기', counts.pending],
-          ['done', '완료', counts.done],
-        ] as const).map(([k, label, n]) => (
-          <button key={k} type="button" onClick={() => setStatusFilter(k as any)}
+        {[{ k: 'all' as const, label: '전체' }, ...STATUSES.map(st => ({ k: st.value, label: st.label }))].map(({ k, label }) => (
+          <button key={k} type="button" onClick={() => setStatusFilter(k)}
             style={{
               padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
               borderRadius: 6, border: '1px solid var(--border)',
-              background: statusFilter === k ? 'var(--accent)' : 'var(--bg-surface)',
+              background: statusFilter === k
+                ? (k === 'all' ? 'var(--accent)' : STATUS_BG[k])
+                : 'var(--bg-surface)',
               color: statusFilter === k ? '#fff' : 'var(--text-body)',
             }}>
-            {label} ({n})
+            {label} ({k === 'all' ? counts.all : (counts[k] || 0)})
+          </button>
+        ))}
+      </div>
+
+      {/* 단계 필터 — 대본→TTS→기획→소스→편집→업로드 */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginRight: 4 }}>단계:</span>
+        <button type="button" onClick={() => setStageFilter(null)}
+          style={{
+            padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+            borderRadius: 6, border: '1px solid var(--border)',
+            background: stageFilter === null ? 'var(--accent)' : 'var(--bg-surface)',
+            color: stageFilter === null ? '#fff' : 'var(--text-body)',
+          }}>
+          전체
+        </button>
+        {STAGES.map(st => (
+          <button key={st.value} type="button"
+            onClick={() => setStageFilter(stageFilter === st.value ? null : st.value)}
+            style={{
+              padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+              borderRadius: 6, border: '1px solid var(--border)',
+              background: stageFilter === st.value ? 'var(--accent)' : 'var(--bg-surface)',
+              color: stageFilter === st.value ? '#fff' : 'var(--text-body)',
+            }}>
+            {st.label} ({stageCounts[st.value] || 0})
           </button>
         ))}
       </div>
@@ -507,25 +575,111 @@ export default function MyScripts() {
                 fontSize: 10, fontWeight: 700, padding: '2px 8px',
                 background: 'var(--bg-elevated)', borderRadius: 4, color: 'var(--text-secondary)',
               }}>{sourceLabel[s.source_type] || s.source_type}</span>
-              {/* 상태 토글 — 클릭 시 대기 ↔ 완료 */}
+              {/* 상태 picker — 대기/진행/완료/보류 */}
               {(() => {
                 const st = getStatus(s)
-                const isDone = st === 'done'
+                const isOpen = statusPickerSid === s.id
                 return (
-                  <button type="button"
-                    disabled={savingMetaId === s.id}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      updateScriptMeta(s, { status: isDone ? 'pending' : 'done' })
-                    }}
-                    style={{
-                      fontSize: 10, fontWeight: 700, padding: '2px 8px',
-                      background: isDone ? 'var(--success, #10b981)' : 'var(--warning, #f59e0b)',
-                      color: '#fff', border: 'none', borderRadius: 4,
-                      cursor: 'pointer', opacity: savingMetaId === s.id ? 0.5 : 1,
-                    }}>
-                    {isDone ? '완료' : '대기'}
-                  </button>
+                  <div style={{ position: 'relative' }}>
+                    <button type="button"
+                      disabled={savingMetaId === s.id}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setStatusPickerSid(isOpen ? null : s.id)
+                        setGroupPickerSid(null); setStagePickerSid(null)
+                      }}
+                      style={{
+                        fontSize: 10, fontWeight: 700, padding: '2px 8px',
+                        background: STATUS_BG[st], color: '#fff', border: 'none', borderRadius: 4,
+                        cursor: 'pointer', opacity: savingMetaId === s.id ? 0.5 : 1,
+                      }}>
+                      {STATUS_LABEL[st]} ▾
+                    </button>
+                    {isOpen && (
+                      <div onClick={e => e.stopPropagation()}
+                        style={{
+                          position: 'absolute', top: '100%', left: 0, marginTop: 4,
+                          minWidth: 130, zIndex: 100,
+                          background: 'var(--bg-surface)', border: '1px solid var(--border)',
+                          borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', padding: 6,
+                        }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', padding: '4px 8px' }}>
+                          작업 상태
+                        </div>
+                        {STATUSES.map(opt => (
+                          <button key={opt.value} type="button"
+                            onClick={() => { updateScriptMeta(s, { status: opt.value }); setStatusPickerSid(null) }}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left',
+                              padding: '6px 8px', fontSize: 11, fontWeight: opt.value === st ? 700 : 500,
+                              background: opt.value === st ? 'var(--bg-elevated)' : 'transparent',
+                              color: 'var(--text-body)', border: 'none', borderRadius: 4, cursor: 'pointer',
+                            }}>
+                            <span style={{ width: 8, height: 8, borderRadius: '50%', background: opt.bg, flexShrink: 0 }} />
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
+              {/* 단계 picker — 대본/TTS/기획/소스/편집/업로드 */}
+              {(() => {
+                const stg = getStage(s)
+                const isOpen = stagePickerSid === s.id
+                return (
+                  <div style={{ position: 'relative' }}>
+                    <button type="button"
+                      disabled={savingMetaId === s.id}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setStagePickerSid(isOpen ? null : s.id)
+                        setGroupPickerSid(null); setStatusPickerSid(null)
+                      }}
+                      style={{
+                        fontSize: 10, fontWeight: 700, padding: '2px 8px',
+                        background: stg ? 'rgba(124,58,237,0.12)' : 'transparent',
+                        color: stg ? '#7c3aed' : 'var(--text-muted)',
+                        border: `1px ${stg ? 'solid' : 'dashed'} var(--border)`,
+                        borderRadius: 4, cursor: 'pointer', opacity: savingMetaId === s.id ? 0.5 : 1,
+                      }}>
+                      {stg ? STAGE_LABEL[stg] : '+ 단계'}
+                    </button>
+                    {isOpen && (
+                      <div onClick={e => e.stopPropagation()}
+                        style={{
+                          position: 'absolute', top: '100%', left: 0, marginTop: 4,
+                          minWidth: 130, zIndex: 100,
+                          background: 'var(--bg-surface)', border: '1px solid var(--border)',
+                          borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.12)', padding: 6,
+                        }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', padding: '4px 8px' }}>
+                          제작 단계
+                        </div>
+                        <button type="button"
+                          onClick={() => { updateScriptMeta(s, { work_stage: '' }); setStagePickerSid(null) }}
+                          style={{
+                            display: 'block', width: '100%', textAlign: 'left',
+                            padding: '6px 8px', fontSize: 11, fontWeight: !stg ? 700 : 500,
+                            background: !stg ? 'var(--bg-elevated)' : 'transparent',
+                            color: 'var(--text-body)', border: 'none', borderRadius: 4, cursor: 'pointer',
+                          }}>미지정</button>
+                        {STAGES.map((opt, i) => (
+                          <button key={opt.value} type="button"
+                            onClick={() => { updateScriptMeta(s, { work_stage: opt.value }); setStagePickerSid(null) }}
+                            style={{
+                              display: 'block', width: '100%', textAlign: 'left',
+                              padding: '6px 8px', fontSize: 11, fontWeight: opt.value === stg ? 700 : 500,
+                              background: opt.value === stg ? 'var(--bg-elevated)' : 'transparent',
+                              color: 'var(--text-body)', border: 'none', borderRadius: 4, cursor: 'pointer',
+                            }}>
+                            {i + 1}. {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )
               })()}
               {/* 그룹 라벨 + picker */}
@@ -538,6 +692,7 @@ export default function MyScripts() {
                       onClick={(e) => {
                         e.stopPropagation()
                         setGroupPickerSid(isOpen ? null : s.id)
+                        setStatusPickerSid(null); setStagePickerSid(null)
                         setNewGroupInput('')
                       }}
                       style={{

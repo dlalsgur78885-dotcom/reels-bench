@@ -26,6 +26,7 @@ export default function MyScriptDetail() {
   const [planUrl, setPlanUrl] = useState('')
   const [savingMeta, setSavingMeta] = useState(false)
   const [forking, setForking] = useState(false)
+  const [forksModalOpen, setForksModalOpen] = useState(false)
 
   const [editing, setEditing] = useState(false)
   const [draftTitle, setDraftTitle] = useState('')
@@ -404,20 +405,13 @@ export default function MyScriptDetail() {
           </div>
         )}
         {Array.isArray(data?.meta?.forks) && data.meta.forks.length > 0 && (
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, padding: '8px 12px',
-            background: 'rgba(124,58,237,0.08)', border: '1px solid #c4b5fd',
-            borderRadius: 6, fontSize: 12, color: 'var(--text-body)', flexWrap: 'wrap',
-          }}>
-            <span>📄 수정본 {data.meta.forks.length}개:</span>
-            {data.meta.forks.map((f: any) => (
-              <button key={f.id} onClick={() => navigate(`/my-scripts/${pid}/${f.id}`)}
-                style={{ padding: '3px 10px', fontSize: 11, fontWeight: 700,
-                  background: 'transparent', color: '#7c3aed',
-                  border: '1px solid #7c3aed', borderRadius: 4, cursor: 'pointer' }}>
-                {f.title || '수정본'} →
-              </button>
-            ))}
+          <div style={{ marginBottom: 10 }}>
+            <button onClick={() => setForksModalOpen(true)}
+              style={{ padding: '8px 14px', fontSize: 12, fontWeight: 700,
+                background: 'rgba(124,58,237,0.08)', color: '#7c3aed',
+                border: '1px solid #c4b5fd', borderRadius: 6, cursor: 'pointer' }}>
+              📄 수정본 {data.meta.forks.length}개 보기
+            </button>
           </div>
         )}
 
@@ -796,6 +790,50 @@ export default function MyScriptDetail() {
           </div>
         )}
       </div>
+
+      {/* 수정본 목록 팝업 */}
+      {forksModalOpen && Array.isArray(data?.meta?.forks) && (
+        <div onClick={() => setForksModalOpen(false)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 20 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)',
+              borderRadius: 8, padding: 18, width: '100%', maxWidth: 460,
+              maxHeight: '80vh', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
+              <h3 style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>
+                📄 수정본 목록 ({data.meta.forks.length}개)
+              </h3>
+              <button onClick={() => setForksModalOpen(false)}
+                style={{ background: 'transparent', border: 'none', cursor: 'pointer',
+                  color: 'var(--text-muted)', fontSize: 18 }}>×</button>
+            </div>
+            <div style={{ display: 'grid', gap: 6 }}>
+              {data.meta.forks.map((f: any) => (
+                <button key={f.id}
+                  onClick={() => { setForksModalOpen(false); navigate(`/my-scripts/${pid}/${f.id}`) }}
+                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    gap: 10, width: '100%', textAlign: 'left', padding: '10px 12px',
+                    background: 'var(--bg-base)', border: '1px solid var(--border)',
+                    borderRadius: 6, cursor: 'pointer' }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {f.title || '수정본'}
+                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                    {f.created_at && (
+                      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                        {new Date(f.created_at).toLocaleDateString('ko-KR')}
+                      </span>
+                    )}
+                    <span style={{ fontSize: 12, fontWeight: 700, color: '#7c3aed' }}>→</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

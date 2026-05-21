@@ -84,6 +84,12 @@ async def api_key_middleware(request, call_next):
     return await call_next(request)
 
 
+@app.get("/api/health")
+def health():
+    """경량 헬스체크 — 모니터링/keep-warm 용도. 인증 없이 즉시 응답."""
+    return {"ok": True, "ts": time.time()}
+
+
 # ── Script Generation ──
 
 class ScriptGenRequest(BaseModel):

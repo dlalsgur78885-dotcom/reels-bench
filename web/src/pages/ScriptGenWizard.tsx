@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useMemo, useCallback, Profiler } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { buildTtsText } from '../ttsCopy'
 import { api, authedFetch, BASE } from '../api'
@@ -100,27 +100,40 @@ export default function ScriptGenWizard() {
     api.listMyProducts().then(setProducts).catch(() => {})
   }, [])
 
-  // 위저드 영속화 — state 변경 시마다 sessionStorage에 저장 (debounce 없음, 한 키 통째)
+  // 위저드 영속화 — sessionStorage 저장. 입력 연타 시 매 키마다 JSON.stringify(전체) +
+  // 동기 setItem 은 메인 스레드를 막아 버벅임을 유발 → 600ms 디바운스 (입력이 멈춘 뒤 1회만).
+  const persistTimerRef = useRef<number | undefined>(undefined)
+  const persistFlushRef = useRef<() => void>(() => {})
   useEffect(() => {
     if (!shortcode) return
     if (step === 'product' && !productId && !mapping && !Object.keys(genResult).length) {
-      // 깨끗한 초기 상태 — 저장 불필요
+      persistFlushRef.current = () => {}  // 깨끗한 초기 상태 — 저장 불필요
       return
     }
-    try {
-      sessionStorage.setItem(wizKey(shortcode), JSON.stringify({
-        _t: Date.now(),
-        step, productId, mapping, chunkOverrides, chunkEdits,
-        skippedChunks: Array.from(skippedChunks),
-        skippedSentenceStarts: Array.from(skippedSentenceStarts),
-        sectionOverrides, hookArchetypeOverride,
-        allPersonas, selectedPersonaIdx: Array.from(selectedPersonaIdx),
-        genResult,
-      }))
-    } catch {}
+    // 최신 state를 캡처한 flush — 디바운스 타이머와 언마운트 양쪽에서 재사용
+    const flush = () => {
+      try {
+        sessionStorage.setItem(wizKey(shortcode), JSON.stringify({
+          _t: Date.now(),
+          step, productId, mapping, chunkOverrides, chunkEdits,
+          skippedChunks: Array.from(skippedChunks),
+          skippedSentenceStarts: Array.from(skippedSentenceStarts),
+          sectionOverrides, hookArchetypeOverride,
+          allPersonas, selectedPersonaIdx: Array.from(selectedPersonaIdx),
+          genResult,
+        }))
+      } catch {}
+    }
+    persistFlushRef.current = flush
+    window.clearTimeout(persistTimerRef.current)
+    persistTimerRef.current = window.setTimeout(flush, 600)
+    return () => window.clearTimeout(persistTimerRef.current)
   }, [shortcode, step, productId, mapping, chunkOverrides, chunkEdits,
       skippedChunks, skippedSentenceStarts, sectionOverrides, hookArchetypeOverride,
       allPersonas, selectedPersonaIdx, genResult])
+
+  // 언마운트 시 디바운스 윈도우 안의 마지막 변경을 즉시 flush — 페이지 이탈 후에도 복원 보장
+  useEffect(() => () => { persistFlushRef.current() }, [])
 
   const goToMapping = async (pid: number) => {
     if (!shortcode) return
@@ -232,15 +245,15 @@ export default function ScriptGenWizard() {
 
   // chunk별 effective user_usp_ids (precedence: chunkOverride > LLM 자동 매핑) — multi
   // override는 빈 배열도 명시적 "미매핑"으로 인정 (key 존재 여부로 판단)
-  const effectiveChunkUspIds = (chunk: MappingPreview['section_chunks'][number]): number[] => {
+  const effectiveChunkUspIds = useCallback((chunk: MappingPreview['section_chunks'][number]): number[] => {
     const sec = chunk.section || ''
     if (sec in chunkOverrides) return chunkOverrides[sec]
     const m = mapping?.chunk_mapping.find(x => x.chunk_section === sec)
     return m?.user_usp_ids || []
-  }
+  }, [chunkOverrides, mapping])
 
   // override 적용 후 unused user USPs 재계산 — chunk effective USPs만 기준 (multi)
-  const effectiveUnusedUsps = (() => {
+  const effectiveUnusedUsps = useMemo(() => {
     if (!mapping) return []
     const used = new Set<number>()
     mapping.section_chunks.forEach(c => {
@@ -249,7 +262,7 @@ export default function ScriptGenWizard() {
     return mapping.product.usps
       .map((u: any, i: number) => ({ user_usp_id: i + 1, user_usp_name: u.usp }))
       .filter(u => !used.has(u.user_usp_id))
-  })()
+  }, [mapping, effectiveChunkUspIds])
 
   const [personaRefreshing, setPersonaRefreshing] = useState(false)
   const [refreshingUspIdx, setRefreshingUspIdx] = useState<number | null>(null)
@@ -331,7 +344,7 @@ export default function ScriptGenWizard() {
     }
   }
 
-  const matchedUserUspsInfo = (() => {
+  const matchedUserUspsInfo = useMemo(() => {
     if (!mapping) return [] as Array<{ idx: number; name: string; personaCount: number; reviewCount: number }>
     const matched = new Set<number>()
     mapping.section_chunks.forEach(c => {
@@ -347,7 +360,7 @@ export default function ScriptGenWizard() {
     // matched가 0개면 fallback — 모든 USP 노출 (사용자가 페르소나 직접 선택 가능)
     const filtered = matched.size > 0 ? all.filter(x => x.match) : all
     return filtered.map(({ match: _m, ...rest }) => rest)
-  })()
+  }, [mapping, effectiveChunkUspIds])
 
   const goToPersona = async () => {
     if (!mapping) return
@@ -620,7 +633,18 @@ export default function ScriptGenWizard() {
   }
   const benchPath = source === 'youtube' ? `/yt/bench/${shortcode}` : `/bench/${shortcode}`
 
+  // ── 렌더 프로파일링 (dev 전용) — 브라우저 콘솔에서 커밋 횟수·시간 확인 ──
+  const renderStatsRef = useRef({ commits: 0, total: 0 })
+  const onWizRender = useCallback((_id: string, phase: string, actualDuration: number) => {
+    if (!import.meta.env.DEV) return
+    const s = renderStatsRef.current
+    s.commits += 1
+    s.total += actualDuration
+    console.log(`[wizard] commit #${s.commits} (${phase}) ${actualDuration.toFixed(1)}ms · avg ${(s.total / s.commits).toFixed(1)}ms`)
+  }, [])
+
   return (
+    <Profiler id="ScriptGenWizard" onRender={onWizRender}>
     <div style={{ maxWidth: 1000, margin: '0 auto', padding: 20 }}>
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         <button onClick={() => navigate(benchPath)} style={navBtnSt}>← 분석 페이지</button>
@@ -920,6 +944,7 @@ export default function ScriptGenWizard() {
         />
       )}
     </div>
+    </Profiler>
   )
 }
 
@@ -1283,17 +1308,23 @@ function StepMapping({
               </button>
               {uspGroups.map(g => {
                 const isActive = groupFilter === g.id
+                const dotColor = g.color || '#9ca3af'
                 return (
                   <button key={g.id} type="button"
                     onClick={() => setGroupFilter(isActive ? null : g.id)}
                     style={{
                       padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700,
                       cursor: 'pointer',
-                      background: isActive ? (g.color || 'var(--accent)') : 'var(--bg-surface)',
-                      color: isActive ? '#fff' : (g.color || 'var(--text-body)'),
-                      border: `1px solid ${isActive ? (g.color || 'var(--accent)') : 'var(--border)'}`,
-                      boxShadow: isActive ? '0 0 0 2px rgba(99,102,241,0.2)' : 'none',
+                      background: '#000',
+                      color: '#fff',
+                      border: `1px solid ${isActive ? dotColor : '#000'}`,
+                      boxShadow: isActive ? `0 0 0 2px ${dotColor}` : 'none',
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
                     }}>
+                    <span aria-hidden="true" style={{
+                      width: 8, height: 8, borderRadius: '50%',
+                      background: dotColor, display: 'inline-block', flexShrink: 0,
+                    }} />
                     {g.name} ({groupCount(g.id)})
                   </button>
                 )
@@ -1672,11 +1703,19 @@ function StepMapping({
                             style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
                             <span style={{
                               padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700,
-                              background: bucket.group?.color || 'var(--bg-elevated)',
-                              color: bucket.group?.color ? '#fff' : 'var(--text-muted)',
-                              border: bucket.group ? 'none' : '1px dashed var(--border)',
+                              background: bucket.group ? '#000' : 'var(--bg-elevated)',
+                              color: bucket.group ? '#fff' : 'var(--text-muted)',
+                              border: bucket.group ? '1px solid #000' : '1px dashed var(--border)',
                               whiteSpace: 'nowrap', minWidth: 56, textAlign: 'center',
+                              display: 'inline-flex', alignItems: 'center', gap: 5, justifyContent: 'center',
                             }}>
+                              {bucket.group && (
+                                <span aria-hidden="true" style={{
+                                  width: 6, height: 6, borderRadius: '50%',
+                                  background: bucket.group.color || '#9ca3af',
+                                  display: 'inline-block', flexShrink: 0,
+                                }} />
+                              )}
                               {bucket.group ? bucket.group.name : '미분류'}
                             </span>
                             {bucket.usps.map(u => {

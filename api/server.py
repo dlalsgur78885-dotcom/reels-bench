@@ -2635,16 +2635,42 @@ def delete_gen_script(pid: int, sid: str, request: Request):
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    # 삭제 전 meta 조회 — 수정본이면 원본 forks에서 제거하기 위해
+    pre = _r.get(
+        f"{SUPA}/rest/v1/generated_scripts?id=eq.{sid}&product_id=eq.{pid}"
+        f"&select=meta&limit=1",
+        headers=H, timeout=10,
+    ).json() or []
+    del_meta = (pre[0].get("meta") if pre else None) or {}
     # soft delete via archived_at — 본인이 만든 대본만 삭제 가능
     r = _r.patch(
         f"{SUPA}/rest/v1/generated_scripts?id=eq.{sid}&product_id=eq.{pid}"
         f"&created_by=eq.{me['id']}",
-        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
-                 "Content-Type": "application/json", "Prefer": "return=minimal"},
+        headers={**H, "Content-Type": "application/json", "Prefer": "return=minimal"},
         json={"archived_at": "now()"}, timeout=10,
     )
     if r.status_code not in (200, 204):
         raise HTTPException(r.status_code, r.text[:300])
+    # 수정본이었으면 원본 meta.forks에서 이 대본 제거 (죽은 링크 방지)
+    parent_sid = del_meta.get("forked_from")
+    if parent_sid:
+        prow = _r.get(
+            f"{SUPA}/rest/v1/generated_scripts?id=eq.{parent_sid}&select=meta&limit=1",
+            headers=H, timeout=10,
+        ).json() or []
+        if prow:
+            p_meta = dict(prow[0].get("meta") or {})
+            forks = [f for f in (p_meta.get("forks") or []) if f.get("id") != sid]
+            if forks:
+                p_meta["forks"] = forks
+            else:
+                p_meta.pop("forks", None)
+            _r.patch(
+                f"{SUPA}/rest/v1/generated_scripts?id=eq.{parent_sid}",
+                headers={**H, "Content-Type": "application/json", "Prefer": "return=minimal"},
+                json={"meta": p_meta}, timeout=10,
+            )
     _invalidate_my_scripts_cache()
     return {"deleted": True}
 

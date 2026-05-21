@@ -7,6 +7,7 @@ import {
   DEFAULT_TRANSITION_MS,
   MAX_CLIP_SPEED,
   MAX_GAIN_DB,
+  MAX_KEYFRAMES_PER_CLIP,
   MAX_TRANSFORM_OFFSET,
   MAX_TRANSFORM_ROTATION,
   MAX_TRANSFORM_SCALE,
@@ -15,6 +16,7 @@ import {
   MIN_CLIP_MS,
   MIN_CLIP_SPEED,
   MIN_GAIN_DB,
+  MIN_KEYFRAME_GAP_MS,
   MIN_TRANSFORM_OFFSET,
   MIN_TRANSFORM_ROTATION,
   MIN_TRANSFORM_SCALE,
@@ -26,9 +28,13 @@ import {
   type FilterPreset,
   type MediaAsset,
   type Project,
+  type TransformKeyframe,
   type TransitionKind,
   type VideoAudioClip,
+  getClipDuration,
   getClipTransform,
+  getTransformAt,
+  hasTransformKeyframes,
   isCaptionClip,
   isIdentityTransform,
   isMediaClip
@@ -72,6 +78,54 @@ function freshProject(): Project {
 
 function touch(p: Project): Project {
   return { ...p, updatedAt: Date.now() }
+}
+
+/**
+ * Range-clamp every transform field — the SAME clamp `setClipTransform` applies
+ * to a static transform. Reused by the Phase 3.5 keyframe actions so a stored
+ * keyframe never holds an out-of-range value.
+ */
+function clampClipTransform(t: ClipTransform): ClipTransform {
+  return {
+    x: Math.max(MIN_TRANSFORM_OFFSET, Math.min(MAX_TRANSFORM_OFFSET, t.x)),
+    y: Math.max(MIN_TRANSFORM_OFFSET, Math.min(MAX_TRANSFORM_OFFSET, t.y)),
+    scale: Math.max(
+      MIN_TRANSFORM_SCALE,
+      Math.min(MAX_TRANSFORM_SCALE, t.scale)
+    ),
+    rotation: Math.max(
+      MIN_TRANSFORM_ROTATION,
+      Math.min(MAX_TRANSFORM_ROTATION, t.rotation)
+    ),
+    opacity: Math.max(0, Math.min(1, t.opacity))
+  }
+}
+
+/**
+ * Normalize a keyframe list (Phase 3.5): clamp each keyframe transform, sort
+ * ascending by atMs, then dedup — keyframes within MIN_KEYFRAME_GAP_MS of the
+ * previously-kept one REPLACE it (last write wins). The result is the
+ * canonical form the store persists; callers must still enforce the >= 2
+ * invariant (a normalized list MAY collapse to length 1).
+ */
+function normalizeKeyframes(kfs: TransformKeyframe[]): TransformKeyframe[] {
+  const sorted = kfs
+    .map((kf) => ({
+      atMs: Math.max(0, Math.round(kf.atMs)),
+      transform: clampClipTransform(kf.transform)
+    }))
+    .sort((a, b) => a.atMs - b.atMs)
+  const out: TransformKeyframe[] = []
+  for (const kf of sorted) {
+    const last = out[out.length - 1]
+    if (last && kf.atMs - last.atMs < MIN_KEYFRAME_GAP_MS) {
+      // Within the dedup window — replace the kept keyframe.
+      out[out.length - 1] = kf
+    } else {
+      out.push(kf)
+    }
+  }
+  return out
 }
 
 /**
@@ -221,6 +275,43 @@ export interface ProjectStore {
   setClipTransform(clipId: string, partial: Partial<ClipTransform>): void
   /** Clear a media clip's transform (back to identity). */
   resetClipTransform(clipId: string): void
+
+  // --- Transform keyframe animation (Phase 3.5, media clips only) ---
+  /**
+   * Add a transform keyframe at a clip-relative `atMs`.
+   *  - If the clip has NO active keyframe track yet: seed TWO keyframes (one
+   *    at atMs 0, one at the requested atMs), both = the clip's current static
+   *    transform — this satisfies the >= 2 invariant immediately.
+   *  - If a track exists: insert ONE keyframe; its transform defaults to the
+   *    interpolated value on the existing curve (no jump) unless `transform`
+   *    overrides specific fields.
+   * A keyframe within MIN_KEYFRAME_GAP_MS of an existing one REPLACES it.
+   * Rejected when atMs<0, atMs>clip duration, or count>=MAX_KEYFRAMES_PER_CLIP.
+   * No-op for caption clips.
+   */
+  addTransformKeyframe(
+    clipId: string,
+    atMs: number,
+    transform?: Partial<ClipTransform>
+  ): void
+  /**
+   * Merge into the keyframe at `kfIndex`: re-clamp atMs into [0, clipDuration],
+   * merge + clamp the transform, then re-sort the track ascending by atMs.
+   */
+  updateTransformKeyframe(
+    clipId: string,
+    kfIndex: number,
+    partial: { atMs?: number; transform?: Partial<ClipTransform> }
+  ): void
+  /**
+   * Remove the keyframe at `kfIndex`. If removal would drop the track below 2
+   * keyframes, the whole track is cleared and the surviving keyframe's
+   * transform is written into the clip's static `transform` so the look holds.
+   */
+  removeTransformKeyframe(clipId: string, kfIndex: number): void
+  /** Clear a clip's keyframe track entirely; keeps its static `transform`. */
+  clearTransformKeyframes(clipId: string): void
+
   /**
    * Append a video track immediately after the last existing video track.
    * Returns the new track's id, or null if already at MAX_VIDEO_TRACKS.
@@ -517,16 +608,73 @@ export const useProjectStore = create<ProjectStore>()(
     const offsetSourceMs = (atMs - orig.startMs) * speed
     const splitSource = orig.trimInMs + offsetSourceMs
     const newRightId = ulid()
+    // -------------------------------------------------------------------
+    // Phase 3.5 — keyframe split handling. CHOSEN APPROACH: partition +
+    // re-base. Keyframes are clip-relative, so on split we (1) partition by
+    // the clip-relative split offset, (2) re-base the right half's atMs by
+    // subtracting that offset, and (3) inject a boundary keyframe (the
+    // interpolated value AT the split point) into both halves so neither
+    // half jumps. If either half ends up with < 2 keyframes the track is
+    // collapsed to a static transform (the value at that half's midpoint).
+    // -------------------------------------------------------------------
+    let leftKfs: TransformKeyframe[] | undefined
+    let rightKfs: TransformKeyframe[] | undefined
+    let leftStaticTransform = orig.transform
+    let rightStaticTransform = orig.transform
+    if (hasTransformKeyframes(orig)) {
+      const splitOffsetLocalMs = atMs - orig.startMs
+      const boundary = clampClipTransform(getTransformAt(orig, atMs))
+      const all = orig.transformKeyframes as TransformKeyframe[]
+      // Left half keeps keyframes at/before the split offset + the boundary.
+      const leftRaw: TransformKeyframe[] = [
+        ...all.filter((kf) => kf.atMs <= splitOffsetLocalMs),
+        { atMs: splitOffsetLocalMs, transform: { ...boundary } }
+      ]
+      // Right half keeps keyframes at/after the split offset, re-based to 0,
+      // plus a boundary keyframe at re-based 0.
+      const rightRaw: TransformKeyframe[] = [
+        { atMs: 0, transform: { ...boundary } },
+        ...all
+          .filter((kf) => kf.atMs >= splitOffsetLocalMs)
+          .map((kf) => ({
+            atMs: kf.atMs - splitOffsetLocalMs,
+            transform: { ...kf.transform }
+          }))
+      ]
+      const leftNorm = normalizeKeyframes(leftRaw)
+      const rightNorm = normalizeKeyframes(rightRaw)
+      if (leftNorm.length >= 2) {
+        leftKfs = leftNorm
+      } else {
+        // Degenerate — bake to the left half's midpoint value.
+        const baked = clampClipTransform(
+          getTransformAt(orig, (orig.startMs + atMs) / 2)
+        )
+        leftStaticTransform = isIdentityTransform(baked) ? undefined : baked
+      }
+      if (rightNorm.length >= 2) {
+        rightKfs = rightNorm
+      } else {
+        const baked = clampClipTransform(
+          getTransformAt(orig, (atMs + orig.endMs) / 2)
+        )
+        rightStaticTransform = isIdentityTransform(baked) ? undefined : baked
+      }
+    }
     const left: VideoAudioClip = {
       ...orig,
       endMs: atMs,
-      trimOutMs: splitSource
+      trimOutMs: splitSource,
+      transform: leftStaticTransform,
+      transformKeyframes: leftKfs
     }
     const right: VideoAudioClip = {
       ...orig,
       id: newRightId,
       startMs: atMs,
-      trimInMs: splitSource
+      trimInMs: splitSource,
+      transform: rightStaticTransform,
+      transformKeyframes: rightKfs
     }
     const tracks = project.tracks.map((t, i) => {
       if (i !== trackIdx) return t
@@ -968,6 +1116,202 @@ export const useProjectStore = create<ProjectStore>()(
       if (!isMediaClip(c)) return t
       const clips = [...t.clips]
       clips[idx] = { ...c, transform: undefined }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // --------------------------------------------------------------------
+  // Transform keyframe animation (Phase 3.5) — media clips only.
+  //
+  // Invariants enforced after every mutation:
+  //   - transformKeyframes is sorted ascending by atMs
+  //   - keyframes closer than MIN_KEYFRAME_GAP_MS are deduped/replaced
+  //   - a length-1 array is NEVER persisted (collapses to static transform)
+  //   - every stored keyframe transform is range-clamped
+  // --------------------------------------------------------------------
+  addTransformKeyframe(clipId, atMs, transform): void {
+    const at = Math.round(Number(atMs))
+    if (!Number.isFinite(at) || at < 0) return
+    if (transform && typeof transform === 'object') {
+      for (const v of Object.values(transform)) {
+        if (v !== undefined && !Number.isFinite(v)) return
+      }
+    }
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const dur = getClipDuration(c)
+      if (at > dur) return t
+      const existing = Array.isArray(c.transformKeyframes)
+        ? [...c.transformKeyframes]
+        : []
+      let nextKfs: TransformKeyframe[]
+      if (existing.length < 2) {
+        // No active track — seed two keyframes (atMs 0 + requested) both at
+        // the clip's current static transform. If atMs===0 the dedup below
+        // collapses them, so nudge the second to a minimal non-zero offset.
+        const base = clampClipTransform(getClipTransform(c))
+        const secondAt = at <= 0 ? Math.min(dur, MIN_KEYFRAME_GAP_MS) : at
+        nextKfs = [
+          { atMs: 0, transform: { ...base } },
+          { atMs: secondAt, transform: { ...base } }
+        ]
+        // If the requested keyframe carried explicit field overrides, apply
+        // them to the requested (second) keyframe.
+        if (transform && Object.keys(transform).length > 0) {
+          nextKfs[1] = {
+            atMs: secondAt,
+            transform: clampClipTransform({ ...base, ...transform })
+          }
+        }
+      } else {
+        if (existing.length >= MAX_KEYFRAMES_PER_CLIP) return t
+        // Land on the existing curve so the insert doesn't cause a jump.
+        const onCurve = getTransformAt(c, c.startMs + at)
+        const merged: ClipTransform =
+          transform && Object.keys(transform).length > 0
+            ? clampClipTransform({ ...onCurve, ...transform })
+            : clampClipTransform(onCurve)
+        nextKfs = [...existing, { atMs: at, transform: merged }]
+      }
+      const finalKfs = normalizeKeyframes(nextKfs)
+      if (finalKfs.length < 2) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, transformKeyframes: finalKfs }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  updateTransformKeyframe(clipId, kfIndex, partial): void {
+    if (!partial || typeof partial !== 'object') return
+    if (
+      partial.transform &&
+      typeof partial.transform === 'object'
+    ) {
+      for (const v of Object.values(partial.transform)) {
+        if (v !== undefined && !Number.isFinite(v)) return
+      }
+    }
+    if (
+      partial.atMs !== undefined &&
+      !Number.isFinite(Number(partial.atMs))
+    ) {
+      return
+    }
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const existing = Array.isArray(c.transformKeyframes)
+        ? [...c.transformKeyframes]
+        : []
+      if (kfIndex < 0 || kfIndex >= existing.length) return t
+      const dur = getClipDuration(c)
+      const cur = existing[kfIndex]
+      const nextAt =
+        partial.atMs !== undefined
+          ? Math.max(0, Math.min(dur, Math.round(Number(partial.atMs))))
+          : cur.atMs
+      const nextTransform = partial.transform
+        ? clampClipTransform({ ...cur.transform, ...partial.transform })
+        : clampClipTransform(cur.transform)
+      const updated = existing.map((kf, i) =>
+        i === kfIndex ? { atMs: nextAt, transform: nextTransform } : kf
+      )
+      const finalKfs = normalizeKeyframes(updated)
+      const clips = [...t.clips]
+      if (finalKfs.length < 2) {
+        // Collapsed below the invariant (dedup merged everything) — fall
+        // back to a static transform from the surviving keyframe.
+        clips[idx] = {
+          ...c,
+          transform: finalKfs[0] ? finalKfs[0].transform : c.transform,
+          transformKeyframes: undefined
+        }
+      } else {
+        clips[idx] = { ...c, transformKeyframes: finalKfs }
+      }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  removeTransformKeyframe(clipId, kfIndex): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const existing = Array.isArray(c.transformKeyframes)
+        ? [...c.transformKeyframes]
+        : []
+      if (kfIndex < 0 || kfIndex >= existing.length) return t
+      const remaining = existing.filter((_, i) => i !== kfIndex)
+      const clips = [...t.clips]
+      if (remaining.length < 2) {
+        // Track would fall below the >= 2 invariant — clear it and bake the
+        // surviving keyframe's transform into the static transform so the
+        // current look is kept.
+        const survivor = remaining[0]
+        const baked = survivor
+          ? clampClipTransform(survivor.transform)
+          : undefined
+        clips[idx] = {
+          ...c,
+          transform:
+            baked && !isIdentityTransform(baked) ? baked : undefined,
+          transformKeyframes: undefined
+        }
+      } else {
+        clips[idx] = {
+          ...c,
+          transformKeyframes: normalizeKeyframes(remaining)
+        }
+      }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  clearTransformKeyframes(clipId): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      if (c.transformKeyframes === undefined) return t
+      const clips = [...t.clips]
+      // Keep the static transform untouched — only drop the animation track.
+      clips[idx] = { ...c, transformKeyframes: undefined }
       changed = true
       return { ...t, clips }
     })

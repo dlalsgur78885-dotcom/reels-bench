@@ -46,6 +46,10 @@ export function installTestBridge(): void {
         setClipFilter: Store['setClipFilter']
         setClipTransform: Store['setClipTransform']
         resetClipTransform: Store['resetClipTransform']
+        addTransformKeyframe: Store['addTransformKeyframe']
+        updateTransformKeyframe: Store['updateTransformKeyframe']
+        removeTransformKeyframe: Store['removeTransformKeyframe']
+        clearTransformKeyframes: Store['clearTransformKeyframes']
         addVideoTrack: Store['addVideoTrack']
         removeVideoTrack: Store['removeVideoTrack']
         addCaption: Store['addCaption']
@@ -87,6 +91,16 @@ export function installTestBridge(): void {
         useProjectStore.getState().setClipTransform(id, partial),
       resetClipTransform: (id) =>
         useProjectStore.getState().resetClipTransform(id),
+      addTransformKeyframe: (id, atMs, transform) =>
+        useProjectStore.getState().addTransformKeyframe(id, atMs, transform),
+      updateTransformKeyframe: (id, kfIndex, partial) =>
+        useProjectStore
+          .getState()
+          .updateTransformKeyframe(id, kfIndex, partial),
+      removeTransformKeyframe: (id, kfIndex) =>
+        useProjectStore.getState().removeTransformKeyframe(id, kfIndex),
+      clearTransformKeyframes: (id) =>
+        useProjectStore.getState().clearTransformKeyframes(id),
       addVideoTrack: () => useProjectStore.getState().addVideoTrack(),
       removeVideoTrack: (tid) =>
         useProjectStore.getState().removeVideoTrack(tid),

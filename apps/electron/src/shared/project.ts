@@ -68,6 +68,18 @@ export interface ClipTransform {
   opacity: number
 }
 
+/**
+ * One keyframe in a clip's transform animation track (Phase 3.5).
+ * `atMs` is RELATIVE to the clip's own start (clip.startMs == atMs 0) — this
+ * survives clip moves on the timeline and clip duplication without remapping.
+ */
+export interface TransformKeyframe {
+  /** Offset from clip.startMs, in ms. >= 0. */
+  atMs: number
+  /** Full transform snapshot at this instant (all 5 fields, no partials). */
+  transform: ClipTransform
+}
+
 export type FilterPreset =
   | 'none'
   | 'cinematic'
@@ -123,6 +135,16 @@ export interface VideoAudioClip {
   // -----------------------------------------------------------------
   /** Static canvas-relative transform. Absent = identity (centered, 1x, 0°, opaque). */
   transform?: ClipTransform
+  // -----------------------------------------------------------------
+  // Phase 3.5 — keyframe animation (optional, BC-safe).
+  // -----------------------------------------------------------------
+  /**
+   * Ordered transform keyframes. With >= 2 entries the clip's transform
+   * ANIMATES (getTransformAt interpolates linearly). Absent / empty / length 1
+   * → falls back to the static `transform` field (Phase 3 behavior). `atMs` is
+   * clip-relative; the store keeps entries sorted ascending and deduped.
+   */
+  transformKeyframes?: TransformKeyframe[]
 }
 
 /** Visual preset for a caption block. */
@@ -300,6 +322,14 @@ export const MAX_TRANSFORM_OFFSET = 2
 /** Hard cap on the number of video tracks (layer count). */
 export const MAX_VIDEO_TRACKS = 6
 
+// ---------------------------------------------------------------------------
+// Keyframe animation constants (Phase 3.5).
+// ---------------------------------------------------------------------------
+/** Hard cap on keyframes per clip (UI + ffmpeg expression-length guard). */
+export const MAX_KEYFRAMES_PER_CLIP = 24
+/** Two keyframes closer than this (clip-relative ms) are deduped/merged. */
+export const MIN_KEYFRAME_GAP_MS = 30
+
 export interface ProbeResult {
   durationMs: number
   width: number
@@ -381,4 +411,79 @@ export function isIdentityTransform(t: ClipTransform): boolean {
     t.rotation === 0 &&
     t.opacity === 1
   )
+}
+
+// ---------------------------------------------------------------------------
+// Keyframe helpers (Phase 3.5) — pure, importable from any layer.
+// ---------------------------------------------------------------------------
+
+/** Coerce non-finite to identity defaults + range-clamp every transform field. */
+function clampTransform(t: ClipTransform): ClipTransform {
+  const num = (v: number, d: number): number => (Number.isFinite(v) ? v : d)
+  const clamp = (v: number, lo: number, hi: number): number =>
+    Math.min(hi, Math.max(lo, v))
+  return {
+    x: clamp(num(t.x, 0), MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
+    y: clamp(num(t.y, 0), MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
+    scale: clamp(num(t.scale, 1), MIN_TRANSFORM_SCALE, MAX_TRANSFORM_SCALE),
+    rotation: clamp(
+      num(t.rotation, 0),
+      MIN_TRANSFORM_ROTATION,
+      MAX_TRANSFORM_ROTATION
+    ),
+    opacity: clamp(num(t.opacity, 1), 0, 1)
+  }
+}
+
+/** True iff the clip has an active (>= 2 keyframe) transform animation track. */
+export function hasTransformKeyframes(clip: VideoAudioClip): boolean {
+  return (
+    Array.isArray(clip.transformKeyframes) &&
+    clip.transformKeyframes.length >= 2
+  )
+}
+
+/**
+ * Resolve the effective transform for a clip at an ABSOLUTE timeline ms.
+ *  - No active keyframe track → getClipTransform(clip) (Phase 3 static path).
+ *  - Active track → linear interpolation between the two surrounding
+ *    keyframes; hold-clamp before the first / after the last keyframe.
+ * Every returned field is finite + range-clamped (clip may arrive over IPC
+ * unvalidated).
+ */
+export function getTransformAt(
+  clip: VideoAudioClip,
+  timelineMs: number
+): ClipTransform {
+  if (!hasTransformKeyframes(clip)) return getClipTransform(clip)
+  const kfs = [...(clip.transformKeyframes as TransformKeyframe[])].sort(
+    (a, b) => a.atMs - b.atMs
+  )
+  const localMs = timelineMs - clip.startMs
+  const first = kfs[0]
+  const last = kfs[kfs.length - 1]
+  if (localMs <= first.atMs) return clampTransform(first.transform)
+  if (localMs >= last.atMs) return clampTransform(last.transform)
+  let k0 = first
+  let k1 = last
+  for (let i = 0; i < kfs.length - 1; i++) {
+    if (localMs >= kfs[i].atMs && localMs <= kfs[i + 1].atMs) {
+      k0 = kfs[i]
+      k1 = kfs[i + 1]
+      break
+    }
+  }
+  const span = k1.atMs - k0.atMs
+  if (span <= 0) return clampTransform(k0.transform)
+  const f = (localMs - k0.atMs) / span
+  const a = clampTransform(k0.transform)
+  const b = clampTransform(k1.transform)
+  const lerp = (u: number, v: number): number => u + (v - u) * f
+  return clampTransform({
+    x: lerp(a.x, b.x),
+    y: lerp(a.y, b.y),
+    scale: lerp(a.scale, b.scale),
+    rotation: lerp(a.rotation, b.rotation),
+    opacity: lerp(a.opacity, b.opacity)
+  })
 }

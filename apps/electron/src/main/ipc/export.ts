@@ -46,6 +46,7 @@ import {
   isMediaClip,
   getClipTransform,
   isIdentityTransform,
+  hasTransformKeyframes,
   MAX_TRANSFORM_OFFSET,
   MAX_TRANSFORM_ROTATION,
   MAX_TRANSFORM_SCALE,
@@ -53,8 +54,10 @@ import {
   MIN_TRANSFORM_ROTATION,
   MIN_TRANSFORM_SCALE,
   type CaptionClip,
+  type ClipTransform,
   type Project,
   type Track,
+  type TransformKeyframe,
   type VideoAudioClip
 } from '../../shared/project'
 import { resolveFfmpegPath } from '../ffmpeg/binary'
@@ -519,6 +522,101 @@ function atempoChain(speed: number): string {
   return parts.join(',')
 }
 
+// ---------------------------------------------------------------------------
+// Phase 3.5 — keyframe expression compiler.
+// ---------------------------------------------------------------------------
+
+/**
+ * Compile a sorted keyframe list into a piecewise-linear ffmpeg expression
+ * string for a single transform property.
+ *
+ * The time variable `varName` (default `'t'`) is the filter-local time in
+ * seconds. For zoompan the caller passes `'time'`; for rotate/pad/geq the
+ * caller passes `'t'`.
+ *
+ * Output form (N keyframes at local seconds s0 < s1 < ... < s_{n-1}):
+ *   if(lt(VAR,s0), v0,
+ *     if(lt(VAR,s1), v0+(v1-v0)*(VAR-s0)/(s1-s0),
+ *       ... v_{n-1}))
+ *
+ * Optimisation — when ALL interpolated values are equal the bare constant is
+ * returned (no if() nesting). Callers use this to skip animated filters
+ * entirely and fall back to the Phase 3 static snippet, keeping non-animated
+ * properties free of the `geq`/`zoompan` performance cost.
+ *
+ * Guard: zero-width segments (duplicate timestamps) are skipped to prevent
+ * divide-by-zero in the interpolation expression. The project arrives over IPC
+ * unvalidated so this guard is safety-critical, not cosmetic.
+ *
+ * NOTE: MAX_KEYFRAMES_PER_CLIP=24 caps the nested-if depth at 23 levels — well
+ * within ffmpeg's expression evaluator limits for typical usage.
+ */
+export function keyframeExpr(
+  kfs: TransformKeyframe[],
+  pick: (t: ClipTransform) => number,
+  varName = 't'
+): string {
+  // Sort ascending and deduplicate zero-gap pairs defensively (store should
+  // have already enforced MIN_KEYFRAME_GAP_MS >= 30, but IPC is untrusted).
+  const sorted = [...kfs].sort((a, b) => a.atMs - b.atMs)
+
+  // Build de-duplicated list: keep first occurrence when two keyframes are
+  // within 1 ms (floating-point safe threshold).
+  const deduped: TransformKeyframe[] = []
+  for (const kf of sorted) {
+    if (
+      deduped.length === 0 ||
+      kf.atMs - deduped[deduped.length - 1].atMs >= 1
+    ) {
+      deduped.push(kf)
+    }
+  }
+
+  // Collect values.
+  const vals = deduped.map((kf) => pick(kf.transform))
+  const secs = deduped.map((kf) => kf.atMs / 1000)
+
+  // Constant-skip: all values equal → bare constant.
+  if (vals.every((v) => Math.abs(v - vals[0]) < 1e-9)) {
+    return vals[0].toFixed(6)
+  }
+
+  // Build right-to-left nested if() expression.
+  // Start from the final (hold-last) value, wrap in if(lt(...), interp, rest)
+  // for each interval from the right.
+  let expr = vals[vals.length - 1].toFixed(6)
+
+  for (let i = deduped.length - 2; i >= 0; i--) {
+    const s0 = secs[i]
+    const s1 = secs[i + 1]
+    const v0 = vals[i]
+    const v1 = vals[i + 1]
+
+    // Guard: skip zero-width segment (safety; should not occur after dedup).
+    const span = s1 - s0
+    if (span < 1e-6) continue
+
+    // Linear interpolation: v0 + (v1-v0)*(VAR-s0)/(s1-s0)
+    const dv = v1 - v0
+    let interp: string
+    if (Math.abs(dv) < 1e-9) {
+      // Flat segment — avoid emitting a divide for zero slope.
+      interp = v0.toFixed(6)
+    } else {
+      interp = `${v0.toFixed(6)}+${dv.toFixed(6)}*(${varName}-${s0.toFixed(4)})/${span.toFixed(4)}`
+    }
+
+    // Hold-first before s0.
+    if (i === 0) {
+      expr = `if(lt(${varName},${s0.toFixed(4)}),${v0.toFixed(6)},if(lt(${varName},${s1.toFixed(4)}),${interp},${expr}))`
+    } else {
+      expr = `if(lt(${varName},${s1.toFixed(4)}),${interp},${expr})`
+    }
+  }
+
+  return expr
+}
+
 /**
  * Build the per-clip video filter chain (excluding the xfade join).
  *
@@ -649,66 +747,245 @@ function buildVideoSegmentChain(
     }
   }
 
-  // 6. Transform sub-chain — only when the clip has a non-identity transform.
-  //    ALWAYS use getClipTransform() — never read clip.transform directly.
-  //    Gated by isIdentityTransform so legacy/unmodified clips have zero
-  //    overhead and single-track identity graphs remain byte-identical.
-  //    getClipTransform coerces non-finite values to identity; we ALSO
-  //    range-clamp here because the `project` arg arrives over IPC unvalidated
-  //    — the main process must not trust the renderer to have clamped (a
-  //    finite-but-extreme scale would otherwise OOM ffmpeg). Same MIN/MAX
-  //    constants as the renderer store's setClipTransform clamp.
-  const rawXform = getClipTransform(seg.clip)
-  const clampField = (v: number, lo: number, hi: number): number =>
-    Math.min(hi, Math.max(lo, v))
-  const xform = {
-    x: clampField(rawXform.x, MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
-    y: clampField(rawXform.y, MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
-    scale: clampField(rawXform.scale, MIN_TRANSFORM_SCALE, MAX_TRANSFORM_SCALE),
-    rotation: clampField(
-      rawXform.rotation,
-      MIN_TRANSFORM_ROTATION,
-      MAX_TRANSFORM_ROTATION
-    ),
-    opacity: clampField(rawXform.opacity, 0, 1)
-  }
-  if (!isIdentityTransform(xform)) {
-    const { x, y, scale, rotation, opacity } = xform
-    // 6a. Convert to RGBA so rotation corners and opacity blend correctly.
+  // 6. Transform sub-chain.
+  //
+  //    CRITICAL INVARIANT (spec 3.1): a clip with !hasTransformKeyframes(clip)
+  //    MUST produce a BYTE-IDENTICAL filter graph to the pre-Phase-3.5 code.
+  //    The two branches below are structurally exclusive — the keyframe path
+  //    is entered ONLY when hasTransformKeyframes returns true; otherwise the
+  //    original Phase 3 static code runs COMPLETELY UNCHANGED.
+
+  if (hasTransformKeyframes(seg.clip)) {
+    // -----------------------------------------------------------------------
+    // Phase 3.5 animated sub-chain.
+    //
+    // The keyframe list is clamped main-side before building expressions.
+    // The project arrives over IPC unvalidated; renderer clamping is not
+    // trusted (a finite-but-extreme value would OOM ffmpeg). Mirror exactly
+    // the same MIN/MAX constants used by the Phase 3 static path.
+    //
+    // Segment-local time: PTS was reset (setpts=PTS-STARTPTS) and optionally
+    // divided by speed (setpts=PTS/speed). After those two setpts filters the
+    // filter-local `t` (or `time` for zoompan) runs 0..segDurSec on the
+    // OUTPUT timeline. Keyframe `atMs` is CLIP-RELATIVE ms — dividing by 1000
+    // gives the matching local seconds directly, with no speed factor needed.
+    // -----------------------------------------------------------------------
+    const clampField = (v: number, lo: number, hi: number): number =>
+      Math.min(hi, Math.max(lo, v))
+
+    // Re-clamp every keyframe's transform. Build a clean sorted array.
+    const rawKfs = (seg.clip.transformKeyframes as TransformKeyframe[])
+    const kfs: TransformKeyframe[] = rawKfs
+      .slice()
+      .sort((a, b) => a.atMs - b.atMs)
+      .map((kf) => ({
+        // atMs is untrusted (IPC) — coerce non-finite/negative so a corrupt
+        // project JSON can't put "NaN"/"Infinity" into the ffmpeg expression
+        // via secs=atMs/1000. Valid renderer atMs (>=0, finite) passes through.
+        atMs: Number.isFinite(kf.atMs) ? Math.max(0, kf.atMs) : 0,
+        transform: {
+          x: clampField(Number.isFinite(kf.transform.x) ? kf.transform.x : 0, MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
+          y: clampField(Number.isFinite(kf.transform.y) ? kf.transform.y : 0, MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
+          scale: clampField(Number.isFinite(kf.transform.scale) ? kf.transform.scale : 1, MIN_TRANSFORM_SCALE, MAX_TRANSFORM_SCALE),
+          rotation: clampField(Number.isFinite(kf.transform.rotation) ? kf.transform.rotation : 0, MIN_TRANSFORM_ROTATION, MAX_TRANSFORM_ROTATION),
+          opacity: clampField(Number.isFinite(kf.transform.opacity) ? kf.transform.opacity : 1, 0, 1)
+        }
+      }))
+
+    // Per-property constant-skip: compute the expression and check whether it
+    // resolved to a bare constant (all values equal → keyframeExpr returns
+    // a number string, no `if(` present). We use this to decide whether to
+    // emit the animated filter or fall back to the cheaper static snippet.
+    const scaleExpr    = keyframeExpr(kfs, (t) => t.scale,    'time')
+    const rotExpr      = keyframeExpr(kfs, (t) => t.rotation * Math.PI / 180, 't')
+    const xExpr        = keyframeExpr(kfs, (t) => t.x * W,    't')
+    const yExpr        = keyframeExpr(kfs, (t) => t.y * H,    't')
+    const opacityExpr  = keyframeExpr(kfs, (t) => t.opacity,  't')
+
+    const isConstExpr = (e: string): boolean => !e.includes('(')
+
+    // Constant fallback values (first keyframe, already clamped).
+    const firstT = kfs[0].transform
+    const constScale    = firstT.scale
+    const constRotRad   = firstT.rotation * Math.PI / 180
+    const constX        = firstT.x
+    const constY        = firstT.y
+    const constOpacity  = firstT.opacity
+
+    // 6a. format=rgba — always emitted for the animated path.
     fragment += `,format=rgba`
 
-    // 6b. Scale: scale then crop/pad back to canvas size.
-    if (Math.abs(scale - 1) > 1e-5) {
-      fragment += `,scale=iw*${scale.toFixed(6)}:ih*${scale.toFixed(6)}`
-      if (scale > 1) {
-        // Scaled beyond canvas — crop centred to canvas dimensions.
-        fragment += `,crop=${W}:${H}`
-      } else {
-        // Scaled below canvas — pad with transparent gutters.
-        fragment += `,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0`
+    // 6b. SCALE (animated via zoompan, or static snippet when constant).
+    //
+    // zoompan is used for animated scale because it is the only ffmpeg filter
+    // that evaluates a per-frame zoom expression while keeping output dimensions
+    // fixed. It uses variable name `time` (seconds).
+    //
+    // LIMITATION: zoompan internally quantises zoom to float precision on each
+    // output frame; very slow zooms (< ~0.001 zoom-unit/frame) may exhibit
+    // integer-step banding on some ffmpeg builds. This is a known zoompan
+    // limitation and is documented here for the e2e tester.
+    //
+    // d=1 = one output frame per input frame (pass-through cadence).
+    if (isConstExpr(scaleExpr)) {
+      // Constant scale — Phase 3 static snippet.
+      if (Math.abs(constScale - 1) > 1e-5) {
+        fragment += `,scale=iw*${constScale.toFixed(6)}:ih*${constScale.toFixed(6)}`
+        if (constScale > 1) {
+          fragment += `,crop=${W}:${H}`
+        } else {
+          fragment += `,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0`
+        }
       }
+    } else {
+      // Animated scale via zoompan.
+      // zoompan centres the zoom on (iw/2, ih/2) by default when
+      // x='iw/2-(iw/zoom/2)' y='ih/2-(ih/zoom/2)'.
+      fragment += `,zoompan=z='${scaleExpr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=${preset.fps}`
     }
 
-    // 6c. Rotation (degrees → radians; transparent fill for corners).
-    if (Math.abs(rotation) > 1e-5) {
-      const rad = (rotation * Math.PI) / 180
-      fragment += `,rotate=${rad.toFixed(6)}:c=black@0:ow=${W}:oh=${H}`
+    // 6c. ROTATION (animated via rotate filter; uses variable `t`).
+    if (isConstExpr(rotExpr)) {
+      // Constant rotation — Phase 3 static snippet.
+      if (Math.abs(constRotRad) > 1e-5) {
+        fragment += `,rotate=${constRotRad.toFixed(6)}:c=black@0:ow=${W}:oh=${H}`
+      }
+    } else {
+      fragment += `,rotate=a='${rotExpr}':c=black@0:ow=${W}:oh=${H}`
     }
 
-    // 6d. Translation: x/y are fractions of canvas dimensions, centre-origin.
-    //     We bake the offset into a pad filter then crop to clamp back to canvas.
-    if (Math.abs(x) > 1e-6 || Math.abs(y) > 1e-6) {
-      const xPx = Math.round(x * W)
-      const yPx = Math.round(y * H)
-      // pad moves the frame right/down by the offset; (ow-iw)/2 centres first.
-      fragment += `,pad=${W}:${H}:${xPx}+(ow-iw)/2:${yPx}+(oh-ih)/2:color=black@0`
-      // Crop back to canvas size from origin to clamp.
-      fragment += `,crop=${W}:${H}:0:0`
+    // 6d. TRANSLATION (animated).
+    //
+    // TRANSLATE PATH CHOSEN: split + overlay (NOT pad).
+    //
+    // Rationale: ffmpeg's `pad` filter evaluates its x/y expressions at
+    // filter-graph initialisation time (once), NOT per frame, so passing a
+    // `t`-expression to pad produces a static offset equal to t=0. This is a
+    // long-standing ffmpeg limitation that applies to all bundled builds.
+    // The `overlay` filter evaluates x/y per frame and is universally
+    // supported. We therefore route animated translation through:
+    //   split=2[base][content] →
+    //   [base]pad=W:H:0:0:black@0[bg] →
+    //   [bg][content]overlay=x='<xExpr>+(W-iw)/2':y='<yExpr>+(H-ih)/2'
+    //
+    // The centre-origin convention (x/y as fraction of canvas) is preserved:
+    //   xPxExpr = keyframeExpr(t => t.x * W) + (W-iw)/2
+    //   yPxExpr = keyframeExpr(t => t.y * H) + (H-ih)/2
+    //
+    // For constant translation we still use the Phase 3 pad+crop snippet to
+    // avoid the split+overlay overhead on static clips.
+    if (isConstExpr(xExpr) && isConstExpr(yExpr)) {
+      // Constant translation — Phase 3 static snippet.
+      if (Math.abs(constX) > 1e-6 || Math.abs(constY) > 1e-6) {
+        const xPx = Math.round(constX * W)
+        const yPx = Math.round(constY * H)
+        fragment += `,pad=${W}:${H}:${xPx}+(ow-iw)/2:${yPx}+(oh-ih)/2:color=black@0`
+        fragment += `,crop=${W}:${H}:0:0`
+      }
+    } else {
+      // Animated translation via split + overlay.
+      const splitLbl  = `xt_split_${seg.inputIdx}`
+      const bgLbl     = `xt_bg_${seg.inputIdx}`
+      const contentLbl = `xt_content_${seg.inputIdx}`
+      // End current chain, split into bg + content, build transparent bg,
+      // then overlay with animated position.
+      const overlayX = `${xExpr}+(${W}-iw)/2`
+      const overlayY = `${yExpr}+(${H}-ih)/2`
+      fragment += `,split=2[${splitLbl}_bg][${splitLbl}_fg]`
+      // Append sub-fragments as separate filter graph statements.
+      fragment += `;[${splitLbl}_bg]pad=${W}:${H}:0:0:color=black@0[${bgLbl}]`
+      fragment += `;[${bgLbl}][${splitLbl}_fg]overlay=x='${overlayX}':y='${overlayY}'[${contentLbl}]`
+      // Swap current chain label to contentLbl so the final `[${out}]` suffix
+      // attaches correctly below.  We do this by closing the current pad of
+      // the chain and continuing from contentLbl.
+      fragment += `;[${contentLbl}]null`
     }
 
-    // 6e. Opacity.
-    if (Math.abs(opacity - 1) > 1e-5) {
-      fragment += `,colorchannelmixer=aa=${opacity.toFixed(6)}`
+    // 6e. OPACITY (animated via geq; uses variable `t`).
+    //
+    // geq evaluates per pixel per frame — it is the most CPU-intensive filter
+    // in this chain. The constant-skip optimisation is critical: a clip where
+    // opacity never changes must NOT emit geq. A constant non-1 opacity uses
+    // the cheaper colorchannelmixer static snippet.
+    if (isConstExpr(opacityExpr)) {
+      // Constant opacity — Phase 3 static snippet.
+      if (Math.abs(constOpacity - 1) > 1e-5) {
+        fragment += `,colorchannelmixer=aa=${constOpacity.toFixed(6)}`
+      }
+    } else {
+      // Animated opacity via geq (passes through R/G/B unchanged, scales A).
+      fragment += `,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${opacityExpr}*alpha(X,Y)'`
+    }
+
+  } else {
+    // -----------------------------------------------------------------------
+    // Phase 3 static step-6 — UNCHANGED from pre-Phase-3.5.
+    // This block must remain byte-for-byte identical to the original so that
+    // regression test (11) (concat=n=2, no eof_action=pass) and all Phase 1/2
+    // tests continue to pass.
+    // -----------------------------------------------------------------------
+
+    // 6. Transform sub-chain — only when the clip has a non-identity transform.
+    //    ALWAYS use getClipTransform() — never read clip.transform directly.
+    //    Gated by isIdentityTransform so legacy/unmodified clips have zero
+    //    overhead and single-track identity graphs remain byte-identical.
+    //    getClipTransform coerces non-finite values to identity; we ALSO
+    //    range-clamp here because the `project` arg arrives over IPC unvalidated
+    //    — the main process must not trust the renderer to have clamped (a
+    //    finite-but-extreme scale would otherwise OOM ffmpeg). Same MIN/MAX
+    //    constants as the renderer store's setClipTransform clamp.
+    const rawXform = getClipTransform(seg.clip)
+    const clampField = (v: number, lo: number, hi: number): number =>
+      Math.min(hi, Math.max(lo, v))
+    const xform = {
+      x: clampField(rawXform.x, MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
+      y: clampField(rawXform.y, MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
+      scale: clampField(rawXform.scale, MIN_TRANSFORM_SCALE, MAX_TRANSFORM_SCALE),
+      rotation: clampField(
+        rawXform.rotation,
+        MIN_TRANSFORM_ROTATION,
+        MAX_TRANSFORM_ROTATION
+      ),
+      opacity: clampField(rawXform.opacity, 0, 1)
+    }
+    if (!isIdentityTransform(xform)) {
+      const { x, y, scale, rotation, opacity } = xform
+      // 6a. Convert to RGBA so rotation corners and opacity blend correctly.
+      fragment += `,format=rgba`
+
+      // 6b. Scale: scale then crop/pad back to canvas size.
+      if (Math.abs(scale - 1) > 1e-5) {
+        fragment += `,scale=iw*${scale.toFixed(6)}:ih*${scale.toFixed(6)}`
+        if (scale > 1) {
+          // Scaled beyond canvas — crop centred to canvas dimensions.
+          fragment += `,crop=${W}:${H}`
+        } else {
+          // Scaled below canvas — pad with transparent gutters.
+          fragment += `,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0`
+        }
+      }
+
+      // 6c. Rotation (degrees → radians; transparent fill for corners).
+      if (Math.abs(rotation) > 1e-5) {
+        const rad = (rotation * Math.PI) / 180
+        fragment += `,rotate=${rad.toFixed(6)}:c=black@0:ow=${W}:oh=${H}`
+      }
+
+      // 6d. Translation: x/y are fractions of canvas dimensions, centre-origin.
+      //     We bake the offset into a pad filter then crop to clamp back to canvas.
+      if (Math.abs(x) > 1e-6 || Math.abs(y) > 1e-6) {
+        const xPx = Math.round(x * W)
+        const yPx = Math.round(y * H)
+        // pad moves the frame right/down by the offset; (ow-iw)/2 centres first.
+        fragment += `,pad=${W}:${H}:${xPx}+(ow-iw)/2:${yPx}+(oh-ih)/2:color=black@0`
+        // Crop back to canvas size from origin to clamp.
+        fragment += `,crop=${W}:${H}:0:0`
+      }
+
+      // 6e. Opacity.
+      if (Math.abs(opacity - 1) > 1e-5) {
+        fragment += `,colorchannelmixer=aa=${opacity.toFixed(6)}`
+      }
     }
   }
 
@@ -1709,6 +1986,7 @@ export const __test = {
   buildExportPlan,
   escapeDrawtext,
   atempoChain,
+  keyframeExpr,
   collectSegments,
   stitchVideo,
   stitchVideoTrack,

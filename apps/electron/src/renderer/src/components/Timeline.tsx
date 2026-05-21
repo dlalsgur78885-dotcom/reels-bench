@@ -4,11 +4,13 @@ import {
   getClipDuration,
   getClipSourceText,
   getClipTransform,
+  hasTransformKeyframes,
   isCaptionClip,
   isIdentityTransform,
   isMediaClip,
   MAX_VIDEO_TRACKS,
   MIN_CLIP_MS,
+  MIN_KEYFRAME_GAP_MS,
   type Clip,
   type MediaAsset,
   type Project,
@@ -226,6 +228,27 @@ const styles = {
     background: '#ef4444',
     pointerEvents: 'none' as const,
     zIndex: 5
+  } as React.CSSProperties,
+  // Phase 3.5 — keyframe marker row pinned to the bottom of a clip block.
+  keyframeMarkerRow: {
+    position: 'absolute' as const,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 12,
+    zIndex: 3
+  } as React.CSSProperties,
+  keyframeMarker: {
+    position: 'absolute' as const,
+    bottom: 1,
+    width: 9,
+    height: 9,
+    marginLeft: -5,
+    background: '#a5b4fc',
+    border: '1px solid #1a1a1a',
+    transform: 'rotate(45deg)',
+    cursor: 'ew-resize',
+    zIndex: 3
   } as React.CSSProperties
 }
 
@@ -364,6 +387,13 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const setClipFilter = useProjectStore((s) => s.setClipFilter)
   const setClipTransform = useProjectStore((s) => s.setClipTransform)
   const resetClipTransform = useProjectStore((s) => s.resetClipTransform)
+  const addTransformKeyframe = useProjectStore((s) => s.addTransformKeyframe)
+  const updateTransformKeyframe = useProjectStore(
+    (s) => s.updateTransformKeyframe
+  )
+  const removeTransformKeyframe = useProjectStore(
+    (s) => s.removeTransformKeyframe
+  )
   const addVideoTrack = useProjectStore((s) => s.addVideoTrack)
   const removeVideoTrack = useProjectStore((s) => s.removeVideoTrack)
   const addClip = useProjectStore((s) => s.addClip)
@@ -451,6 +481,27 @@ export function Timeline(props: TimelineProps): JSX.Element {
     }
     return null
   }, [ctx, project])
+
+  // Index of the keyframe under the playhead (within MIN_KEYFRAME_GAP_MS of
+  // the clip-relative playhead offset), or -1 when not on a keyframe. Drives
+  // the context-menu's "키프레임 갱신/추가" labels + the onTransformChange
+  // redirect.
+  const ctxKeyframeIndex = useMemo<number>(() => {
+    if (!ctxClip || !isMediaClip(ctxClip)) return -1
+    const kfs = ctxClip.transformKeyframes
+    if (!kfs || kfs.length === 0) return -1
+    const localMs = playheadMs - ctxClip.startMs
+    let bestIdx = -1
+    let bestDist = MIN_KEYFRAME_GAP_MS
+    for (let i = 0; i < kfs.length; i++) {
+      const d = Math.abs(kfs[i].atMs - localMs)
+      if (d < bestDist) {
+        bestDist = d
+        bestIdx = i
+      }
+    }
+    return bestIdx
+  }, [ctxClip, playheadMs])
 
   const onMenuAction = (key: string): void => {
     if (!ctxClip) return
@@ -665,6 +716,58 @@ export function Timeline(props: TimelineProps): JSX.Element {
     const onUp = (): void => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  // -------------------------------------------------------------------------
+  // Keyframe marker drag — horizontal only. Mirrors the trim-handle pattern:
+  // a click-vs-drag threshold distinguishes a marker click (→ seek) from a
+  // drag (→ updateTransformKeyframe with a clamped clip-relative atMs). The
+  // rapid updateTransformKeyframe calls are coalesced by the store's 200ms
+  // undo throttle, exactly like trim-drag.
+  // -------------------------------------------------------------------------
+  const onKeyframeMarkerMouseDown = (
+    e: React.MouseEvent<HTMLDivElement>,
+    clip: VideoAudioClip,
+    kfIndex: number,
+    kfAtMs: number
+  ): void => {
+    // Right-click or Alt+click removes the keyframe outright.
+    if (e.button === 2 || e.altKey) {
+      e.preventDefault()
+      e.stopPropagation()
+      removeTransformKeyframe(clip.id, kfIndex)
+      return
+    }
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    handleSelect(clip.id)
+    setCtx(null)
+    const startMouseX = e.clientX
+    const durationMs = getClipDuration(clip)
+    let dragging = false
+
+    const onMove = (ev: MouseEvent): void => {
+      const dx = ev.clientX - startMouseX
+      if (!dragging) {
+        if (Math.abs(dx) < CLICK_VS_DRAG_PX) return
+        dragging = true
+      }
+      const deltaMs = (dx / pps) * 1000
+      const desired = Math.max(
+        0,
+        Math.min(durationMs, Math.round(kfAtMs + deltaMs))
+      )
+      updateTransformKeyframe(clip.id, kfIndex, { atMs: desired })
+    }
+    const onUp = (): void => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      // A pure click (no drag) → seek to the keyframe.
+      if (!dragging) onSeek(clip.startMs + kfAtMs)
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
@@ -1076,6 +1179,76 @@ export function Timeline(props: TimelineProps): JSX.Element {
                           ⤢
                         </div>
                       )}
+                    {/* Keyframe indicator (Phase 3.5) — badge distinct from
+                        the Phase 3 transform-indicator when the clip has an
+                        active (>= 2 keyframe) animation track. */}
+                    {isMediaClip(clip) && hasTransformKeyframes(clip) && (
+                      <div
+                        data-testid="keyframe-indicator"
+                        data-clip-id={clip.id}
+                        style={{
+                          position: 'absolute',
+                          left: 4,
+                          bottom: 4,
+                          padding: '1px 5px',
+                          borderRadius: 3,
+                          background: 'rgba(165, 180, 252, 0.95)',
+                          color: '#1a1a1a',
+                          fontSize: 9,
+                          fontWeight: 700,
+                          pointerEvents: 'none',
+                          zIndex: 4
+                        }}
+                        title="키프레임 애니메이션"
+                      >
+                        ◆
+                      </div>
+                    )}
+                    {/* Keyframe marker row (Phase 3.5) — one diamond per
+                        keyframe, positioned by clip-relative atMs. Click →
+                        seek; horizontal drag → re-time; right/Alt-click →
+                        remove. */}
+                    {isMediaClip(clip) && hasTransformKeyframes(clip) && (
+                      <div
+                        style={styles.keyframeMarkerRow}
+                        data-testid="keyframe-marker-row"
+                        data-clip-id={clip.id}
+                      >
+                        {(clip.transformKeyframes ?? []).map((kf, kfIdx) => {
+                          const clipDur = Math.max(1, getClipDuration(clip))
+                          const markerLeft = (kf.atMs / clipDur) * w
+                          return (
+                            <div
+                              key={kfIdx}
+                              style={{
+                                ...styles.keyframeMarker,
+                                left: markerLeft
+                              }}
+                              data-testid="keyframe-marker"
+                              data-clip-id={clip.id}
+                              data-kf-index={kfIdx}
+                              data-kf-ms={kf.atMs}
+                              title={`키프레임 ${kfIdx + 1} · ${Math.round(
+                                kf.atMs
+                              )}ms`}
+                              onMouseDown={(ev) =>
+                                onKeyframeMarkerMouseDown(
+                                  ev,
+                                  clip,
+                                  kfIdx,
+                                  kf.atMs
+                                )
+                              }
+                              onContextMenu={(ev) => {
+                                ev.preventDefault()
+                                ev.stopPropagation()
+                                removeTransformKeyframe(clip.id, kfIdx)
+                              }}
+                            />
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
                 )
               })}
@@ -1122,7 +1295,27 @@ export function Timeline(props: TimelineProps): JSX.Element {
           onTransformChange={
             isMediaClip(ctxClip)
               ? (partial): void => {
-                  setClipTransform(ctxClip.id, partial)
+                  // Phase 3.5 redirect:
+                  //  - active keyframe track + playhead ON a keyframe →
+                  //    update that keyframe.
+                  //  - active track but NOT on a keyframe → insert one at the
+                  //    playhead carrying the partial change.
+                  //  - no track → Phase 3 static transform (unchanged).
+                  if (hasTransformKeyframes(ctxClip)) {
+                    if (ctxKeyframeIndex >= 0) {
+                      updateTransformKeyframe(ctxClip.id, ctxKeyframeIndex, {
+                        transform: partial
+                      })
+                    } else {
+                      addTransformKeyframe(
+                        ctxClip.id,
+                        playheadMs - ctxClip.startMs,
+                        partial
+                      )
+                    }
+                  } else {
+                    setClipTransform(ctxClip.id, partial)
+                  }
                 }
               : undefined
           }
@@ -1133,6 +1326,34 @@ export function Timeline(props: TimelineProps): JSX.Element {
                 }
               : undefined
           }
+          onAddKeyframe={
+            isMediaClip(ctxClip)
+              ? (): void => {
+                  // "키프레임 추가/갱신" — addTransformKeyframe seeds a track
+                  // (two keyframes) on the first call, or inserts/replaces
+                  // one within the dedup window on subsequent calls.
+                  addTransformKeyframe(
+                    ctxClip.id,
+                    playheadMs - ctxClip.startMs
+                  )
+                }
+              : undefined
+          }
+          onRemoveKeyframeAtPlayhead={
+            isMediaClip(ctxClip)
+              ? (): void => {
+                  if (ctxKeyframeIndex >= 0) {
+                    removeTransformKeyframe(ctxClip.id, ctxKeyframeIndex)
+                  }
+                }
+              : undefined
+          }
+          keyframeCount={
+            isMediaClip(ctxClip)
+              ? ctxClip.transformKeyframes?.length ?? 0
+              : 0
+          }
+          isOnKeyframe={isMediaClip(ctxClip) && ctxKeyframeIndex >= 0}
           onClose={() => setCtx(null)}
         />
       )}

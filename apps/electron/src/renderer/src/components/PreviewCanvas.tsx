@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  getClipTransform,
+  getTransformAt,
   isCaptionClip,
   isMediaClip,
   type CaptionClip,
@@ -938,7 +938,10 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           // stable, but active layers always sit at 1 + layerIndex.
           const zIndex = layer ? 1 + layer.layerIndex : 1 + trackIdx
           const clip = layer?.clip
-          const t = clip ? getClipTransform(clip) : null
+          // Phase 3.5 — resolve the effective transform AT the playhead so
+          // keyframed clips animate during scrub/playback. For a static clip
+          // getTransformAt falls back to the Phase 3 getClipTransform path.
+          const t = clip ? getTransformAt(clip, playheadMs) : null
           const cssTransform = t
             ? `translate(${t.x * 100}%, ${t.y * 100}%) scale(${t.scale}) rotate(${t.rotation}deg)`
             : undefined

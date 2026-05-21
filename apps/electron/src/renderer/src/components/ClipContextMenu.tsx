@@ -8,7 +8,7 @@ import type {
 import {
   DEFAULT_TRANSITION_MS,
   FILTER_PRESETS,
-  getClipTransform,
+  getTransformAt,
   isCaptionClip,
   isMediaClip,
   MAX_CLIP_SPEED,
@@ -52,6 +52,15 @@ interface ClipContextMenuProps {
   onTransformChange?: (partial: Partial<ClipTransform>) => void
   /** Reset the clip's transform to identity. Media clips only. */
   onTransformReset?: () => void
+  // --- Phase 3.5 keyframe editing (media clips only) ---
+  /** Add (or update) a transform keyframe at the current playhead. */
+  onAddKeyframe?: () => void
+  /** Remove the keyframe under the current playhead (if any). */
+  onRemoveKeyframeAtPlayhead?: () => void
+  /** Number of keyframes on the clip's animation track (0 when static). */
+  keyframeCount?: number
+  /** True when the playhead currently sits on an existing keyframe. */
+  isOnKeyframe?: boolean
   onClose: () => void
 }
 
@@ -159,6 +168,39 @@ const styles = {
     fontSize: 11,
     cursor: 'pointer',
     width: '100%'
+  } as React.CSSProperties,
+  keyframeRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 8
+  } as React.CSSProperties,
+  keyframeBtn: {
+    flex: 1,
+    background: '#312e81',
+    color: '#e0e7ff',
+    border: '1px solid #6366f1',
+    borderRadius: 4,
+    padding: '4px 8px',
+    fontSize: 11,
+    cursor: 'pointer'
+  } as React.CSSProperties,
+  keyframeBtnDisabled: {
+    background: '#1f2937',
+    color: '#475569',
+    border: '1px solid #374151',
+    cursor: 'not-allowed'
+  } as React.CSSProperties,
+  keyframeCountBadge: {
+    flexShrink: 0,
+    background: '#6366f1',
+    color: '#f5f5f5',
+    borderRadius: 999,
+    padding: '2px 8px',
+    fontSize: 10,
+    fontWeight: 700,
+    minWidth: 22,
+    textAlign: 'center' as const
   } as React.CSSProperties
 }
 
@@ -214,6 +256,10 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
     onFilterChange,
     onTransformChange,
     onTransformReset,
+    onAddKeyframe,
+    onRemoveKeyframeAtPlayhead,
+    keyframeCount,
+    isOnKeyframe,
     onClose
   } = props
   const ref = useRef<HTMLDivElement>(null)
@@ -237,10 +283,11 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
     ? clip.filterPreset ?? 'none'
     : 'none'
   const filterIntensity = isMediaClip(clip) ? clip.filterIntensity ?? 1 : 1
-  // Current transform — always resolved via getClipTransform (identity
-  // fallback), never read off clip.transform directly.
+  // Current transform — Phase 3.5: resolved via getTransformAt at the
+  // playhead so a keyframed clip shows the INTERPOLATED value. For a static
+  // clip getTransformAt falls back to the Phase 3 getClipTransform path.
   const transform: ClipTransform = isMediaClip(clip)
-    ? getClipTransform(clip)
+    ? getTransformAt(clip, playheadMs ?? clip.startMs)
     : { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 }
 
   useEffect(() => {
@@ -505,6 +552,40 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
           </div>
           {showTransform && (
             <div style={styles.speedPanel} data-testid="menu-transform-panel">
+              {/* Keyframe controls (Phase 3.5) — above the sliders. */}
+              {onAddKeyframe && (
+                <div style={styles.keyframeRow}>
+                  <button
+                    type="button"
+                    style={styles.keyframeBtn}
+                    data-testid="menu-transform-add-keyframe"
+                    onClick={() => onAddKeyframe()}
+                  >
+                    {isOnKeyframe ? '키프레임 갱신' : '현재 위치에 키프레임 추가'}
+                  </button>
+                  <button
+                    type="button"
+                    style={{
+                      ...styles.keyframeBtn,
+                      ...(isOnKeyframe ? {} : styles.keyframeBtnDisabled)
+                    }}
+                    data-testid="menu-transform-remove-keyframe"
+                    disabled={!isOnKeyframe}
+                    onClick={() => {
+                      if (!isOnKeyframe) return
+                      onRemoveKeyframeAtPlayhead?.()
+                    }}
+                  >
+                    키프레임 삭제
+                  </button>
+                  <span
+                    style={styles.keyframeCountBadge}
+                    data-testid="keyframe-count"
+                  >
+                    {keyframeCount ?? 0}
+                  </span>
+                </div>
+              )}
               {/* Scale */}
               <div style={styles.transformRow}>
                 <span style={styles.transformLabel}>크기</span>

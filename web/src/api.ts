@@ -563,6 +563,8 @@ export const api = {
     get<{ id: string; product_id: number; ref_shortcode: string | null; source_type: string; persona_name: string | null; title: string; sentences: any[]; meta: any; created_at: string }>(`/api/my-products/${pid}/scripts/${sid}`),
   deleteGenScript: (pid: number, sid: string) =>
     del<{ deleted: boolean }>(`/api/my-products/${pid}/scripts/${sid}`),
+  forkGenScript: (pid: number, sid: string) =>
+    post<{ id: string; row: any }>(`/api/my-products/${pid}/scripts/${sid}/fork`, {}),
   listAllMyScripts: () =>
     get<{
       products: Array<{ id: number; name: string }>

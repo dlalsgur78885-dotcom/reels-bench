@@ -2082,6 +2082,61 @@ def update_gen_script(pid: int, sid: str, body: GenScriptPatch, request: Request
     return {"updated": True, "row": rows[0] if rows else None}
 
 
+@app.post("/api/my-products/{pid}/scripts/{sid}/fork")
+def fork_gen_script(pid: int, sid: str, request: Request):
+    """대본 수정본 만들기 — 현재 대본을 복제한 새 대본 생성.
+    저장된 TTS·상태는 빼고 복제 (수정본은 자기 TTS를 새로 뽑음).
+    원본 ↔ 수정본 양방향 링크: 수정본 meta.forked_from / 원본 meta.forks."""
+    me = auth_svc.require_user(request)
+    row = _check_script_access(pid, sid, me, edit=True)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    orig_meta = dict(row.get("meta") or {})
+    orig_title = row.get("title") or "대본"
+    # 수정본 meta — TTS/상태/forks 제거, 원본 역참조만 기록
+    new_meta = dict(orig_meta)
+    for k in ("tts", "forks", "status", "work_stage"):
+        new_meta.pop(k, None)
+    new_meta["forked_from"] = sid
+    new_meta["forked_from_title"] = orig_title
+    new_title = f"{orig_title} (수정본)"
+    ins = _r.post(
+        f"{SUPA}/rest/v1/generated_scripts",
+        headers={**H, "Content-Type": "application/json", "Prefer": "return=representation"},
+        json={
+            "product_id": pid,
+            "ref_shortcode": row.get("ref_shortcode"),
+            "source_type": row.get("source_type"),
+            "persona_name": row.get("persona_name"),
+            "title": new_title,
+            "sentences": row.get("sentences") or [],
+            "meta": new_meta,
+            "created_by": me["id"],
+        }, timeout=15,
+    )
+    if ins.status_code not in (200, 201):
+        raise HTTPException(ins.status_code, ins.text[:300])
+    new_row = ins.json()[0] if ins.json() else {}
+    new_sid = new_row.get("id")
+    # 원본 meta.forks에 수정본 추가
+    forks = list(orig_meta.get("forks") or [])
+    forks.append({
+        "id": new_sid, "title": new_title,
+        "created_at": new_row.get("created_at"),
+    })
+    orig_meta["forks"] = forks
+    _r.patch(
+        f"{SUPA}/rest/v1/generated_scripts?id=eq.{sid}&product_id=eq.{pid}",
+        headers={**H, "Content-Type": "application/json", "Prefer": "return=minimal"},
+        json={"meta": orig_meta}, timeout=10,
+    )
+    _invalidate_my_scripts_cache()
+    logger.info("[gen-script fork] %s → %s (pid=%s)", sid, new_sid, pid)
+    return {"id": new_sid, "row": new_row}
+
+
 class SavedRefineRequest(BaseModel):
     variant: str = "default"
 

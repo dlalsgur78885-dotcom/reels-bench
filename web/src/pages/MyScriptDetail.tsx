@@ -25,6 +25,7 @@ export default function MyScriptDetail() {
   const [pinned, setPinned] = useState('')
   const [planUrl, setPlanUrl] = useState('')
   const [savingMeta, setSavingMeta] = useState(false)
+  const [forking, setForking] = useState(false)
 
   const [editing, setEditing] = useState(false)
   const [draftTitle, setDraftTitle] = useState('')
@@ -276,6 +277,20 @@ export default function MyScriptDetail() {
     }
   }
 
+  const makeFork = async () => {
+    if (!pid || !sid || forking) return
+    if (!confirm('현재 대본을 복제한 수정본을 만들까요?\n원본 대본과 저장된 음성은 그대로 보존되고, 수정본은 음성을 새로 만들 수 있습니다.')) return
+    setForking(true)
+    try {
+      const r = await api.forkGenScript(pid, sid)
+      navigate(`/my-scripts/${pid}/${r.id}`)
+    } catch (e: any) {
+      alert('수정본 생성 실패: ' + (e?.message || e))
+    } finally {
+      setForking(false)
+    }
+  }
+
   const meta = useMemo(() => data?.meta || {}, [data])
 
   if (loading) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>불러오는 중…</div>
@@ -326,6 +341,14 @@ export default function MyScriptDetail() {
                 style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600,
                   background: 'transparent', color: 'var(--accent)',
                   border: '1px solid var(--accent)', borderRadius: 4, cursor: 'pointer' }}>수정</button>
+              <button onClick={makeFork} disabled={forking}
+                title="현재 대본을 복제한 새 대본을 만듭니다 — 원본·음성은 그대로 보존"
+                style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600,
+                  background: 'transparent', color: '#7c3aed',
+                  border: '1px solid #7c3aed', borderRadius: 4,
+                  cursor: forking ? 'wait' : 'pointer', opacity: forking ? 0.6 : 1 }}>
+                {forking ? '복제 중…' : '📄 수정본 만들기'}
+              </button>
               <button
                 onClick={async () => {
                   const text = buildTtsText(displayedSents)
@@ -363,6 +386,40 @@ export default function MyScriptDetail() {
             </>
           )}
         </div>
+
+        {/* 원본 ↔ 수정본 링크 */}
+        {data?.meta?.forked_from && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, padding: '8px 12px',
+            background: 'rgba(124,58,237,0.08)', border: '1px solid #c4b5fd',
+            borderRadius: 6, fontSize: 12, color: 'var(--text-body)',
+          }}>
+            <span>📄 이 대본은 <strong>수정본</strong>입니다.</span>
+            <button onClick={() => navigate(`/my-scripts/${pid}/${data.meta.forked_from}`)}
+              style={{ padding: '3px 10px', fontSize: 11, fontWeight: 700,
+                background: '#7c3aed', color: '#fff', border: 'none', borderRadius: 4,
+                cursor: 'pointer' }}>
+              ← 원본 대본 보기{data.meta.forked_from_title ? ` (${data.meta.forked_from_title})` : ''}
+            </button>
+          </div>
+        )}
+        {Array.isArray(data?.meta?.forks) && data.meta.forks.length > 0 && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, padding: '8px 12px',
+            background: 'rgba(124,58,237,0.08)', border: '1px solid #c4b5fd',
+            borderRadius: 6, fontSize: 12, color: 'var(--text-body)', flexWrap: 'wrap',
+          }}>
+            <span>📄 수정본 {data.meta.forks.length}개:</span>
+            {data.meta.forks.map((f: any) => (
+              <button key={f.id} onClick={() => navigate(`/my-scripts/${pid}/${f.id}`)}
+                style={{ padding: '3px 10px', fontSize: 11, fontWeight: 700,
+                  background: 'transparent', color: '#7c3aed',
+                  border: '1px solid #7c3aed', borderRadius: 4, cursor: 'pointer' }}>
+                {f.title || '수정본'} →
+              </button>
+            ))}
+          </div>
+        )}
 
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
           <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px',

@@ -232,9 +232,9 @@ export default function SeedanceVideoSelect() {
                 background: on ? 'var(--accent)' : 'rgba(0,0,0,0.5)', color: '#fff' }}>
                 {on ? order : ''}
               </div>
-              <video src={v.video_url} muted loop preload="metadata"
+              <video src={`${v.video_url}#t=0.1`} muted loop preload="metadata"
                 onMouseEnter={e => (e.currentTarget as HTMLVideoElement).play().catch(() => {})}
-                onMouseLeave={e => { const el = e.currentTarget as HTMLVideoElement; el.pause(); el.currentTime = 0 }}
+                onMouseLeave={e => { const el = e.currentTarget as HTMLVideoElement; el.pause(); el.currentTime = 0.1 }}
                 style={{ width: '100%', aspectRatio: aspectStyle(v.aspect_ratio),
                   background: '#000', display: 'block', objectFit: 'cover' }} />
               <div style={{ padding: 8 }}>

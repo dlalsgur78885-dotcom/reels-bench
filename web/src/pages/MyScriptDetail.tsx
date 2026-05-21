@@ -595,7 +595,9 @@ export default function MyScriptDetail() {
                   style={{ textDecoration: 'none', color: 'inherit',
                     background: 'var(--bg-base)', border: '1px solid var(--border)',
                     borderRadius: 6, overflow: 'hidden', display: 'block' }}>
-                  <video src={v.video_url} muted preload="metadata"
+                  <video src={`${v.video_url}#t=0.1`} muted preload="metadata"
+                    onMouseEnter={e => (e.currentTarget as HTMLVideoElement).play().catch(() => {})}
+                    onMouseLeave={e => { const el = e.currentTarget as HTMLVideoElement; el.pause(); el.currentTime = 0.1 }}
                     style={{ width: '100%', aspectRatio: '9/16', maxHeight: 160,
                       objectFit: 'cover', background: '#000', display: 'block' }} />
                   <div style={{ padding: '4px 6px', fontSize: 10, fontWeight: 600,

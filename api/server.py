@@ -5872,6 +5872,7 @@ def seedance_list_videos(request: Request):
 class SeedanceVideoPatch(BaseModel):
     name: str | None = None
     group_name: str | None = None  # 빈 문자열 = 미분류로 해제
+    character_group_id: str | None = None  # 빈 문자열 = 인물 그룹 해제
 
 
 @app.patch("/api/seedance/videos/{vid}")
@@ -5884,8 +5885,8 @@ def seedance_update_video(vid: str, body: SeedanceVideoPatch, request: Request):
     payload: dict = {}
     if body.name is not None:
         payload["name"] = body.name.strip() or None
-    if body.group_name is not None:
-        # meta.group_name 패치 — 기존 meta 가져와서 merge
+    # meta 키(group_name, character_group_id) 패치 — 기존 meta 가져와서 merge
+    if body.group_name is not None or body.character_group_id is not None:
         cur = _r.get(
             f"{SUPA}/rest/v1/seedance_videos?id=eq.{vid}&created_by=eq.{me['id']}&select=meta&limit=1",
             headers=H, timeout=10,
@@ -5893,11 +5894,18 @@ def seedance_update_video(vid: str, body: SeedanceVideoPatch, request: Request):
         if not cur:
             raise HTTPException(404, "영상 없음")
         meta = dict(cur[0].get("meta") or {})
-        gn = body.group_name.strip()
-        if gn:
-            meta["group_name"] = gn
-        else:
-            meta.pop("group_name", None)
+        if body.group_name is not None:
+            gn = body.group_name.strip()
+            if gn:
+                meta["group_name"] = gn
+            else:
+                meta.pop("group_name", None)
+        if body.character_group_id is not None:
+            cgid = body.character_group_id.strip()
+            if cgid:
+                meta["character_group_id"] = cgid
+            else:
+                meta.pop("character_group_id", None)
         payload["meta"] = meta
     if not payload:
         return {"updated": False}
@@ -5979,6 +5987,100 @@ def seedance_set_usp_links(vid: str, body: VideoUspLinksIn, request: Request):
     return {"updated": True, "count": len(clean),
             "links": [{"product_id": c["product_id"], "usp_index": c["usp_index"]}
                       for c in clean]}
+
+
+# ── 인물 그룹 (배우 일관성용 — USP 그룹과 별개 축, 전역) ──
+
+class CharacterGroupIn(BaseModel):
+    name: str
+    character_id: str | None = None
+
+
+@app.get("/api/seedance/character-groups")
+def list_character_groups(request: Request):
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+    groups = _r.get(
+        f"{SUPA}/rest/v1/seedance_character_groups?created_by=eq.{me['id']}"
+        f"&select=*&order=created_at.asc",
+        headers=H, timeout=10,
+    ).json() or []
+    groups = groups if isinstance(groups, list) else []
+    # 인물 정보 부착
+    char_ids = list({g["character_id"] for g in groups if g.get("character_id")})
+    if char_ids:
+        ids_csv = ",".join(f'"{c}"' for c in char_ids)
+        chars = _r.get(
+            f"{SUPA}/rest/v1/seedance_characters?id=in.({ids_csv})&select=id,name,image_url",
+            headers=H, timeout=10,
+        ).json() or []
+        cmap = {c["id"]: c for c in (chars if isinstance(chars, list) else [])}
+        for g in groups:
+            c = cmap.get(g.get("character_id"))
+            g["character_name"] = c.get("name") if c else None
+            g["character_image"] = c.get("image_url") if c else None
+    return groups
+
+
+@app.post("/api/seedance/character-groups")
+def create_character_group(body: CharacterGroupIn, request: Request):
+    me = auth_svc.require_user(request)
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(400, "그룹 이름이 비어있습니다")
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+    r = _r.post(
+        f"{SUPA}/rest/v1/seedance_character_groups",
+        headers={**H, "Content-Type": "application/json", "Prefer": "return=representation"},
+        json={"name": name, "character_id": (body.character_id or "").strip() or None,
+              "created_by": me["id"]},
+        timeout=10,
+    )
+    if r.status_code not in (200, 201):
+        raise HTTPException(r.status_code, r.text[:300])
+    rows = r.json()
+    return rows[0] if rows else {}
+
+
+@app.patch("/api/seedance/character-groups/{gid}")
+def update_character_group(gid: str, body: CharacterGroupIn, request: Request):
+    me = auth_svc.require_user(request)
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(400, "그룹 이름이 비어있습니다")
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+    r = _r.patch(
+        f"{SUPA}/rest/v1/seedance_character_groups?id=eq.{gid}&created_by=eq.{me['id']}",
+        headers={**H, "Content-Type": "application/json", "Prefer": "return=minimal"},
+        json={"name": name, "character_id": (body.character_id or "").strip() or None},
+        timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:300])
+    return {"updated": True}
+
+
+@app.delete("/api/seedance/character-groups/{gid}")
+def delete_character_group(gid: str, request: Request):
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+    _r.delete(
+        f"{SUPA}/rest/v1/seedance_character_groups?id=eq.{gid}&created_by=eq.{me['id']}",
+        headers={**H, "Prefer": "return=minimal"}, timeout=10,
+    )
+    return {"deleted": True}
 
 
 @app.get("/api/seedance/status")

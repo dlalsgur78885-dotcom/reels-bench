@@ -655,6 +655,26 @@ export const api = {
   setScriptVideos: (pid: number, sid: string, video_ids: string[]) =>
     put<{ updated: boolean; count: number }>(
       `/api/my-products/${pid}/scripts/${sid}/videos`, { video_ids }),
+  // Seedance: 인물 그룹 (배우 일관성 — 전역, USP 그룹과 별개 축)
+  listCharacterGroups: () =>
+    get<CharacterGroup[]>('/api/seedance/character-groups'),
+  createCharacterGroup: (name: string, character_id?: string | null) =>
+    post<CharacterGroup>('/api/seedance/character-groups', { name, character_id }),
+  updateCharacterGroup: (gid: string, name: string, character_id?: string | null) =>
+    patch<{ updated: boolean }>(`/api/seedance/character-groups/${gid}`, { name, character_id }),
+  deleteCharacterGroup: (gid: string) =>
+    del<{ deleted: boolean }>(`/api/seedance/character-groups/${gid}`),
+  listSeedanceCharacters: () =>
+    get<Array<{ id: string; name: string | null; image_url: string | null }>>('/api/seedance/characters'),
+}
+
+export interface CharacterGroup {
+  id: string
+  name: string
+  character_id: string | null
+  created_at?: string
+  character_name?: string | null
+  character_image?: string | null
 }
 
 export interface ReferenceInfo {

@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, authedFetch } from '../api'
-import type { MyProduct } from '../api'
+import type { MyProduct, CharacterGroup } from '../api'
 import { useMe } from '../auth'
 import SeedanceShareModal from '../components/SeedanceShareModal'
 import SeedanceGroupShareModal from '../components/SeedanceGroupShareModal'
 import UspTagPicker, { type UspLink } from '../components/UspTagPicker'
+import CharacterGroupModal from '../components/CharacterGroupModal'
 
 type Video = {
   id: string
@@ -36,6 +37,13 @@ export default function SeedanceLibrary() {
   const me = useMe()
   const [videos, setVideos] = useState<Video[]>([])
   const [products, setProducts] = useState<MyProduct[]>([])
+  const [charGroups, setCharGroups] = useState<CharacterGroup[]>([])
+  const [characters, setCharacters] = useState<Array<{ id: string; name: string | null; image_url: string | null }>>([])
+  // 인물 그룹 필터: null=전체, '__none__'=미지정, 그 외 = character_group id
+  const [charGroupFilter, setCharGroupFilter] = useState<string | null>(null)
+  // 인물 그룹 생성/수정 모달 — null=닫힘, {}=신규, {id..}=수정
+  const [charGroupModal, setCharGroupModal] = useState<
+    { id: string; name: string; character_id: string | null } | 'new' | null>(null)
   const [shareModalFor, setShareModalFor] = useState<Video | null>(null)
   const [groupShareModalFor, setGroupShareModalFor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -59,6 +67,47 @@ export default function SeedanceLibrary() {
 
   useEffect(() => { load() }, [])
   useEffect(() => { api.listMyProducts().then(setProducts).catch(() => {}) }, [])
+  useEffect(() => {
+    api.listCharacterGroups().then(setCharGroups).catch(() => {})
+    api.listSeedanceCharacters().then(setCharacters).catch(() => {})
+  }, [])
+
+  const loadCharGroups = () => api.listCharacterGroups().then(setCharGroups).catch(() => {})
+
+  const getCharGroupId = (v: Video): string => ((v.meta?.character_group_id || '') as string).trim()
+  const charGroupName = (id: string): string =>
+    charGroups.find(g => g.id === id)?.name || '(삭제된 그룹)'
+
+  const updateVideoCharGroup = async (v: Video, character_group_id: string) => {
+    setSavingMetaId(v.id)
+    try {
+      const r = await authedFetch(`/api/seedance/videos/${v.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ character_group_id }),
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const newMeta = { ...(v.meta || {}) }
+      if (character_group_id) newMeta.character_group_id = character_group_id
+      else delete newMeta.character_group_id
+      setVideos(prev => prev.map(x => x.id === v.id ? { ...x, meta: newMeta } : x))
+      if (selected?.id === v.id) setSelected({ ...selected, meta: newMeta })
+    } catch (e: any) {
+      alert('인물 그룹 변경 실패: ' + (e?.message || e))
+    } finally {
+      setSavingMetaId(null)
+    }
+  }
+
+  const deleteCharGroup = async (g: CharacterGroup) => {
+    if (!confirm(`"${g.name}" 인물 그룹을 삭제할까요? (영상은 미지정으로 바뀜)`)) return
+    try {
+      await api.deleteCharacterGroup(g.id)
+      setCharGroups(prev => prev.filter(x => x.id !== g.id))
+      if (charGroupFilter === g.id) setCharGroupFilter(null)
+    } catch (e: any) {
+      alert('삭제 실패: ' + (e?.message || e))
+    }
+  }
 
   // USP 링크 이름 해석 — "상품명 · USP명"
   const uspLinkLabel = (l: UspLink): string => {
@@ -141,10 +190,20 @@ export default function SeedanceLibrary() {
   const groupCount = (g: string) => videos.filter(v => getGroup(v) === g).length
 
   const filtered = useMemo(() => {
-    if (groupFilter === null) return videos
-    if (groupFilter === UNCLASSIFIED) return videos.filter(v => !getGroup(v))
-    return videos.filter(v => getGroup(v) === groupFilter)
-  }, [videos, groupFilter])
+    return videos.filter(v => {
+      // 자유 그룹 필터
+      if (groupFilter !== null) {
+        if (groupFilter === UNCLASSIFIED && getGroup(v)) return false
+        if (groupFilter !== UNCLASSIFIED && getGroup(v) !== groupFilter) return false
+      }
+      // 인물 그룹 필터
+      if (charGroupFilter !== null) {
+        if (charGroupFilter === '__none__' && getCharGroupId(v)) return false
+        if (charGroupFilter !== '__none__' && getCharGroupId(v) !== charGroupFilter) return false
+      }
+      return true
+    })
+  }, [videos, groupFilter, charGroupFilter, charGroups])
 
   const updateGroup = async (v: Video, group_name: string) => {
     setSavingMetaId(v.id)
@@ -261,6 +320,67 @@ export default function SeedanceLibrary() {
         </div>
       )}
 
+      {/* 인물 그룹 필터 — 배우 일관성용 (USP 그룹과 별개 축) */}
+      {videos.length > 0 && (
+        <div style={{
+          display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center',
+          maxWidth: '100%', overflowX: 'auto',
+        }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginRight: 4, flexShrink: 0 }}>
+            인물 그룹:
+          </span>
+          <FilterBtn active={charGroupFilter === null} onClick={() => setCharGroupFilter(null)}>
+            전체
+          </FilterBtn>
+          <FilterBtn active={charGroupFilter === '__none__'} dashed
+            onClick={() => setCharGroupFilter('__none__')}>
+            미지정
+          </FilterBtn>
+          {charGroups.map(g => {
+            const active = charGroupFilter === g.id
+            const n = videos.filter(v => getCharGroupId(v) === g.id).length
+            return (
+              <div key={g.id} style={{
+                display: 'inline-flex', alignItems: 'stretch', flexShrink: 0,
+                borderRadius: 6, border: '1px solid var(--border)', overflow: 'hidden',
+                background: active ? 'var(--accent)' : 'var(--bg-surface)',
+              }}>
+                <button type="button"
+                  onClick={() => setCharGroupFilter(active ? null : g.id)}
+                  title={g.character_name ? `인물: ${g.character_name}` : '인물 미지정'}
+                  style={{ padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                    border: 'none', background: 'transparent',
+                    color: active ? '#fff' : 'var(--text-body)', whiteSpace: 'nowrap' }}>
+                  {g.character_image && (
+                    <img src={g.character_image} alt=""
+                      style={{ width: 14, height: 14, borderRadius: '50%', objectFit: 'cover',
+                        verticalAlign: 'middle', marginRight: 4 }} />
+                  )}
+                  {g.name}{g.character_name ? ` · ${g.character_name}` : ''} ({n})
+                </button>
+                <button type="button" title="수정"
+                  onClick={() => setCharGroupModal({ id: g.id, name: g.name, character_id: g.character_id })}
+                  style={{ padding: '4px 6px', fontSize: 10, cursor: 'pointer', border: 'none',
+                    borderLeft: '1px solid var(--border)', background: 'transparent',
+                    color: active ? '#fff' : 'var(--text-muted)' }}>✎</button>
+                <button type="button" title="삭제"
+                  onClick={() => deleteCharGroup(g)}
+                  style={{ padding: '4px 6px', fontSize: 10, cursor: 'pointer', border: 'none',
+                    borderLeft: '1px solid var(--border)', background: 'transparent',
+                    color: active ? '#fff' : 'var(--text-muted)' }}>✕</button>
+              </div>
+            )
+          })}
+          <button type="button" onClick={() => setCharGroupModal('new')}
+            style={{ padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+              borderRadius: 6, border: '1px dashed var(--accent)',
+              background: 'transparent', color: 'var(--accent)',
+              flexShrink: 0, whiteSpace: 'nowrap' }}>
+            + 인물 그룹
+          </button>
+        </div>
+      )}
+
       {loading && <div style={{ color: 'var(--text-muted)' }}>불러오는 중…</div>}
       {error && <div style={{ color: 'var(--error)' }}>오류: {error}</div>}
       {!loading && videos.length === 0 && !error && (
@@ -318,6 +438,15 @@ export default function SeedanceLibrary() {
                         </span>
                       )}
                     </div>
+                    {getCharGroupId(v) && (
+                      <div style={{ marginTop: 3 }}>
+                        <span title="인물 그룹"
+                          style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px',
+                            borderRadius: 3, background: 'var(--accent-light)', color: 'var(--accent)' }}>
+                          🎭 {charGroupName(getCharGroupId(v))}
+                        </span>
+                      </div>
+                    )}
                     <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, marginBottom: 6,
                       display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 4 }}>
                       <span>{v.resolution || '?'} · {v.duration || '?'}s · {v.aspect_ratio || ''}</span>
@@ -543,6 +672,30 @@ export default function SeedanceLibrary() {
             </div>
 
             <div style={{ marginBottom: 10 }}>
+              <Label>인물 그룹</Label>
+              {selected._shared ? (
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  {getCharGroupId(selected) ? charGroupName(getCharGroupId(selected)) : '미지정'}
+                </span>
+              ) : (
+                <select
+                  value={getCharGroupId(selected)}
+                  onChange={e => updateVideoCharGroup(selected, e.target.value)}
+                  disabled={savingMetaId === selected.id}
+                  style={{ width: '100%', padding: '6px 8px', fontSize: 12,
+                    border: '1px solid var(--border)', borderRadius: 6,
+                    background: 'var(--bg-base)', color: 'var(--text-body)' }}>
+                  <option value="">— 미지정 —</option>
+                  {charGroups.map(g => (
+                    <option key={g.id} value={g.id}>
+                      {g.name}{g.character_name ? ` · ${g.character_name}` : ''}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+
+            <div style={{ marginBottom: 10 }}>
               <Label>연결된 USP</Label>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                 {(selected.usp_links || []).length === 0 ? (
@@ -634,6 +787,22 @@ export default function SeedanceLibrary() {
           groupName={groupShareModalFor}
           videoCount={videos.filter(v => ((v.meta?.group_name || '') as string).trim() === groupShareModalFor).length}
           onClose={() => setGroupShareModalFor(null)}
+        />
+      )}
+
+      {charGroupModal && (
+        <CharacterGroupModal
+          initial={charGroupModal === 'new' ? null : charGroupModal}
+          characters={characters}
+          onClose={() => setCharGroupModal(null)}
+          onSave={async (name, characterId) => {
+            if (charGroupModal === 'new') {
+              await api.createCharacterGroup(name, characterId)
+            } else {
+              await api.updateCharacterGroup(charGroupModal.id, name, characterId)
+            }
+            await loadCharGroups()
+          }}
         />
       )}
     </div>

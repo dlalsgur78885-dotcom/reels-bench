@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api, authedFetch } from '../api'
-import type { MyProduct } from '../api'
+import type { MyProduct, CharacterGroup } from '../api'
 import type { UspLink } from '../components/UspTagPicker'
 
 type Video = {
@@ -13,6 +13,7 @@ type Video = {
   resolution: string | null
   duration: string | null
   usp_links?: UspLink[]
+  meta?: any
 }
 type UspGroup = { id: string; name: string; color: string | null; usp_indexes: number[] }
 
@@ -35,6 +36,9 @@ export default function SeedanceVideoSelect() {
   const [videos, setVideos] = useState<Video[]>([])
   const [products, setProducts] = useState<MyProduct[]>([])
   const [groups, setGroups] = useState<UspGroup[]>([])
+  const [charGroups, setCharGroups] = useState<CharacterGroup[]>([])
+  // 인물 그룹 필터: null=전체, '__none__'=미지정, 그 외 = id
+  const [charGroupFilter, setCharGroupFilter] = useState<string | null>(null)
   const [scriptTitle, setScriptTitle] = useState('')
   const [uspFilter, setUspFilter] = useState<Set<number>>(new Set(uspsParam))
   const [selected, setSelected] = useState<string[]>([])  // 순서 유지
@@ -50,6 +54,7 @@ export default function SeedanceVideoSelect() {
         const vdata = vres.ok ? await vres.json() : []
         setVideos(Array.isArray(vdata) ? vdata : [])
         api.listMyProducts().then(setProducts).catch(() => {})
+        api.listCharacterGroups().then(setCharGroups).catch(() => {})
         if (pid != null) {
           api.listUspGroups(pid).then(setGroups).catch(() => setGroups([]))
         }
@@ -96,12 +101,23 @@ export default function SeedanceVideoSelect() {
     return n
   })
 
+  const getCharGroupId = (v: Video): string => ((v.meta?.character_group_id || '') as string).trim()
+
   const filtered = useMemo(() => {
-    if (uspFilter.size === 0) return videos
-    return videos.filter(v =>
-      (v.usp_links || []).some(l => l.product_id === pid && uspFilter.has(l.usp_index)),
-    )
-  }, [videos, uspFilter, pid])
+    return videos.filter(v => {
+      // USP 필터
+      if (uspFilter.size > 0) {
+        const ok = (v.usp_links || []).some(l => l.product_id === pid && uspFilter.has(l.usp_index))
+        if (!ok) return false
+      }
+      // 인물 그룹 필터
+      if (charGroupFilter !== null) {
+        if (charGroupFilter === '__none__' && getCharGroupId(v)) return false
+        if (charGroupFilter !== '__none__' && getCharGroupId(v) !== charGroupFilter) return false
+      }
+      return true
+    })
+  }, [videos, uspFilter, pid, charGroupFilter])
 
   const toggleSelect = (id: string) => setSelected(prev =>
     prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
@@ -201,6 +217,40 @@ export default function SeedanceVideoSelect() {
               )
             })}
           </div>
+        </div>
+      )}
+
+      {/* 인물 그룹 필터 — 배우 일관성 (USP와 별개 축) */}
+      {charGroups.length > 0 && (
+        <div style={{ marginBottom: 14, padding: 12, background: 'var(--bg-surface)',
+          border: '1px solid var(--border)', borderRadius: 8 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginRight: 6 }}>
+            인물 그룹:
+          </span>
+          {([['전체', null], ['미지정', '__none__']] as const).map(([label, val]) => (
+            <button key={label} type="button" onClick={() => setCharGroupFilter(val)}
+              style={{ marginRight: 6, marginBottom: 4, padding: '3px 10px', fontSize: 11,
+                fontWeight: 700, cursor: 'pointer', borderRadius: 12,
+                border: '1px solid var(--border)',
+                background: charGroupFilter === val ? 'var(--accent)' : 'var(--bg-base)',
+                color: charGroupFilter === val ? '#fff' : 'var(--text-body)' }}>
+              {label}
+            </button>
+          ))}
+          {charGroups.map(g => {
+            const on = charGroupFilter === g.id
+            return (
+              <button key={g.id} type="button"
+                onClick={() => setCharGroupFilter(on ? null : g.id)}
+                style={{ marginRight: 6, marginBottom: 4, padding: '3px 10px', fontSize: 11,
+                  fontWeight: 700, cursor: 'pointer', borderRadius: 12,
+                  border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`,
+                  background: on ? 'var(--accent)' : 'var(--bg-base)',
+                  color: on ? '#fff' : 'var(--text-body)' }}>
+                🎭 {g.name}{g.character_name ? ` · ${g.character_name}` : ''}
+              </button>
+            )
+          })}
         </div>
       )}
 

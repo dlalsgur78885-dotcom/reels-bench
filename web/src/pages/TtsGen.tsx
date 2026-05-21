@@ -73,6 +73,17 @@ function resolveAudioUrl(url: string, bust: number): string {
   return /^https?:\/\//i.test(url) ? withBust : `${TTS_BASE}${withBust}`
 }
 
+// 대본 문장이 저장된 TTS 입력과 달라졌는지 (문장 추가·삭제·텍스트 변경)
+function scriptTextChanged(
+  scriptSents: InputSentence[],
+  savedSents?: InputSentence[],
+): boolean {
+  if (!savedSents) return false
+  if (scriptSents.length !== savedSents.length) return true
+  const norm = (t?: string) => (t || '').replace(/\s+/g, ' ').trim()
+  return scriptSents.some((s, i) => norm(s.text) !== norm(savedSents[i]?.text))
+}
+
 // 대본에서 "오디오 수정" 진입 시 — 현재 대본 문장(텍스트 최신)에 저장된 TTS의 감정/어절
 // 설정을 입힌다. 텍스트가 정확히 일치하는 문장만 감정 승계, 수정·추가된 문장은 텍스트만.
 function mergeScriptWithSavedTts(
@@ -122,10 +133,13 @@ export default function TtsGen() {
   // inputSentences 우선: job.sentences(SegmentMeta)에는 sentence_emotion(전체 감정)이
   // 빠져 있으므로, 저장 시 함께 담아둔 편집 sentences를 복원에 사용.
   const saved = state?.savedTts
+  const savedSents: InputSentence[] | undefined =
+    (saved?.inputSentences as InputSentence[]) || (saved?.job?.sentences as InputSentence[])
+  const scriptSents = state?.scriptSentences
+  // 저장 후 대본이 수정됐는지 — 수정됐으면 옛 음성(job)은 무효이므로 복원하지 않음
+  const scriptChanged = !!(saved && scriptSents && scriptSents.length
+    && scriptTextChanged(scriptSents, savedSents))
   const initialSentences: InputSentence[] = (() => {
-    const savedSents = (saved?.inputSentences as InputSentence[])
-      || (saved?.job?.sentences as InputSentence[])
-    const scriptSents = state?.scriptSentences
     // 저장 후 대본이 수정됐을 수 있음 — 텍스트는 최신 대본, 감정은 저장본에서 머지
     if (saved && scriptSents && scriptSents.length) {
       return savedSents ? mergeScriptWithSavedTts(scriptSents, savedSents) : scriptSents
@@ -151,9 +165,9 @@ export default function TtsGen() {
   const [synthLoading, setSynthLoading] = useState(false)
   const [autoEmotionLoading, setAutoEmotionLoading] = useState(false)
   const [autoEmotionIntensity, setAutoEmotionIntensity] = useState<'low' | 'medium' | 'high'>(saved?.autoEmotionIntensity || 'low')
-  // 대본에 음성 저장 — 복원 진입이면 이미 저장된 상태
+  // 대본에 음성 저장 — 복원 진입이면 이미 저장된 상태 (대본 수정 후면 재합성·재저장 필요)
   const [savingToScript, setSavingToScript] = useState(false)
-  const [savedToScript, setSavedToScript] = useState(!!saved)
+  const [savedToScript, setSavedToScript] = useState(!!saved && !scriptChanged)
   // job이 새로 갱신되면(재합성/속도적용 등) "저장됨" 표시 해제. 첫 렌더(복원 포함)는 스킵.
   const firstJobRef = useRef(true)
   const [error, setError] = useState('')
@@ -165,7 +179,8 @@ export default function TtsGen() {
   // 'segment_match' — 문장별 atempo로 REF 정밀 매칭 (음질 트레이드오프)
   // '1.2' / '1.4' — 고정 가속
   const [speedMode, setSpeedMode] = useState<'natural' | 'match_ref' | 'segment_match' | '1.2' | '1.4'>(saved?.speedMode || 'match_ref')
-  const [job, setJob] = useState<JobState | null>(saved?.job || null)
+  // 대본 수정 후 진입이면 옛 음성 무효 → job 미복원 (재합성 유도)
+  const [job, setJob] = useState<JobState | null>(scriptChanged ? null : (saved?.job || null))
   // 문장별 임시 선택 강도 (재생성 누르기 전)
   const [draftLevels, setDraftLevels] = useState<Record<number, number>>(saved?.draftLevels || {})
   // post-synth 문장별 속도 draft (변경 후 'speed 적용' 버튼으로 한 번에 ffmpeg 적용)
@@ -729,6 +744,18 @@ export default function TtsGen() {
               <option value="1.4">🏃 1.4x 가속</option>
             </select>
           </div>
+
+          {/* 대본 수정 후 "오디오 수정"으로 진입 — 옛 음성 무효, 재합성 안내 */}
+          {scriptChanged && !job && (
+            <div style={{
+              ...cardSt, padding: 12, marginBottom: 12, fontSize: 12, lineHeight: 1.6,
+              background: '#fffbeb', border: '1px solid #fcd34d', color: '#92400e',
+            }}>
+              📝 <strong>대본이 수정되어 음성을 다시 생성해야 합니다.</strong> 수정된 문구가
+              입력 스크립트에 반영됐고, 바뀌지 않은 문장의 감정 설정은 그대로 유지됐습니다.
+              아래 "🎙 음성 생성"을 눌러 재합성하세요.
+            </div>
+          )}
 
           {/* 🪄 자동 감정 분석 — 클릭 한 번으로 어절 분리 + 강조 자동 적용 */}
           {!job && !synthLoading && (

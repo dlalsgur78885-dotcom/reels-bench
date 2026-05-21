@@ -42,8 +42,19 @@ export default function MyScriptDetail() {
   const stageLabel = (k: StageKey) => k === 'base' ? '기본' : k === 'alt_a' ? 'A원고' : 'B원고'
   const [stageView, setStageView] = useState<StageKey | null>(null)
   const [deletingStage, setDeletingStage] = useState(false)
+  const [scriptVideos, setScriptVideos] = useState<any[]>([])
 
   const isMine = !!(data && me && data.created_by === me.id)
+
+  // 대본 문장에 쓰인 USP index 모음 (영상 선택 페이지 사전 필터용)
+  const scriptUspIndices = useMemo(() => {
+    const set = new Set<number>()
+    ;(data?.sentences || []).forEach((s: any) => {
+      (s.usp_ids || []).forEach((u: number) => { if (u > 0) set.add(u) })
+      if (s.primary_usp_id) set.add(s.primary_usp_id)
+    })
+    return Array.from(set).sort((a, b) => a - b)
+  }, [data?.sentences])
 
   useEffect(() => {
     if (!pid || !sid) return
@@ -170,6 +181,11 @@ export default function MyScriptDetail() {
       setShares([])
     }
   }, [data, me, pid, sid])
+
+  useEffect(() => {
+    if (!pid || !sid) return
+    api.getScriptVideos(pid, sid).then(setScriptVideos).catch(() => setScriptVideos([]))
+  }, [pid, sid])
 
   const startEdit = () => {
     if (!data) return
@@ -548,6 +564,48 @@ export default function MyScriptDetail() {
               opacity: savingMeta ? 0.7 : 1 }}>
             {savingMeta ? '저장 중…' : '💾 캡션/고정댓글/촬영기획안 저장'}
           </button>
+        </div>
+
+        <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)' }}>
+              🎞 영상 기획안 ({scriptVideos.length}개)
+            </span>
+            <button
+              onClick={() => navigate(
+                `/seedance/select?product=${pid}&sid=${sid}`
+                + (scriptUspIndices.length ? `&usps=${scriptUspIndices.join(',')}` : ''),
+              )}
+              style={{ padding: '5px 12px', fontSize: 11, fontWeight: 700,
+                background: 'var(--accent)', color: '#fff', border: 'none',
+                borderRadius: 6, cursor: 'pointer' }}>
+              + 연관 영상 선택
+            </button>
+          </div>
+          {scriptVideos.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '12px',
+              background: 'var(--bg-base)', borderRadius: 6, textAlign: 'center' }}>
+              선택된 영상이 없습니다. "연관 영상 선택"으로 이 대본의 USP에 맞는 영상을 고르세요.
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gap: 8,
+              gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))' }}>
+              {scriptVideos.map((v: any) => (
+                <a key={v.id} href={v.video_url} target="_blank" rel="noopener noreferrer"
+                  style={{ textDecoration: 'none', color: 'inherit',
+                    background: 'var(--bg-base)', border: '1px solid var(--border)',
+                    borderRadius: 6, overflow: 'hidden', display: 'block' }}>
+                  <video src={v.video_url} muted preload="metadata"
+                    style={{ width: '100%', aspectRatio: '9/16', maxHeight: 160,
+                      objectFit: 'cover', background: '#000', display: 'block' }} />
+                  <div style={{ padding: '4px 6px', fontSize: 10, fontWeight: 600,
+                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {v.name || v.prompt?.slice(0, 24) || '제목 없음'}
+                  </div>
+                </a>
+              ))}
+            </div>
+          )}
         </div>
 
         {isMine && (

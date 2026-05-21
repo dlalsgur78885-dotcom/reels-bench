@@ -2481,6 +2481,76 @@ def get_gen_script(pid: int, sid: str, request: Request):
     return row
 
 
+@app.get("/api/my-products/{pid}/scripts/{sid}/videos")
+def get_script_videos(pid: int, sid: str, request: Request):
+    """대본에 선택된 영상 목록 (영상 기획안). order_idx 순."""
+    me = auth_svc.require_user(request)
+    _check_script_access(pid, sid, me, edit=False)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+    sel = _r.get(
+        f"{SUPA}/rest/v1/script_video_selections?script_id=eq.{sid}"
+        f"&select=video_id,order_idx&order=order_idx.asc",
+        headers=H, timeout=10,
+    ).json() or []
+    sel = sel if isinstance(sel, list) else []
+    if not sel:
+        return []
+    vid_csv = ",".join(f'"{s["video_id"]}"' for s in sel)
+    vids = _r.get(
+        f"{SUPA}/rest/v1/seedance_videos?id=in.({vid_csv})&archived_at=is.null&select=*",
+        headers=H, timeout=10,
+    ).json() or []
+    vmap = {v["id"]: v for v in (vids if isinstance(vids, list) else [])}
+    out: list[dict] = []
+    for s in sel:
+        v = vmap.get(s["video_id"])
+        if v:
+            v = dict(v)
+            v["_order_idx"] = s.get("order_idx", 0)
+            out.append(v)
+    out.sort(key=lambda x: x["_order_idx"])
+    return out
+
+
+class ScriptVideosIn(BaseModel):
+    video_ids: list[str] = []  # 순서대로 — 이 set으로 통째 교체
+
+
+@app.put("/api/my-products/{pid}/scripts/{sid}/videos")
+def set_script_videos(pid: int, sid: str, body: ScriptVideosIn, request: Request):
+    """대본의 선택 영상을 통째로 교체. 대본 편집 권한 필요."""
+    me = auth_svc.require_user(request)
+    _check_script_access(pid, sid, me, edit=True)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+    _r.delete(
+        f"{SUPA}/rest/v1/script_video_selections?script_id=eq.{sid}",
+        headers={**H, "Prefer": "return=minimal"}, timeout=10,
+    )
+    clean: list[dict] = []
+    seen: set = set()
+    for i, vid in enumerate(body.video_ids or []):
+        if not vid or vid in seen:
+            continue
+        seen.add(vid)
+        clean.append({"script_id": sid, "video_id": vid, "order_idx": i,
+                      "created_by": me["id"]})
+    if clean:
+        r = _r.post(
+            f"{SUPA}/rest/v1/script_video_selections",
+            headers={**H, "Content-Type": "application/json", "Prefer": "return=minimal"},
+            json=clean, timeout=10,
+        )
+        if r.status_code not in (200, 201, 204):
+            raise HTTPException(r.status_code, r.text[:300])
+    return {"updated": True, "count": len(clean)}
+
+
 @app.delete("/api/my-products/{pid}/scripts/{sid}")
 def delete_gen_script(pid: int, sid: str, request: Request):
     me = auth_svc.require_user(request)
@@ -5778,6 +5848,24 @@ def seedance_list_videos(request: Request):
         headers=H, timeout=10,
     )
     rows = r.json() if r.status_code == 200 else []
+    # USP 링크 부착 — 영상별 [{product_id, usp_index}, ...]
+    if rows:
+        vids_csv = ",".join(f'"{v["id"]}"' for v in rows)
+        try:
+            lr = _r.get(
+                f"{SUPA}/rest/v1/seedance_video_usp_links?video_id=in.({vids_csv})"
+                f"&select=video_id,product_id,usp_index",
+                headers=H, timeout=10,
+            )
+            links = lr.json() if lr.status_code == 200 else []
+        except Exception:
+            links = []
+        by_vid: dict = {}
+        for ln in (links if isinstance(links, list) else []):
+            by_vid.setdefault(ln["video_id"], []).append(
+                {"product_id": ln["product_id"], "usp_index": ln["usp_index"]})
+        for v in rows:
+            v["usp_links"] = by_vid.get(v["id"], [])
     return _seedance_attach_creators(rows, me["id"], perm_by_id, group_perm_by_id)
 
 
@@ -5839,6 +5927,58 @@ def seedance_delete_video(vid: str, request: Request):
     if r.status_code not in (200, 204):
         raise HTTPException(r.status_code, r.text[:300])
     return {"deleted": True}
+
+
+class VideoUspLinksIn(BaseModel):
+    # [{product_id:int, usp_index:int}, ...] — 영상에 연결할 USP 전체 set (교체)
+    links: list[dict] = []
+
+
+@app.put("/api/seedance/videos/{vid}/usp-links")
+def seedance_set_usp_links(vid: str, body: VideoUspLinksIn, request: Request):
+    """영상의 USP 링크를 통째로 교체. 영상 소유자만 가능."""
+    me = auth_svc.require_user(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    _r = supabase.get_session()
+    own = _r.get(
+        f"{SUPA}/rest/v1/seedance_videos?id=eq.{vid}&created_by=eq.{me['id']}"
+        f"&select=id&limit=1",
+        headers=H, timeout=10,
+    ).json() or []
+    if not own:
+        raise HTTPException(404, "영상 없음 또는 권한 없음")
+    # dedup + 검증
+    clean: list[dict] = []
+    seen: set = set()
+    for ln in (body.links or []):
+        try:
+            pid = int(ln.get("product_id"))
+            ui = int(ln.get("usp_index"))
+        except (TypeError, ValueError):
+            continue
+        if ui < 1 or (pid, ui) in seen:
+            continue
+        seen.add((pid, ui))
+        clean.append({"video_id": vid, "product_id": pid, "usp_index": ui,
+                      "created_by": me["id"]})
+    # 기존 링크 전부 삭제 후 재삽입
+    _r.delete(
+        f"{SUPA}/rest/v1/seedance_video_usp_links?video_id=eq.{vid}",
+        headers={**H, "Prefer": "return=minimal"}, timeout=10,
+    )
+    if clean:
+        r = _r.post(
+            f"{SUPA}/rest/v1/seedance_video_usp_links",
+            headers={**H, "Content-Type": "application/json", "Prefer": "return=minimal"},
+            json=clean, timeout=10,
+        )
+        if r.status_code not in (200, 201, 204):
+            raise HTTPException(r.status_code, r.text[:300])
+    return {"updated": True, "count": len(clean),
+            "links": [{"product_id": c["product_id"], "usp_index": c["usp_index"]}
+                      for c in clean]}
 
 
 @app.get("/api/seedance/status")
@@ -6740,6 +6880,7 @@ async def seedance_create_character(request: Request):
     file = form.get("file")
     name = ((form.get("name") or "")).strip() or None
     description = ((form.get("description") or "")).strip() or None
+    angle = _norm_angle(form.get("angle"))
     if not file or not hasattr(file, "read"):
         raise HTTPException(400, "file 필수 (multipart)")
     content = await file.read()
@@ -6764,6 +6905,9 @@ async def seedance_create_character(request: Request):
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
+    meta: dict = {"file_size": len(content), "filename": fn}
+    if angle:
+        meta["angles"] = {image_url: angle}
     row = {
         "id": cid,
         "created_by": me["id"],
@@ -6771,7 +6915,7 @@ async def seedance_create_character(request: Request):
         "description": description,
         "image_url": image_url,
         "image_urls": [image_url],
-        "meta": {"file_size": len(content), "filename": fn},
+        "meta": meta,
     }
     ins = _r.post(
         f"{SUPA}/rest/v1/seedance_characters",
@@ -6802,10 +6946,28 @@ def seedance_update_character(cid: str, body: SeedanceCharacterPatch, request: R
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
+    H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
+    # 권한 확인: 본인 소유 또는 edit 권한으로 공유받은 인물만 수정 가능.
+    # (기존엔 created_by=eq.{me} 필터만 걸어 공유받은 인물은 0 rows → 200 OK 로
+    #  silent fail — UI는 성공처럼 보이나 DB 미반영 → 새로고침 시 원복됐음)
+    owned = _r.get(
+        f"{SUPA}/rest/v1/seedance_characters?id=eq.{cid}&archived_at=is.null"
+        f"&select=created_by&limit=1",
+        headers=H, timeout=10,
+    ).json() or []
+    if not owned:
+        raise HTTPException(404, "인물 없음")
+    if owned[0]["created_by"] != me["id"]:
+        perm = _seedance_shared_ids(
+            "seedance_character_shares", "character_id", me["id"]
+        ).get(cid)
+        if perm != "edit":
+            raise HTTPException(403, "이 인물을 수정할 권한이 없습니다 (편집 권한 필요)")
+    # created_by 필터 제거 — 권한은 위에서 이미 검증 완료
     r = _r.patch(
-        f"{SUPA}/rest/v1/seedance_characters?id=eq.{cid}&created_by=eq.{me['id']}",
-        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
-                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        f"{SUPA}/rest/v1/seedance_characters?id=eq.{cid}",
+        headers={**H, "Content-Type": "application/json",
+                 "Prefer": "return=representation"},
         json=payload, timeout=10,
     )
     if r.status_code not in (200, 204):
@@ -6831,27 +6993,65 @@ def seedance_delete_character(cid: str, request: Request):
     return {"deleted": True}
 
 
-def _seedance_char_owned(cid: str, me_id: str) -> dict:
+# 인물 사진 각도 — 4종 (정면/측면/반측/뒷모습). meta.angles = {url: angle} 매핑.
+_CHAR_ANGLES = ("front", "side", "three_quarter", "back")
+
+
+def _norm_angle(v) -> str | None:
+    """입력 angle 정규화 — 4종 외엔 None."""
+    s = (v or "").strip() if isinstance(v, str) else ""
+    return s if s in _CHAR_ANGLES else None
+
+
+def _seedance_char_editable(cid: str, me: dict) -> dict:
+    """인물 편집 권한 확인 — owner / admin / edit-share. row 반환.
+    없으면 404, view-only 공유면 403. (사진 추가·제거·각도변경에 공통 사용)"""
     SUPA = (os.getenv("SUPABASE_URL") or "").strip()
     SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     _r = supabase.get_session()
     r = _r.get(
-        f"{SUPA}/rest/v1/seedance_characters?id=eq.{cid}&created_by=eq.{me_id}"
+        f"{SUPA}/rest/v1/seedance_characters?id=eq.{cid}"
         f"&archived_at=is.null&select=*&limit=1",
         headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
     ).json() or []
     if not r:
         raise HTTPException(404, "인물 없음")
-    return r[0]
+    row = r[0]
+    if row["created_by"] == me["id"] or me.get("role") == "admin":
+        return row
+    perm = _seedance_shared_ids(
+        "seedance_character_shares", "character_id", me["id"]
+    ).get(cid)
+    if perm != "edit":
+        raise HTTPException(403, "이 인물을 편집할 권한이 없습니다 (편집 권한 필요)")
+    return row
+
+
+def _patch_character(cid: str, payload: dict) -> dict | None:
+    """인물 row PATCH — created_by 필터 없음 (호출 전 _seedance_char_editable로 권한 검증 가정)."""
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _r = supabase.get_session()
+    r = _r.patch(
+        f"{SUPA}/rest/v1/seedance_characters?id=eq.{cid}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json=payload, timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise HTTPException(r.status_code, r.text[:300])
+    rows = r.json() if r.status_code == 200 else []
+    return rows[0] if rows else None
 
 
 @app.post("/api/seedance/characters/{cid}/images")
 async def seedance_add_character_image(cid: str, request: Request):
-    """기존 인물에 사진 추가 (multipart: file)."""
+    """기존 인물에 사진 추가 (multipart: file, angle?)."""
     me = auth_svc.require_user(request)
-    row = _seedance_char_owned(cid, me["id"])
+    row = _seedance_char_editable(cid, me)
     form = await request.form()
     file = form.get("file")
+    angle = _norm_angle(form.get("angle"))
     if not file or not hasattr(file, "read"):
         raise HTTPException(400, "file 필수")
     content = await file.read()
@@ -6864,7 +7064,9 @@ async def seedance_add_character_image(cid: str, request: Request):
     ext = ".jpg"
     if fn.lower().endswith((".png", ".webp", ".jpeg", ".jpg")):
         ext = "." + fn.lower().rsplit(".", 1)[1].replace("jpeg", "jpg")
-    path = f"{me['id']}/{cid}-{img_id}{ext}"
+    # 저장 경로는 인물 owner 폴더 기준 (공유 편집자도 owner 버킷에 적재)
+    owner_id = row.get("created_by") or me["id"]
+    path = f"{owner_id}/{cid}-{img_id}{ext}"
     ct = getattr(file, "content_type", None) or ("image/png" if ext == ".png" else "image/jpeg")
     ok, err = supabase.storage_upload(_SEEDANCE_CHAR_BUCKET, path, content,
                                        content_type=ct, upsert=True)
@@ -6877,29 +7079,30 @@ async def seedance_add_character_image(cid: str, request: Request):
         image_urls.insert(0, row["image_url"])
     image_urls.append(new_url)
 
-    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
-    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    _r = supabase.get_session()
-    r = _r.patch(
-        f"{SUPA}/rest/v1/seedance_characters?id=eq.{cid}&created_by=eq.{me['id']}",
-        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
-                 "Content-Type": "application/json", "Prefer": "return=representation"},
-        json={"image_urls": image_urls}, timeout=10,
-    )
-    if r.status_code not in (200, 204):
-        raise HTTPException(r.status_code, r.text[:300])
-    rows = r.json() if r.status_code == 200 else []
-    return {"added": new_url, "row": rows[0] if rows else None}
+    payload: dict = {"image_urls": image_urls}
+    if angle:
+        meta = dict(row.get("meta") or {})
+        angles = dict(meta.get("angles") or {})
+        angles[new_url] = angle
+        meta["angles"] = angles
+        payload["meta"] = meta
+    updated = _patch_character(cid, payload)
+    return {"added": new_url, "angle": angle, "row": updated}
 
 
 class SeedanceCharImageOp(BaseModel):
     url: str
 
 
+class SeedanceCharImageAngle(BaseModel):
+    url: str
+    angle: str | None = None  # front|side|three_quarter|back, None/빈값 = 미지정 해제
+
+
 @app.post("/api/seedance/characters/{cid}/images/remove")
 def seedance_remove_character_image(cid: str, body: SeedanceCharImageOp, request: Request):
     me = auth_svc.require_user(request)
-    row = _seedance_char_owned(cid, me["id"])
+    row = _seedance_char_editable(cid, me)
     image_urls = [u for u in (row.get("image_urls") or []) if u != body.url]
     if len(image_urls) == len(row.get("image_urls") or []):
         raise HTTPException(404, "해당 URL 없음")
@@ -6907,41 +7110,49 @@ def seedance_remove_character_image(cid: str, body: SeedanceCharImageOp, request
         raise HTTPException(400, "마지막 사진은 제거 불가 (인물 자체를 삭제해주세요)")
     primary = row.get("image_url")
     new_primary = primary if primary in image_urls else image_urls[0]
-    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
-    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    _r = supabase.get_session()
-    r = _r.patch(
-        f"{SUPA}/rest/v1/seedance_characters?id=eq.{cid}&created_by=eq.{me['id']}",
-        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
-                 "Content-Type": "application/json", "Prefer": "return=representation"},
-        json={"image_urls": image_urls, "image_url": new_primary}, timeout=10,
-    )
-    if r.status_code not in (200, 204):
-        raise HTTPException(r.status_code, r.text[:300])
-    rows = r.json() if r.status_code == 200 else []
-    return {"removed": body.url, "row": rows[0] if rows else None}
+    payload: dict = {"image_urls": image_urls, "image_url": new_primary}
+    # meta.angles에서도 제거된 url 키 정리
+    meta = dict(row.get("meta") or {})
+    angles = dict(meta.get("angles") or {})
+    if body.url in angles:
+        angles.pop(body.url, None)
+        meta["angles"] = angles
+        payload["meta"] = meta
+    updated = _patch_character(cid, payload)
+    return {"removed": body.url, "row": updated}
 
 
 @app.post("/api/seedance/characters/{cid}/images/primary")
 def seedance_set_primary_image(cid: str, body: SeedanceCharImageOp, request: Request):
     me = auth_svc.require_user(request)
-    row = _seedance_char_owned(cid, me["id"])
+    row = _seedance_char_editable(cid, me)
     urls = list(row.get("image_urls") or [])
     if body.url not in urls:
         raise HTTPException(404, "해당 URL이 사진 목록에 없음")
-    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
-    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    _r = supabase.get_session()
-    r = _r.patch(
-        f"{SUPA}/rest/v1/seedance_characters?id=eq.{cid}&created_by=eq.{me['id']}",
-        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
-                 "Content-Type": "application/json", "Prefer": "return=representation"},
-        json={"image_url": body.url}, timeout=10,
-    )
-    if r.status_code not in (200, 204):
-        raise HTTPException(r.status_code, r.text[:300])
-    rows = r.json() if r.status_code == 200 else []
-    return {"primary": body.url, "row": rows[0] if rows else None}
+    updated = _patch_character(cid, {"image_url": body.url})
+    return {"primary": body.url, "row": updated}
+
+
+@app.post("/api/seedance/characters/{cid}/images/angle")
+def seedance_set_image_angle(cid: str, body: SeedanceCharImageAngle, request: Request):
+    """사진 한 장의 각도(정면/측면/반측/뒷모습) 지정·해제 — meta.angles 갱신."""
+    me = auth_svc.require_user(request)
+    row = _seedance_char_editable(cid, me)
+    urls = list(row.get("image_urls") or [])
+    if row.get("image_url") and row["image_url"] not in urls:
+        urls.append(row["image_url"])
+    if body.url not in urls:
+        raise HTTPException(404, "해당 URL이 사진 목록에 없음")
+    angle = _norm_angle(body.angle)
+    meta = dict(row.get("meta") or {})
+    angles = dict(meta.get("angles") or {})
+    if angle:
+        angles[body.url] = angle
+    else:
+        angles.pop(body.url, None)  # 미지정으로 해제
+    meta["angles"] = angles
+    updated = _patch_character(cid, {"meta": meta})
+    return {"url": body.url, "angle": angle, "row": updated}
 
 
 # ── Serve built frontend (must be last: catches all non-API routes) ──

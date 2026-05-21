@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { authedFetch } from '../api'
+import { api, authedFetch } from '../api'
+import type { MyProduct } from '../api'
 import { useMe } from '../auth'
 import SeedanceShareModal from '../components/SeedanceShareModal'
 import SeedanceGroupShareModal from '../components/SeedanceGroupShareModal'
+import UspTagPicker, { type UspLink } from '../components/UspTagPicker'
 
 type Video = {
   id: string
@@ -20,6 +22,7 @@ type Video = {
   created_at: string
   created_by?: string
   meta: any
+  usp_links?: UspLink[]
   _shared?: boolean
   _permission?: 'view' | 'edit'
   _creator_name?: string
@@ -32,6 +35,7 @@ export default function SeedanceLibrary() {
   const navigate = useNavigate()
   const me = useMe()
   const [videos, setVideos] = useState<Video[]>([])
+  const [products, setProducts] = useState<MyProduct[]>([])
   const [shareModalFor, setShareModalFor] = useState<Video | null>(null)
   const [groupShareModalFor, setGroupShareModalFor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -54,6 +58,20 @@ export default function SeedanceLibrary() {
   const pickerCloseRef = useRef<(() => void) | null>(null)
 
   useEffect(() => { load() }, [])
+  useEffect(() => { api.listMyProducts().then(setProducts).catch(() => {}) }, [])
+
+  // USP 링크 이름 해석 — "상품명 · USP명"
+  const uspLinkLabel = (l: UspLink): string => {
+    const p = products.find(x => x.id === l.product_id)
+    const u = p?.usps?.[l.usp_index - 1]
+    return u?.usp || `USP#${l.usp_index}`
+  }
+
+  const saveUspLinks = async (v: Video, links: UspLink[]) => {
+    await api.setVideoUspLinks(v.id, links)
+    setVideos(prev => prev.map(x => x.id === v.id ? { ...x, usp_links: links } : x))
+    if (selected?.id === v.id) setSelected({ ...selected, usp_links: links })
+  }
 
   // picker 열려있을 때 document 클릭/스크롤/리사이즈로 닫기 (스크롤 시 좌표가 어긋나므로 닫음)
   useEffect(() => {
@@ -285,11 +303,20 @@ export default function SeedanceLibrary() {
                       display: 'block', objectFit: 'cover', cursor: 'pointer' }}
                     preload="metadata" />
                   <div style={{ padding: 8 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.3,
-                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                      cursor: 'pointer' }}
-                      onClick={() => setSelected(v)}>
-                      {v.name || v.prompt?.slice(0, 40) || '제목 없음'}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.3, flex: 1,
+                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                        cursor: 'pointer' }}
+                        onClick={() => setSelected(v)}>
+                        {v.name || v.prompt?.slice(0, 40) || '제목 없음'}
+                      </div>
+                      {(v.usp_links || []).length > 0 && (
+                        <span title={`USP ${(v.usp_links || []).length}개 연결`}
+                          style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, padding: '1px 5px',
+                            borderRadius: 3, background: 'var(--accent)', color: '#fff' }}>
+                          USP {(v.usp_links || []).length}
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, marginBottom: 6,
                       display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 4 }}>
@@ -511,6 +538,31 @@ export default function SeedanceLibrary() {
                       </div>
                     </div>
                   </div>
+                )}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 10 }}>
+              <Label>연결된 USP</Label>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                {(selected.usp_links || []).length === 0 ? (
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>연결된 USP 없음</span>
+                ) : (
+                  (selected.usp_links || []).map((l, i) => (
+                    <span key={i}
+                      style={{ fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 10,
+                        background: 'var(--accent-light)', color: 'var(--accent)' }}>
+                      {uspLinkLabel(l)}
+                    </span>
+                  ))
+                )}
+                {!selected._shared && (
+                  <UspTagPicker
+                    links={selected.usp_links || []}
+                    products={products}
+                    label="USP 편집"
+                    onSave={(links) => saveUspLinks(selected, links)}
+                  />
                 )}
               </div>
             </div>

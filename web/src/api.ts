@@ -646,6 +646,15 @@ export const api = {
     post<{ deleted: string[]; failed: string[]; deleted_count: number; failed_count: number }>(
       '/api/reels/bulk-delete', { shortcodes },
     ),
+  // Seedance: 영상 USP 링크 + 대본-영상 선택(영상 기획안)
+  setVideoUspLinks: (vid: string, links: Array<{ product_id: number; usp_index: number }>) =>
+    put<{ updated: boolean; count: number; links: Array<{ product_id: number; usp_index: number }> }>(
+      `/api/seedance/videos/${vid}/usp-links`, { links }),
+  getScriptVideos: (pid: number, sid: string) =>
+    get<any[]>(`/api/my-products/${pid}/scripts/${sid}/videos`),
+  setScriptVideos: (pid: number, sid: string, video_ids: string[]) =>
+    put<{ updated: boolean; count: number }>(
+      `/api/my-products/${pid}/scripts/${sid}/videos`, { video_ids }),
 }
 
 export interface ReferenceInfo {

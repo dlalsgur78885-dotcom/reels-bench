@@ -35,6 +35,7 @@ const FbSearchAds = lazy(() => import('./pages/FbSearchAds'))
 const FbAdImportPage = lazy(() => import('./pages/FbAdImportPage'))
 const Seedance = lazy(() => import('./pages/Seedance'))
 const SeedanceLibrary = lazy(() => import('./pages/SeedanceLibrary'))
+const SeedanceVideoSelect = lazy(() => import('./pages/SeedanceVideoSelect'))
 const SeedancePrompts = lazy(() => import('./pages/SeedancePrompts'))
 const SeedanceCharacters = lazy(() => import('./pages/SeedanceCharacters'))
 const Mockup = lazy(() => import('./pages/Mockup'))
@@ -299,6 +300,7 @@ export default function App() {
           <Route path="/my-scripts/:pid/:sid" element={<MyScriptDetail />} />
           <Route path="/seedance" element={<Seedance />} />
           <Route path="/seedance/library" element={<SeedanceLibrary />} />
+          <Route path="/seedance/select" element={<SeedanceVideoSelect />} />
           <Route path="/seedance/prompts" element={<SeedancePrompts />} />
           <Route path="/seedance/characters" element={<SeedanceCharacters />} />
           <Route path="/mockup" element={<Mockup />} />

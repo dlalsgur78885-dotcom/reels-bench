@@ -93,9 +93,14 @@ const primaryBtnSt: React.CSSProperties = {
 export default function TtsGen() {
   const { state } = useLocation() as { state?: { sentences?: InputSentence[]; title?: string; voice?: string; personaGender?: 'male' | 'female' | 'unknown'; persona?: any; from?: { path: string; label: string }; scriptId?: string; productId?: number; savedTts?: any } }
   const navigate = useNavigate()
-  // 대본에서 "오디오 수정"으로 진입한 경우 — 저장된 TTS 작업 복원
+  // 대본에서 "오디오 수정"으로 진입한 경우 — 저장된 TTS 작업 복원.
+  // inputSentences 우선: job.sentences(SegmentMeta)에는 sentence_emotion(전체 감정)이
+  // 빠져 있으므로, 저장 시 함께 담아둔 편집 sentences를 복원에 사용.
   const saved = state?.savedTts
-  const initialSentences: InputSentence[] = (saved?.job?.sentences as InputSentence[]) || state?.sentences || []
+  const initialSentences: InputSentence[] =
+    (saved?.inputSentences as InputSentence[])
+    || (saved?.job?.sentences as InputSentence[])
+    || state?.sentences || []
   const title = state?.title || ''
   const from = state?.from
   // 대본 귀속 — 있으면 "이 대본에 음성 저장" 가능
@@ -198,6 +203,9 @@ export default function TtsGen() {
     try {
       const ttsPayload = {
         job,
+        // 재합성 입력 — sentence_emotion(전체 감정)은 job.sentences에 없으므로
+        // 편집 중인 sentences를 그대로 저장해 복원 시 전체 감정까지 살린다.
+        inputSentences: sentences,
         voice,
         speedMode,
         persona: persona || null,

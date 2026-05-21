@@ -1927,6 +1927,7 @@ class GenScriptPatch(BaseModel):
     status: str | None = None  # 'pending' | 'done'
     group_name: str | None = None  # 사용자 정의 그룹
     stages: list[dict] | None = None  # meta.stages 통째 갱신 (key 기반: base/alt_a/alt_b)
+    tts: dict | None = None  # 저장된 TTS 작업 (음성 결과 + 재생성 입력). {} 빈 dict면 삭제
 
 
 class GenScriptShareIn(BaseModel):
@@ -2045,7 +2046,12 @@ def update_gen_script(pid: int, sid: str, body: GenScriptPatch, request: Request
             cur_meta.pop("group_name", None)
     if body.stages is not None:
         cur_meta["stages"] = body.stages
-    if any(x is not None for x in [body.caption, body.pinned_comment, body.shooting_plan_url, body.status, body.group_name, body.stages]):
+    if body.tts is not None:
+        if body.tts:
+            cur_meta["tts"] = body.tts
+        else:
+            cur_meta.pop("tts", None)  # 빈 dict = 저장된 음성 삭제
+    if any(x is not None for x in [body.caption, body.pinned_comment, body.shooting_plan_url, body.status, body.group_name, body.stages, body.tts]):
         payload["meta"] = cur_meta
     if not payload:
         return {"updated": False, "row": row}

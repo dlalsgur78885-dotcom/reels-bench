@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { api } from '../api'
+import { api, TTS_BASE } from '../api'
 import { useMe } from '../auth'
 import { buildTtsText } from '../ttsCopy'
+import { buildSrt, downloadTextFile, safeFileName } from '../lib/srt'
 
 const sourceLabel: Record<string, string> = {
   insta: 'Instagram', youtube: 'YouTube', fb_ads: 'FB Ads',
@@ -341,6 +342,8 @@ export default function MyScriptDetail() {
                   voice: data?.meta?.target_persona?.voice,
                   personaGender: data?.meta?.target_persona?.gender,
                   persona: data?.meta?.target_persona,  // 합성 시 인라인 cue
+                  scriptId: data?.id,
+                  productId: pid,
                   from: { path: `/my-scripts/${pid}/${sid}`, label: '저장된 대본' },
                 } })}
                 disabled={!displayedSents.length}
@@ -348,7 +351,9 @@ export default function MyScriptDetail() {
                   background: displayedSents.length ? 'var(--accent)' : 'var(--bg-elevated)',
                   color: displayedSents.length ? '#fff' : 'var(--text-muted)',
                   border: '1px solid var(--accent)', borderRadius: 4,
-                  cursor: displayedSents.length ? 'pointer' : 'not-allowed' }}>TTS 생성</button>
+                  cursor: displayedSents.length ? 'pointer' : 'not-allowed' }}>
+                {data?.meta?.tts?.job ? 'TTS 재생성' : 'TTS 생성'}
+              </button>
               {isMine && (
                 <button onClick={deleteScript}
                   style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600,
@@ -564,6 +569,76 @@ export default function MyScriptDetail() {
               opacity: savingMeta ? 0.7 : 1 }}>
             {savingMeta ? '저장 중…' : '💾 캡션/고정댓글/촬영기획안 저장'}
           </button>
+        </div>
+
+        {/* 🎙 음성 — 대본에 저장된 TTS 작업 (스크립트+감정태그+voice+음성결과) */}
+        <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 8 }}>
+            🎙 음성
+          </div>
+          {data?.meta?.tts?.job ? (() => {
+            const tts = data.meta.tts
+            const fjob = tts.job
+            const audioSrc = /^https?:\/\//i.test(fjob.final_url || '')
+              ? fjob.final_url
+              : `${TTS_BASE}${fjob.final_url || ''}`
+            const editAudio = () => navigate('/tts', { state: {
+              savedTts: tts,
+              scriptId: data.id,
+              productId: pid,
+              title: data.title || '',
+              from: { path: `/my-scripts/${pid}/${sid}`, label: '저장된 대본' },
+            } })
+            const downloadSrt = () => {
+              const srt = buildSrt(fjob.sentences || [], fjob.total_duration || 0)
+              downloadTextFile(`${safeFileName(data.title || '', fjob.job_id || 'tts')}.srt`,
+                srt, 'application/x-subrip')
+            }
+            return (
+              <div style={{ background: 'var(--bg-base)', border: '1px solid var(--border)',
+                borderRadius: 8, padding: 12 }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+                  {typeof fjob.total_duration === 'number' ? `${fjob.total_duration.toFixed(1)}초` : ''}
+                  {fjob.char_count ? ` · ${fjob.char_count}자` : ''}
+                  {fjob.voice_name ? ` · ${fjob.voice_name}` : ''}
+                  {tts.saved_at ? ` · 저장 ${new Date(tts.saved_at).toLocaleString('ko-KR')}` : ''}
+                </div>
+                <audio controls src={audioSrc} style={{ width: '100%', marginBottom: 10 }} />
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button onClick={editAudio}
+                    style={{ padding: '8px 16px', fontSize: 12, fontWeight: 700,
+                      background: '#7c3aed', color: '#fff', border: '1px solid #7c3aed',
+                      borderRadius: 6, cursor: 'pointer' }}>
+                    🎚 오디오 수정
+                  </button>
+                  <a href={audioSrc} download={`${safeFileName(data.title || '', fjob.job_id || 'tts')}.mp3`}
+                    style={{ display: 'inline-flex', alignItems: 'center', padding: '8px 16px',
+                      fontSize: 12, fontWeight: 600, background: 'var(--accent)', color: '#fff',
+                      border: '1px solid var(--accent)', borderRadius: 6, textDecoration: 'none' }}>
+                    ⬇ MP3 다운로드
+                  </a>
+                  <button onClick={downloadSrt} disabled={!(fjob.sentences || []).length}
+                    style={{ padding: '8px 16px', fontSize: 12, fontWeight: 600,
+                      background: '#16a34a', color: '#fff', border: '1px solid #16a34a',
+                      borderRadius: 6, cursor: (fjob.sentences || []).length ? 'pointer' : 'not-allowed',
+                      opacity: (fjob.sentences || []).length ? 1 : 0.5 }}>
+                    ⬇ SRT 다운로드
+                  </button>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
+                  "오디오 수정"을 누르면 스크립트·감정 태그·voice 설정이 그대로 복원돼,
+                  대본을 조금 고쳐도 같은 톤으로 재합성할 수 있습니다.
+                </div>
+              </div>
+            )
+          })() : (
+            <div style={{ fontSize: 12, color: 'var(--text-muted)',
+              background: 'var(--bg-base)', border: '1px dashed var(--border)',
+              borderRadius: 8, padding: '14px 12px' }}>
+              아직 저장된 음성이 없습니다. 위 "TTS 생성"으로 음성을 만든 뒤
+              결과 화면의 "이 대본에 음성 저장" 버튼을 누르면 여기에 표시됩니다.
+            </div>
+          )}
         </div>
 
         <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--border)' }}>

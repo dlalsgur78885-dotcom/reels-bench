@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { ttsAuthedFetch, TTS_BASE } from '../api'
+import { ttsAuthedFetch, authedFetch, TTS_BASE } from '../api'
+import { buildSrt, downloadTextFile, safeFileName } from '../lib/srt'
 
 interface Phrase {
   text: string;
@@ -72,49 +73,6 @@ function resolveAudioUrl(url: string, bust: number): string {
   return /^https?:\/\//i.test(url) ? withBust : `${TTS_BASE}${withBust}`
 }
 
-function formatSrtTime(sec: number): string {
-  const t = Math.max(0, sec)
-  const h = Math.floor(t / 3600)
-  const m = Math.floor((t % 3600) / 60)
-  const s = Math.floor(t % 60)
-  const ms = Math.round((t - Math.floor(t)) * 1000)
-  const pad = (n: number, w = 2) => String(n).padStart(w, '0')
-  return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms, 3)}`
-}
-
-function buildSrt(sentences: SegmentMeta[], totalDuration: number): string {
-  const blocks: string[] = []
-  let idx = 1
-  for (let i = 0; i < sentences.length; i++) {
-    const s = sentences[i]
-    const text = (s.text || '').trim()
-    if (!text) continue
-    let start = Number.isFinite(s.start) ? s.start : 0
-    let end = Number.isFinite(s.end) ? s.end : start
-    // end가 비정상(<=start)이면 다음 sentence.start 또는 total로 폴백
-    if (end <= start) {
-      const next = sentences[i + 1]
-      end = next && Number.isFinite(next.start) ? next.start : Math.max(start + 1, totalDuration)
-    }
-    blocks.push(`${idx}\n${formatSrtTime(start)} --> ${formatSrtTime(end)}\n${text}\n`)
-    idx++
-  }
-  return blocks.join('\n')
-}
-
-function downloadTextFile(filename: string, content: string, mime = 'text/plain') {
-  // UTF-8 BOM — Windows 메모장/일부 플레이어 호환
-  const blob = new Blob(['﻿', content], { type: `${mime};charset=utf-8` })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
-
 const LEVELS = [-2, -1, 0, 1, 2] as const
 const DEFAULT_LABELS = ['매우약', '약', '기본', '강', '매우강']
 
@@ -133,17 +91,22 @@ const primaryBtnSt: React.CSSProperties = {
 }
 
 export default function TtsGen() {
-  const { state } = useLocation() as { state?: { sentences?: InputSentence[]; title?: string; voice?: string; personaGender?: 'male' | 'female' | 'unknown'; persona?: any; from?: { path: string; label: string } } }
+  const { state } = useLocation() as { state?: { sentences?: InputSentence[]; title?: string; voice?: string; personaGender?: 'male' | 'female' | 'unknown'; persona?: any; from?: { path: string; label: string }; scriptId?: string; productId?: number; savedTts?: any } }
   const navigate = useNavigate()
-  const initialSentences: InputSentence[] = state?.sentences || []
+  // 대본에서 "오디오 수정"으로 진입한 경우 — 저장된 TTS 작업 복원
+  const saved = state?.savedTts
+  const initialSentences: InputSentence[] = (saved?.job?.sentences as InputSentence[]) || state?.sentences || []
   const title = state?.title || ''
   const from = state?.from
+  // 대본 귀속 — 있으면 "이 대본에 음성 저장" 가능
+  const scriptId: string | undefined = state?.scriptId
+  const productId: number | undefined = state?.productId
   // 페르소나에서 voice 전달받으면 그걸 기본값 (없으면 joonpark)
-  const initialVoice = state?.voice || 'joonpark'
+  const initialVoice = saved?.voice || state?.voice || 'joonpark'
   // 페르소나 성별 — dropdown 필터링용 (male/female만 필터, unknown은 전부 표시)
   const personaGender = state?.personaGender
   // 페르소나 dict — 합성 시 인라인 cue로 변환됨 (백엔드)
-  const persona = state?.persona
+  const persona = saved?.persona ?? state?.persona
 
   const [sentences, setSentences] = useState<InputSentence[]>(initialSentences)
   const [savedSentences, setSavedSentences] = useState<InputSentence[] | null>(null)
@@ -151,7 +114,12 @@ export default function TtsGen() {
   const [voice, setVoice] = useState(initialVoice)
   const [synthLoading, setSynthLoading] = useState(false)
   const [autoEmotionLoading, setAutoEmotionLoading] = useState(false)
-  const [autoEmotionIntensity, setAutoEmotionIntensity] = useState<'low' | 'medium' | 'high'>('low')
+  const [autoEmotionIntensity, setAutoEmotionIntensity] = useState<'low' | 'medium' | 'high'>(saved?.autoEmotionIntensity || 'low')
+  // 대본에 음성 저장 — 복원 진입이면 이미 저장된 상태
+  const [savingToScript, setSavingToScript] = useState(false)
+  const [savedToScript, setSavedToScript] = useState(!!saved)
+  // job이 새로 갱신되면(재합성/속도적용 등) "저장됨" 표시 해제. 첫 렌더(복원 포함)는 스킵.
+  const firstJobRef = useRef(true)
   const [error, setError] = useState('')
   // 마지막 합성 시점 sentences snapshot — 합성 후 변경 감지용
   const [lastSynthSnapshot, setLastSynthSnapshot] = useState<string>('')
@@ -160,12 +128,12 @@ export default function TtsGen() {
   // 'match_ref' — 전체 길이만 REF에 맞춤 (1.5x clamp atempo)
   // 'segment_match' — 문장별 atempo로 REF 정밀 매칭 (음질 트레이드오프)
   // '1.2' / '1.4' — 고정 가속
-  const [speedMode, setSpeedMode] = useState<'natural' | 'match_ref' | 'segment_match' | '1.2' | '1.4'>('match_ref')
-  const [job, setJob] = useState<JobState | null>(null)
+  const [speedMode, setSpeedMode] = useState<'natural' | 'match_ref' | 'segment_match' | '1.2' | '1.4'>(saved?.speedMode || 'match_ref')
+  const [job, setJob] = useState<JobState | null>(saved?.job || null)
   // 문장별 임시 선택 강도 (재생성 누르기 전)
-  const [draftLevels, setDraftLevels] = useState<Record<number, number>>({})
+  const [draftLevels, setDraftLevels] = useState<Record<number, number>>(saved?.draftLevels || {})
   // post-synth 문장별 속도 draft (변경 후 'speed 적용' 버튼으로 한 번에 ffmpeg 적용)
-  const [speedDrafts, setSpeedDrafts] = useState<Record<number, number>>({})
+  const [speedDrafts, setSpeedDrafts] = useState<Record<number, number>>(saved?.speedDrafts || {})
   const [applyingSpeeds, setApplyingSpeeds] = useState(false)
   // post-synth persona cue 편집 — 변경 시 전체 재합성 필요 (ElevenLabs 비용)
   const [editingCue, setEditingCue] = useState(false)
@@ -219,6 +187,38 @@ export default function TtsGen() {
       return { ...s, phrases: s.phrases.map((p, j) => j === phraseIdx ? { ...p, ...patch } : p) }
     }))
   }
+  useEffect(() => {
+    if (firstJobRef.current) { firstJobRef.current = false; return }
+    setSavedToScript(false)
+  }, [job])
+
+  const saveToScript = async () => {
+    if (!job || !scriptId || !productId || savingToScript) return
+    setSavingToScript(true)
+    try {
+      const ttsPayload = {
+        job,
+        voice,
+        speedMode,
+        persona: persona || null,
+        draftLevels,
+        speedDrafts,
+        autoEmotionIntensity,
+        saved_at: Date.now(),
+      }
+      const r = await authedFetch(`/api/my-products/${productId}/scripts/${scriptId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tts: ttsPayload }),
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`)
+      setSavedToScript(true)
+    } catch (e: any) {
+      alert('대본에 음성 저장 실패: ' + (e?.message || e))
+    } finally {
+      setSavingToScript(false)
+    }
+  }
+
   const runAutoEmotion = async () => {
     if (!sentences.length) return
     const hasExistingPhrases = sentences.some(s => s.phrases?.length)
@@ -751,7 +751,7 @@ export default function TtsGen() {
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <a
                     href={resolveAudioUrl(job.final_url, audioBust)}
-                    download={`${(title || job.job_id).replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) || job.job_id}.mp3`}
+                    download={`${safeFileName(title, job.job_id)}.mp3`}
                     style={{
                       display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                       padding: '10px 18px', fontSize: 13, fontWeight: 600, lineHeight: 1,
@@ -763,8 +763,7 @@ export default function TtsGen() {
                     type="button"
                     onClick={() => {
                       const srt = buildSrt(job.sentences, job.total_duration)
-                      const base = (title || job.job_id).replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) || job.job_id
-                      downloadTextFile(`${base}.srt`, srt, 'application/x-subrip')
+                      downloadTextFile(`${safeFileName(title, job.job_id)}.srt`, srt, 'application/x-subrip')
                     }}
                     disabled={!job.sentences?.length}
                     style={{
@@ -778,6 +777,43 @@ export default function TtsGen() {
                     title="현재 final.mp3 timing 기준 (Whisper 정렬)"
                   >⬇ SRT 다운로드</button>
                 </div>
+                {scriptId && productId && (
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+                    <button
+                      type="button"
+                      onClick={saveToScript}
+                      disabled={savingToScript || savedToScript}
+                      style={{
+                        width: '100%', padding: '11px 18px', fontSize: 13, fontWeight: 700,
+                        background: savedToScript ? 'var(--bg-elevated)' : '#7c3aed',
+                        color: savedToScript ? 'var(--text-muted)' : '#fff',
+                        border: `1px solid ${savedToScript ? 'var(--border)' : '#7c3aed'}`,
+                        borderRadius: 6,
+                        cursor: (savingToScript || savedToScript) ? 'default' : 'pointer',
+                      }}
+                      title="스크립트·감정 태그·voice 설정과 음성 결과를 대본에 저장 — 나중에 같은 톤으로 재합성">
+                      {savingToScript ? '저장 중…'
+                        : savedToScript ? '✓ 대본에 저장됨'
+                        : '💾 이 대본에 음성 저장'}
+                    </button>
+                    {savedToScript && from && (
+                      <button
+                        type="button"
+                        onClick={() => navigate(from.path)}
+                        style={{
+                          width: '100%', marginTop: 6, padding: '8px 16px', fontSize: 12, fontWeight: 600,
+                          background: 'transparent', color: 'var(--accent)',
+                          border: '1px solid var(--accent)', borderRadius: 6, cursor: 'pointer',
+                        }}>
+                        ← {from.label}(으)로 돌아가기
+                      </button>
+                    )}
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+                      스크립트·감정 태그·voice 설정이 함께 저장돼, 나중에 대본에서 "오디오 수정"으로
+                      같은 톤 그대로 불러와 일부만 고쳐 재합성할 수 있습니다.
+                    </div>
+                  </div>
+                )}
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
                   {job.is_supabase
                     ? <>☁ Supabase Storage 저장 — 영구 URL ({job.job_id})</>

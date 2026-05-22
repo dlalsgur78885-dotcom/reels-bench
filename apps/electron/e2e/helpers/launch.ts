@@ -1,4 +1,7 @@
 import path from 'node:path'
+import os from 'node:os'
+import fs from 'node:fs'
+import crypto from 'node:crypto'
 import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
 
 /**
@@ -11,6 +14,8 @@ export interface LaunchedApp {
   page: Page
   consoleErrors: string[]
   pageErrors: Error[]
+  /** Temporary user-data directory created for this launch — removed on close. */
+  userDataDir: string
 }
 
 export interface LaunchOptions {
@@ -73,8 +78,18 @@ export async function launchElectron(opts: LaunchOptions = {}): Promise<Launched
   const repoRoot = path.resolve(__dirname, '..', '..')
   const mainEntry = path.join(repoRoot, 'out', 'main', 'index.js')
 
+  // Each test gets its own user-data directory so Electron's
+  // requestSingleInstanceLock() does not block the next launch.
+  // The dir is written under os.tmpdir() and cleaned up in afterEach
+  // when the app is closed (Electron removes its own lock file on exit).
+  const uniqueUserData = path.join(
+    os.tmpdir(),
+    `reels-e2e-${crypto.randomBytes(6).toString('hex')}`
+  )
+  fs.mkdirSync(uniqueUserData, { recursive: true })
+
   const app = await electron.launch({
-    args: [mainEntry],
+    args: [mainEntry, `--user-data-dir=${uniqueUserData}`],
     cwd: repoRoot,
     // Ensure dev-only side-paths in the main process don't trigger.
     env: {
@@ -165,7 +180,7 @@ export async function launchElectron(opts: LaunchOptions = {}): Promise<Launched
   // Wait for renderer DOM to be ready before tests interact with window.electron.
   await page.waitForLoadState('domcontentloaded', { timeout: 10_000 })
 
-  return { app, page, consoleErrors, pageErrors }
+  return { app, page, consoleErrors, pageErrors, userDataDir: uniqueUserData }
 }
 
 export { FAKE_SESSION_STORAGE_KEY, buildFakeSessionBlob }

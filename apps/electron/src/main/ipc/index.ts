@@ -7,6 +7,8 @@ import { registerAudioHandlers } from './audio'
 import { registerExportHandlers } from './export'
 import { registerDownloadHandlers } from './download'
 import { registerUpdaterHandlers } from './updater'
+import { registerSttHandlers } from './stt'
+import { registerRecordingHandlers } from './recording'
 
 export function registerIpcHandlers(): void {
   registerFfmpegHandlers()
@@ -18,4 +20,6 @@ export function registerIpcHandlers(): void {
   registerExportHandlers()
   registerDownloadHandlers()
   registerUpdaterHandlers()
+  registerSttHandlers()
+  registerRecordingHandlers()
 }

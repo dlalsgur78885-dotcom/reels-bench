@@ -1,21 +1,33 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  CAPTION_POP_START_SCALE,
+  CAPTION_SLIDE_FRAC,
+  getCaptionAnimWindows,
+  getCaptionAnimation,
   getClipColorAdjust,
   getClipCropRect,
+  getOverlayBaseSize,
+  getSpeedAt,
   getTransformAt,
+  hasSpeedCurve,
   isCaptionClip,
   isMediaClip,
+  isOverlayClip,
+  sourceOffsetForTimelineOffset,
   type CaptionClip,
   type CaptionSpan,
   type CaptionStyle,
   type Clip,
+  type OverlayClip,
   type Project,
+  type ShapeStyle,
   type Track,
   type VideoAudioClip
 } from '../../../shared/project'
 import { colorAdjustToCss, filterPresetToCss } from '../../../shared/filterPresets'
 import { useTimelineUi } from '../store/timelineUi'
 import { toMediaUrl } from '../lib/mediaUrl'
+import { SocialPreviewOverlay } from './SocialPreviewOverlay'
 import {
   dbToLinear,
   getPreviewAudioGraph,
@@ -23,21 +35,52 @@ import {
 } from '../lib/audioGraph'
 
 // ---------------------------------------------------------------------------
-// Source-time mapping (Phase 2.3 speed-aware).
+// Source-time mapping (Phase 2.3 speed-aware; Phase 3.10 curve-aware).
 //
 // timelineMs → source media currentTime, factoring playback speed and the
 // clip's trim window.
 //
-//   currentTime = ((timelineMs - clip.startMs) * speed + clip.trimInMs) / 1000
-//   playbackRate = speed
+//   constant: currentTime = ((timelineMs-startMs)*speed + trimInMs) / 1000
+//             playbackRate = speed
+//   curve:    currentTime = (sourceOffsetForTimelineOffset(...) + trimInMs)/1000
+//             playbackRate = getSpeedAt(clip, sourceOffset)  (instantaneous)
+//
+// The constant path is byte-identical to the pre-3.10 formula for any clip
+// without an active speed curve.
 // ---------------------------------------------------------------------------
 export function clipSourceTimeSec(clip: VideoAudioClip, timelineMs: number): number {
+  if (hasSpeedCurve(clip)) {
+    // Curve clip — map the elapsed TIMELINE offset through the inverse speed
+    // integral to the consumed SOURCE offset (from trimInMs).
+    const sourceOffsetMs = sourceOffsetForTimelineOffset(
+      clip,
+      timelineMs - clip.startMs
+    )
+    return (sourceOffsetMs + clip.trimInMs) / 1000
+  }
   const speed = clip.speed ?? 1
   const offsetMs = (timelineMs - clip.startMs) * speed
   return (offsetMs + clip.trimInMs) / 1000
 }
 
-export function clipPlaybackRate(clip: VideoAudioClip): number {
+/**
+ * Effective playback rate for a clip's <video>/<audio> element. For a curve
+ * clip the rate tracks the INSTANTANEOUS curve speed at the playhead (so the
+ * preview ramps), which is why `timelineMs` is needed; pass the playhead.
+ * For a non-curve clip the constant `speed` is returned (timelineMs ignored)
+ * — byte-identical to the pre-3.10 behavior.
+ */
+export function clipPlaybackRate(
+  clip: VideoAudioClip,
+  timelineMs?: number
+): number {
+  if (hasSpeedCurve(clip) && timelineMs !== undefined) {
+    const sourceOffsetMs = sourceOffsetForTimelineOffset(
+      clip,
+      timelineMs - clip.startMs
+    )
+    return getSpeedAt(clip, sourceOffsetMs)
+  }
   return clip.speed ?? 1
 }
 
@@ -161,6 +204,22 @@ function captionsAtTime(project: Project, t: number): CaptionClip[] {
     for (const c of track.clips) {
       if (!isCaptionClip(c)) continue
       if (t >= c.startMs && t < c.endMs) out.push(c)
+    }
+  }
+  return out
+}
+
+/**
+ * Resolve every OverlayClip active at `ms` across all overlay tracks, in
+ * track order (later tracks composite on top). Phase 3.8.
+ */
+function overlaysAtTime(project: Project, ms: number): OverlayClip[] {
+  const out: OverlayClip[] = []
+  for (const track of project.tracks) {
+    if (track.kind !== 'overlay') continue
+    for (const c of track.clips) {
+      if (!isOverlayClip(c)) continue
+      if (ms >= c.startMs && ms < c.endMs) out.push(c)
     }
   }
   return out
@@ -331,11 +390,95 @@ function SpanView(props: { span: CaptionSpan; style: CaptionStyle }): JSX.Elemen
   )
 }
 
+// ---------------------------------------------------------------------------
+// Caption animation (Phase 3.9) — pure preview-side resolver.
+//
+// Given a caption + the playhead, return the opacity multiplier and the EXTRA
+// transform string to APPEND onto the caption's positioning transform (so the
+// centered-caption `translateX(-50%)` survives). For a caption with no
+// animation this returns { opacity:1, extraTransform:'' } and no
+// revealSpanCount → the rendered DOM is byte-identical to the legacy path.
+// ---------------------------------------------------------------------------
+function captionAnimCss(
+  caption: CaptionClip,
+  playheadMs: number,
+  fittedHeight: number
+): { opacity: number; extraTransform: string; revealSpanCount?: number } {
+  const anim = getCaptionAnimation(caption)
+  if (!anim) return { opacity: 1, extraTransform: '' }
+
+  const dur = Math.max(1, caption.endMs - caption.startMs)
+  const local = playheadMs - caption.startMs
+  const { inMs, outMs } = getCaptionAnimWindows(caption)
+  const clamp01 = (v: number): number => Math.min(1, Math.max(0, v))
+  // Entrance progress (0 at clip start → 1 once inMs has elapsed).
+  const eIn = inMs > 0 ? clamp01(local / inMs) : 1
+  // Exit progress (1 until outMs before clip end → 0 at clip end).
+  const eOut = outMs > 0 ? clamp01((dur - local) / outMs) : 1
+
+  const dist = CAPTION_SLIDE_FRAC * fittedHeight
+  let opacity = 1
+  let translateY = 0
+  let scalePart = ''
+  let revealSpanCount: number | undefined
+
+  // ---- Entrance ----
+  switch (anim.entrance) {
+    case 'fade':
+      opacity *= eIn
+      break
+    case 'slide-up':
+      // Starts below its final position, rises into place.
+      translateY += (1 - eIn) * dist
+      break
+    case 'slide-down':
+      // Starts above its final position, drops into place.
+      translateY += (1 - eIn) * -dist
+      break
+    case 'pop':
+      scalePart = ` scale(${
+        CAPTION_POP_START_SCALE + (1 - CAPTION_POP_START_SCALE) * eIn
+      })`
+      opacity *= eIn
+      break
+    case 'typewriter':
+      revealSpanCount = Math.ceil(eIn * caption.spans.length)
+      break
+    case 'none':
+    default:
+      break
+  }
+
+  // ---- Exit ----
+  switch (anim.exit) {
+    case 'fade':
+      opacity *= eOut
+      break
+    case 'slide-up':
+      // Drifts upward as it leaves.
+      translateY += (1 - eOut) * -dist
+      break
+    case 'slide-down':
+      // Drifts downward as it leaves.
+      translateY += (1 - eOut) * dist
+      break
+    case 'none':
+    default:
+      break
+  }
+
+  const parts: string[] = []
+  if (translateY !== 0) parts.push(`translateY(${translateY}px)`)
+  if (scalePart) parts.push(scalePart.trim())
+  return { opacity, extraTransform: parts.join(' '), revealSpanCount }
+}
+
 function CaptionOverlay(props: {
   caption: CaptionClip
   fittedHeight: number
+  playheadMs: number
 }): JSX.Element {
-  const { caption, fittedHeight } = props
+  const { caption, fittedHeight, playheadMs } = props
   const { style } = caption
   const REF_HEIGHT = 1920
   const scaledFontSize =
@@ -343,6 +486,12 @@ function CaptionOverlay(props: {
       ? Math.max(12, (style.fontSize * fittedHeight) / REF_HEIGHT)
       : style.fontSize
   const bottomPct = (1 - style.yPosition) * 100
+  const anim = getCaptionAnimation(caption)
+  const { opacity, extraTransform, revealSpanCount } = captionAnimCss(
+    caption,
+    playheadMs,
+    fittedHeight
+  )
   const containerStyle: React.CSSProperties = {
     position: 'absolute',
     bottom: `${bottomPct}%`,
@@ -362,22 +511,165 @@ function CaptionOverlay(props: {
     ...presetExtras(style),
     ...backgroundFor(style)
   }
+  // INVARIANT: an un-animated caption (anim === null) writes NEITHER `opacity`
+  // nor a modified `transform` — the spread above already set `transform` via
+  // alignToHorizontalAnchor, and `opacity` stays absent → rendered DOM is
+  // byte-identical to the legacy path. Only when there IS animation do we
+  // append the extra transform / multiply opacity onto the container.
+  if (anim) {
+    const baseTransform =
+      typeof containerStyle.transform === 'string'
+        ? containerStyle.transform
+        : ''
+    containerStyle.transform = extraTransform
+      ? `${baseTransform} ${extraTransform}`.trim()
+      : baseTransform
+    containerStyle.opacity = opacity
+  }
   return (
     <div
       data-testid="caption-overlay"
       data-caption-id={caption.id}
       data-preset={style.preset}
       data-background={style.background}
+      data-anim-entrance={anim?.entrance ?? 'none'}
+      data-anim-exit={anim?.exit ?? 'none'}
+      data-revealed-spans={revealSpanCount}
       style={containerStyle}
     >
       <div style={{ display: 'inline' }}>
-        {caption.spans.map((s, i) => (
-          <span key={i}>
-            {i > 0 && ' '}
-            <SpanView span={s} style={style} />
-          </span>
-        ))}
+        {caption.spans.map((s, i) => {
+          // Typewriter: keep tail spans in flow (visibility:hidden — no
+          // layout reflow) so only the revealed prefix is visible.
+          const hidden =
+            revealSpanCount !== undefined && i >= revealSpanCount
+          return (
+            <span
+              key={i}
+              style={hidden ? { visibility: 'hidden' } : undefined}
+            >
+              {i > 0 && ' '}
+              <SpanView span={s} style={style} />
+            </span>
+          )
+        })}
       </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Overlay element renderer (Phase 3.8) — image/sticker → <img>, shape → SVG.
+// Positioned with the SAME CSS transform math as a video layer.
+// ---------------------------------------------------------------------------
+function OverlayShapeSvg(props: { style: ShapeStyle }): JSX.Element {
+  const { style } = props
+  // viewBox is a fixed 100×100 unit box — the parent element supplies the
+  // actual on-canvas size, so the SVG just scales to fill. strokeWidth is in
+  // canvas px (pre-scale); we map it into viewBox units roughly via the box.
+  const VB = 100
+  const sw = Math.max(0, style.strokeWidth)
+  const hasStroke = style.stroke !== 'none' && sw > 0
+  const fill = style.fill === 'none' ? 'none' : style.fill
+  const common = {
+    fill,
+    fillOpacity: style.fillOpacity,
+    stroke: hasStroke ? style.stroke : 'none',
+    strokeWidth: hasStroke ? sw : 0,
+    vectorEffect: 'non-scaling-stroke' as const
+  }
+  return (
+    <svg
+      viewBox={`0 0 ${VB} ${VB}`}
+      preserveAspectRatio="none"
+      width="100%"
+      height="100%"
+      style={{ display: 'block', overflow: 'visible' }}
+    >
+      {style.shape === 'rectangle' && (
+        <rect
+          x={0}
+          y={0}
+          width={VB}
+          height={VB}
+          rx={Math.max(0, style.cornerRadius)}
+          ry={Math.max(0, style.cornerRadius)}
+          {...common}
+        />
+      )}
+      {style.shape === 'ellipse' && (
+        <ellipse cx={VB / 2} cy={VB / 2} rx={VB / 2} ry={VB / 2} {...common} />
+      )}
+      {style.shape === 'line' && (
+        <line
+          x1={0}
+          y1={VB / 2}
+          x2={VB}
+          y2={VB / 2}
+          stroke={style.stroke === 'none' ? style.fill : style.stroke}
+          strokeWidth={Math.max(1, sw || 4)}
+          vectorEffect="non-scaling-stroke"
+        />
+      )}
+    </svg>
+  )
+}
+
+function OverlayElement(props: {
+  clip: OverlayClip
+  playheadMs: number
+}): JSX.Element {
+  const { clip, playheadMs } = props
+  // Phase 3.5 transform — resolved at the playhead so keyframed overlays
+  // animate. Identical CSS math to the video layer.
+  const t = getTransformAt(clip, playheadMs)
+  const cssTransform = `translate(${t.x * 100}%, ${t.y * 100}%) scale(${
+    t.scale
+  }) rotate(${t.rotation}deg)`
+  const { w, h } = getOverlayBaseSize(clip)
+  const src = clip.source
+  // Un-transformed box: centered, sized by base*Frac of the canvas. The
+  // CSS transform (translate/scale/rotate) + opacity apply on top.
+  const boxStyle: React.CSSProperties = {
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    width: `${w * 100}%`,
+    height: `${h * 100}%`,
+    // Center first, then apply the clip transform.
+    transform: `translate(-50%, -50%) ${cssTransform}`,
+    transformOrigin: 'center center',
+    opacity: t.opacity,
+    pointerEvents: 'none'
+  }
+  return (
+    <div
+      style={boxStyle}
+      data-testid="overlay-element"
+      data-overlay-id={clip.id}
+      data-overlay-type={src.type}
+    >
+      {(src.type === 'image' || src.type === 'sticker') && (
+        <img
+          src={
+            src.type === 'image'
+              ? toMediaUrl(src.path)
+              : // Bundled stickers resolve to an asset URL; BUNDLED_STICKERS
+                // is empty for now so this path is dormant.
+                ''
+          }
+          alt=""
+          draggable={false}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
+            display: 'block',
+            pointerEvents: 'none'
+          }}
+        />
+      )}
+      {src.type === 'shape' && <OverlayShapeSvg style={src.style} />}
     </div>
   )
 }
@@ -395,6 +687,9 @@ function CaptionOverlay(props: {
 export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   const { project, playheadMs } = props
   const playing = useTimelineUi((s) => s.playing)
+  // Phase 6 — SNS 플랫폼 미리보기. Transient UI state; never touches the
+  // project / export. 'none' (default) renders no chrome.
+  const socialPlatform = useTimelineUi((s) => s.socialPreviewPlatform)
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasAspect = project.width / Math.max(1, project.height)
   const fitted = useFittedRect(containerRef, canvasAspect)
@@ -460,14 +755,23 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   const topLayer = videoLayers.length > 0 ? videoLayers[videoLayers.length - 1] : null
   const bottomLayer = videoLayers.length > 0 ? videoLayers[0] : null
 
-  // Caption overlay (and the empty-state placeholder) must sit above EVERY
-  // video layer. Layers occupy zIndex 1..(1 + videoTracks.length - 1), so the
-  // caption layer sits at 1 + videoTracks.length (≥ 2, matching the legacy
-  // single-track value when there is exactly one video track).
-  const captionZIndex = 1 + Math.max(1, videoTracks.length)
+  // Layer stacking (z-index). Video layers occupy zIndex 1..(1 +
+  // videoTracks.length - 1). The OVERLAY layer (Phase 3.8) composites just
+  // above every video layer; the CAPTION layer sits one above the overlay
+  // layer so captions always stay on top of stickers/shapes.
+  const overlayZIndex = 1 + Math.max(1, videoTracks.length)
+  const captionZIndex = overlayZIndex + 1
+  // SNS platform chrome (Phase 6) composites ABOVE captions so the user sees
+  // exactly what gets covered by the platform UI.
+  const socialZIndex = captionZIndex + 1
 
   const activeCaptions = useMemo(
     () => captionsAtTime(project, playheadMs),
+    [project, playheadMs]
+  )
+
+  const activeOverlays = useMemo(
+    () => overlaysAtTime(project, playheadMs),
     [project, playheadMs]
   )
 
@@ -555,7 +859,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                   // src may not be ready yet — ignored, will retry next tick.
                 }
               }
-              const rate = clipPlaybackRate(activeVideo)
+              const rate = clipPlaybackRate(activeVideo, playheadMs)
               if (Math.abs(v.playbackRate - rate) > 0.001) v.playbackRate = rate
             }
 
@@ -616,7 +920,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                     // ignore
                   }
                 }
-                const rate = clipPlaybackRate(bottomLayer.clip)
+                const rate = clipPlaybackRate(bottomLayer.clip, playheadMs)
                 if (Math.abs(bg.playbackRate - rate) > 0.001) {
                   bg.playbackRate = rate
                 }
@@ -662,7 +966,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                 // src may not be ready yet — ignored.
               }
             }
-            const rate = clipPlaybackRate(clip)
+            const rate = clipPlaybackRate(clip, playheadMs)
             if (Math.abs(a.playbackRate - rate) > 0.001) a.playbackRate = rate
           }
 
@@ -1086,6 +1390,24 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           />
         )}
 
+        {/* Overlay layer (Phase 3.8) — image stickers + vector shapes.
+            Composites ABOVE every video layer, BELOW the caption layer.
+            Always rendered (even when empty) so layer-counting tests can
+            select it; pointer events disabled (preview is non-interactive). */}
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            pointerEvents: 'none',
+            zIndex: overlayZIndex
+          }}
+          data-testid="overlay-layer"
+        >
+          {activeOverlays.map((o) => (
+            <OverlayElement key={o.id} clip={o} playheadMs={playheadMs} />
+          ))}
+        </div>
+
         {/* Placeholder when no video clip is at the playhead on ANY layer. */}
         {videoLayers.length === 0 && (
           <div
@@ -1118,8 +1440,29 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           data-testid="caption-overlay-layer"
         >
           {activeCaptions.map((c) => (
-            <CaptionOverlay key={c.id} caption={c} fittedHeight={fitted.height} />
+            <CaptionOverlay
+              key={c.id}
+              caption={c}
+              fittedHeight={fitted.height}
+              playheadMs={playheadMs}
+            />
           ))}
+        </div>
+
+        {/* SNS platform-preview chrome (Phase 6) — a non-interactive visual
+            guide layered above everything else. Renders nothing when the
+            selected platform is '없음' (none). It never affects the video,
+            captions, transforms, or the export pipeline. */}
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            pointerEvents: 'none',
+            zIndex: socialZIndex
+          }}
+          data-testid="social-preview-layer"
+        >
+          <SocialPreviewOverlay platform={socialPlatform} />
         </div>
 
         <style>{`

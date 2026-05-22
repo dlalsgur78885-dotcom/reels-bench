@@ -59,7 +59,7 @@ function resolveFfprobePath(): string {
 function classifyByExtension(filePath: string): MediaKind {
   const ext = path.extname(filePath).slice(1).toLowerCase()
   if (['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'].includes(ext)) return 'video'
-  if (['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'].includes(ext)) return 'audio'
+  if (AUDIO_EXTENSIONS.includes(ext)) return 'audio'
   return 'image'
 }
 
@@ -72,7 +72,12 @@ interface FfprobeStream {
   nb_frames?: string
   avg_frame_rate?: string
   r_frame_rate?: string
+  /** ffprobe stream disposition flags. `attached_pic` = 1 marks embedded cover art. */
+  disposition?: { attached_pic?: number }
 }
+
+/** Audio container extensions — used to override embedded cover-art misdetection. */
+const AUDIO_EXTENSIONS = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg']
 
 interface FfprobeFormat {
   duration?: string
@@ -152,18 +157,36 @@ function runProbe(filePath: string, timeoutMs = 15_000): Promise<FfprobeJson> {
 
 function parseProbe(json: FfprobeJson, filePath: string): ProbeResult {
   const streams = Array.isArray(json.streams) ? json.streams : []
-  const videoStream = streams.find((s) => s.codec_type === 'video')
+  // An embedded cover-art / album-art stream is reported by ffprobe as a
+  // `video` stream but carries `disposition.attached_pic = 1`. It is NOT real
+  // motion video — treat it as if it were not there for kind detection, so a
+  // music/TTS file (.mp3 with cover art) is correctly classified as `audio`
+  // instead of being misrouted onto a video track. See slide 10.
+  const realVideoStream = streams.find(
+    (s) => s.codec_type === 'video' && s.disposition?.attached_pic !== 1
+  )
+  const videoStream = realVideoStream ?? streams.find((s) => s.codec_type === 'video')
   const audioStream = streams.find((s) => s.codec_type === 'audio')
 
+  const extKind = classifyByExtension(filePath)
+  const hasCoverArtOnly = !realVideoStream && Boolean(audioStream)
+
   let kind: MediaKind
-  if (videoStream && videoStream.width && videoStream.height) {
+  if (extKind === 'audio' && audioStream) {
+    // Audio container extension + an audio stream → always audio, even when a
+    // cover-art video stream is present. This is the primary cover-art guard.
+    kind = 'audio'
+  } else if (hasCoverArtOnly) {
+    // Only an attached-pic video stream alongside audio → audio file.
+    kind = 'audio'
+  } else if (realVideoStream && realVideoStream.width && realVideoStream.height) {
     // Distinguish image vs video by frame count / duration. Most images
     // probed by ffprobe have either no duration or a single frame.
-    const nbFrames = Number(videoStream.nb_frames ?? '0')
-    const dur = Number(videoStream.duration ?? json.format?.duration ?? '0')
+    const nbFrames = Number(realVideoStream.nb_frames ?? '0')
+    const dur = Number(realVideoStream.duration ?? json.format?.duration ?? '0')
     if ((nbFrames === 1 || Number.isNaN(nbFrames)) && dur < 0.1) {
       kind = 'image'
-    } else if (classifyByExtension(filePath) === 'image') {
+    } else if (extKind === 'image') {
       kind = 'image'
     } else {
       kind = 'video'
@@ -171,7 +194,7 @@ function parseProbe(json: FfprobeJson, filePath: string): ProbeResult {
   } else if (audioStream) {
     kind = 'audio'
   } else {
-    kind = classifyByExtension(filePath)
+    kind = extKind
   }
 
   const durationSec = (() => {
@@ -183,9 +206,14 @@ function parseProbe(json: FfprobeJson, filePath: string): ProbeResult {
     return Number.isFinite(fromStream) && fromStream > 0 ? fromStream : 0
   })()
 
-  const width = videoStream?.width ?? 0
-  const height = videoStream?.height ?? 0
-  const codec = videoStream?.codec_name ?? audioStream?.codec_name
+  // For an audio file, report no video dimensions even if a cover-art stream
+  // exists — the asset is audio, not an image.
+  const width = kind === 'audio' ? 0 : videoStream?.width ?? 0
+  const height = kind === 'audio' ? 0 : videoStream?.height ?? 0
+  const codec =
+    kind === 'audio'
+      ? audioStream?.codec_name
+      : videoStream?.codec_name ?? audioStream?.codec_name
 
   return {
     durationMs: Math.round((kind === 'image' ? 0 : durationSec) * 1000),

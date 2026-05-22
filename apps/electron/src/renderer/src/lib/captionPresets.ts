@@ -46,3 +46,17 @@ export const ALL_PRESETS: CaptionPreset[] = [
   'tiktok-rounded',
   'gradient'
 ]
+
+/**
+ * Human-readable labels for the caption animation dropdowns (Phase 3.9,
+ * Korean UI). Keyed by both CaptionEntranceKind and CaptionExitKind values
+ * (exit kinds are a subset of entrance kinds).
+ */
+export const CAPTION_ANIM_LABELS: Record<string, string> = {
+  none: '없음',
+  fade: '페이드',
+  'slide-up': '위로 슬라이드',
+  'slide-down': '아래로 슬라이드',
+  pop: '팝',
+  typewriter: '타이핑'
+}

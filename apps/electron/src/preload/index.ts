@@ -21,8 +21,14 @@ import {
   type ParsedCaptionCue,
   type PickFileOptions,
   type ProgressEvent,
+  type SaveRecordingResult,
   type SilenceDetectOptions,
   type SilenceRange,
+  type SttModelKey,
+  type SttModelStatus,
+  type SttProgress,
+  type SttResult,
+  type SttTranscribeOptions,
   type UpdateDownloadedPayload,
   type UpdateDownloadProgressPayload,
   type WaveformOptions,
@@ -146,6 +152,26 @@ const api: ElectronApi = {
         url,
         suggestedName
       )
+  },
+  recording: {
+    saveAudio: (
+      bytes: ArrayBuffer | Uint8Array,
+      ext: string
+    ): Promise<SaveRecordingResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.recording.saveAudio, bytes, ext)
+  },
+  stt: {
+    transcribe: (opts: SttTranscribeOptions): Promise<SttResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.stt.transcribe, opts),
+    cancel: (jobId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.stt.cancel, jobId),
+    modelStatus: (model?: SttModelKey): Promise<SttModelStatus> =>
+      ipcRenderer.invoke(IPC_CHANNELS.stt.modelStatus, model),
+    onProgress: (cb: (e: SttProgress) => void): (() => void) => {
+      const listener = (_ev: IpcRendererEvent, payload: SttProgress): void => cb(payload)
+      ipcRenderer.on(IPC_CHANNELS.stt.progress, listener)
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.stt.progress, listener)
+    }
   },
   updater: {
     installNow: (): Promise<boolean> =>

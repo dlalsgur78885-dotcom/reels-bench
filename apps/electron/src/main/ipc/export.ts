@@ -45,21 +45,34 @@ import {
   DEFAULT_TRANSITION_MS,
   isCaptionClip,
   isMediaClip,
+  isOverlayClip,
   getClipTransform,
   getClipColorAdjust,
+  getOverlayBaseSize,
   isIdentityTransform,
   hasTransformKeyframes,
   getClipCropRect,
+  getCaptionAnimation,
+  getCaptionAnimWindows,
+  hasSpeedCurve,
+  resolveSpeedSegments,
+  getTransformAt,
   MAX_TRANSFORM_OFFSET,
   MAX_TRANSFORM_ROTATION,
   MAX_TRANSFORM_SCALE,
   MIN_TRANSFORM_OFFSET,
   MIN_TRANSFORM_ROTATION,
   MIN_TRANSFORM_SCALE,
+  CAPTION_SLIDE_FRAC,
+  CAPTION_POP_START_SCALE,
+  MAX_CAPTION_TYPEWRITER_STEPS,
+  type CaptionAnimation,
   type CaptionClip,
   type ClipTransform,
+  type OverlayClip,
   type Project,
   type Track,
+  type TransformableClip,
   type TransformKeyframe,
   type VideoAudioClip
 } from '../../shared/project'
@@ -70,6 +83,10 @@ import {
   resetCaptionRenderStats,
   getCaptionRenderStats
 } from '../captions/render'
+import {
+  renderOverlayShapeToFile,
+  resolveBundledStickerPath
+} from '../overlays/render'
 
 // ---------------------------------------------------------------------------
 // Preset table (kept in sync with renderer's exportPresets.ts — main-process
@@ -332,11 +349,31 @@ interface VideoSegment {
 }
 
 /**
+ * One stepped PNG used by the typewriter entrance — or the single step for
+ * all other captions. Each step has its own ffmpeg input index and its own
+ * visibility window [visStartMs, visEndMs).
+ */
+interface CaptionStep {
+  pngPath: string
+  inputIdx: number
+  /** Inclusive start of this step's visibility window (ms, timeline-absolute). */
+  visStartMs: number
+  /** Exclusive end of this step's visibility window (ms, timeline-absolute). */
+  visEndMs: number
+}
+
+/**
  * Mapping from `caption.id` → pre-rendered PNG path + assigned ffmpeg input
  * index. When this map is non-empty, the export pipeline uses the PNG-overlay
  * path; when empty, the drawtext fallback runs (which is the legacy code path
  * preserved for fontconfig-only systems or when sharp's native binding is
  * unavailable).
+ *
+ * Phase 3.9: `animation` carries the resolved CaptionAnimation (null for none).
+ * `steps` holds 1 entry for non-typewriter captions, or N entries for typewriter
+ * (one per stepped PNG). The first step's `inputIdx` is the lowest; subsequent
+ * steps use consecutive indices. Only step[0].pngPath / inputIdx / startMs / endMs
+ * are used for backwards-compat bookkeeping; the overlay graph iterates `steps`.
  */
 interface CaptionPng {
   pngPath: string
@@ -345,9 +382,47 @@ interface CaptionPng {
   startMs: number
   endMs: number
   cached: boolean
+  // Phase 3.9 fields.
+  /** Resolved animation or null (null → byte-identical legacy overlay fragment). */
+  animation: CaptionAnimation | null
+  /**
+   * Entrance window (ms) after getCaptionAnimWindows clamping. 0 when no entrance.
+   * Stored so stitchCaptions does not need to re-derive it.
+   */
+  animInMs: number
+  /**
+   * Exit window (ms) after getCaptionAnimWindows clamping. 0 when no exit.
+   */
+  animOutMs: number
+  /**
+   * Flattened step list. Length = 1 for non-typewriter; length = N for typewriter.
+   * Each entry contributes one `-loop 1 -t … -i <png>` input and one overlay
+   * fragment in the filter graph.
+   */
+  steps: CaptionStep[]
 }
 
 type CaptionPngMap = Map<string, CaptionPng>
+
+/**
+ * Phase 3.8 — mapping from `overlayClip.id` → pre-resolved PNG path + ffmpeg
+ * input index. Image overlays use source.path directly; sticker overlays use
+ * a bundled file; shape overlays use a sharp-rendered temporary PNG.
+ * The map is keyed by overlay clip id for O(1) lookup.
+ */
+interface OverlayPng {
+  pngPath: string
+  inputIdx: number
+  startMs: number
+  endMs: number
+  /** Pixel size AFTER baseWidthFrac/baseHeightFrac × canvas was applied. */
+  pxW: number
+  pxH: number
+  /** Reference to the original clip — needed to build the transform sub-chain. */
+  clip: OverlayClip
+}
+
+type OverlayPngMap = Map<string, OverlayPng>
 
 interface AudioSegment {
   clip: VideoAudioClip
@@ -412,13 +487,6 @@ function collectSegments(
       const { clip, track } = trackClips[i]
       const media = project.media[clip.mediaId]
       if (!media) continue
-      const inputIdx = inputs.length
-      inputs.push(media.path)
-
-      // Captions overlapping this clip's timeline range.
-      const captions = allCaptionClips.filter(
-        (c) => c.endMs > clip.startMs && c.startMs < clip.endMs
-      )
 
       // Transition: defined on this clip (transitionIn) — only valid if there
       // is a previous segment ON THE SAME TRACK (not a global predecessor).
@@ -439,17 +507,150 @@ function collectSegments(
         transitionKind = clip.transitionIn.kind
       }
 
-      layerSegments.push({
-        clip,
-        track,
-        inputIdx,
-        captions,
-        startMs: clip.startMs,
-        endMs: clip.endMs,
-        transitionInMs,
-        transitionKind,
-        layerIndex
-      })
+      if (!hasSpeedCurve(clip)) {
+        // -----------------------------------------------------------------------
+        // FAST PATH: no speed curve — single segment, byte-identical to pre-3.10.
+        // -----------------------------------------------------------------------
+        const inputIdx = inputs.length
+        inputs.push(media.path)
+        const captions = allCaptionClips.filter(
+          (c) => c.endMs > clip.startMs && c.startMs < clip.endMs
+        )
+        layerSegments.push({
+          clip,
+          track,
+          inputIdx,
+          captions,
+          startMs: clip.startMs,
+          endMs: clip.endMs,
+          transitionInMs,
+          transitionKind,
+          layerIndex
+        })
+      } else {
+        // -----------------------------------------------------------------------
+        // SPEED-CURVE PATH (Phase 3.10): expand into N constant-speed sub-segments.
+        // Each step gets its own -i (same file, different trim window — identical
+        // to the removeSilencesFromClip multi-input pattern).
+        // -----------------------------------------------------------------------
+        const steps = resolveSpeedSegments(clip)
+        let stepStartMs = clip.startMs
+
+        for (let si = 0; si < steps.length; si++) {
+          const step = steps[si]
+          const isFirst = si === 0
+          const isLast = si === steps.length - 1
+
+          const stepEndMs = isLast
+            ? clip.endMs // force last step to clip.endMs (kills rounding drift)
+            : stepStartMs + Math.round(step.outDurMs)
+
+          // Build a SYNTHETIC shallow-clone of the original clip for this step.
+          // trimInMs/trimOutMs are absolute source offsets (trimInMs + step window).
+          // startMs/endMs reflect this step's position on the timeline — required
+          // so buildAudioSegmentChain reads the correct adelay for embedded audio.
+          const syntheticClip: VideoAudioClip = {
+            ...clip,
+            startMs: stepStartMs,
+            endMs: stepEndMs,
+            trimInMs: clip.trimInMs + step.srcStartMs,
+            trimOutMs: clip.trimInMs + step.srcEndMs,
+            speed: step.speed,
+            speedKeyframes: undefined,
+            // Transition belongs only to the first step.
+            transitionIn: isFirst ? clip.transitionIn : undefined,
+            // Audio fades belong to the WHOLE clip: first step keeps fadeInMs,
+            // last step keeps fadeOutMs, intermediate steps get zero for both.
+            // This prevents every sub-segment from fading in and out.
+            fadeInMs:  isFirst ? (clip.fadeInMs ?? 0)  : 0,
+            fadeOutMs: isLast  ? (clip.fadeOutMs ?? 0) : 0,
+          }
+
+          // -----------------------------------------------------------------
+          // Transform-keyframe re-basing (spec §3a high-risk section).
+          //
+          // clip.transformKeyframes are clip-timeline-relative (atMs from clip.startMs=0).
+          // This step covers timeline window [stepStartMs, stepEndMs) — i.e.
+          // clip-local offsets [stepStartMs-clip.startMs, stepEndMs-clip.startMs).
+          //
+          // Strategy (mirrors splitClipAt in renderer store):
+          //   1. Compute clip-local offsets for this step's [lo, hi) window.
+          //   2. Collect keyframes whose atMs falls strictly inside (lo, hi).
+          //   3. Synthesise boundary keyframes at lo and hi via getTransformAt.
+          //   4. Re-base all keyframe atMs so 0 = stepStartMs on original timeline.
+          //   5. If <2 keyframes result: bake to static transform at step midpoint.
+          // -----------------------------------------------------------------
+          if (hasTransformKeyframes(clip)) {
+            const localLo = stepStartMs - clip.startMs   // clip-local start of this step
+            const localHi = stepEndMs - clip.startMs     // clip-local end of this step
+
+            // Synthesise boundary keyframes at lo and hi.
+            const tAtLo = getTransformAt(clip, clip.startMs + localLo)
+            const tAtHi = getTransformAt(clip, clip.startMs + localHi)
+
+            // Collect interior keyframes strictly inside (lo, hi).
+            const interior = (clip.transformKeyframes as TransformKeyframe[]).filter(
+              (kf) => kf.atMs > localLo && kf.atMs < localHi
+            )
+
+            // Assemble: boundary-lo, interior..., boundary-hi — then re-base.
+            const rawKfs: TransformKeyframe[] = [
+              { atMs: localLo, transform: tAtLo },
+              ...interior,
+              { atMs: localHi, transform: tAtHi }
+            ]
+            // Re-base: subtract localLo so the step's own start = atMs 0.
+            const rebased: TransformKeyframe[] = rawKfs.map((kf) => ({
+              atMs: kf.atMs - localLo,
+              transform: kf.transform
+            }))
+
+            // Deduplicate adjacent identical atMs (paranoia against lo===hi edge).
+            const deduped = rebased.filter(
+              (kf, idx) =>
+                idx === 0 || kf.atMs !== rebased[idx - 1].atMs
+            )
+
+            if (deduped.length >= 2) {
+              syntheticClip.transformKeyframes = deduped
+              syntheticClip.transform = undefined  // animated path wins
+            } else {
+              // <2 unique keyframes — bake to static transform at step midpoint.
+              syntheticClip.transformKeyframes = undefined
+              syntheticClip.transform = getTransformAt(
+                clip,
+                clip.startMs + Math.round((localLo + localHi) / 2)
+              )
+            }
+          }
+          // If no transform keyframes on original, syntheticClip.transform is
+          // already a copy of clip.transform (from the spread) — static path is
+          // unchanged and byte-identical.
+
+          const inputIdx = inputs.length
+          inputs.push(media.path)
+
+          // Captions overlap check against this step's timeline window.
+          const captions = allCaptionClips.filter(
+            (c) => c.endMs > stepStartMs && c.startMs < stepEndMs
+          )
+
+          layerSegments.push({
+            clip: syntheticClip,
+            track,
+            inputIdx,
+            captions,
+            startMs: stepStartMs,
+            endMs: stepEndMs,
+            // Only the first step carries the original clip's transition.
+            transitionInMs: isFirst ? transitionInMs : 0,
+            transitionKind: isFirst ? transitionKind : 'none',
+            layerIndex
+          })
+
+          stepStartMs = stepEndMs
+        }
+      }
     }
     videoTrackLayers.push(layerSegments)
   }
@@ -469,14 +670,61 @@ function collectSegments(
       if (!isMediaClip(c)) continue
       const media = project.media[c.mediaId]
       if (!media) continue
-      const inputIdx = inputs.length
-      inputs.push(media.path)
-      audioSegments.push({ clip: c, track: t, inputIdx, fromVideoTrack: false })
+
+      if (!hasSpeedCurve(c)) {
+        // Fast path: single audio segment — byte-identical to pre-3.10.
+        const inputIdx = inputs.length
+        inputs.push(media.path)
+        audioSegments.push({ clip: c, track: t, inputIdx, fromVideoTrack: false })
+      } else {
+        // Speed-curve path: expand into N constant-speed audio segments.
+        // Fades belong to the WHOLE clip: fadeInMs only on first step,
+        // fadeOutMs only on last step, zero on all intermediate steps.
+        // startMs/endMs on the synthetic clone must track the step's timeline
+        // position so buildAudioSegmentChain emits the correct adelay.
+        const steps = resolveSpeedSegments(c)
+        let audioStepStartMs = c.startMs
+        for (let si = 0; si < steps.length; si++) {
+          const step = steps[si]
+          const isFirst = si === 0
+          const isLast = si === steps.length - 1
+          const audioStepEndMs = isLast
+            ? c.endMs
+            : audioStepStartMs + Math.round(step.outDurMs)
+          const syntheticAudio: VideoAudioClip = {
+            ...c,
+            startMs: audioStepStartMs,
+            endMs: audioStepEndMs,
+            trimInMs: c.trimInMs + step.srcStartMs,
+            trimOutMs: c.trimInMs + step.srcEndMs,
+            speed: step.speed,
+            speedKeyframes: undefined,
+            fadeInMs:  isFirst ? (c.fadeInMs ?? 0)  : 0,
+            fadeOutMs: isLast  ? (c.fadeOutMs ?? 0) : 0,
+          }
+          const inputIdx = inputs.length
+          inputs.push(media.path)
+          audioSegments.push({ clip: syntheticAudio, track: t, inputIdx, fromVideoTrack: false })
+          audioStepStartMs = audioStepEndMs
+        }
+      }
     }
   }
-  // Embedded audio from video clips. We reuse the same input index — the
-  // video clip's input #N also exposes audio at [N:a:0] (if present).
+  // Embedded audio from video clips. We reuse the same input index as the
+  // corresponding video segment — the video clip's input #N also exposes
+  // audio at [N:a:0] (if present). Speed-curve clips are already expanded
+  // into synthetic constant-speed VideoSegments above, so we simply walk
+  // videoSegments — each synthetic seg.clip is already a constant-speed clone
+  // with the correct trimInMs/trimOutMs/speed, and its inputIdx matches the
+  // video input for that step.
   for (const seg of videoSegments) {
+    // For speed-curve steps: carry fadeInMs only on first step, fadeOutMs
+    // only on last step (the synthetic video clone already has fade fields
+    // inherited from the spread — we need to zero them on intermediate steps).
+    // We detect "is a speed-curve step" by checking speedKeyframes === undefined
+    // AND the original clip had a curve. The synthetic clones from the video
+    // expansion above already have speedKeyframes=undefined and carry the
+    // correct per-step fade assignment made there, so we can use them directly.
     audioSegments.push({
       clip: seg.clip,
       track: seg.track,
@@ -620,6 +868,189 @@ export function keyframeExpr(
   return expr
 }
 
+// ---------------------------------------------------------------------------
+// Phase 3.8 — SHARED transform sub-chain builder.
+//
+// Extracted from the inline code in `buildVideoSegmentChain` so that overlay
+// clips can reuse the SAME filter fragment logic without code duplication.
+//
+// CRITICAL INVARIANT: calling this function for a VideoAudioClip with the
+// same (clip, W, H, labelSuffix) as the old inline code produces a
+// BYTE-IDENTICAL fragment string. The extraction is purely mechanical — the
+// two branches (hasTransformKeyframes / static) are UNCHANGED from the
+// original implementation; only the surrounding function boundary is new.
+//
+// Parameters:
+//   clip          — the clip whose transform is rendered (media or overlay)
+//   W, H          — canvas pixel dimensions
+//   labelSuffix   — unique string used to name intermediate split/bg/content
+//                   filter pads; for media clips pass String(inputIdx) to
+//                   preserve byte-identical label names; for overlay clips
+//                   pass a unique overlay-specific string.
+//   fps           — canvas fps (required by zoompan in the keyframe path)
+//
+// Returns a filter fragment string that BEGINS with a comma (`,format=rgba,…`)
+// or is EMPTY when the transform is identity. The caller appends it directly
+// to the chain fragment it already has.
+// ---------------------------------------------------------------------------
+function buildTransformSubchain(
+  clip: TransformableClip,
+  W: number,
+  H: number,
+  labelSuffix: string,
+  fps: number
+): string {
+  let fragment = ''
+
+  if (hasTransformKeyframes(clip)) {
+    // -----------------------------------------------------------------------
+    // Phase 3.5 animated sub-chain — BYTE-IDENTICAL to the inline block.
+    // -----------------------------------------------------------------------
+    const clampField = (v: number, lo: number, hi: number): number =>
+      Math.min(hi, Math.max(lo, v))
+
+    const rawKfs = (clip.transformKeyframes as TransformKeyframe[])
+    const kfs: TransformKeyframe[] = rawKfs
+      .slice()
+      .sort((a, b) => a.atMs - b.atMs)
+      .map((kf) => ({
+        atMs: Number.isFinite(kf.atMs) ? Math.max(0, kf.atMs) : 0,
+        transform: {
+          x: clampField(Number.isFinite(kf.transform.x) ? kf.transform.x : 0, MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
+          y: clampField(Number.isFinite(kf.transform.y) ? kf.transform.y : 0, MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
+          scale: clampField(Number.isFinite(kf.transform.scale) ? kf.transform.scale : 1, MIN_TRANSFORM_SCALE, MAX_TRANSFORM_SCALE),
+          rotation: clampField(Number.isFinite(kf.transform.rotation) ? kf.transform.rotation : 0, MIN_TRANSFORM_ROTATION, MAX_TRANSFORM_ROTATION),
+          opacity: clampField(Number.isFinite(kf.transform.opacity) ? kf.transform.opacity : 1, 0, 1)
+        }
+      }))
+
+    const scaleExpr    = keyframeExpr(kfs, (t) => t.scale,    'time')
+    const rotExpr      = keyframeExpr(kfs, (t) => t.rotation * Math.PI / 180, 't')
+    const xExpr        = keyframeExpr(kfs, (t) => t.x * W,    't')
+    const yExpr        = keyframeExpr(kfs, (t) => t.y * H,    't')
+    const opacityExpr  = keyframeExpr(kfs, (t) => t.opacity,  't')
+
+    const isConstExpr = (e: string): boolean => !e.includes('(')
+
+    const firstT = kfs[0].transform
+    const constScale    = firstT.scale
+    const constRotRad   = firstT.rotation * Math.PI / 180
+    const constX        = firstT.x
+    const constY        = firstT.y
+    const constOpacity  = firstT.opacity
+
+    // 6a.
+    fragment += `,format=rgba`
+
+    // 6b. scale
+    if (isConstExpr(scaleExpr)) {
+      if (Math.abs(constScale - 1) > 1e-5) {
+        fragment += `,scale=iw*${constScale.toFixed(6)}:ih*${constScale.toFixed(6)}`
+        if (constScale > 1) {
+          fragment += `,crop=${W}:${H}`
+        } else {
+          fragment += `,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0`
+        }
+      }
+    } else {
+      fragment += `,zoompan=z='${scaleExpr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=${fps}`
+    }
+
+    // 6c. rotation
+    if (isConstExpr(rotExpr)) {
+      if (Math.abs(constRotRad) > 1e-5) {
+        fragment += `,rotate=${constRotRad.toFixed(6)}:c=black@0:ow=${W}:oh=${H}`
+      }
+    } else {
+      fragment += `,rotate=a='${rotExpr}':c=black@0:ow=${W}:oh=${H}`
+    }
+
+    // 6d. translation
+    if (isConstExpr(xExpr) && isConstExpr(yExpr)) {
+      if (Math.abs(constX) > 1e-6 || Math.abs(constY) > 1e-6) {
+        const xPx = Math.round(constX * W)
+        const yPx = Math.round(constY * H)
+        fragment += `,pad=${W}:${H}:${xPx}+(ow-iw)/2:${yPx}+(oh-ih)/2:color=black@0`
+        fragment += `,crop=${W}:${H}:0:0`
+      }
+    } else {
+      const splitLbl   = `xt_split_${labelSuffix}`
+      const bgLbl      = `xt_bg_${labelSuffix}`
+      const contentLbl = `xt_content_${labelSuffix}`
+      const overlayX = `${xExpr}+(${W}-iw)/2`
+      const overlayY = `${yExpr}+(${H}-ih)/2`
+      fragment += `,split=2[${splitLbl}_bg][${splitLbl}_fg]`
+      fragment += `;[${splitLbl}_bg]pad=${W}:${H}:0:0:color=black@0[${bgLbl}]`
+      fragment += `;[${bgLbl}][${splitLbl}_fg]overlay=x='${overlayX}':y='${overlayY}'[${contentLbl}]`
+      fragment += `;[${contentLbl}]null`
+    }
+
+    // 6e. opacity
+    if (isConstExpr(opacityExpr)) {
+      if (Math.abs(constOpacity - 1) > 1e-5) {
+        fragment += `,colorchannelmixer=aa=${constOpacity.toFixed(6)}`
+      }
+    } else {
+      fragment += `,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${opacityExpr}*alpha(X,Y)'`
+    }
+
+  } else {
+    // -----------------------------------------------------------------------
+    // Phase 3 static sub-chain — BYTE-IDENTICAL to the inline block.
+    // -----------------------------------------------------------------------
+    const rawXform = getClipTransform(clip)
+    const clampField = (v: number, lo: number, hi: number): number =>
+      Math.min(hi, Math.max(lo, v))
+    const xform = {
+      x: clampField(rawXform.x, MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
+      y: clampField(rawXform.y, MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
+      scale: clampField(rawXform.scale, MIN_TRANSFORM_SCALE, MAX_TRANSFORM_SCALE),
+      rotation: clampField(
+        rawXform.rotation,
+        MIN_TRANSFORM_ROTATION,
+        MAX_TRANSFORM_ROTATION
+      ),
+      opacity: clampField(rawXform.opacity, 0, 1)
+    }
+    if (!isIdentityTransform(xform)) {
+      const { x, y, scale, rotation, opacity } = xform
+      // 6a.
+      fragment += `,format=rgba`
+
+      // 6b.
+      if (Math.abs(scale - 1) > 1e-5) {
+        fragment += `,scale=iw*${scale.toFixed(6)}:ih*${scale.toFixed(6)}`
+        if (scale > 1) {
+          fragment += `,crop=${W}:${H}`
+        } else {
+          fragment += `,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0`
+        }
+      }
+
+      // 6c.
+      if (Math.abs(rotation) > 1e-5) {
+        const rad = (rotation * Math.PI) / 180
+        fragment += `,rotate=${rad.toFixed(6)}:c=black@0:ow=${W}:oh=${H}`
+      }
+
+      // 6d.
+      if (Math.abs(x) > 1e-6 || Math.abs(y) > 1e-6) {
+        const xPx = Math.round(x * W)
+        const yPx = Math.round(y * H)
+        fragment += `,pad=${W}:${H}:${xPx}+(ow-iw)/2:${yPx}+(oh-ih)/2:color=black@0`
+        fragment += `,crop=${W}:${H}:0:0`
+      }
+
+      // 6e.
+      if (Math.abs(opacity - 1) > 1e-5) {
+        fragment += `,colorchannelmixer=aa=${opacity.toFixed(6)}`
+      }
+    }
+  }
+
+  return fragment
+}
+
 /**
  * Build the per-clip video filter chain (excluding the xfade join).
  *
@@ -729,6 +1160,9 @@ function buildVideoSegmentChain(
   //    this segment after we reset PTS, segment_t = timeline_t - clip.startMs).
   //    Captions handled by the PNG-overlay path (captionPngMap) are skipped
   //    here — they'll be composited onto the stitched final video.
+  //    §3.5: this drawtext fallback path does NOT animate — captions render
+  //    statically here regardless of clip.animation. Animation is exclusive
+  //    to the PNG-overlay path in stitchCaptions.
   //
   //    NOTE: drawtext captions are applied BEFORE the transform sub-chain so
   //    they move and scale with the clip. This matches the mental model that
@@ -775,247 +1209,12 @@ function buildVideoSegmentChain(
     }
   }
 
-  // 6. Transform sub-chain.
-  //
-  //    CRITICAL INVARIANT (spec 3.1): a clip with !hasTransformKeyframes(clip)
-  //    MUST produce a BYTE-IDENTICAL filter graph to the pre-Phase-3.5 code.
-  //    The two branches below are structurally exclusive — the keyframe path
-  //    is entered ONLY when hasTransformKeyframes returns true; otherwise the
-  //    original Phase 3 static code runs COMPLETELY UNCHANGED.
-
-  if (hasTransformKeyframes(seg.clip)) {
-    // -----------------------------------------------------------------------
-    // Phase 3.5 animated sub-chain.
-    //
-    // The keyframe list is clamped main-side before building expressions.
-    // The project arrives over IPC unvalidated; renderer clamping is not
-    // trusted (a finite-but-extreme value would OOM ffmpeg). Mirror exactly
-    // the same MIN/MAX constants used by the Phase 3 static path.
-    //
-    // Segment-local time: PTS was reset (setpts=PTS-STARTPTS) and optionally
-    // divided by speed (setpts=PTS/speed). After those two setpts filters the
-    // filter-local `t` (or `time` for zoompan) runs 0..segDurSec on the
-    // OUTPUT timeline. Keyframe `atMs` is CLIP-RELATIVE ms — dividing by 1000
-    // gives the matching local seconds directly, with no speed factor needed.
-    // -----------------------------------------------------------------------
-    const clampField = (v: number, lo: number, hi: number): number =>
-      Math.min(hi, Math.max(lo, v))
-
-    // Re-clamp every keyframe's transform. Build a clean sorted array.
-    const rawKfs = (seg.clip.transformKeyframes as TransformKeyframe[])
-    const kfs: TransformKeyframe[] = rawKfs
-      .slice()
-      .sort((a, b) => a.atMs - b.atMs)
-      .map((kf) => ({
-        // atMs is untrusted (IPC) — coerce non-finite/negative so a corrupt
-        // project JSON can't put "NaN"/"Infinity" into the ffmpeg expression
-        // via secs=atMs/1000. Valid renderer atMs (>=0, finite) passes through.
-        atMs: Number.isFinite(kf.atMs) ? Math.max(0, kf.atMs) : 0,
-        transform: {
-          x: clampField(Number.isFinite(kf.transform.x) ? kf.transform.x : 0, MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
-          y: clampField(Number.isFinite(kf.transform.y) ? kf.transform.y : 0, MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
-          scale: clampField(Number.isFinite(kf.transform.scale) ? kf.transform.scale : 1, MIN_TRANSFORM_SCALE, MAX_TRANSFORM_SCALE),
-          rotation: clampField(Number.isFinite(kf.transform.rotation) ? kf.transform.rotation : 0, MIN_TRANSFORM_ROTATION, MAX_TRANSFORM_ROTATION),
-          opacity: clampField(Number.isFinite(kf.transform.opacity) ? kf.transform.opacity : 1, 0, 1)
-        }
-      }))
-
-    // Per-property constant-skip: compute the expression and check whether it
-    // resolved to a bare constant (all values equal → keyframeExpr returns
-    // a number string, no `if(` present). We use this to decide whether to
-    // emit the animated filter or fall back to the cheaper static snippet.
-    const scaleExpr    = keyframeExpr(kfs, (t) => t.scale,    'time')
-    const rotExpr      = keyframeExpr(kfs, (t) => t.rotation * Math.PI / 180, 't')
-    const xExpr        = keyframeExpr(kfs, (t) => t.x * W,    't')
-    const yExpr        = keyframeExpr(kfs, (t) => t.y * H,    't')
-    const opacityExpr  = keyframeExpr(kfs, (t) => t.opacity,  't')
-
-    const isConstExpr = (e: string): boolean => !e.includes('(')
-
-    // Constant fallback values (first keyframe, already clamped).
-    const firstT = kfs[0].transform
-    const constScale    = firstT.scale
-    const constRotRad   = firstT.rotation * Math.PI / 180
-    const constX        = firstT.x
-    const constY        = firstT.y
-    const constOpacity  = firstT.opacity
-
-    // 6a. format=rgba — always emitted for the animated path.
-    fragment += `,format=rgba`
-
-    // 6b. SCALE (animated via zoompan, or static snippet when constant).
-    //
-    // zoompan is used for animated scale because it is the only ffmpeg filter
-    // that evaluates a per-frame zoom expression while keeping output dimensions
-    // fixed. It uses variable name `time` (seconds).
-    //
-    // LIMITATION: zoompan internally quantises zoom to float precision on each
-    // output frame; very slow zooms (< ~0.001 zoom-unit/frame) may exhibit
-    // integer-step banding on some ffmpeg builds. This is a known zoompan
-    // limitation and is documented here for the e2e tester.
-    //
-    // d=1 = one output frame per input frame (pass-through cadence).
-    if (isConstExpr(scaleExpr)) {
-      // Constant scale — Phase 3 static snippet.
-      if (Math.abs(constScale - 1) > 1e-5) {
-        fragment += `,scale=iw*${constScale.toFixed(6)}:ih*${constScale.toFixed(6)}`
-        if (constScale > 1) {
-          fragment += `,crop=${W}:${H}`
-        } else {
-          fragment += `,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0`
-        }
-      }
-    } else {
-      // Animated scale via zoompan.
-      // zoompan centres the zoom on (iw/2, ih/2) by default when
-      // x='iw/2-(iw/zoom/2)' y='ih/2-(ih/zoom/2)'.
-      fragment += `,zoompan=z='${scaleExpr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=${preset.fps}`
-    }
-
-    // 6c. ROTATION (animated via rotate filter; uses variable `t`).
-    if (isConstExpr(rotExpr)) {
-      // Constant rotation — Phase 3 static snippet.
-      if (Math.abs(constRotRad) > 1e-5) {
-        fragment += `,rotate=${constRotRad.toFixed(6)}:c=black@0:ow=${W}:oh=${H}`
-      }
-    } else {
-      fragment += `,rotate=a='${rotExpr}':c=black@0:ow=${W}:oh=${H}`
-    }
-
-    // 6d. TRANSLATION (animated).
-    //
-    // TRANSLATE PATH CHOSEN: split + overlay (NOT pad).
-    //
-    // Rationale: ffmpeg's `pad` filter evaluates its x/y expressions at
-    // filter-graph initialisation time (once), NOT per frame, so passing a
-    // `t`-expression to pad produces a static offset equal to t=0. This is a
-    // long-standing ffmpeg limitation that applies to all bundled builds.
-    // The `overlay` filter evaluates x/y per frame and is universally
-    // supported. We therefore route animated translation through:
-    //   split=2[base][content] →
-    //   [base]pad=W:H:0:0:black@0[bg] →
-    //   [bg][content]overlay=x='<xExpr>+(W-iw)/2':y='<yExpr>+(H-ih)/2'
-    //
-    // The centre-origin convention (x/y as fraction of canvas) is preserved:
-    //   xPxExpr = keyframeExpr(t => t.x * W) + (W-iw)/2
-    //   yPxExpr = keyframeExpr(t => t.y * H) + (H-ih)/2
-    //
-    // For constant translation we still use the Phase 3 pad+crop snippet to
-    // avoid the split+overlay overhead on static clips.
-    if (isConstExpr(xExpr) && isConstExpr(yExpr)) {
-      // Constant translation — Phase 3 static snippet.
-      if (Math.abs(constX) > 1e-6 || Math.abs(constY) > 1e-6) {
-        const xPx = Math.round(constX * W)
-        const yPx = Math.round(constY * H)
-        fragment += `,pad=${W}:${H}:${xPx}+(ow-iw)/2:${yPx}+(oh-ih)/2:color=black@0`
-        fragment += `,crop=${W}:${H}:0:0`
-      }
-    } else {
-      // Animated translation via split + overlay.
-      const splitLbl  = `xt_split_${seg.inputIdx}`
-      const bgLbl     = `xt_bg_${seg.inputIdx}`
-      const contentLbl = `xt_content_${seg.inputIdx}`
-      // End current chain, split into bg + content, build transparent bg,
-      // then overlay with animated position.
-      const overlayX = `${xExpr}+(${W}-iw)/2`
-      const overlayY = `${yExpr}+(${H}-ih)/2`
-      fragment += `,split=2[${splitLbl}_bg][${splitLbl}_fg]`
-      // Append sub-fragments as separate filter graph statements.
-      fragment += `;[${splitLbl}_bg]pad=${W}:${H}:0:0:color=black@0[${bgLbl}]`
-      fragment += `;[${bgLbl}][${splitLbl}_fg]overlay=x='${overlayX}':y='${overlayY}'[${contentLbl}]`
-      // Swap current chain label to contentLbl so the final `[${out}]` suffix
-      // attaches correctly below.  We do this by closing the current pad of
-      // the chain and continuing from contentLbl.
-      fragment += `;[${contentLbl}]null`
-    }
-
-    // 6e. OPACITY (animated via geq; uses variable `t`).
-    //
-    // geq evaluates per pixel per frame — it is the most CPU-intensive filter
-    // in this chain. The constant-skip optimisation is critical: a clip where
-    // opacity never changes must NOT emit geq. A constant non-1 opacity uses
-    // the cheaper colorchannelmixer static snippet.
-    if (isConstExpr(opacityExpr)) {
-      // Constant opacity — Phase 3 static snippet.
-      if (Math.abs(constOpacity - 1) > 1e-5) {
-        fragment += `,colorchannelmixer=aa=${constOpacity.toFixed(6)}`
-      }
-    } else {
-      // Animated opacity via geq (passes through R/G/B unchanged, scales A).
-      fragment += `,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${opacityExpr}*alpha(X,Y)'`
-    }
-
-  } else {
-    // -----------------------------------------------------------------------
-    // Phase 3 static step-6 — UNCHANGED from pre-Phase-3.5.
-    // This block must remain byte-for-byte identical to the original so that
-    // regression test (11) (concat=n=2, no eof_action=pass) and all Phase 1/2
-    // tests continue to pass.
-    // -----------------------------------------------------------------------
-
-    // 6. Transform sub-chain — only when the clip has a non-identity transform.
-    //    ALWAYS use getClipTransform() — never read clip.transform directly.
-    //    Gated by isIdentityTransform so legacy/unmodified clips have zero
-    //    overhead and single-track identity graphs remain byte-identical.
-    //    getClipTransform coerces non-finite values to identity; we ALSO
-    //    range-clamp here because the `project` arg arrives over IPC unvalidated
-    //    — the main process must not trust the renderer to have clamped (a
-    //    finite-but-extreme scale would otherwise OOM ffmpeg). Same MIN/MAX
-    //    constants as the renderer store's setClipTransform clamp.
-    const rawXform = getClipTransform(seg.clip)
-    const clampField = (v: number, lo: number, hi: number): number =>
-      Math.min(hi, Math.max(lo, v))
-    const xform = {
-      x: clampField(rawXform.x, MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
-      y: clampField(rawXform.y, MIN_TRANSFORM_OFFSET, MAX_TRANSFORM_OFFSET),
-      scale: clampField(rawXform.scale, MIN_TRANSFORM_SCALE, MAX_TRANSFORM_SCALE),
-      rotation: clampField(
-        rawXform.rotation,
-        MIN_TRANSFORM_ROTATION,
-        MAX_TRANSFORM_ROTATION
-      ),
-      opacity: clampField(rawXform.opacity, 0, 1)
-    }
-    if (!isIdentityTransform(xform)) {
-      const { x, y, scale, rotation, opacity } = xform
-      // 6a. Convert to RGBA so rotation corners and opacity blend correctly.
-      fragment += `,format=rgba`
-
-      // 6b. Scale: scale then crop/pad back to canvas size.
-      if (Math.abs(scale - 1) > 1e-5) {
-        fragment += `,scale=iw*${scale.toFixed(6)}:ih*${scale.toFixed(6)}`
-        if (scale > 1) {
-          // Scaled beyond canvas — crop centred to canvas dimensions.
-          fragment += `,crop=${W}:${H}`
-        } else {
-          // Scaled below canvas — pad with transparent gutters.
-          fragment += `,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0`
-        }
-      }
-
-      // 6c. Rotation (degrees → radians; transparent fill for corners).
-      if (Math.abs(rotation) > 1e-5) {
-        const rad = (rotation * Math.PI) / 180
-        fragment += `,rotate=${rad.toFixed(6)}:c=black@0:ow=${W}:oh=${H}`
-      }
-
-      // 6d. Translation: x/y are fractions of canvas dimensions, centre-origin.
-      //     We bake the offset into a pad filter then crop to clamp back to canvas.
-      if (Math.abs(x) > 1e-6 || Math.abs(y) > 1e-6) {
-        const xPx = Math.round(x * W)
-        const yPx = Math.round(y * H)
-        // pad moves the frame right/down by the offset; (ow-iw)/2 centres first.
-        fragment += `,pad=${W}:${H}:${xPx}+(ow-iw)/2:${yPx}+(oh-ih)/2:color=black@0`
-        // Crop back to canvas size from origin to clamp.
-        fragment += `,crop=${W}:${H}:0:0`
-      }
-
-      // 6e. Opacity.
-      if (Math.abs(opacity - 1) > 1e-5) {
-        fragment += `,colorchannelmixer=aa=${opacity.toFixed(6)}`
-      }
-    }
-  }
+  // 6. Transform sub-chain — delegated to the shared helper so overlay clips
+  //    can reuse EXACTLY the same logic. For media clips labelSuffix =
+  //    String(seg.inputIdx), which reproduces the BYTE-IDENTICAL intermediate
+  //    pad names (`xt_split_N`, `xt_bg_N`, `xt_content_N`) that the original
+  //    inline code produced. fps is passed through so zoompan's fps= matches.
+  fragment += buildTransformSubchain(seg.clip, W, H, String(seg.inputIdx), preset.fps)
 
   fragment += `[${out}]`
   return { out, fragment }
@@ -1261,6 +1460,75 @@ function stitchVideo(
   return { graph: allFragments.join(';'), finalLabel }
 }
 
+// ---------------------------------------------------------------------------
+// Phase 3.9 — caption animation helpers.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a piecewise Y-offset expression (in canvas pixels) for slide-up /
+ * slide-down caption animations. The expression returns 0 (at-rest position)
+ * outside the animation windows and linearly interpolates within them.
+ *
+ * `D` = slide travel distance in pixels = round(CAPTION_SLIDE_FRAC * H).
+ * slide-up entrance: y goes from +D → 0 over [startSec, startSec+inSec].
+ * slide-up exit:     y goes from 0 → -D over [endSec-outSec, endSec].
+ * slide-down mirrors sign for both entrance and exit.
+ *
+ * The expression is consumed by the overlay filter's `y` attribute (which is
+ * evaluated in filter-global time `t`).
+ */
+function captionSlideYExpr(
+  startSec: number,
+  endSec: number,
+  inSec: number,
+  outSec: number,
+  H: number,
+  entrance: 'slide-up' | 'slide-down' | 'none',
+  exit: 'slide-up' | 'slide-down' | 'none'
+): string {
+  const D = Math.round(CAPTION_SLIDE_FRAC * H)
+
+  // Determine per-direction entrance/exit displacements.
+  // slide-up entrance: caption comes FROM below (+D) → 0.
+  // slide-up exit:     caption goes TO above (0 → -D).
+  // slide-down entrance: caption comes FROM above (-D) → 0.
+  // slide-down exit:     caption goes TO below (0 → +D).
+  const eD = entrance === 'slide-up' ? D : entrance === 'slide-down' ? -D : 0
+  const xD = exit === 'slide-up' ? -D : exit === 'slide-down' ? D : 0
+
+  // Build nested if() expression:
+  // if t < startSec+inSec (entrance window): eD + (0-eD)*(t-startSec)/inSec
+  // else if t >= endSec-outSec (exit window): (xD)*(t-(endSec-outSec))/outSec
+  // else: 0
+
+  const hasEntrance = entrance !== 'none' && inSec > 1e-4
+  const hasExit = exit !== 'none' && outSec > 1e-4
+
+  if (!hasEntrance && !hasExit) return '0'
+
+  // Build right-to-left: start with hold-last (0 after all windows).
+  let expr = '0'
+
+  if (hasExit) {
+    const exitStart = (endSec - outSec).toFixed(4)
+    // xD * (t - exitStart) / outSec
+    const exitInterp = `${xD.toFixed(2)}*(t-${exitStart})/${outSec.toFixed(4)}`
+    expr = `if(gte(t,${exitStart}),${exitInterp},${expr})`
+  }
+
+  if (hasEntrance) {
+    const entranceEnd = (startSec + inSec).toFixed(4)
+    const entranceStart = startSec.toFixed(4)
+    // eD + (0 - eD) * (t - startSec) / inSec  = eD * (1 - (t-startSec)/inSec)
+    const entranceInterp = `${eD.toFixed(2)}*(1-(t-${entranceStart})/${inSec.toFixed(4)})`
+    expr = `if(lt(t,${entranceEnd}),${entranceInterp},${expr})`
+    // Hold entrance start value before the window begins.
+    expr = `if(lt(t,${entranceStart}),${eD.toFixed(2)},${expr})`
+  }
+
+  return expr
+}
+
 /**
  * Append a chain of `overlay` filters that composite caption PNGs onto the
  * stitched video. Each caption is sourced from its own ffmpeg input (`-i
@@ -1269,31 +1537,239 @@ function stitchVideo(
  * The PNG is full-canvas — caption position was baked into the SVG during
  * rendering, so the overlay simply pastes at (0,0).
  *
+ * Phase 3.9: when a caption has a non-null animation, a per-caption PNG
+ * sub-chain is emitted (`[N:v]<animChain>[capanim_X]`) before the overlay
+ * compositor. Captions with null animation (the majority) emit the EXACT same
+ * single-fragment overlay as before (byte-identical invariant §3.1/3.6).
+ *
  * Returns the new final label + filter fragments. When the map is empty,
  * returns the input label unchanged (no-op chain).
  */
 function stitchCaptions(
   inputVideoLabel: string,
-  captionPngMap: CaptionPngMap
+  captionPngMap: CaptionPngMap,
+  preset: MainPreset
 ): { graph: string; finalLabel: string } {
   if (captionPngMap.size === 0) {
     return { graph: '', finalLabel: inputVideoLabel }
   }
+  const W = preset.width
+  const H = preset.height
   const fragments: string[] = []
   let prevLabel = inputVideoLabel
-  // Sort caption inputs by inputIdx for deterministic graph output (helps
-  // diffing in last-export-cmd.txt and matches the order they were added to
-  // the inputs[] array).
+
+  // Flatten captions → steps in inputIdx order for deterministic graph output.
+  // Each flat entry carries everything stitchCaptions needs to emit one overlay op.
+  interface FlatEntry {
+    step: CaptionStep
+    animation: CaptionAnimation | null
+    capStartMs: number
+    capEndMs: number
+    inSec: number
+    outSec: number
+    stepIndex: number
+    stepCount: number
+  }
+  const flatEntries: FlatEntry[] = []
+  // Sort by top-level cap.inputIdx (= first step's inputIdx) for determinism.
   const ordered = Array.from(captionPngMap.values()).sort(
     (a, b) => a.inputIdx - b.inputIdx
   )
+  for (const cap of ordered) {
+    const inSec = cap.animInMs / 1000
+    const outSec = cap.animOutMs / 1000
+    for (let si = 0; si < cap.steps.length; si++) {
+      flatEntries.push({
+        step: cap.steps[si],
+        animation: cap.animation,
+        capStartMs: cap.startMs,
+        capEndMs: cap.endMs,
+        inSec,
+        outSec,
+        stepIndex: si,
+        stepCount: cap.steps.length
+      })
+    }
+  }
+
+  const totalOps = flatEntries.length
+  let opIdx = 0
+
+  for (const entry of flatEntries) {
+    const { step, animation, capStartMs, capEndMs, inSec, outSec, stepIndex, stepCount } = entry
+    const startSec = capStartMs / 1000
+    const endSec = capEndMs / 1000
+    const stepStartSec = step.visStartMs / 1000
+    const stepEndSec = step.visEndMs / 1000
+    const newLabel = opIdx === totalOps - 1 ? 'vcaptioned' : `vcap${opIdx}`
+
+    if (animation === null) {
+      // =======================================================================
+      // INVARIANT §3.1/3.6: null animation → BYTE-IDENTICAL legacy fragment.
+      // A null-animation caption has exactly one step and its vis window equals
+      // the caption's [startMs, endMs]. The overlay fragment is character-for-
+      // character identical to the pre-Phase-3.9 implementation.
+      // =======================================================================
+      fragments.push(
+        `[${prevLabel}][${step.inputIdx}:v]overlay=0:0:enable='between(t,${stepStartSec.toFixed(3)},${stepEndSec.toFixed(3)})'[${newLabel}]`
+      )
+    } else {
+      // =======================================================================
+      // Phase 3.9: animated caption — emit a per-step sub-chain then overlay.
+      // =======================================================================
+      const animLabel = `capanim_${step.inputIdx}`
+      const chainParts: string[] = []
+
+      // format=rgba is required first so the alpha channel exists for fade/pop.
+      chainParts.push('format=rgba')
+
+      const entrance = animation.entrance
+      const exit = animation.exit
+      // Exit animation applies ONLY to the FINAL step of a caption.
+      const isFinalStep = stepIndex === stepCount - 1
+      const effectiveExit: typeof exit = isFinalStep ? exit : 'none'
+
+      // --- POP: zoompan from CAPTION_POP_START_SCALE → 1 over entrance window,
+      //          centred on the PNG's own midpoint (PNG is full-canvas). ---
+      if (entrance === 'pop' && inSec > 1e-4) {
+        const entranceEnd = (startSec + inSec).toFixed(4)
+        const scaleExpr =
+          `if(lt(t,${entranceEnd}),` +
+          `${CAPTION_POP_START_SCALE.toFixed(4)}+(1-${CAPTION_POP_START_SCALE.toFixed(4)})*(t-${startSec.toFixed(4)})/${inSec.toFixed(4)},` +
+          `1)`
+        chainParts.push(
+          `zoompan=z='${scaleExpr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=${preset.fps}`
+        )
+        // Pop also cross-fades in over the same entrance window.
+        chainParts.push(`fade=t=in:st=${startSec.toFixed(4)}:d=${inSec.toFixed(4)}:alpha=1`)
+      }
+
+      // --- FADE entrance ---
+      if (entrance === 'fade' && inSec > 1e-4) {
+        chainParts.push(`fade=t=in:st=${startSec.toFixed(4)}:d=${inSec.toFixed(4)}:alpha=1`)
+      }
+
+      // --- FADE exit (final step only, gate already applied via effectiveExit) ---
+      if (effectiveExit === 'fade' && outSec > 1e-4) {
+        chainParts.push(`fade=t=out:st=${(endSec - outSec).toFixed(4)}:d=${outSec.toFixed(4)}:alpha=1`)
+      }
+
+      // Emit the per-step sub-chain that transforms the PNG input.
+      fragments.push(`[${step.inputIdx}:v]${chainParts.join(',')}[${animLabel}]`)
+
+      // --- SLIDE overlay: y carries the piecewise travel expression.
+      //     Slide entrance and/or slide exit govern the y offset.
+      //     Non-slide animations use y=0. ---
+      const isSlideEntrance = entrance === 'slide-up' || entrance === 'slide-down'
+      const isSlideExit = effectiveExit === 'slide-up' || effectiveExit === 'slide-down'
+
+      if (isSlideEntrance || isSlideExit) {
+        const yExpr = captionSlideYExpr(
+          startSec,
+          endSec,
+          inSec,
+          outSec,
+          H,
+          isSlideEntrance ? (entrance as 'slide-up' | 'slide-down') : 'none',
+          isSlideExit ? (effectiveExit as 'slide-up' | 'slide-down') : 'none'
+        )
+        fragments.push(
+          `[${prevLabel}][${animLabel}]overlay=0:'${yExpr}':enable='between(t,${stepStartSec.toFixed(3)},${stepEndSec.toFixed(3)})'[${newLabel}]`
+        )
+      } else {
+        // Fade / pop / typewriter step: compositor pastes at (0,0).
+        fragments.push(
+          `[${prevLabel}][${animLabel}]overlay=0:0:enable='between(t,${stepStartSec.toFixed(3)},${stepEndSec.toFixed(3)})'[${newLabel}]`
+        )
+      }
+    }
+
+    prevLabel = newLabel
+    opIdx++
+  }
+
+  return { graph: fragments.join(';'), finalLabel: prevLabel }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.8 — overlay helpers.
+// ---------------------------------------------------------------------------
+
+/**
+ * Collect all OverlayClips from all overlay tracks in declaration order.
+ * Returns an empty array when no overlay tracks / clips exist — the export
+ * path then emits zero overlay inputs and an identical filter graph to
+ * pre-Phase-3.8, satisfying the byte-identical invariant.
+ */
+function collectOverlays(project: Project): OverlayClip[] {
+  const result: OverlayClip[] = []
+  for (const t of project.tracks) {
+    if (t.kind !== 'overlay') continue
+    for (const c of t.clips) {
+      if (isOverlayClip(c)) result.push(c)
+    }
+  }
+  return result
+}
+
+/**
+ * Composite overlay PNGs onto the stitched video, one `overlay` filter per
+ * overlay clip. Modeled byte-for-byte on `stitchCaptions`.
+ *
+ * Each overlay was assigned its own ffmpeg `-loop 1 -t <endSec> -i <png>`
+ * input. Position / scale / rotation / opacity are ALREADY baked into the
+ * per-overlay transform sub-chain that runs before this stitch, so the
+ * compositor uses `overlay=0:0` (origin is the canvas top-left, and the
+ * transparent PNG was composited onto a full-canvas RGBA frame).
+ *
+ * Empty map → early return, preserving the input video label unchanged (the
+ * caller receives the same label it passed in — byte-identical to the
+ * pre-3.8 path).
+ */
+function stitchOverlays(
+  inputVideoLabel: string,
+  overlayPngMap: OverlayPngMap,
+  preset: MainPreset
+): { graph: string; finalLabel: string } {
+  if (overlayPngMap.size === 0) {
+    return { graph: '', finalLabel: inputVideoLabel }
+  }
+  const W = preset.width
+  const H = preset.height
+  const fragments: string[] = []
+  let prevLabel = inputVideoLabel
+  // Sort by inputIdx for deterministic graph output.
+  const ordered = Array.from(overlayPngMap.values()).sort(
+    (a, b) => a.inputIdx - b.inputIdx
+  )
   for (let i = 0; i < ordered.length; i++) {
-    const cap = ordered[i]
-    const startSec = (cap.startMs / 1000).toFixed(3)
-    const endSec = (cap.endMs / 1000).toFixed(3)
-    const newLabel = i === ordered.length - 1 ? 'vcaptioned' : `vcap${i}`
+    const ov = ordered[i]
+    const startSec = (ov.startMs / 1000).toFixed(3)
+    const endSec = (ov.endMs / 1000).toFixed(3)
+    const newLabel = i === ordered.length - 1 ? 'voverlaid' : `vov${i}`
+
+    // Per-overlay filter chain on the PNG input stream:
+    //   scale to pixel size → format=rgba → transform sub-chain.
+    // labelSuffix is based on clip.id slice to be unique and never collide
+    // with media-clip labels (which use numeric inputIdx strings).
+    const ovLabelSuffix = `ov_${ov.clip.id.slice(-8)}`
+    const transformFragment = buildTransformSubchain(
+      ov.clip,
+      W,
+      H,
+      ovLabelSuffix,
+      preset.fps
+    )
+    // The per-overlay chain: scale to base pixel size → format=rgba → transform.
+    // After the transform the frame is full-canvas (W×H) RGBA, so overlay=0:0
+    // pastes it correctly.
+    const ovChain = `scale=${ov.pxW}:${ov.pxH},format=rgba${transformFragment}`
+    // Intermediate label for the transformed overlay stream.
+    const ovStreamLabel = `ovs_${ov.clip.id.slice(-8)}`
+
     fragments.push(
-      `[${prevLabel}][${cap.inputIdx}:v]overlay=0:0:enable='between(t,${startSec},${endSec})'[${newLabel}]`
+      `[${ov.inputIdx}:v]${ovChain}[${ovStreamLabel}]`,
+      `[${prevLabel}][${ovStreamLabel}]overlay=0:0:enable='between(t,${startSec},${endSec})'[${newLabel}]`
     )
     prevLabel = newLabel
   }
@@ -1441,6 +1917,15 @@ function buildExportPlan(
      * IPC omits this map (drawtext fallback path runs).
      */
     captionPngs?: CaptionPngMap
+    /**
+     * Phase 3.8 — pre-resolved overlay PNGs keyed by `overlayClip.id`. Each
+     * entry contributes a `-loop 1 -t <endSec> -i <pngPath>` input followed
+     * by per-overlay filter chains + an `overlay` filter (see
+     * `stitchOverlays`). Input indices MUST start at
+     * `probedInputs.length + captionPngs.size`. Absent → no overlay inputs,
+     * the filter graph is byte-identical to pre-Phase-3.8.
+     */
+    overlayPngs?: OverlayPngMap
   } = {}
 ): ExportPlan {
   const preset = PRESETS[presetKey]
@@ -1453,18 +1938,29 @@ function buildExportPlan(
 
   const xfadeAvailable = options.xfadeAvailable ?? true
   const captionPngs = options.captionPngs
+  const overlayPngs = options.overlayPngs
   const { graph: videoGraph, finalLabel: stitchedVideoLabel } = stitchVideo(
     videoTrackLayers,
     preset,
     xfadeAvailable,
     captionPngs
   )
+
+  // Phase 3.8: composite overlay PNGs BELOW captions (spec §3.3 pipeline order:
+  // stitchVideo → stitchOverlays → stitchCaptions). No-op when overlayPngs is
+  // absent / empty — the label passes through unchanged.
+  const { graph: overlayGraph, finalLabel: afterOverlayLabel } = overlayPngs && overlayPngs.size > 0
+    ? stitchOverlays(stitchedVideoLabel, overlayPngs, preset)
+    : { graph: '', finalLabel: stitchedVideoLabel }
+
   // Composite caption PNGs onto the stitched video. No-op when captionPngs
   // is undefined / empty — in that case all captions used the drawtext path
   // and are already baked into per-segment frames.
+  // Phase 3.9: stitchCaptions receives preset so animation sub-chains can
+  // reference canvas W/H/fps for zoompan and slide distance computations.
   const { graph: captionGraph, finalLabel: videoLabel } = captionPngs
-    ? stitchCaptions(stitchedVideoLabel, captionPngs)
-    : { graph: '', finalLabel: stitchedVideoLabel }
+    ? stitchCaptions(afterOverlayLabel, captionPngs, preset)
+    : { graph: '', finalLabel: afterOverlayLabel }
   const inputsWithAudio = options.inputsWithAudio
   const inputHasAudio = inputsWithAudio
     ? (idx: number): boolean => inputsWithAudio.has(idx)
@@ -1479,6 +1975,7 @@ function buildExportPlan(
   // mobile players that expect both tracks.
   const filterFragments: string[] = []
   if (videoGraph) filterFragments.push(videoGraph)
+  if (overlayGraph) filterFragments.push(overlayGraph)
   if (captionGraph) filterFragments.push(captionGraph)
   if (audioGraph) filterFragments.push(audioGraph)
 
@@ -1518,14 +2015,32 @@ function buildExportPlan(
   // -t value just needs to be ≥ the caption's endMs to avoid stream EOF
   // before the overlay's last enabled frame. We use the caption's endSec to
   // keep things tight (a much larger value works too but wastes nothing).
-  if (captionPngs) {
-    // Sort by inputIdx so argv matches expected ordering.
-    const ordered = Array.from(captionPngs.values()).sort(
+  // Phase 3.8 — overlay PNG inputs. Must appear BEFORE caption PNG inputs in
+  // argv so that inputIdx assignment (overlays after media, captions after
+  // overlays) is consistent with the map construction in runExport.
+  if (overlayPngs && overlayPngs.size > 0) {
+    const ordered = Array.from(overlayPngs.values()).sort(
       (a, b) => a.inputIdx - b.inputIdx
     )
-    for (const cap of ordered) {
-      const durSec = Math.max(0.1, cap.endMs / 1000)
-      argv.push('-loop', '1', '-t', durSec.toFixed(3), '-i', cap.pngPath)
+    for (const ov of ordered) {
+      const durSec = Math.max(0.1, ov.endMs / 1000)
+      argv.push('-loop', '1', '-t', durSec.toFixed(3), '-i', ov.pngPath)
+    }
+  }
+  if (captionPngs) {
+    // Phase 3.9: iterate STEPS (not top-level caps), because typewriter captions
+    // contribute multiple inputs. Collect all steps across all captions, sort
+    // by inputIdx to guarantee argv order matches the assigned indices.
+    const allSteps: Array<{ inputIdx: number; pngPath: string; endMs: number }> = []
+    for (const cap of captionPngs.values()) {
+      for (const step of cap.steps) {
+        allSteps.push({ inputIdx: step.inputIdx, pngPath: step.pngPath, endMs: cap.endMs })
+      }
+    }
+    allSteps.sort((a, b) => a.inputIdx - b.inputIdx)
+    for (const s of allSteps) {
+      const durSec = Math.max(0.1, s.endMs / 1000)
+      argv.push('-loop', '1', '-t', durSec.toFixed(3), '-i', s.pngPath)
     }
   }
   argv.push('-filter_complex', filterGraph)
@@ -1719,19 +2234,88 @@ async function runExport(
         }
       }
       // Caption inputs follow media inputs. Walk in deterministic order.
+      // Phase 3.9: typewriter captions render N stepped PNGs (one per step);
+      // all other captions render a single PNG. Input indices are assigned
+      // consecutively across ALL steps of ALL captions.
       let nextInputIdx = probedInputs.length
       for (const cap of allCaptions) {
-        const result = await renderCaptionToFile(cap, canvasW, canvasH)
-        if (!result) continue // sharp unavailable / render error — drawtext fallback
-        // Allow the rendered PNG path so ffmpeg's security layer accepts it.
-        allowPath(result.pngPath)
-        captionPngs.set(cap.id, {
-          pngPath: result.pngPath,
-          inputIdx: nextInputIdx++,
-          startMs: cap.startMs,
-          endMs: cap.endMs,
-          cached: result.cached
-        })
+        const anim = getCaptionAnimation(cap)
+        const { inMs: animInMs, outMs: animOutMs } = getCaptionAnimWindows(cap)
+        const isTypewriter = anim !== null && anim.entrance === 'typewriter'
+
+        if (isTypewriter) {
+          // ---------------------------------------------------------------
+          // TYPEWRITER: render N stepped PNGs, each with a truncated spans
+          // array (spans.slice(0, k)). Step k is visible on:
+          //   [startMs + k*inMs/N, startMs + (k+1)*inMs/N)
+          // The final step extends through endMs.
+          // N = min(spans.length, MAX_CAPTION_TYPEWRITER_STEPS).
+          // For >12 spans, group ceil(len/N) spans per step.
+          // ---------------------------------------------------------------
+          const spanCount = cap.spans.length
+          if (spanCount === 0) continue // no spans — skip
+          const N = Math.min(spanCount, MAX_CAPTION_TYPEWRITER_STEPS)
+          const groupSize = Math.ceil(spanCount / N)
+          const steps: CaptionStep[] = []
+          let allOk = true
+
+          for (let k = 0; k < N; k++) {
+            const spanEnd = Math.min(spanCount, (k + 1) * groupSize)
+            const truncatedCap = { ...cap, spans: cap.spans.slice(0, spanEnd) }
+            const result = await renderCaptionToFile(truncatedCap, canvasW, canvasH)
+            if (!result) { allOk = false; break }
+            allowPath(result.pngPath)
+            const stepInputIdx = nextInputIdx++
+            // Step k: [startMs + k*inMs/N, startMs + (k+1)*inMs/N)
+            // Final step: extends to endMs.
+            const visStartMs = cap.startMs + Math.floor(k * animInMs / N)
+            const visEndMs = k === N - 1
+              ? cap.endMs
+              : cap.startMs + Math.floor((k + 1) * animInMs / N)
+            steps.push({ pngPath: result.pngPath, inputIdx: stepInputIdx, visStartMs, visEndMs })
+          }
+
+          if (!allOk || steps.length === 0) continue // fallback to drawtext
+
+          // Allow all step PNG paths (some may already be allowed above, but idempotent).
+          for (const s of steps) allowPath(s.pngPath)
+
+          captionPngs.set(cap.id, {
+            pngPath: steps[0].pngPath,
+            inputIdx: steps[0].inputIdx,
+            startMs: cap.startMs,
+            endMs: cap.endMs,
+            cached: false, // individual steps may be cached but we don't aggregate
+            animation: anim,
+            animInMs,
+            animOutMs,
+            steps
+          })
+        } else {
+          // ---------------------------------------------------------------
+          // Non-typewriter (including null animation): single PNG.
+          // ---------------------------------------------------------------
+          const result = await renderCaptionToFile(cap, canvasW, canvasH)
+          if (!result) continue // sharp unavailable / render error — drawtext fallback
+          allowPath(result.pngPath)
+          const stepInputIdx = nextInputIdx++
+          captionPngs.set(cap.id, {
+            pngPath: result.pngPath,
+            inputIdx: stepInputIdx,
+            startMs: cap.startMs,
+            endMs: cap.endMs,
+            cached: result.cached,
+            animation: anim,
+            animInMs,
+            animOutMs,
+            steps: [{
+              pngPath: result.pngPath,
+              inputIdx: stepInputIdx,
+              visStartMs: cap.startMs,
+              visEndMs: cap.endMs
+            }]
+          })
+        }
       }
     }
   } catch (err) {
@@ -1750,12 +2334,96 @@ async function runExport(
     )
   }
 
+  // Phase 3.8 — Pre-resolve overlay PNGs. Overlay inputs are placed AFTER
+  // media inputs and BEFORE caption inputs so captionPngs indices remain
+  // offset by (probedInputs.length + overlayPngs.size).
+  //
+  // Spec §3.5 invariant: if collectOverlays returns [] (no overlay tracks /
+  // clips), overlayPngs stays empty and the entire overlay code path is a
+  // no-op — the filter graph + argv are byte-identical to pre-Phase-3.8.
+  const overlayPngs: OverlayPngMap = new Map()
+  try {
+    const overlayPreset = PRESETS[options.presetKey]
+    if (overlayPreset) {
+      const canvasW = overlayPreset.width
+      const canvasH = overlayPreset.height
+      const allOverlays = collectOverlays(project)
+      // Overlay inputs follow media inputs directly; start index = media count.
+      let nextOverlayIdx = probedInputs.length
+      for (const ov of allOverlays) {
+        let pngPath: string | null = null
+        if (ov.source.type === 'image') {
+          // User image — use source.path directly; no rendering needed.
+          pngPath = ov.source.path
+          if (!pngPath || !existsSync(pngPath)) {
+            console.warn(`[export] overlay image not found: ${pngPath ?? '(null)'} — skipping`)
+            continue
+          }
+        } else if (ov.source.type === 'sticker') {
+          pngPath = resolveBundledStickerPath(ov.source.stickerId)
+          if (!pngPath) {
+            console.warn(`[export] bundled sticker not found: ${ov.source.stickerId} — skipping`)
+            continue
+          }
+        } else if (ov.source.type === 'shape') {
+          const { w: wFrac, h: hFrac } = getOverlayBaseSize(ov)
+          const pxW = Math.round(wFrac * canvasW)
+          const pxH = Math.round(hFrac * canvasH)
+          pngPath = await renderOverlayShapeToFile(ov.source.style, pxW, pxH)
+          if (!pngPath) {
+            // sharp unavailable or degenerate size — skip gracefully.
+            console.warn(`[export] shape overlay render failed for clip ${ov.id} — skipping`)
+            continue
+          }
+        }
+        if (!pngPath) continue
+        allowPath(pngPath)
+        const { w: wFrac, h: hFrac } = getOverlayBaseSize(ov)
+        overlayPngs.set(ov.id, {
+          pngPath,
+          inputIdx: nextOverlayIdx++,
+          startMs: ov.startMs,
+          endMs: ov.endMs,
+          pxW: Math.round(wFrac * canvasW),
+          pxH: Math.round(hFrac * canvasH),
+          clip: ov
+        })
+      }
+    }
+  } catch (err) {
+    // Overlay errors must NEVER fail the whole export.
+    console.warn(
+      '[export] overlay pre-render encountered an error; overlays will be skipped:',
+      err instanceof Error ? err.message : String(err)
+    )
+    overlayPngs.clear()
+  }
+  if (overlayPngs.size > 0) {
+    console.log(`[export] overlays: ${overlayPngs.size} resolved`)
+  }
+
+  // Re-compute caption input indices now that we know overlayPngs.size. The
+  // caption-render loop above assumed indices start at probedInputs.length,
+  // but overlays occupy that range. Shift every captionPng's inputIdx AND
+  // every step's inputIdx up by the number of overlay inputs.
+  // Phase 3.9: typewriter captions have multiple steps — ALL step inputIdx
+  // values must be shifted, not just the top-level cap.inputIdx.
+  if (overlayPngs.size > 0 && captionPngs.size > 0) {
+    for (const cap of captionPngs.values()) {
+      cap.inputIdx += overlayPngs.size
+      for (const step of cap.steps) {
+        step.inputIdx += overlayPngs.size
+      }
+    }
+  }
+
   let plan: ExportPlan
   try {
     plan = buildExportPlan(project, options.presetKey, safeOutput, {
       xfadeAvailable,
       inputsWithAudio,
       codec: chosenCodec,
+      overlayPngs: overlayPngs.size > 0 ? overlayPngs : undefined,
       captionPngs: captionPngs.size > 0 ? captionPngs : undefined
     })
   } catch (err) {
@@ -2016,11 +2684,14 @@ export const __test = {
   atempoChain,
   keyframeExpr,
   collectSegments,
+  collectOverlays,
   stitchVideo,
   stitchVideoTrack,
   compositeLayers,
   stitchAudio,
   stitchCaptions,
+  stitchOverlays,
+  buildTransformSubchain,
   mapPresetForCodec,
   presetFlagForCodec
 }

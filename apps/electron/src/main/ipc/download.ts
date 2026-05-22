@@ -16,6 +16,9 @@
  *   - Output path is computed by main (never trusts the renderer).
  *   - Max size cap (default 500 MB) to defend against runaway downloads.
  *   - Per-job timeout (default 90 s).
+ *   - Redirects are followed MANUALLY: every hop's Location is re-validated by
+ *     `validateUrl` so an external https host cannot 30x-redirect into a
+ *     private/link-local address (SSRF). Hard cap of 5 hops.
  */
 import { app, ipcMain, net } from 'electron'
 import { createWriteStream, existsSync } from 'node:fs'
@@ -28,6 +31,7 @@ import { allowPath } from '../ffmpeg/security'
 
 const MAX_BYTES = 500 * 1024 * 1024 // 500 MB hard cap
 const DEFAULT_TIMEOUT_MS = 90_000
+const MAX_REDIRECTS = 5 // hard cap on manually-followed redirect hops
 
 function importsDir(): string {
   return path.join(app.getPath('userData'), 'imports')
@@ -80,7 +84,18 @@ function validateUrl(raw: unknown): string {
   }
   // Block raw IPs to avoid SSRF to internal ranges. We can't perfectly
   // resolve here, but blocking literal IPs covers the obvious cases.
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(':')) {
+  //   - dotted-quad      192.168.0.1
+  //   - bare IPv6        contains ':'
+  //   - pure decimal     2130706433  (== 127.0.0.1 as a 32-bit int)
+  //   - hex notation     0x7f000001
+  // The decimal/hex forms are valid IP literals that browsers/curl accept but
+  // would otherwise slip past a naive dotted-quad check.
+  if (
+    /^\d+\.\d+\.\d+\.\d+$/.test(host) ||
+    host.includes(':') ||
+    /^\d+$/.test(host) ||
+    /^0x[0-9a-f]+$/i.test(host)
+  ) {
     throw new Error('[download] raw IP host not allowed')
   }
   return u.toString()
@@ -89,6 +104,56 @@ function validateUrl(raw: unknown): string {
 interface DownloadOpts {
   /** Override the default timeout (ms). */
   timeoutMs?: number
+}
+
+/**
+ * Fetch `url` following any 3xx redirects MANUALLY, re-validating each hop's
+ * `Location` header through `validateUrl`. This is the SSRF guard: with
+ * `redirect: 'follow'` only the first URL would be checked, so an external
+ * https host could 30x-bounce us into `169.254.169.254`, `192.168.x`, etc.
+ *
+ * Throws on a bad redirect target or when MAX_REDIRECTS is exceeded.
+ */
+async function fetchFollowingRedirects(
+  startUrl: string,
+  signal: AbortSignal
+): Promise<Response> {
+  // electron.net.fetch shares the session's protocol handlers/cookies.
+  // Falls back to global fetch if unavailable (very old Electron).
+  const fetchFn: typeof fetch =
+    (net as { fetch?: typeof fetch }).fetch?.bind(net) ?? fetch
+  const headers = {
+    // IG/FB CDN occasionally returns 403 on bot-y UA strings. Mirror
+    // a Chrome desktop UA — same one Electron uses by default.
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+  }
+
+  let currentUrl = startUrl
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const r = await fetchFn(currentUrl, {
+      method: 'GET',
+      redirect: 'manual',
+      signal,
+      headers
+    })
+    // 3xx with a Location → re-validate and continue.
+    if (r.status >= 300 && r.status < 400) {
+      const loc = r.headers.get('location')
+      if (!loc) {
+        // Redirect without a target — treat as a hard failure.
+        throw new Error(`[download] redirect ${r.status} without Location`)
+      }
+      // Location may be relative — resolve against the current URL, then
+      // run it through the full SSRF/https/localhost validator.
+      const resolved = new URL(loc, currentUrl).toString()
+      currentUrl = validateUrl(resolved)
+      continue
+    }
+    return r
+  }
+  throw new Error(`[download] too many redirects (>${MAX_REDIRECTS})`)
 }
 
 async function downloadOnce(
@@ -105,22 +170,7 @@ async function downloadOnce(
   const timer = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
-    // electron.net.fetch shares the session's protocol handlers/cookies.
-    // Falls back to global fetch if unavailable (very old Electron).
-    const fetchFn: typeof fetch =
-      (net as { fetch?: typeof fetch }).fetch?.bind(net) ?? fetch
-    const r = await fetchFn(url, {
-      method: 'GET',
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: {
-        // IG/FB CDN occasionally returns 403 on bot-y UA strings. Mirror
-        // a Chrome desktop UA — same one Electron uses by default.
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-          '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-      }
-    })
+    const r = await fetchFollowingRedirects(url, controller.signal)
     if (!r.ok) {
       return { bytes: 0, status: r.status }
     }

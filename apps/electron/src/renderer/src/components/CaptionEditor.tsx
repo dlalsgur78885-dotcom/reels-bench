@@ -1,8 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  CAPTION_ENTRANCE_KINDS,
+  CAPTION_EXIT_KINDS,
+  MAX_CAPTION_ANIM_MS,
+  MIN_CAPTION_ANIM_MS,
+  NO_CAPTION_ANIMATION,
   isCaptionClip,
+  type CaptionAnimation,
   type CaptionClip,
   type CaptionEmphasis,
+  type CaptionEntranceKind,
+  type CaptionExitKind,
   type CaptionPreset,
   type CaptionSpan,
   type Project
@@ -10,6 +18,7 @@ import {
 import { useProjectStore } from '../store/project'
 import {
   ALL_PRESETS,
+  CAPTION_ANIM_LABELS,
   PRESET_LABELS,
   makeStyleFromPreset
 } from '../lib/captionPresets'
@@ -289,6 +298,17 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
     updateCaption(captionId, { spans: next })
   }
 
+  // Phase 3.9 — caption animation. Merge a partial onto the current spec
+  // (back-filling NO_CAPTION_ANIMATION when the clip has none yet). Reuses
+  // updateCaption — `animation` flows through its `{...c,...partial}` spread,
+  // and undo is automatic (updateCaption → set + temporal).
+  const anim: CaptionAnimation = caption.animation ?? NO_CAPTION_ANIMATION
+  const setAnim = (partial: Partial<CaptionAnimation>): void => {
+    updateCaption(captionId, {
+      animation: { ...(caption.animation ?? NO_CAPTION_ANIMATION), ...partial }
+    })
+  }
+
   return (
     <div style={styles.panel} data-testid="caption-editor">
       <div style={styles.header}>
@@ -451,6 +471,77 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
               </button>
             ))}
           </div>
+        </div>
+
+        {/* Animation (Phase 3.9) — entrance/exit + per-direction durations */}
+        <div style={styles.group}>
+          <div style={styles.label}>애니메이션</div>
+          <div style={styles.row}>
+            <div style={{ ...styles.group, flex: 1 }}>
+              <div style={styles.label}>등장</div>
+              <select
+                style={styles.input}
+                value={anim.entrance}
+                onChange={(e) =>
+                  setAnim({
+                    entrance: e.target.value as CaptionEntranceKind
+                  })
+                }
+                data-testid="caption-anim-entrance"
+              >
+                {CAPTION_ENTRANCE_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {CAPTION_ANIM_LABELS[k]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={{ ...styles.group, flex: 1 }}>
+              <div style={styles.label}>퇴장</div>
+              <select
+                style={styles.input}
+                value={anim.exit}
+                onChange={(e) =>
+                  setAnim({ exit: e.target.value as CaptionExitKind })
+                }
+                data-testid="caption-anim-exit"
+              >
+                {CAPTION_EXIT_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {CAPTION_ANIM_LABELS[k]}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {anim.entrance !== 'none' && (
+            <div style={styles.group}>
+              <div style={styles.label}>등장 시간: {anim.inMs}ms</div>
+              <input
+                type="range"
+                min={MIN_CAPTION_ANIM_MS}
+                max={MAX_CAPTION_ANIM_MS}
+                step={50}
+                value={anim.inMs}
+                onChange={(e) => setAnim({ inMs: Number(e.target.value) })}
+                data-testid="caption-anim-in"
+              />
+            </div>
+          )}
+          {anim.exit !== 'none' && (
+            <div style={styles.group}>
+              <div style={styles.label}>퇴장 시간: {anim.outMs}ms</div>
+              <input
+                type="range"
+                min={MIN_CAPTION_ANIM_MS}
+                max={MAX_CAPTION_ANIM_MS}
+                step={50}
+                value={anim.outMs}
+                onChange={(e) => setAnim({ outMs: Number(e.target.value) })}
+                data-testid="caption-anim-out"
+              />
+            </div>
+          )}
         </div>
 
         {/* Word preview / emphasis picker */}

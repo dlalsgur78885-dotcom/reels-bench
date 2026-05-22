@@ -63,6 +63,65 @@ export interface TimelineUiStore {
   /** Map media id → data: URI for the rendered waveform PNG. */
   waveformUris: Record<string, string>
   setWaveformUri(mediaId: string, uri: string): void
+
+  // ----- Toolbar: tool mode (Phase 5) -----
+  /**
+   * Active timeline interaction tool.
+   *   'select' — default; clicking a clip selects it.
+   *   'split'  — clicking inside a clip splits it at the click point.
+   */
+  toolMode: 'select' | 'split'
+  setToolMode(mode: 'select' | 'split'): void
+
+  // ----- Toolbar: snap toggle (Phase 5) -----
+  /**
+   * Persistent edge/second snap toggle. When false, drags behave as if Alt
+   * were held (snap disabled). Holding Alt at drag time still disables snap
+   * regardless of this flag.
+   */
+  snapEnabled: boolean
+  setSnapEnabled(enabled: boolean): void
+
+  // ----- Toolbar: A/V link toggle (Phase 5) -----
+  /**
+   * When true, linked video+audio clips move together. Best-effort: the
+   * underlying link data model is not yet implemented, so today this is only
+   * a UI toggle that future work can read.
+   */
+  avLinkEnabled: boolean
+  setAvLinkEnabled(enabled: boolean): void
+
+  // ----- Toolbar: markers (Phase 5) -----
+  /** Timeline markers (absolute ms positions), kept as transient UI state. */
+  markers: TimelineMarker[]
+  /** Add a marker at `atMs` (deduped within 1ms). Returns the marker id. */
+  addMarker(atMs: number, label?: string): string
+  /** Remove a marker by id. */
+  removeMarker(markerId: string): void
+  /** Remove every marker. */
+  clearMarkers(): void
+
+  // ----- Social preview (Phase 6) -----
+  /**
+   * Which SNS platform chrome to mock over the preview. Purely a visual guide
+   * — it never touches the project, undo history, or the export pipeline.
+   * `'none'` (default) renders no overlay.
+   */
+  socialPreviewPlatform: SocialPreviewPlatform
+  setSocialPreviewPlatform(platform: SocialPreviewPlatform): void
+}
+
+/**
+ * SNS platform whose UI chrome the preview mocks over the video. Transient
+ * UI state only — Phase 6 "SNS 플랫폼 미리보기".
+ */
+export type SocialPreviewPlatform = 'none' | 'tiktok' | 'youtube' | 'instagram'
+
+/** A single timeline marker pinned to an absolute ms position. */
+export interface TimelineMarker {
+  id: string
+  atMs: number
+  label?: string
 }
 
 /** Default pixels-per-second for the timeline ruler. */
@@ -87,6 +146,11 @@ export const useTimelineUi = create<TimelineUiStore>((set, get) => ({
   bpm: DEFAULT_BPM,
   beatsSource: 'metronome',
   waveformUris: {},
+  toolMode: 'select',
+  snapEnabled: true,
+  avLinkEnabled: false,
+  markers: [],
+  socialPreviewPlatform: 'none',
 
   selectClip(clipId: string | null): void {
     const current = get().selectedClipIds
@@ -151,6 +215,61 @@ export const useTimelineUi = create<TimelineUiStore>((set, get) => ({
     const cur = get().waveformUris
     if (cur[mediaId] === uri) return
     set({ waveformUris: { ...cur, [mediaId]: uri } })
+  },
+
+  setToolMode(mode: 'select' | 'split'): void {
+    if (mode !== 'select' && mode !== 'split') return
+    if (mode !== get().toolMode) set({ toolMode: mode })
+  },
+
+  setSnapEnabled(enabled: boolean): void {
+    const v = Boolean(enabled)
+    if (v !== get().snapEnabled) set({ snapEnabled: v })
+  },
+
+  setAvLinkEnabled(enabled: boolean): void {
+    const v = Boolean(enabled)
+    if (v !== get().avLinkEnabled) set({ avLinkEnabled: v })
+  },
+
+  addMarker(atMs: number, label?: string): string {
+    const at = Math.max(0, Math.round(Number(atMs) || 0))
+    const cur = get().markers
+    // Dedupe — a marker already within 1ms wins (return its id).
+    const existing = cur.find((m) => Math.abs(m.atMs - at) < 1)
+    if (existing) return existing.id
+    const id = `mk_${Date.now().toString(36)}_${Math.random()
+      .toString(36)
+      .slice(2, 7)}`
+    const marker: TimelineMarker = { id, atMs: at }
+    if (typeof label === 'string' && label.trim()) marker.label = label.trim()
+    set({
+      markers: [...cur, marker].sort((a, b) => a.atMs - b.atMs)
+    })
+    return id
+  },
+
+  removeMarker(markerId: string): void {
+    const cur = get().markers
+    const next = cur.filter((m) => m.id !== markerId)
+    if (next.length !== cur.length) set({ markers: next })
+  },
+
+  clearMarkers(): void {
+    if (get().markers.length > 0) set({ markers: [] })
+  },
+
+  setSocialPreviewPlatform(platform: SocialPreviewPlatform): void {
+    const valid: SocialPreviewPlatform[] = [
+      'none',
+      'tiktok',
+      'youtube',
+      'instagram'
+    ]
+    if (!valid.includes(platform)) return
+    if (platform !== get().socialPreviewPlatform) {
+      set({ socialPreviewPlatform: platform })
+    }
   }
 }))
 

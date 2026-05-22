@@ -6,10 +6,12 @@ import {
   DEFAULT_DUCKING_DB,
   DEFAULT_TRANSITION_MS,
   IDENTITY_CROP,
+  MAX_AUDIO_TRACKS,
   MAX_CLIP_SPEED,
   MAX_COLOR_ADJUST,
   MAX_GAIN_DB,
   MAX_KEYFRAMES_PER_CLIP,
+  MAX_SPEED_KEYFRAMES_PER_CLIP,
   MAX_TRANSFORM_OFFSET,
   MAX_TRANSFORM_ROTATION,
   MAX_TRANSFORM_SCALE,
@@ -21,6 +23,7 @@ import {
   MIN_CROP_SIZE,
   MIN_GAIN_DB,
   MIN_KEYFRAME_GAP_MS,
+  MIN_SPEED_KEYFRAME_GAP_MS,
   MIN_TRANSFORM_OFFSET,
   MIN_TRANSFORM_ROTATION,
   MIN_TRANSFORM_SCALE,
@@ -34,19 +37,29 @@ import {
   type CropRect,
   type FilterPreset,
   type MediaAsset,
+  type OverlayClip,
   type Project,
+  type Track,
+  type TrackKind,
+  type TrackRole,
+  type SpeedKeyframe,
   type TransformKeyframe,
   type TransitionKind,
   type VideoAudioClip,
   getClipDuration,
+  getClipTimelineDuration,
   getClipTransform,
+  getSpeedAt,
   getTransformAt,
+  hasSpeedCurve,
   hasTransformKeyframes,
   isCaptionClip,
   isIdentityCrop,
   isIdentityTransform,
   isMediaClip,
-  isNeutralColorAdjust
+  isNeutralColorAdjust,
+  isOverlayClip,
+  sourceOffsetForTimelineOffset
 } from '../../../shared/project'
 import type { SilenceRange } from '../../../shared/ipc'
 
@@ -77,7 +90,10 @@ function freshProject(): Project {
         duckTarget: 'voice',
         duckingDb: DEFAULT_DUCKING_DB
       },
-      { id: ulid(), kind: 'caption', name: 'Caption 1', clips: [] }
+      { id: ulid(), kind: 'caption', name: 'Caption 1', clips: [] },
+      // Phase 3.8 — overlay track (stickers / shapes), composites above
+      // video, below captions. Last track so it round-trips identically.
+      { id: ulid(), kind: 'overlay', name: 'Overlay 1', clips: [] }
     ],
     media: {},
     createdAt: now,
@@ -177,6 +193,49 @@ function normalizeKeyframes(kfs: TransformKeyframe[]): TransformKeyframe[] {
 }
 
 /**
+ * Normalize a speed-keyframe list (Phase 3.10): round + clamp `atMs >= 0`,
+ * clamp each `speed` into [MIN_CLIP_SPEED, MAX_CLIP_SPEED], sort ascending by
+ * atMs, then dedup — keyframes within MIN_SPEED_KEYFRAME_GAP_MS of the
+ * previously-kept one REPLACE it (last write wins). Mirrors
+ * `normalizeKeyframes`; callers must still enforce the >= 2 invariant (a
+ * normalized list MAY collapse to length 1).
+ */
+function normalizeSpeedKeyframes(kfs: SpeedKeyframe[]): SpeedKeyframe[] {
+  const sorted = kfs
+    .map((kf) => ({
+      atMs: Math.max(0, Math.round(kf.atMs)),
+      speed: Math.max(
+        MIN_CLIP_SPEED,
+        Math.min(MAX_CLIP_SPEED, Number.isFinite(kf.speed) ? kf.speed : 1)
+      )
+    }))
+    .sort((a, b) => a.atMs - b.atMs)
+  const out: SpeedKeyframe[] = []
+  for (const kf of sorted) {
+    const last = out[out.length - 1]
+    if (last && kf.atMs - last.atMs < MIN_SPEED_KEYFRAME_GAP_MS) {
+      // Within the dedup window — replace the kept keyframe.
+      out[out.length - 1] = kf
+    } else {
+      out.push(kf)
+    }
+  }
+  return out
+}
+
+/**
+ * Recompute a media clip's `endMs` from its (possibly variable) speed:
+ * `endMs = startMs + max(MIN_CLIP_MS, round(getClipTimelineDuration(clip)))`.
+ * `getClipTimelineDuration` returns `(trimOutMs-trimInMs)/speed` for a
+ * constant clip and the exact integral of 1/speed for a curve clip — so every
+ * speed mutation (constant or curve) routes through this single helper.
+ */
+function recomputeEndMsForSpeed(clip: VideoAudioClip): VideoAudioClip {
+  const dur = Math.max(MIN_CLIP_MS, Math.round(getClipTimelineDuration(clip)))
+  return { ...clip, endMs: clip.startMs + dur }
+}
+
+/**
  * Migration helper: an older persisted project may have:
  *   - clips without `kind` (assume 'media')
  *   - no caption track (add one)
@@ -202,6 +261,10 @@ function migrateLoadedProject(p: Project): Project {
   // `getClipCropRect` (null = no crop). No migration step needed.
   // Phase 3.7 — `colorAdjust` is optional, back-filled lazily by
   // `getClipColorAdjust` (null = neutral). No migration step needed.
+  // Phase 3.10 — `speedKeyframes` is optional (absent/empty/length-1 falls
+  // back to the constant `speed` field via hasSpeedCurve). No migration.
+  // Phase 3.8 — do NOT auto-append an overlay track to old projects (keeps
+  // the export byte-identical); `addOverlay` lazily creates it on first use.
   // Ensure a caption track exists. If none, append one.
   const hasCaption = tracks.some((t) => t.kind === 'caption')
   const migratedTracks = hasCaption
@@ -387,6 +450,39 @@ export interface ProjectStore {
   /** Clear a clip's keyframe track entirely; keeps its static `transform`. */
   clearTransformKeyframes(clipId: string): void
 
+  // --- Variable speed curve (Phase 3.10, media clips only) ---
+  /**
+   * Add a speed keyframe at a SOURCE offset `atMs` (ms from trimInMs).
+   *  - If the clip has NO active speed curve yet: seed TWO keyframes (source
+   *    offset 0 + the clip's full source span `trimOutMs-trimInMs`), both at
+   *    the clip's current constant `speed` — this satisfies the >= 2 invariant.
+   *  - If a curve exists: insert ONE keyframe; its speed defaults to the
+   *    interpolated value on the existing curve (`getSpeedAt`) unless `speed`
+   *    overrides it.
+   * Rejected when atMs<0, atMs>(trimOutMs-trimInMs), or
+   * count>=MAX_SPEED_KEYFRAMES_PER_CLIP. Recomputes endMs. No-op for captions.
+   */
+  addSpeedKeyframe(clipId: string, atMs: number, speed?: number): void
+  /**
+   * Merge into the speed keyframe at `kfIndex`: re-clamp atMs into [0,
+   * srcDur], clamp speed, then re-normalize the curve. If it collapses below
+   * 2 keyframes the curve is dropped and the survivor's speed is baked into
+   * the clip's constant `speed`. Recomputes endMs.
+   */
+  updateSpeedKeyframe(
+    clipId: string,
+    kfIndex: number,
+    partial: { atMs?: number; speed?: number }
+  ): void
+  /**
+   * Remove the speed keyframe at `kfIndex`. If removal drops the curve below
+   * 2 keyframes, the curve is cleared and the surviving keyframe's speed is
+   * baked into the clip's constant `speed`. Recomputes endMs.
+   */
+  removeSpeedKeyframe(clipId: string, kfIndex: number): void
+  /** Clear a clip's speed curve entirely; keeps its constant `speed`. */
+  clearSpeedKeyframes(clipId: string): void
+
   /**
    * Append a video track immediately after the last existing video track.
    * Returns the new track's id, or null if already at MAX_VIDEO_TRACKS.
@@ -394,6 +490,52 @@ export interface ProjectStore {
   addVideoTrack(): string | null
   /** Remove a video track. No-op if it is the only video track. */
   removeVideoTrack(trackId: string): void
+
+  // --- Generic track management (Phase 3 — timeline track context menu) ---
+  /**
+   * Rename a track. Trims whitespace; an empty/blank name is rejected
+   * (no-op). No-op if the track is missing or the name is unchanged.
+   */
+  renameTrack(trackId: string, name: string): void
+  /**
+   * Add ONE track of the given kind, inserted next to its peers (video tracks
+   * stay contiguous, audio after the last audio/video, caption/overlay at the
+   * end). Optional `role` for audio tracks. Returns the new track's id, or
+   * null when a per-kind cap (MAX_VIDEO_TRACKS / MAX_AUDIO_TRACKS) is hit.
+   */
+  addTrack(kind: TrackKind, role?: TrackRole): string | null
+  /**
+   * Add an auxiliary audio submix track (role='submix'). For now this is a
+   * plain audio track marked as a submix bus; true routing (other tracks
+   * feeding into it) is not yet wired. Returns the new track id, or null at
+   * MAX_AUDIO_TRACKS.
+   */
+  addAudioSubmixTrack(): string | null
+  /**
+   * Add `count` tracks of the given kind in ONE atomic update. Stops early at
+   * the per-kind cap. Returns the ids actually created (may be fewer than
+   * `count`, or empty).
+   */
+  addTracks(kind: TrackKind, count: number, role?: TrackRole): string[]
+  /**
+   * Remove a single track by id. Guards: the last video track and the last
+   * caption track cannot be removed. Returns true when a track was removed.
+   */
+  removeTrack(trackId: string): boolean
+  /**
+   * Remove several tracks in ONE atomic update. Applies the same guards as
+   * `removeTrack` (always keeps ≥1 video track and ≥1 caption track).
+   * Returns the ids actually removed.
+   */
+  removeTracks(trackIds: string[]): string[]
+
+  /**
+   * Resolve an audio track for dropping an audio clip, creating one if the
+   * project has none. With `preferRole` an existing audio track of that role
+   * is preferred. The new track is inserted right after the last existing
+   * audio track (or after the last video track). Returns the track id.
+   */
+  ensureAudioTrack(preferRole?: 'voice' | 'bgm'): string
 
   // --- Captions (Phase 2.4) ---
   /** Append a caption clip to the caption track. */
@@ -411,6 +553,25 @@ export interface ProjectStore {
   removeCaption(captionId: string): void
   /** Get the id of the (first) caption track in the project. */
   getCaptionTrackId(): string | null
+
+  // --- Overlay elements (Phase 3.8) ---
+  /** Get the id of the (first) overlay track, or null if none exists yet. */
+  getOverlayTrackId(): string | null
+  /**
+   * Return the (first) overlay track's id, creating one (appended after the
+   * caption track) if the project has none. Lets old projects gain an
+   * overlay track lazily on first overlay insert.
+   */
+  ensureOverlayTrack(): string
+  /** Append an overlay clip; creates the overlay track if needed. */
+  addOverlay(clip: OverlayClip): void
+  /** Generic partial update for an overlay clip (mirrors `updateCaption`). */
+  updateOverlay(
+    overlayId: string,
+    partial: Partial<Omit<OverlayClip, 'id' | 'kind' | 'trackId'>>
+  ): void
+  /** Remove an overlay clip (alias of removeClip with kind guard). */
+  removeOverlay(overlayId: string): void
 
   /**
    * Replace the entire project with one loaded from disk. Used at startup.
@@ -603,11 +764,19 @@ export const useProjectStore = create<ProjectStore>()(
     const project = get().project
     const trackIdx = project.tracks.findIndex((t) => t.id === clip.trackId)
     if (trackIdx === -1) return
-    // Enforce: caption track only accepts caption clips, and media tracks
-    // only accept media clips. (Belt-and-suspenders against UI bugs.)
+    // Enforce a track-kind ↔ clip-kind match matrix (belt-and-suspenders
+    // against UI bugs):
+    //   - video/audio track  ↔ media clip
+    //   - caption track      ↔ caption clip
+    //   - overlay track      ↔ overlay clip
     const track = project.tracks[trackIdx]
-    if (track.kind === 'caption' && clip.kind !== 'caption') return
-    if (track.kind !== 'caption' && clip.kind !== 'media') return
+    const accepts =
+      track.kind === 'caption'
+        ? clip.kind === 'caption'
+        : track.kind === 'overlay'
+          ? clip.kind === 'overlay'
+          : clip.kind === 'media'
+    if (!accepts) return
 
     const tracks = [...project.tracks]
     tracks[trackIdx] = {
@@ -679,8 +848,12 @@ export const useProjectStore = create<ProjectStore>()(
     if (atMs >= orig.endMs - MIN_CLIP_MS) return null
 
     const speed = orig.speed ?? 1
-    // Source-time offset from orig.trimInMs for the split point.
-    const offsetSourceMs = (atMs - orig.startMs) * speed
+    // Source-time offset from orig.trimInMs for the split point. Phase 3.10 —
+    // a curve clip's timeline⇄source mapping is non-linear, so map the split's
+    // TIMELINE offset through the inverse integral instead of `*speed`.
+    const offsetSourceMs = hasSpeedCurve(orig)
+      ? sourceOffsetForTimelineOffset(orig, atMs - orig.startMs)
+      : (atMs - orig.startMs) * speed
     const splitSource = orig.trimInMs + offsetSourceMs
     const newRightId = ulid()
     // -------------------------------------------------------------------
@@ -736,24 +909,70 @@ export const useProjectStore = create<ProjectStore>()(
         rightStaticTransform = isIdentityTransform(baked) ? undefined : baked
       }
     }
+    // -------------------------------------------------------------------
+    // Phase 3.10 — speed-curve split handling. PARALLEL to the transform-
+    // keyframe partition above, but speed keyframes' atMs are SOURCE offsets
+    // (ms from trimInMs). `offsetSourceMs` is the split's source offset within
+    // the ORIGINAL clip. Left keeps keyframes at/before it; right keeps those
+    // at/after, re-based by `-offsetSourceMs` (the right clip's trimInMs
+    // becomes splitSource). A boundary keyframe (the speed AT the split) is
+    // synthesized on both sides so neither half jumps. If a half collapses
+    // below 2 keyframes its curve is dropped + the survivor's speed baked into
+    // the constant `speed`.
+    // -------------------------------------------------------------------
+    let leftSpeedKfs: SpeedKeyframe[] | undefined
+    let rightSpeedKfs: SpeedKeyframe[] | undefined
+    let leftSpeed = orig.speed
+    let rightSpeed = orig.speed
+    if (hasSpeedCurve(orig)) {
+      const boundarySpeed = getSpeedAt(orig, offsetSourceMs)
+      const allSp = orig.speedKeyframes as SpeedKeyframe[]
+      const leftSpRaw: SpeedKeyframe[] = [
+        ...allSp.filter((kf) => kf.atMs <= offsetSourceMs),
+        { atMs: offsetSourceMs, speed: boundarySpeed }
+      ]
+      const rightSpRaw: SpeedKeyframe[] = [
+        { atMs: 0, speed: boundarySpeed },
+        ...allSp
+          .filter((kf) => kf.atMs >= offsetSourceMs)
+          .map((kf) => ({ atMs: kf.atMs - offsetSourceMs, speed: kf.speed }))
+      ]
+      const leftSpNorm = normalizeSpeedKeyframes(leftSpRaw)
+      const rightSpNorm = normalizeSpeedKeyframes(rightSpRaw)
+      if (leftSpNorm.length >= 2) {
+        leftSpeedKfs = leftSpNorm
+      } else {
+        // Degenerate — bake the surviving speed into the constant field.
+        leftSpeed = leftSpNorm[0]?.speed ?? boundarySpeed
+      }
+      if (rightSpNorm.length >= 2) {
+        rightSpeedKfs = rightSpNorm
+      } else {
+        rightSpeed = rightSpNorm[0]?.speed ?? boundarySpeed
+      }
+    }
     // Phase 3.6 — `cropRect` is a SOURCE-fraction rect, so the {...orig}
     // spread below carries it unchanged to both halves (every same-source
     // descendant samples the identical sub-region). No crop-specific handling.
-    const left: VideoAudioClip = {
+    const left: VideoAudioClip = recomputeEndMsForSpeed({
       ...orig,
       endMs: atMs,
       trimOutMs: splitSource,
       transform: leftStaticTransform,
-      transformKeyframes: leftKfs
-    }
-    const right: VideoAudioClip = {
+      transformKeyframes: leftKfs,
+      speed: leftSpeed,
+      speedKeyframes: leftSpeedKfs
+    })
+    const right: VideoAudioClip = recomputeEndMsForSpeed({
       ...orig,
       id: newRightId,
       startMs: atMs,
       trimInMs: splitSource,
       transform: rightStaticTransform,
-      transformKeyframes: rightKfs
-    }
+      transformKeyframes: rightKfs,
+      speed: rightSpeed,
+      speedKeyframes: rightSpeedKfs
+    })
     const tracks = project.tracks.map((t, i) => {
       if (i !== trackIdx) return t
       const clips = [...t.clips]
@@ -801,7 +1020,9 @@ export const useProjectStore = create<ProjectStore>()(
     const newClipId = ulid()
     // Deep-copy: spread covers all surface fields. For caption clips we need
     // to clone the nested spans + style so future edits to the duplicate
-    // don't mutate the original. Media clips have no nested mutable refs.
+    // don't mutate the original. Overlay clips need their `source` cloned
+    // (shape overlays carry a nested `style`). Media clips have no nested
+    // mutable refs.
     let dup: Clip
     if (isCaptionClip(orig)) {
       dup = {
@@ -811,6 +1032,17 @@ export const useProjectStore = create<ProjectStore>()(
         endMs: start + duration,
         spans: orig.spans.map((s) => ({ ...s })),
         style: { ...orig.style }
+      }
+    } else if (isOverlayClip(orig)) {
+      dup = {
+        ...orig,
+        id: newClipId,
+        startMs: start,
+        endMs: start + duration,
+        source:
+          orig.source.type === 'shape'
+            ? { ...orig.source, style: { ...orig.source.style } }
+            : { ...orig.source }
       }
     } else {
       dup = {
@@ -830,6 +1062,13 @@ export const useProjectStore = create<ProjectStore>()(
     return newClipId
   },
 
+  /**
+   * Set a media clip's CONSTANT playback speed. Phase 3.10 — when the clip
+   * currently has a variable speed curve, the curve is FIRST dropped (the
+   * user explicitly chose a single constant speed), then the constant is
+   * applied. endMs is recomputed via `getClipTimelineDuration` (constant
+   * math once the curve is gone).
+   */
   setClipSpeed(clipId: string, speed: number): void {
     const project = get().project
     const clamped = Math.max(MIN_CLIP_SPEED, Math.min(MAX_CLIP_SPEED, speed))
@@ -840,18 +1079,13 @@ export const useProjectStore = create<ProjectStore>()(
       const c = t.clips[idx]
       // Speed is a media-only concept; silently ignore captions.
       if (!isMediaClip(c)) return t
-      const srcDur = c.trimOutMs - c.trimInMs
-      // Guard against zero/negative source duration (defensive — shouldn't
-      // normally happen, but avoids divide-by-zero / negative width).
-      const newTimelineDur = Math.max(
-        MIN_CLIP_MS,
-        Math.round(srcDur / clamped)
-      )
-      const updated: VideoAudioClip = {
+      // Phase 3.10 — the user explicitly chose a constant speed: drop any
+      // variable speed curve FIRST, then apply the constant + recompute endMs.
+      const updated: VideoAudioClip = recomputeEndMsForSpeed({
         ...c,
         speed: clamped,
-        endMs: c.startMs + newTimelineDur
-      }
+        speedKeyframes: undefined
+      })
       const clips = [...t.clips]
       clips[idx] = updated
       changed = true
@@ -992,9 +1226,22 @@ export const useProjectStore = create<ProjectStore>()(
     if (!isMediaClip(orig)) return []
 
     const speed = orig.speed ?? 1
+    const origHasCurve = hasSpeedCurve(orig)
+    // Forward map: SOURCE offset (ms from orig.trimInMs) → TIMELINE offset
+    // (ms from orig.startMs). Constant clip → linear (/speed). Curve clip →
+    // the integral of 1/speed up to that source offset, obtained by measuring
+    // the timeline duration of a virtual clip trimmed to [trimInMs, here].
+    const srcOffsetToTimelineOffset = (srcOff: number): number => {
+      if (!origHasCurve) return srcOff / speed
+      const clamped = Math.max(0, srcOff)
+      return getClipTimelineDuration({
+        ...orig,
+        trimOutMs: orig.trimInMs + clamped
+      })
+    }
     // Translate source-time silence ranges to TIMELINE ranges relative to the
     // clip. silencedetect emits source-time seconds; we received ms here.
-    // src_t = trimInMs + (timeline_t - startMs) * speed
+    // src_t = trimInMs + (timeline_t - startMs) * speed   (constant case)
     //      => timeline_t = startMs + (src_t - trimInMs) / speed
     const localRanges: { startMs: number; endMs: number }[] = []
     for (const r of ranges) {
@@ -1002,8 +1249,10 @@ export const useProjectStore = create<ProjectStore>()(
       const sStart = Math.max(orig.trimInMs, Math.min(orig.trimOutMs, r.startMs))
       const sEnd = Math.max(orig.trimInMs, Math.min(orig.trimOutMs, r.endMs))
       if (sEnd <= sStart) continue
-      const tStart = orig.startMs + (sStart - orig.trimInMs) / speed
-      const tEnd = orig.startMs + (sEnd - orig.trimInMs) / speed
+      const tStart =
+        orig.startMs + srcOffsetToTimelineOffset(sStart - orig.trimInMs)
+      const tEnd =
+        orig.startMs + srcOffsetToTimelineOffset(sEnd - orig.trimInMs)
       localRanges.push({
         startMs: Math.round(tStart),
         endMs: Math.round(tEnd)
@@ -1050,20 +1299,57 @@ export const useProjectStore = create<ProjectStore>()(
     }
     // Compose new media clips. Each survivor is a fresh clip referencing the
     // same media; trimInMs/trimOutMs are derived from the timeline window.
+    // Phase 3.10 — when the original carries a speed curve, map each
+    // survivor's timeline window through the inverse integral to get source
+    // offsets, then partition `speedKeyframes` per piece (parallel to the
+    // splitClipAt logic) and recompute endMs via `getClipTimelineDuration`.
     const ids: string[] = []
     const built: VideoAudioClip[] = usable.map((s) => {
       const id = ulid()
       ids.push(id)
-      const trimIn = orig.trimInMs + (s.startMs - orig.startMs) * speed
-      const trimOut = orig.trimInMs + (s.endMs - orig.startMs) * speed
-      return {
+      // Source offsets (ms from orig.trimInMs) of this survivor's edges.
+      const srcOffStart = origHasCurve
+        ? sourceOffsetForTimelineOffset(orig, s.startMs - orig.startMs)
+        : (s.startMs - orig.startMs) * speed
+      const srcOffEnd = origHasCurve
+        ? sourceOffsetForTimelineOffset(orig, s.endMs - orig.startMs)
+        : (s.endMs - orig.startMs) * speed
+      const trimIn = orig.trimInMs + srcOffStart
+      const trimOut = orig.trimInMs + srcOffEnd
+      let pieceSpeed = orig.speed
+      let pieceSpeedKfs: SpeedKeyframe[] | undefined
+      if (origHasCurve) {
+        const allSp = orig.speedKeyframes as SpeedKeyframe[]
+        // Keep keyframes inside [srcOffStart, srcOffEnd], re-based to the
+        // piece's own trimInMs, plus boundary keyframes at both edges.
+        const raw: SpeedKeyframe[] = [
+          { atMs: 0, speed: getSpeedAt(orig, srcOffStart) },
+          ...allSp
+            .filter((kf) => kf.atMs > srcOffStart && kf.atMs < srcOffEnd)
+            .map((kf) => ({ atMs: kf.atMs - srcOffStart, speed: kf.speed })),
+          {
+            atMs: srcOffEnd - srcOffStart,
+            speed: getSpeedAt(orig, srcOffEnd)
+          }
+        ]
+        const norm = normalizeSpeedKeyframes(raw)
+        if (norm.length >= 2) {
+          pieceSpeedKfs = norm
+        } else {
+          // Degenerate piece — bake the surviving speed into the constant.
+          pieceSpeed = norm[0]?.speed ?? getSpeedAt(orig, srcOffStart)
+        }
+      }
+      return recomputeEndMsForSpeed({
         ...orig,
         id,
         startMs: s.startMs,
         endMs: s.endMs,
         trimInMs: Math.max(0, Math.round(trimIn)),
-        trimOutMs: Math.max(0, Math.round(trimOut))
-      }
+        trimOutMs: Math.max(0, Math.round(trimOut)),
+        speed: pieceSpeed,
+        speedKeyframes: pieceSpeedKfs
+      })
     })
     const tracks = project.tracks.map((t, i) => {
       if (i !== trackIdx) return t
@@ -1149,8 +1435,8 @@ export const useProjectStore = create<ProjectStore>()(
       const idx = t.clips.findIndex((c) => c.id === clipId)
       if (idx === -1) return t
       const c = t.clips[idx]
-      // Transform is a media-only concept; silently ignore captions.
-      if (!isMediaClip(c)) return t
+      // Transform applies to media + overlay clips; ignore captions.
+      if (!isMediaClip(c) && !isOverlayClip(c)) return t
       const merged: ClipTransform = { ...getClipTransform(c), ...partial }
       // Clamp each field to its allowed range.
       merged.scale = Math.max(
@@ -1170,7 +1456,7 @@ export const useProjectStore = create<ProjectStore>()(
         MIN_TRANSFORM_OFFSET,
         Math.min(MAX_TRANSFORM_OFFSET, merged.y)
       )
-      const updated: VideoAudioClip = isIdentityTransform(merged)
+      const updated: VideoAudioClip | OverlayClip = isIdentityTransform(merged)
         ? { ...c, transform: undefined }
         : { ...c, transform: merged }
       const clips = [...t.clips]
@@ -1191,7 +1477,7 @@ export const useProjectStore = create<ProjectStore>()(
       const idx = t.clips.findIndex((c) => c.id === clipId)
       if (idx === -1) return t
       const c = t.clips[idx]
-      if (!isMediaClip(c)) return t
+      if (!isMediaClip(c) && !isOverlayClip(c)) return t
       const clips = [...t.clips]
       clips[idx] = { ...c, transform: undefined }
       changed = true
@@ -1331,7 +1617,7 @@ export const useProjectStore = create<ProjectStore>()(
       const idx = t.clips.findIndex((c) => c.id === clipId)
       if (idx === -1) return t
       const c = t.clips[idx]
-      if (!isMediaClip(c)) return t
+      if (!isMediaClip(c) && !isOverlayClip(c)) return t
       const dur = getClipDuration(c)
       if (at > dur) return t
       const existing = Array.isArray(c.transformKeyframes)
@@ -1401,7 +1687,7 @@ export const useProjectStore = create<ProjectStore>()(
       const idx = t.clips.findIndex((c) => c.id === clipId)
       if (idx === -1) return t
       const c = t.clips[idx]
-      if (!isMediaClip(c)) return t
+      if (!isMediaClip(c) && !isOverlayClip(c)) return t
       const existing = Array.isArray(c.transformKeyframes)
         ? [...c.transformKeyframes]
         : []
@@ -1447,7 +1733,7 @@ export const useProjectStore = create<ProjectStore>()(
       const idx = t.clips.findIndex((c) => c.id === clipId)
       if (idx === -1) return t
       const c = t.clips[idx]
-      if (!isMediaClip(c)) return t
+      if (!isMediaClip(c) && !isOverlayClip(c)) return t
       const existing = Array.isArray(c.transformKeyframes)
         ? [...c.transformKeyframes]
         : []
@@ -1490,11 +1776,207 @@ export const useProjectStore = create<ProjectStore>()(
       const idx = t.clips.findIndex((c) => c.id === clipId)
       if (idx === -1) return t
       const c = t.clips[idx]
-      if (!isMediaClip(c)) return t
+      if (!isMediaClip(c) && !isOverlayClip(c)) return t
       if (c.transformKeyframes === undefined) return t
       const clips = [...t.clips]
       // Keep the static transform untouched — only drop the animation track.
       clips[idx] = { ...c, transformKeyframes: undefined }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // --------------------------------------------------------------------
+  // Variable speed curve (Phase 3.10) — media clips only. Mirrors the
+  // Phase 3.5 transform-keyframe actions. Speed keyframes' atMs are SOURCE
+  // offsets (ms from trimInMs). Every mutation recomputes endMs via
+  // `recomputeEndMsForSpeed` (the curve changes the clip's timeline length).
+  //
+  // Invariants enforced after every mutation:
+  //   - speedKeyframes is sorted ascending by atMs
+  //   - keyframes closer than MIN_SPEED_KEYFRAME_GAP_MS are deduped/replaced
+  //   - a length-1 array is NEVER persisted (collapses to constant `speed`)
+  //   - every stored keyframe speed is clamped [MIN_CLIP_SPEED, MAX_CLIP_SPEED]
+  // --------------------------------------------------------------------
+  addSpeedKeyframe(clipId, atMs, speed): void {
+    const at = Math.round(Number(atMs))
+    if (!Number.isFinite(at) || at < 0) return
+    if (speed !== undefined && !Number.isFinite(Number(speed))) return
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const srcDur = Math.max(0, c.trimOutMs - c.trimInMs)
+      if (at > srcDur) return t
+      const existing = Array.isArray(c.speedKeyframes)
+        ? [...c.speedKeyframes]
+        : []
+      let nextKfs: SpeedKeyframe[]
+      if (existing.length < 2) {
+        // No active curve — seed two keyframes spanning the full source
+        // window, both at the clip's current constant speed. An explicit
+        // `speed` override applies to the requested keyframe.
+        const base = Math.max(
+          MIN_CLIP_SPEED,
+          Math.min(MAX_CLIP_SPEED, c.speed ?? 1)
+        )
+        nextKfs = [
+          { atMs: 0, speed: base },
+          { atMs: srcDur, speed: base }
+        ]
+        if (speed !== undefined) {
+          // The requested keyframe sits at `at` (dedup merges if it lands on
+          // 0 or srcDur within the gap window).
+          nextKfs.push({ atMs: at, speed: Number(speed) })
+        }
+      } else {
+        if (existing.length >= MAX_SPEED_KEYFRAMES_PER_CLIP) return t
+        // Land on the existing curve so the insert causes no speed jump.
+        const onCurve = getSpeedAt(c, at)
+        nextKfs = [
+          ...existing,
+          { atMs: at, speed: speed !== undefined ? Number(speed) : onCurve }
+        ]
+      }
+      const finalKfs = normalizeSpeedKeyframes(nextKfs)
+      if (finalKfs.length < 2) return t
+      const clips = [...t.clips]
+      clips[idx] = recomputeEndMsForSpeed({ ...c, speedKeyframes: finalKfs })
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  updateSpeedKeyframe(clipId, kfIndex, partial): void {
+    if (!partial || typeof partial !== 'object') return
+    if (partial.atMs !== undefined && !Number.isFinite(Number(partial.atMs))) {
+      return
+    }
+    if (
+      partial.speed !== undefined &&
+      !Number.isFinite(Number(partial.speed))
+    ) {
+      return
+    }
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const existing = Array.isArray(c.speedKeyframes)
+        ? [...c.speedKeyframes]
+        : []
+      if (kfIndex < 0 || kfIndex >= existing.length) return t
+      const srcDur = Math.max(0, c.trimOutMs - c.trimInMs)
+      const cur = existing[kfIndex]
+      const nextAt =
+        partial.atMs !== undefined
+          ? Math.max(0, Math.min(srcDur, Math.round(Number(partial.atMs))))
+          : cur.atMs
+      const nextSpeed =
+        partial.speed !== undefined
+          ? Math.max(
+              MIN_CLIP_SPEED,
+              Math.min(MAX_CLIP_SPEED, Number(partial.speed))
+            )
+          : cur.speed
+      const updated = existing.map((kf, i) =>
+        i === kfIndex ? { atMs: nextAt, speed: nextSpeed } : kf
+      )
+      const finalKfs = normalizeSpeedKeyframes(updated)
+      const clips = [...t.clips]
+      if (finalKfs.length < 2) {
+        // Collapsed below the >= 2 invariant — drop the curve + bake the
+        // surviving keyframe's speed into the constant `speed` field.
+        clips[idx] = recomputeEndMsForSpeed({
+          ...c,
+          speed: finalKfs[0] ? finalKfs[0].speed : c.speed,
+          speedKeyframes: undefined
+        })
+      } else {
+        clips[idx] = recomputeEndMsForSpeed({ ...c, speedKeyframes: finalKfs })
+      }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  removeSpeedKeyframe(clipId, kfIndex): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const existing = Array.isArray(c.speedKeyframes)
+        ? [...c.speedKeyframes]
+        : []
+      if (kfIndex < 0 || kfIndex >= existing.length) return t
+      const remaining = existing.filter((_, i) => i !== kfIndex)
+      const clips = [...t.clips]
+      if (remaining.length < 2) {
+        // Curve would fall below the >= 2 invariant — clear it + bake the
+        // surviving keyframe's speed into the constant `speed`.
+        const survivor = remaining[0]
+        clips[idx] = recomputeEndMsForSpeed({
+          ...c,
+          speed: survivor
+            ? Math.max(
+                MIN_CLIP_SPEED,
+                Math.min(MAX_CLIP_SPEED, survivor.speed)
+              )
+            : c.speed,
+          speedKeyframes: undefined
+        })
+      } else {
+        clips[idx] = recomputeEndMsForSpeed({
+          ...c,
+          speedKeyframes: normalizeSpeedKeyframes(remaining)
+        })
+      }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  clearSpeedKeyframes(clipId): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      if (c.speedKeyframes === undefined) return t
+      const clips = [...t.clips]
+      // Keep the constant `speed` untouched — only drop the curve, then
+      // recompute endMs with the now-constant timeline math.
+      clips[idx] = recomputeEndMsForSpeed({
+        ...c,
+        speedKeyframes: undefined
+      })
       changed = true
       return { ...t, clips }
     })
@@ -1529,6 +2011,46 @@ export const useProjectStore = create<ProjectStore>()(
     return id
   },
 
+  ensureAudioTrack(preferRole?: 'voice' | 'bgm'): string {
+    const project = get().project
+    const audioTracks = project.tracks.filter((t) => t.kind === 'audio')
+    // Prefer an existing audio track of the requested role; otherwise any
+    // audio track; otherwise create a fresh Voice track.
+    if (audioTracks.length > 0) {
+      const byRole = preferRole
+        ? audioTracks.find((t) => t.role === preferRole)
+        : undefined
+      return (byRole ?? audioTracks[0]).id
+    }
+    const id = ulid()
+    const newTrack: Track =
+      preferRole === 'bgm'
+        ? {
+            id,
+            kind: 'audio',
+            name: 'BGM',
+            clips: [],
+            role: 'bgm',
+            duckTarget: 'voice',
+            duckingDb: DEFAULT_DUCKING_DB
+          }
+        : { id, kind: 'audio', name: 'Voice 1', clips: [], role: 'voice' }
+    // Insert right after the last video/audio track so audio lanes sit below
+    // video lanes and above caption/overlay lanes (CapCut layout).
+    let insertIdx = project.tracks.length
+    for (let i = 0; i < project.tracks.length; i++) {
+      if (project.tracks[i].kind === 'video' || project.tracks[i].kind === 'audio') {
+        insertIdx = i + 1
+      }
+    }
+    const tracks = [...project.tracks]
+    tracks.splice(insertIdx, 0, newTrack)
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+    return id
+  },
+
   removeVideoTrack(trackId: string): void {
     const project = get().project
     const target = project.tracks.find((t) => t.id === trackId)
@@ -1548,6 +2070,143 @@ export const useProjectStore = create<ProjectStore>()(
     const next = touch({ ...project, tracks })
     set({ project: next })
     schedulePersist(next)
+  },
+
+  // -------------------------------------------------------------------------
+  // Generic track management (Phase 3 — timeline track context menu).
+  // -------------------------------------------------------------------------
+  renameTrack(trackId: string, name: string): void {
+    const trimmed = (name ?? '').trim()
+    if (trimmed.length === 0) return
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      if (t.id !== trackId) return t
+      if (t.name === trimmed) return t
+      changed = true
+      return { ...t, name: trimmed }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  addTrack(kind: TrackKind, role?: TrackRole): string | null {
+    const ids = get().addTracks(kind, 1, role)
+    return ids.length > 0 ? ids[0] : null
+  },
+
+  addAudioSubmixTrack(): string | null {
+    return get().addTrack('audio', 'submix')
+  },
+
+  addTracks(kind: TrackKind, count: number, role?: TrackRole): string[] {
+    const n = Math.max(0, Math.floor(count))
+    if (n === 0) return []
+    let project = get().project
+    let tracks = [...project.tracks]
+    const created: string[] = []
+
+    // Per-kind caps. caption/overlay are unbounded.
+    const capFor = (k: TrackKind): number => {
+      if (k === 'video') return MAX_VIDEO_TRACKS
+      if (k === 'audio') return MAX_AUDIO_TRACKS
+      return Number.POSITIVE_INFINITY
+    }
+
+    // Pick an insertion index that keeps tracks grouped by kind:
+    //   video  → after the last video track
+    //   audio  → after the last audio (or video) track
+    //   others → at the end
+    const insertIndexFor = (list: Track[], k: TrackKind): number => {
+      if (k === 'video') {
+        let idx = 0
+        for (let i = 0; i < list.length; i++) {
+          if (list[i].kind === 'video') idx = i + 1
+        }
+        return idx
+      }
+      if (k === 'audio') {
+        let idx = list.length
+        for (let i = 0; i < list.length; i++) {
+          if (list[i].kind === 'video' || list[i].kind === 'audio') {
+            idx = i + 1
+          }
+        }
+        return idx
+      }
+      return list.length
+    }
+
+    const labelFor = (k: TrackKind, r: TrackRole, seq: number): string => {
+      if (k === 'video') return `Video ${seq}`
+      if (k === 'audio') {
+        if (r === 'bgm') return `BGM ${seq}`
+        if (r === 'sfx') return `SFX ${seq}`
+        if (r === 'submix') return `Submix ${seq}`
+        return `Voice ${seq}`
+      }
+      if (k === 'caption') return `Caption ${seq}`
+      if (k === 'overlay') return `Overlay ${seq}`
+      return `Track ${seq}`
+    }
+
+    for (let i = 0; i < n; i++) {
+      const existingOfKind = tracks.filter((t) => t.kind === kind).length
+      if (existingOfKind >= capFor(kind)) break
+      const id = ulid()
+      const seq = existingOfKind + 1
+      const base: Track = { id, kind, name: labelFor(kind, role ?? null, seq), clips: [] }
+      if (kind === 'audio') {
+        base.role = role ?? 'voice'
+        if (role === 'bgm') {
+          base.duckTarget = 'voice'
+          base.duckingDb = DEFAULT_DUCKING_DB
+        }
+      }
+      const at = insertIndexFor(tracks, kind)
+      tracks.splice(at, 0, base)
+      created.push(id)
+    }
+
+    if (created.length === 0) return []
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+    return created
+  },
+
+  removeTrack(trackId: string): boolean {
+    return get().removeTracks([trackId]).length > 0
+  },
+
+  removeTracks(trackIds: string[]): string[] {
+    if (!Array.isArray(trackIds) || trackIds.length === 0) return []
+    const project = get().project
+    const wanted = new Set(trackIds)
+    const videoCount = project.tracks.filter((t) => t.kind === 'video').length
+    const captionCount = project.tracks.filter(
+      (t) => t.kind === 'caption'
+    ).length
+    let remainingVideo = videoCount
+    let remainingCaption = captionCount
+    const removed: string[] = []
+    const tracks = project.tracks.filter((t) => {
+      if (!wanted.has(t.id)) return true
+      // Guard: never drop the last video track or the last caption track.
+      if (t.kind === 'video' && remainingVideo <= 1) return true
+      if (t.kind === 'caption' && remainingCaption <= 1) return true
+      if (t.kind === 'video') remainingVideo -= 1
+      if (t.kind === 'caption') remainingCaption -= 1
+      removed.push(t.id)
+      return false
+    })
+    if (removed.length === 0) return []
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+    return removed
   },
 
   addCaption(caption: CaptionClip): void {
@@ -1629,6 +2288,106 @@ export const useProjectStore = create<ProjectStore>()(
   getCaptionTrackId(): string | null {
     const track = get().project.tracks.find((t) => t.kind === 'caption')
     return track ? track.id : null
+  },
+
+  // --------------------------------------------------------------------
+  // Overlay elements (Phase 3.8) — stickers / shapes on the overlay track.
+  // --------------------------------------------------------------------
+  getOverlayTrackId(): string | null {
+    const track = get().project.tracks.find((t) => t.kind === 'overlay')
+    return track ? track.id : null
+  },
+
+  ensureOverlayTrack(): string {
+    const project = get().project
+    const existing = project.tracks.find((t) => t.kind === 'overlay')
+    if (existing) return existing.id
+    // No overlay track (old project) — append one after the caption track
+    // so it sits last, matching freshProject's track order.
+    const id = ulid()
+    const newTrack: Track = {
+      id,
+      kind: 'overlay',
+      name: 'Overlay 1',
+      clips: []
+    }
+    let lastCaptionIdx = -1
+    for (let i = 0; i < project.tracks.length; i++) {
+      if (project.tracks[i].kind === 'caption') lastCaptionIdx = i
+    }
+    const tracks = [...project.tracks]
+    // Insert right after the caption track, or at the very end if none.
+    tracks.splice(
+      lastCaptionIdx === -1 ? tracks.length : lastCaptionIdx + 1,
+      0,
+      newTrack
+    )
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+    return id
+  },
+
+  addOverlay(clip: OverlayClip): void {
+    // Lazily create the overlay track, then re-target the clip onto it and
+    // delegate to addClip (which validates track-kind compatibility).
+    const trackId = get().ensureOverlayTrack()
+    get().addClip(clip.trackId === trackId ? clip : { ...clip, trackId })
+  },
+
+  updateOverlay(overlayId, partial): void {
+    const project = get().project
+    let touched = false
+    const tracks = project.tracks.map((t) => {
+      if (t.kind !== 'overlay') return t
+      const clips = t.clips.map((c) => {
+        if (!isOverlayClip(c)) return c
+        if (c.id !== overlayId) return c
+        touched = true
+        const merged: OverlayClip = {
+          ...c,
+          ...partial,
+          // Preserve immutable fields if the caller passed them in.
+          id: c.id,
+          kind: 'overlay',
+          trackId: c.trackId,
+          // Deep-clone the nested source — for shape overlays clone `style`
+          // so the merged object never aliases the caller's input.
+          source: partial.source
+            ? partial.source.type === 'shape'
+              ? {
+                  ...partial.source,
+                  style: { ...partial.source.style }
+                }
+              : { ...partial.source }
+            : c.source
+        }
+        return merged
+      })
+      return { ...t, clips }
+    })
+    if (!touched) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  removeOverlay(overlayId: string): void {
+    const project = get().project
+    let touched = false
+    const tracks = project.tracks.map((t) => {
+      if (t.kind !== 'overlay') return t
+      const before = t.clips.length
+      const clips = t.clips.filter(
+        (c) => !(isOverlayClip(c) && c.id === overlayId)
+      )
+      if (clips.length !== before) touched = true
+      return { ...t, clips }
+    })
+    if (!touched) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
   },
 
   _hydrateFromDisk(project: Project): void {

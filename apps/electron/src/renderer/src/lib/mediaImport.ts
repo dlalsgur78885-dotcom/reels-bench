@@ -14,6 +14,117 @@ function basename(p: string): string {
   return i >= 0 ? p.slice(i + 1) : p
 }
 
+/**
+ * Probe + thumbnail + store-add a single already-local file path. Shared by
+ * `importFilesByPath` and `importFromUrl`. The path MUST already be on the
+ * ffmpeg allowlist (dialog-picked, drag-dropped+allowed, or downloaded by the
+ * main process which allowlists automatically).
+ *
+ * Returns the created asset, or throws so the caller can surface the error.
+ */
+export async function ingestLocalFile(
+  filePath: string,
+  opts?: { displayName?: string; fileSizeBytes?: number }
+): Promise<{ asset: MediaAsset; dataUri?: string }> {
+  const probe = await window.electron.media.probe(filePath)
+  const id = newId()
+  const fileName = opts?.displayName ?? basename(filePath)
+
+  const atMs =
+    probe.kind === 'image' || probe.kind === 'audio'
+      ? 0
+      : Math.min(1000, Math.max(0, probe.durationMs - 100))
+
+  let thumbnailPath: string | undefined
+  let dataUri: string | undefined
+  if (probe.kind !== 'audio') {
+    try {
+      const thumb = await window.electron.media.generateThumbnail(filePath, {
+        atMs,
+        mediaId: id
+      })
+      thumbnailPath = thumb.path
+      dataUri = thumb.dataUri
+    } catch (err) {
+      console.warn('[import] thumbnail failed', filePath, err)
+    }
+  }
+
+  const asset: MediaAsset = {
+    id,
+    path: filePath,
+    kind: probe.kind,
+    durationMs: probe.durationMs,
+    width: probe.width,
+    height: probe.height,
+    codec: probe.codec,
+    thumbnailPath,
+    importedAt: Date.now(),
+    fileName,
+    fileSizeBytes: opts?.fileSizeBytes ?? 0
+  }
+  useProjectStore.getState().addMedia(asset)
+
+  // Fire-and-forget waveform for anything carrying audio.
+  if (probe.kind === 'audio' || probe.kind === 'video') {
+    void window.electron.media
+      .generateWaveform(filePath, { mediaId: id })
+      .then((wf) => {
+        useProjectStore.getState().updateMediaWaveform(id, wf.path)
+        useTimelineUi.getState().setWaveformUri(id, wf.dataUri)
+      })
+      .catch((err: unknown) => {
+        console.warn('[import] waveform failed', filePath, err)
+      })
+  }
+
+  return { asset, dataUri }
+}
+
+export interface UrlImportResult {
+  ok: boolean
+  asset?: MediaAsset
+  dataUri?: string
+  error?: string
+}
+
+/**
+ * Download a remote https media URL to local userData via the main process,
+ * then run the standard ingest pipeline. Used by the remote-source import
+ * buttons (video library, internal reels, TTS audio).
+ *
+ * The download IPC validates the URL (https-only, no localhost / raw IP) and
+ * allowlists the resulting path, so probe / thumbnail / ffmpeg accept it.
+ * NEVER throws — resolves with `{ ok: false, error }` on any failure.
+ */
+export async function importFromUrl(
+  url: string,
+  opts?: { suggestedName?: string; displayName?: string }
+): Promise<UrlImportResult> {
+  try {
+    if (!/^https:\/\//i.test(url)) {
+      return { ok: false, error: 'https URL이 아닙니다' }
+    }
+    const dl = await window.electron.download.downloadVideoToTemp(
+      url,
+      opts?.suggestedName
+    )
+    if (!dl.ok) {
+      return { ok: false, error: `다운로드 실패 (${dl.error})` }
+    }
+    const { asset, dataUri } = await ingestLocalFile(dl.localPath, {
+      displayName: opts?.displayName,
+      fileSizeBytes: dl.sizeBytes
+    })
+    return { ok: true, asset, dataUri }
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err)
+    }
+  }
+}
+
 async function fileSize(filePath: string): Promise<number> {
   // We don't have a generic fs:stat IPC in scope; if absent, return 0.
   // (Future Phase-2.2 can wire a fs:stat handler.)

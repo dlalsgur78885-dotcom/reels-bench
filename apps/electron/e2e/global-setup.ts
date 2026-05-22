@@ -97,4 +97,56 @@ export default async function globalSetup(): Promise<void> {
   process.env.E2E_FIXTURE_MP4 = target
   process.env.E2E_TMP_ROOT = e2eRoot
   process.env.E2E_FFMPEG_PATH = ffmpegPath
+
+  // Generate a 3s mp3 audio-only fixture (sine wave, no video stream).
+  // Used by the Phase 2 audio-track-routing tests to verify that an audio
+  // file probed with cover-art is classified as kind='audio' and lands on an
+  // audio track, not a video track.
+  const audioTarget = path.join(e2eRoot, 'test.mp3')
+  if (existsSync(audioTarget)) {
+    try {
+      unlinkSync(audioTarget)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=440:sample_rate=44100',
+      '-t',
+      '3',
+      '-c:a',
+      'libmp3lame',
+      '-b:a',
+      '128k',
+      audioTarget
+    ]
+    const proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stderr = ''
+    proc.stderr.on('data', (b: Buffer) => {
+      stderr += b.toString('utf8')
+    })
+    proc.on('error', reject)
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`audio fixture ffmpeg exited ${code}: ${stderr}`))
+        return
+      }
+      if (!existsSync(audioTarget) || statSync(audioTarget).size < 512) {
+        reject(new Error(`audio fixture missing or too small at ${audioTarget}`))
+        return
+      }
+      resolve()
+    })
+  })
+
+  process.env.E2E_FIXTURE_MP3 = audioTarget
 }

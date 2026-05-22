@@ -38,8 +38,32 @@ if (!gotLock) {
 function applySessionHardening(): void {
   const ses = session.defaultSession
 
-  ses.setPermissionRequestHandler((_wc, _permission, callback) => {
+  // Deny every web permission by default. The sole exception is `media`,
+  // which the Phase 5 timeline voice-recording feature needs for microphone
+  // capture (navigator.mediaDevices.getUserMedia). Camera is not used by the
+  // app; Electron groups mic+camera under the single `media` permission, so
+  // we additionally inspect mediaTypes and only allow audio-only requests.
+  ses.setPermissionRequestHandler((_wc, permission, callback, details) => {
+    if (permission === 'media') {
+      const mediaTypes = (details as { mediaTypes?: string[] })?.mediaTypes
+      // Allow audio-only mic requests; reject anything asking for video.
+      if (!mediaTypes || (mediaTypes.includes('audio') && !mediaTypes.includes('video'))) {
+        callback(true)
+        return
+      }
+    }
     callback(false)
+  })
+
+  // Synchronous permission check (used by getUserMedia's pre-flight). Mirror
+  // the request handler exactly: only audio-only `media` passes — video/camera
+  // and every other permission are rejected, keeping check ↔ request policy
+  // consistent. (setPermissionCheckHandler's details carry a singular
+  // `mediaType` string, not the `mediaTypes` array the request handler sees.)
+  ses.setPermissionCheckHandler((_wc, permission, _origin, details) => {
+    if (permission !== 'media') return false
+    const mediaType = (details as { mediaType?: string })?.mediaType
+    return mediaType === undefined || mediaType === 'audio'
   })
 
   ses.webRequest.onHeadersReceived((details, callback) => {

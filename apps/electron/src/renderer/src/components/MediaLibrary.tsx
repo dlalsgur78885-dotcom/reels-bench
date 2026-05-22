@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { MediaAsset } from '../../../shared/project'
 import { useProjectStore } from '../store/project'
 import { importFilesByPath } from '../lib/mediaImport'
+import { ImportPanel, type ImportTab } from './ImportPanel'
 
 /** dataTransfer MIME used to carry a mediaId from MediaLibrary to Timeline. */
 export const MEDIA_DRAG_MIME = 'application/x-reels-media-id'
@@ -211,8 +212,52 @@ const styles = {
     borderRadius: 6,
     color: '#fca5a5',
     fontSize: 11
+  } as React.CSSProperties,
+  infoRow: {
+    margin: '0 12px',
+    padding: '8px 12px',
+    background: '#0d2a1a',
+    border: '1px solid #1f4a35',
+    borderRadius: 6,
+    color: '#86efac',
+    fontSize: 11
+  } as React.CSSProperties,
+  // ── 소스별 4버튼 탭 바 ──
+  tabBar: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 4,
+    padding: '8px 10px',
+    borderBottom: '1px solid #2a2a2a',
+    background: '#101010'
+  } as React.CSSProperties,
+  tabBtn: {
+    flex: '1 1 auto',
+    minWidth: 70,
+    background: '#1a1a1a',
+    color: '#9aa0a6',
+    border: '1px solid #2a2a2a',
+    borderRadius: 6,
+    padding: '6px 8px',
+    fontSize: 11,
+    fontWeight: 600,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap'
+  } as React.CSSProperties,
+  tabBtnActive: {
+    background: '#10b981',
+    color: '#04231a',
+    borderColor: '#10b981'
   } as React.CSSProperties
 }
+
+const IMPORT_TABS: { key: ImportTab; label: string }[] = [
+  { key: 'local', label: '① 내 PC' },
+  { key: 'library', label: '② 영상 라이브러리' },
+  { key: 'tts', label: '③ TTS & SRT' },
+  { key: 'ai', label: '④ AI 영상 생성' },
+  { key: 'internal', label: '내부 영상' }
+]
 
 // ---------------------------------------------------------------------------
 // Component.
@@ -224,8 +269,20 @@ export function MediaLibrary(): JSX.Element {
   const [dragOver, setDragOver] = useState(false)
   const [importing, setImporting] = useState<string[]>([])
   const [errors, setErrors] = useState<string[]>([])
+  const [notices, setNotices] = useState<string[]>([])
+  /** 현재 선택된 가져오기 소스 탭. */
+  const [tab, setTab] = useState<ImportTab>('local')
   /** mediaId -> data URI (loaded lazily after hydration). */
   const [thumbCache, setThumbCache] = useState<Record<string, string>>({})
+
+  /** ImportPanel(원격 소스 탭)에서 올라오는 안내/에러 메시지 핸들러. */
+  const handleNotice = (message: string, kind: 'info' | 'error'): void => {
+    if (kind === 'error') {
+      setErrors((prev) => [message, ...prev])
+    } else {
+      setNotices((prev) => [message, ...prev])
+    }
+  }
 
   const assets = useMemo(
     () =>
@@ -341,52 +398,16 @@ export function MediaLibrary(): JSX.Element {
   const dismissError = (idx: number): void => {
     setErrors((prev) => prev.filter((_, i) => i !== idx))
   }
+  const dismissNotice = (idx: number): void => {
+    setNotices((prev) => prev.filter((_, i) => i !== idx))
+  }
 
-  return (
-    <div style={styles.wrap}>
-      <div style={styles.header}>
-        <div style={styles.title}>미디어 라이브러리</div>
-        <button
-          style={styles.importBtn}
-          onClick={onImportClick}
-          data-testid="import-button"
-        >
-          가져오기
-        </button>
-      </div>
-
-      <div
-        style={{ ...styles.drop, ...(dragOver ? styles.dropActive : {}) }}
-        onDragOver={(e) => {
-          e.preventDefault()
-          e.stopPropagation()
-          setDragOver(true)
-        }}
-        onDragEnter={(e) => {
-          e.preventDefault()
-          setDragOver(true)
-        }}
-        onDragLeave={(e) => {
-          e.preventDefault()
-          setDragOver(false)
-        }}
-        onDrop={onDrop}
-        data-testid="drop-zone"
-      >
-        {dragOver
-          ? '여기에 놓아주세요'
-          : '파일을 드래그하거나 위 [가져오기]를 눌러주세요'}
-      </div>
-
-      {importing.length > 0 && (
-        <div style={styles.importingRow}>
-          가져오는 중… {importing.length}개
-        </div>
-      )}
-
+  /** 어느 탭에서나 보이는 안내/에러 배너. */
+  const banners = (
+    <>
       {errors.map((msg, idx) => (
         <div
-          key={`${idx}-${msg}`}
+          key={`err-${idx}-${msg}`}
           style={styles.errorRow}
           onClick={() => dismissError(idx)}
           role="button"
@@ -394,22 +415,106 @@ export function MediaLibrary(): JSX.Element {
           {msg}
         </div>
       ))}
+      {notices.map((msg, idx) => (
+        <div
+          key={`info-${idx}-${msg}`}
+          style={styles.infoRow}
+          onClick={() => dismissNotice(idx)}
+          role="button"
+        >
+          {msg}
+        </div>
+      ))}
+    </>
+  )
 
-      {assets.length === 0 ? (
-        <div style={styles.empty}>
-          비어있어요. 영상·음원·이미지를 가져오세요.
-        </div>
+  return (
+    <div style={styles.wrap}>
+      <div style={styles.header}>
+        <div style={styles.title}>미디어 가져오기</div>
+        {tab === 'local' && (
+          <button
+            style={styles.importBtn}
+            onClick={onImportClick}
+            data-testid="import-button"
+          >
+            가져오기
+          </button>
+        )}
+      </div>
+
+      {/* ── 소스별 4버튼 (+ 내부 영상) ── */}
+      <div style={styles.tabBar} data-testid="import-tabs">
+        {IMPORT_TABS.map((t) => (
+          <button
+            key={t.key}
+            style={{
+              ...styles.tabBtn,
+              ...(tab === t.key ? styles.tabBtnActive : {})
+            }}
+            onClick={() => setTab(t.key)}
+            data-testid={`import-tab-${t.key}`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'local' ? (
+        <>
+          <div
+            style={{ ...styles.drop, ...(dragOver ? styles.dropActive : {}) }}
+            onDragOver={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              setDragOver(true)
+            }}
+            onDragEnter={(e) => {
+              e.preventDefault()
+              setDragOver(true)
+            }}
+            onDragLeave={(e) => {
+              e.preventDefault()
+              setDragOver(false)
+            }}
+            onDrop={onDrop}
+            data-testid="drop-zone"
+          >
+            {dragOver
+              ? '여기에 놓아주세요'
+              : '파일을 드래그하거나 위 [가져오기]를 눌러주세요'}
+          </div>
+
+          {importing.length > 0 && (
+            <div style={styles.importingRow}>
+              가져오는 중… {importing.length}개
+            </div>
+          )}
+
+          {banners}
+
+          {assets.length === 0 ? (
+            <div style={styles.empty}>
+              비어있어요. 영상·음원·이미지를 가져오세요.
+            </div>
+          ) : (
+            <div style={styles.list} data-testid="media-list">
+              {assets.map((a) => (
+                <MediaCard
+                  key={a.id}
+                  asset={a}
+                  thumbUri={thumbCache[a.id]}
+                  onRemove={() => removeMedia(a.id)}
+                />
+              ))}
+            </div>
+          )}
+        </>
       ) : (
-        <div style={styles.list} data-testid="media-list">
-          {assets.map((a) => (
-            <MediaCard
-              key={a.id}
-              asset={a}
-              thumbUri={thumbCache[a.id]}
-              onRemove={() => removeMedia(a.id)}
-            />
-          ))}
-        </div>
+        <>
+          {banners}
+          <ImportPanel tab={tab} onNotice={handleNotice} />
+        </>
       )}
     </div>
   )

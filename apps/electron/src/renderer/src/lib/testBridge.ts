@@ -50,8 +50,18 @@ export function installTestBridge(): void {
         updateTransformKeyframe: Store['updateTransformKeyframe']
         removeTransformKeyframe: Store['removeTransformKeyframe']
         clearTransformKeyframes: Store['clearTransformKeyframes']
+        addSpeedKeyframe: Store['addSpeedKeyframe']
+        updateSpeedKeyframe: Store['updateSpeedKeyframe']
+        removeSpeedKeyframe: Store['removeSpeedKeyframe']
+        clearSpeedKeyframes: Store['clearSpeedKeyframes']
         addVideoTrack: Store['addVideoTrack']
         removeVideoTrack: Store['removeVideoTrack']
+        renameTrack: Store['renameTrack']
+        addTrack: Store['addTrack']
+        addTracks: Store['addTracks']
+        addAudioSubmixTrack: Store['addAudioSubmixTrack']
+        removeTrack: Store['removeTrack']
+        removeTracks: Store['removeTracks']
         addCaption: Store['addCaption']
         addCaptions: Store['addCaptions']
         newId: () => string
@@ -101,9 +111,27 @@ export function installTestBridge(): void {
         useProjectStore.getState().removeTransformKeyframe(id, kfIndex),
       clearTransformKeyframes: (id) =>
         useProjectStore.getState().clearTransformKeyframes(id),
+      addSpeedKeyframe: (id, atMs, speed) =>
+        useProjectStore.getState().addSpeedKeyframe(id, atMs, speed),
+      updateSpeedKeyframe: (id, kfIndex, partial) =>
+        useProjectStore.getState().updateSpeedKeyframe(id, kfIndex, partial),
+      removeSpeedKeyframe: (id, kfIndex) =>
+        useProjectStore.getState().removeSpeedKeyframe(id, kfIndex),
+      clearSpeedKeyframes: (id) =>
+        useProjectStore.getState().clearSpeedKeyframes(id),
       addVideoTrack: () => useProjectStore.getState().addVideoTrack(),
       removeVideoTrack: (tid) =>
         useProjectStore.getState().removeVideoTrack(tid),
+      renameTrack: (tid, name) =>
+        useProjectStore.getState().renameTrack(tid, name),
+      addTrack: (kind, role) =>
+        useProjectStore.getState().addTrack(kind, role),
+      addTracks: (kind, count, role) =>
+        useProjectStore.getState().addTracks(kind, count, role),
+      addAudioSubmixTrack: () =>
+        useProjectStore.getState().addAudioSubmixTrack(),
+      removeTrack: (tid) => useProjectStore.getState().removeTrack(tid),
+      removeTracks: (tids) => useProjectStore.getState().removeTracks(tids),
       addCaption: (cap) => useProjectStore.getState().addCaption(cap),
       addCaptions: (caps) => useProjectStore.getState().addCaptions(caps),
       newId

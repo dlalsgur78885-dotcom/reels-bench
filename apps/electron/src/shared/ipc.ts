@@ -49,10 +49,19 @@ export const IPC_CHANNELS = {
   download: {
     downloadVideoToTemp: 'download:downloadVideoToTemp'
   },
+  recording: {
+    saveAudio: 'recording:saveAudio'
+  },
   updater: {
     installNow: 'updater:installNow',
     downloadProgress: 'updater:download-progress',
     downloaded: 'updater:downloaded'
+  },
+  stt: {
+    transcribe: 'stt:transcribe',
+    cancel: 'stt:cancel',
+    progress: 'stt:progress',
+    modelStatus: 'stt:modelStatus'
   }
 } as const
 
@@ -285,6 +294,20 @@ export type DownloadResult =
   | { ok: false; error: string; httpStatus?: number }
 
 // ---------------------------------------------------------------------------
+// Voice recording (Phase 5 — timeline toolbar).
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of persisting a renderer-recorded audio blob to disk. The renderer
+ * captures audio via MediaRecorder, hands the raw bytes to main, and main
+ * writes them into `userData/recordings/<name>` and allowlists the path so
+ * the standard media probe / ffmpeg pipeline accepts it.
+ */
+export type SaveRecordingResult =
+  | { ok: true; localPath: string; sizeBytes: number }
+  | { ok: false; error: string }
+
+// ---------------------------------------------------------------------------
 // Auto-update (Phase 4.7).
 // ---------------------------------------------------------------------------
 
@@ -316,6 +339,89 @@ export interface UpdateDownloadProgressPayload {
   total: number
   /** Current throughput in bytes/sec. */
   bytesPerSecond: number
+}
+
+// ---------------------------------------------------------------------------
+// Auto-caption STT (speech-to-text). Local whisper.cpp; ggml-base model is
+// downloaded on first use into userData/models/.
+// ---------------------------------------------------------------------------
+
+/** STT model key. Only 'base' ships now; 'small' reserved for a future pass. */
+export type SttModelKey = 'base'
+
+/** Transcription language. 'auto' lets whisper detect. */
+export type SttLanguage = 'ko' | 'en' | 'auto'
+
+export interface SttTranscribeOptions {
+  /** Renderer-generated ulid; correlates progress + cancel. */
+  jobId: string
+  /** Absolute path of the audio/video file to transcribe. Must be allow-listed. */
+  sourcePath: string
+  /** Optional sub-range of the source to transcribe, in ms. Omit = whole file. */
+  startMs?: number
+  endMs?: number
+  /** Default 'auto'. */
+  language?: SttLanguage
+  /** Default 'base'. */
+  model?: SttModelKey
+}
+
+/** One transcribed cue. Shape-compatible with ParsedCaptionCue (sans id). */
+export interface SttCue {
+  startMs: number
+  endMs: number
+  text: string
+}
+
+export type SttPhase =
+  | 'preparing'
+  | 'downloading-model'
+  | 'extracting-audio'
+  | 'transcribing'
+  | 'done'
+  | 'error'
+  | 'cancelled'
+
+export interface SttProgress {
+  jobId: string
+  phase: SttPhase
+  /** 0..100 within the current phase. */
+  percent: number
+  message?: string
+  /** Populated only on 'downloading-model'. */
+  modelBytesDownloaded?: number
+  modelBytesTotal?: number
+}
+
+export type SttErrorCode =
+  | 'binary_missing'
+  | 'model_missing'
+  | 'model_download_failed'
+  | 'model_checksum_failed'
+  | 'no_audio'
+  | 'path_not_allowed'
+  | 'cancelled'
+  | 'timeout'
+  | 'parse_failed'
+  | 'spawn_failed'
+  | 'queue_full'
+  | 'duplicate_jobId'
+  | 'unsupported_platform'
+
+export type SttResult =
+  | {
+      jobId: string
+      ok: true
+      cues: SttCue[]
+      language: string
+      durationMs: number
+    }
+  | { jobId: string; ok: false; error: string; code: SttErrorCode }
+
+export interface SttModelStatus {
+  present: boolean
+  model: SttModelKey
+  sizeBytes?: number
 }
 
 export interface ExportBuildPlanResult {
@@ -444,6 +550,28 @@ export interface ElectronApi {
     onDownloadProgress(
       cb: (payload: UpdateDownloadProgressPayload) => void
     ): () => void
+  }
+  recording: {
+    /**
+     * Persist a renderer-captured audio recording (raw bytes from a
+     * MediaRecorder blob) to `userData/recordings/`. The renderer supplies
+     * the bytes and a desired file extension; main composes the path and
+     * allowlists it. Returns the local path for the standard import pipeline.
+     */
+    saveAudio(
+      bytes: ArrayBuffer | Uint8Array,
+      ext: string
+    ): Promise<SaveRecordingResult>
+  }
+  stt: {
+    /** Transcribe a clip's / file's audio into timed caption cues. */
+    transcribe(opts: SttTranscribeOptions): Promise<SttResult>
+    /** Cancel an in-flight transcription job by id. */
+    cancel(jobId: string): Promise<void>
+    /** Check whether the STT model is present on disk. */
+    modelStatus(model?: SttModelKey): Promise<SttModelStatus>
+    /** Subscribe to streaming transcription progress. Returns an unsubscribe fn. */
+    onProgress(cb: (e: SttProgress) => void): () => void
   }
 }
 

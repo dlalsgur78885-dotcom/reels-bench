@@ -18,6 +18,10 @@
       "from": "build/fonts",
       "to": "build/fonts",
       "filter": ["**/*.otf", "**/*.ttf"]
+    },
+    {
+      "from": "resources/whisper/win32-x64",
+      "to": "whisper/win32-x64"
     }
   ],
   "directories": {

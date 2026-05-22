@@ -6,20 +6,28 @@ import {
   getClipDuration,
   getClipSourceText,
   getClipTransform,
+  getSpeedAt,
+  hasSpeedCurve,
   hasTransformKeyframes,
   isCaptionClip,
   isIdentityTransform,
   isMediaClip,
+  isOverlayClip,
+  MAX_AUDIO_TRACKS,
   MAX_VIDEO_TRACKS,
   MIN_CLIP_MS,
   MIN_KEYFRAME_GAP_MS,
+  MIN_SPEED_KEYFRAME_GAP_MS,
+  sourceOffsetForTimelineOffset,
   type Clip,
   type MediaAsset,
+  type OverlayClip,
   type Project,
   type Track,
   type VideoAudioClip
 } from '../../../shared/project'
-import { useProjectStore } from '../store/project'
+import { overlaySourceLabel } from '../lib/overlays'
+import { getTotalDurationMs, useProjectStore, useUndoRedo } from '../store/project'
 import {
   BEAT_SNAP_TOLERANCE_MS,
   MAX_PPS,
@@ -27,7 +35,9 @@ import {
   snapToNearestBeat,
   useTimelineUi
 } from '../store/timelineUi'
+import { startVoiceRecording, type VoiceRecorder } from '../lib/voiceRecording'
 import { ClipContextMenu } from './ClipContextMenu'
+import { TrackContextMenu } from './TrackContextMenu'
 import { MEDIA_DRAG_MIME } from './MediaLibrary'
 
 interface TimelineProps {
@@ -78,6 +88,82 @@ const styles = {
     padding: '2px 8px',
     fontSize: 11,
     cursor: 'pointer'
+  } as React.CSSProperties,
+  // Phase 5 — square icon button used across the rebuilt toolbar.
+  toolBtn: {
+    background: '#1f2937',
+    color: '#e5e7eb',
+    border: '1px solid #374151',
+    borderRadius: 4,
+    width: 26,
+    height: 26,
+    padding: 0,
+    fontSize: 13,
+    lineHeight: 1,
+    cursor: 'pointer',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0
+  } as React.CSSProperties,
+  toolBtnDisabled: {
+    opacity: 0.35,
+    cursor: 'not-allowed'
+  } as React.CSSProperties,
+  // Active (toggled-on) state — teal accent, matching the CapCut reference.
+  toolBtnActive: {
+    background: '#0e7490',
+    color: '#ecfeff',
+    border: '1px solid #22d3ee'
+  } as React.CSSProperties,
+  // Recording state — red accent.
+  toolBtnRecording: {
+    background: '#b91c1c',
+    color: '#fff',
+    border: '1px solid #ef4444'
+  } as React.CSSProperties,
+  toolbarGroup: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4
+  } as React.CSSProperties,
+  toolbarSep: {
+    width: 1,
+    height: 20,
+    background: '#2a2a2a',
+    margin: '0 4px',
+    flexShrink: 0
+  } as React.CSSProperties,
+  flex1: { flex: 1, minWidth: 8 } as React.CSSProperties,
+  zoomSlider: {
+    width: 96,
+    accentColor: '#22d3ee',
+    cursor: 'pointer'
+  } as React.CSSProperties,
+  recTimer: {
+    fontSize: 10,
+    color: '#fca5a5',
+    fontVariantNumeric: 'tabular-nums' as const,
+    minWidth: 34
+  } as React.CSSProperties,
+  // Phase 5 — ruler marker pin.
+  rulerMarker: {
+    position: 'absolute' as const,
+    top: 0,
+    bottom: 0,
+    width: 0,
+    borderLeft: '2px solid #f59e0b',
+    zIndex: 4,
+    cursor: 'pointer'
+  } as React.CSSProperties,
+  rulerMarkerFlag: {
+    position: 'absolute' as const,
+    top: 0,
+    left: 0,
+    width: 9,
+    height: 9,
+    background: '#f59e0b',
+    clipPath: 'polygon(0 0, 100% 0, 100% 60%, 0 100%)'
   } as React.CSSProperties,
   ruler: {
     height: 24,
@@ -205,6 +291,11 @@ const styles = {
     background: 'linear-gradient(180deg, #4338ca, #312e81)',
     borderColor: '#6366f1'
   } as React.CSSProperties,
+  // Phase 3.8 — overlay clip block (distinct teal/cyan look).
+  overlayClip: {
+    background: 'linear-gradient(180deg, #0e7490, #155e75)',
+    borderColor: '#22d3ee'
+  } as React.CSSProperties,
   trimHandle: {
     position: 'absolute' as const,
     top: 0,
@@ -257,7 +348,8 @@ const styles = {
 // ---------------------------------------------------------------------------
 // Snap: 1) zero; 2) second boundaries; 3) adjacent clip edges (excluding
 // the moving clip's own edges); within SNAP_PX tolerance.
-// Alt-drag disables snap.
+// Alt-drag disables snap. The persistent toolbar snap toggle (Phase 5) also
+// disables it when off — passed via `options.snapEnabled`.
 // ---------------------------------------------------------------------------
 function snapMs(
   desiredMs: number,
@@ -265,9 +357,12 @@ function snapMs(
   track: Track,
   ignoreClipId: string | null,
   altPressed: boolean,
-  options?: { beats?: number[]; beatSnapEnabled?: boolean }
+  options?: { beats?: number[]; beatSnapEnabled?: boolean; snapEnabled?: boolean }
 ): number {
-  if (altPressed) return Math.max(0, desiredMs)
+  // Persistent toggle off OR Alt held → no snapping at all.
+  if (altPressed || options?.snapEnabled === false) {
+    return Math.max(0, desiredMs)
+  }
   const snapMsTolerance = (SNAP_PX / pps) * 1000
   let best = desiredMs
   let bestDist = Infinity
@@ -400,10 +495,22 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const removeTransformKeyframe = useProjectStore(
     (s) => s.removeTransformKeyframe
   )
+  const addSpeedKeyframe = useProjectStore((s) => s.addSpeedKeyframe)
+  const updateSpeedKeyframe = useProjectStore((s) => s.updateSpeedKeyframe)
+  const removeSpeedKeyframe = useProjectStore((s) => s.removeSpeedKeyframe)
+  const clearSpeedKeyframes = useProjectStore((s) => s.clearSpeedKeyframes)
   const addVideoTrack = useProjectStore((s) => s.addVideoTrack)
   const removeVideoTrack = useProjectStore((s) => s.removeVideoTrack)
+  const ensureAudioTrack = useProjectStore((s) => s.ensureAudioTrack)
+  const renameTrack = useProjectStore((s) => s.renameTrack)
+  const addTrack = useProjectStore((s) => s.addTrack)
+  const addTracks = useProjectStore((s) => s.addTracks)
+  const addAudioSubmixTrack = useProjectStore((s) => s.addAudioSubmixTrack)
+  const removeTrack = useProjectStore((s) => s.removeTrack)
+  const removeTracks = useProjectStore((s) => s.removeTracks)
   const addClip = useProjectStore((s) => s.addClip)
   const updateCaption = useProjectStore((s) => s.updateCaption)
+  const updateOverlay = useProjectStore((s) => s.updateOverlay)
   const setTrackMuted = useProjectStore((s) => s.setTrackMuted)
   const setTrackSolo = useProjectStore((s) => s.setTrackSolo)
 
@@ -416,7 +523,35 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const beatSnapEnabled = useTimelineUi((s) => s.beatSnapEnabled)
   const waveformUris = useTimelineUi((s) => s.waveformUris)
 
+  // Phase 5 — timeline toolbar state.
+  const toolMode = useTimelineUi((s) => s.toolMode)
+  const setToolMode = useTimelineUi((s) => s.setToolMode)
+  const snapEnabled = useTimelineUi((s) => s.snapEnabled)
+  const setSnapEnabled = useTimelineUi((s) => s.setSnapEnabled)
+  const avLinkEnabled = useTimelineUi((s) => s.avLinkEnabled)
+  const setAvLinkEnabled = useTimelineUi((s) => s.setAvLinkEnabled)
+  const markers = useTimelineUi((s) => s.markers)
+  const addMarker = useTimelineUi((s) => s.addMarker)
+  const removeMarker = useTimelineUi((s) => s.removeMarker)
+  const clearMarkers = useTimelineUi((s) => s.clearMarkers)
+
+  const removeClip = useProjectStore((s) => s.removeClip)
+  const { undo, redo, canUndo, canRedo } = useUndoRedo()
+
+  // Voice-recording session handle (Phase 5). Non-null while recording.
+  const recorderRef = useRef<VoiceRecorder | null>(null)
+  const [recording, setRecording] = useState(false)
+  const [recordError, setRecordError] = useState<string | null>(null)
+  // Elapsed seconds while recording — drives the toolbar timer label.
+  const [recordElapsed, setRecordElapsed] = useState(0)
+
   const [ctx, setCtx] = useState<{ clipId: string; x: number; y: number } | null>(null)
+  // Phase 3 — track header context menu (slide 11).
+  const [trackCtx, setTrackCtx] = useState<{
+    trackId: string
+    x: number
+    y: number
+  } | null>(null)
   const [dropTargetTrackId, setDropTargetTrackId] = useState<string | null>(null)
 
   // Compute total length (max endMs across all clips, min 10s for ruler).
@@ -493,7 +628,9 @@ export function Timeline(props: TimelineProps): JSX.Element {
   // the context-menu's "키프레임 갱신/추가" labels + the onTransformChange
   // redirect.
   const ctxKeyframeIndex = useMemo<number>(() => {
-    if (!ctxClip || !isMediaClip(ctxClip)) return -1
+    if (!ctxClip || (!isMediaClip(ctxClip) && !isOverlayClip(ctxClip))) {
+      return -1
+    }
     const kfs = ctxClip.transformKeyframes
     if (!kfs || kfs.length === 0) return -1
     const localMs = playheadMs - ctxClip.startMs
@@ -501,6 +638,30 @@ export function Timeline(props: TimelineProps): JSX.Element {
     let bestDist = MIN_KEYFRAME_GAP_MS
     for (let i = 0; i < kfs.length; i++) {
       const d = Math.abs(kfs[i].atMs - localMs)
+      if (d < bestDist) {
+        bestDist = d
+        bestIdx = i
+      }
+    }
+    return bestIdx
+  }, [ctxClip, playheadMs])
+
+  // Phase 3.10 — index of the speed keyframe under the playhead. Speed
+  // keyframe atMs are SOURCE offsets, so map the playhead's TIMELINE offset
+  // through `sourceOffsetForTimelineOffset` first, then find the nearest
+  // keyframe within MIN_SPEED_KEYFRAME_GAP_MS. -1 when not on a keyframe.
+  const ctxSpeedKeyframeIndex = useMemo<number>(() => {
+    if (!ctxClip || !isMediaClip(ctxClip)) return -1
+    const kfs = ctxClip.speedKeyframes
+    if (!kfs || kfs.length === 0) return -1
+    const sourceOffsetMs = sourceOffsetForTimelineOffset(
+      ctxClip,
+      playheadMs - ctxClip.startMs
+    )
+    let bestIdx = -1
+    let bestDist = MIN_SPEED_KEYFRAME_GAP_MS
+    for (let i = 0; i < kfs.length; i++) {
+      const d = Math.abs(kfs[i].atMs - sourceOffsetMs)
       if (d < bestDist) {
         bestDist = d
         bestIdx = i
@@ -527,6 +688,25 @@ export function Timeline(props: TimelineProps): JSX.Element {
       props.onOpenSilenceDialog?.(clip.id)
     }
   }
+
+  // -------------------------------------------------------------------------
+  // Track header context menu (Phase 3 — slide 11).
+  // -------------------------------------------------------------------------
+  const handleTrackHeaderContext = (
+    e: React.MouseEvent,
+    track: Track
+  ): void => {
+    e.preventDefault()
+    e.stopPropagation()
+    setCtx(null)
+    setTrackCtx({ trackId: track.id, x: e.clientX, y: e.clientY })
+  }
+
+  // The track the menu currently targets, resolved live from the project.
+  const trackCtxTrack = useMemo<Track | null>(() => {
+    if (!trackCtx) return null
+    return project.tracks.find((t) => t.id === trackCtx.trackId) ?? null
+  }, [trackCtx, project])
 
   // -------------------------------------------------------------------------
   // Ctrl+wheel zoom — anchor on cursor where possible.
@@ -599,17 +779,29 @@ export function Timeline(props: TimelineProps): JSX.Element {
     const media: MediaAsset | undefined = project.media[mediaId]
     if (!media) return
 
-    // Auto-route: audio media goes on the audio track, video/image on the
-    // video track. Caption tracks reject media drops outright.
-    if (track.kind === 'caption') return
-    let target: Track | undefined = track
-    if (media.kind === 'audio' && track.kind !== 'audio') {
-      target = project.tracks.find((t) => t.kind === 'audio')
-    } else if (
-      (media.kind === 'video' || media.kind === 'image') &&
-      track.kind !== 'video'
-    ) {
-      target = project.tracks.find((t) => t.kind === 'video')
+    // Auto-route by MEDIA kind (not by which lane the cursor happened to be
+    // over): audio → an audio track, video/image → a video track. This is the
+    // slide-10 fix — an audio clip must never land on a video track.
+    //   - audio  → drop lane if it is an audio track, else any audio track,
+    //              else a freshly-created Voice track (ensureAudioTrack).
+    //   - video  → drop lane if it is a video track, else the first video track.
+    //   - image  → same as video.
+    let target: Track | undefined
+    if (media.kind === 'audio') {
+      if (track.kind === 'audio') {
+        target = track
+      } else {
+        const audioTrackId = ensureAudioTrack('voice')
+        target = useProjectStore
+          .getState()
+          .project.tracks.find((t) => t.id === audioTrackId)
+      }
+    } else {
+      // video / image → a video track.
+      target =
+        track.kind === 'video'
+          ? track
+          : project.tracks.find((t) => t.kind === 'video')
     }
     if (!target) return
 
@@ -667,7 +859,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
         let desiredStart = orig.startMs + deltaMs
         desiredStart = snapMs(desiredStart, pps, liveTrack, clip.id, ev.altKey, {
           beats,
-          beatSnapEnabled
+          beatSnapEnabled,
+          snapEnabled
         })
         if (desiredStart > orig.endMs - MIN_CLIP_MS) {
           desiredStart = orig.endMs - MIN_CLIP_MS
@@ -694,7 +887,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
         let desiredEnd = orig.endMs + deltaMs
         desiredEnd = snapMs(desiredEnd, pps, liveTrack, clip.id, ev.altKey, {
           beats,
-          beatSnapEnabled
+          beatSnapEnabled,
+          snapEnabled
         })
         if (desiredEnd < orig.startMs + MIN_CLIP_MS) {
           desiredEnd = orig.startMs + MIN_CLIP_MS
@@ -736,7 +930,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
   // -------------------------------------------------------------------------
   const onKeyframeMarkerMouseDown = (
     e: React.MouseEvent<HTMLDivElement>,
-    clip: VideoAudioClip,
+    clip: VideoAudioClip | OverlayClip,
     kfIndex: number,
     kfAtMs: number
   ): void => {
@@ -811,7 +1005,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
           .project.tracks.find((t) => t.id === track.id) ?? track
       desired = snapMs(desired, pps, liveTrack, clip.id, ev.altKey, {
         beats,
-        beatSnapEnabled
+        beatSnapEnabled,
+        snapEnabled
       })
       desired = clampNoOverlap(liveTrack, desired, duration, clip.id)
       desired = Math.max(0, Math.round(desired))
@@ -825,6 +1020,9 @@ export function Timeline(props: TimelineProps): JSX.Element {
         updateMediaClipTrim(clip.id, { startMs: newStart, endMs: newEnd })
       } else if (isCaptionClip(clip)) {
         updateCaption(clip.id, { startMs: newStart, endMs: newEnd })
+      } else if (isOverlayClip(clip)) {
+        // Overlay clips reposition by body-drag too (no trim handles).
+        updateOverlay(clip.id, { startMs: newStart, endMs: newEnd })
       }
     }
     const onUp = (): void => {
@@ -835,55 +1033,459 @@ export function Timeline(props: TimelineProps): JSX.Element {
     window.addEventListener('mouseup', onUp)
   }
 
+  // -------------------------------------------------------------------------
+  // Phase 5 — toolbar handlers.
+  // -------------------------------------------------------------------------
+
+  /** Resolve the currently-selected clip from the live project, or null. */
+  const findSelectedClip = useCallback((): Clip | null => {
+    if (!selectedClipId) return null
+    for (const t of project.tracks) {
+      const c = t.clips.find((cc) => cc.id === selectedClipId)
+      if (c) return c
+    }
+    return null
+  }, [project, selectedClipId])
+
+  /** Split the selected media clip at the playhead. Returns the new id. */
+  const handleSplitAtPlayhead = useCallback((): string | null => {
+    const clip = findSelectedClip()
+    if (!clip || !isMediaClip(clip)) return null
+    return splitClipAt(clip.id, playheadMs) ?? null
+  }, [findSelectedClip, splitClipAt, playheadMs])
+
+  /** Delete the selected clip (any kind). */
+  const handleDeleteSelected = useCallback((): void => {
+    const clip = findSelectedClip()
+    if (!clip) return
+    onDeleteClip(clip.id)
+    handleSelect(null)
+  }, [findSelectedClip, onDeleteClip, handleSelect])
+
+  /**
+   * Split the selected clip at the playhead, then delete one side.
+   *   side='before' → drop the LEFT (earlier) piece, keep the right.
+   *   side='after'  → drop the RIGHT (later) piece, keep the left.
+   * splitClipAt returns the NEW (right) clip id; the original keeps the
+   * left segment.
+   */
+  const handleSplitDelete = useCallback(
+    (side: 'before' | 'after'): void => {
+      const clip = findSelectedClip()
+      if (!clip || !isMediaClip(clip)) return
+      const origId = clip.id
+      const newRightId = splitClipAt(origId, playheadMs)
+      if (!newRightId) return
+      if (side === 'before') {
+        // Keep the right piece (the new clip); remove the original left.
+        removeClip(origId)
+        handleSelect(newRightId)
+      } else {
+        // Keep the left piece (original); remove the new right.
+        removeClip(newRightId)
+        handleSelect(origId)
+      }
+    },
+    [findSelectedClip, splitClipAt, playheadMs, removeClip, handleSelect]
+  )
+
+  /** Add a marker at the current playhead position. */
+  const handleAddMarker = useCallback((): void => {
+    addMarker(playheadMs)
+  }, [addMarker, playheadMs])
+
+  /** Zoom so the whole timeline content fits the visible body width. */
+  const handleFit = useCallback((): void => {
+    const el = bodyRef.current
+    if (!el) return
+    const HEADER = 120
+    const avail = el.clientWidth - HEADER
+    if (avail <= 0) return
+    const totalMs = Math.max(1000, getTotalDurationMs(project))
+    const targetPps = (avail / totalMs) * 1000
+    setPps(Math.max(MIN_PPS, Math.min(MAX_PPS, targetPps)))
+    el.scrollLeft = 0
+  }, [project, setPps])
+
+  // Recording elapsed-time ticker.
+  useEffect(() => {
+    if (!recording) return
+    setRecordElapsed(0)
+    const started = Date.now()
+    const timer = window.setInterval(() => {
+      setRecordElapsed(Math.floor((Date.now() - started) / 1000))
+    }, 250)
+    return () => window.clearInterval(timer)
+  }, [recording])
+
+  /** Start a microphone recording session. */
+  const handleStartRecording = useCallback(async (): Promise<void> => {
+    if (recording) return
+    setRecordError(null)
+    try {
+      const rec = await startVoiceRecording()
+      recorderRef.current = rec
+      setRecording(true)
+    } catch (err) {
+      setRecordError(
+        err instanceof Error ? err.message : '마이크를 시작하지 못했습니다'
+      )
+    }
+  }, [recording])
+
+  /** Stop the active recording, ingest the take, and add a clip. */
+  const handleStopRecording = useCallback(async (): Promise<void> => {
+    const rec = recorderRef.current
+    if (!rec) return
+    recorderRef.current = null
+    setRecording(false)
+    const result = await rec.stop()
+    if (result.ok) {
+      handleSelect(result.clipId)
+    } else {
+      setRecordError(result.error)
+    }
+  }, [handleSelect])
+
+  // Stop + discard any in-flight recording if the timeline unmounts.
+  useEffect(() => {
+    return () => {
+      recorderRef.current?.cancel()
+      recorderRef.current = null
+    }
+  }, [])
+
+  /** Split-tool: clicking inside a clip splits it at the click point. */
+  const handleSplitToolClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>, clip: Clip): void => {
+      if (toolMode !== 'split') return
+      if (!isMediaClip(clip)) return
+      // Walk up from the clicked clip-body to the track lane (the element
+      // carrying a data-track-drop attribute) so the click X maps to an
+      // absolute timeline position regardless of the body's own offset.
+      let lane: HTMLElement | null = e.currentTarget
+      while (lane && !lane.hasAttribute('data-track-drop')) {
+        lane = lane.parentElement
+      }
+      if (!lane) return
+      const rect = lane.getBoundingClientRect()
+      const x = e.clientX - rect.left
+      const atMs = Math.max(0, Math.round((x / pps) * 1000))
+      const newId = splitClipAt(clip.id, atMs)
+      if (newId) handleSelect(newId)
+    },
+    [toolMode, pps, splitClipAt, handleSelect]
+  )
+
+  const selectedClipForToolbar = findSelectedClip()
+  const canSplit =
+    selectedClipForToolbar !== null && isMediaClip(selectedClipForToolbar)
+  const canDelete = selectedClipForToolbar !== null
+
   return (
     <div style={styles.wrap} data-testid="timeline">
-      <div style={styles.toolbar}>
-        <div>줌</div>
-        <button
-          style={styles.zoomBtn}
-          onClick={() => setPps(pps / ZOOM_FACTOR)}
-          aria-label="축소"
-          data-testid="timeline-zoom-out"
-        >
-          −
-        </button>
-        <div
-          style={{ minWidth: 56, textAlign: 'center' }}
-          data-testid="timeline-zoom-level"
-        >
-          {Math.round(pps)} px/s
+      <div style={styles.toolbar} data-testid="timeline-toolbar">
+        {/* ---- LEFT GROUP: add · tool · undo/redo · split · split-delete ·
+                delete · marker ---- */}
+        <div style={styles.toolbarGroup}>
+          {/* + 비디오 트랙 (add) */}
+          <button
+            type="button"
+            style={{
+              ...styles.toolBtn,
+              ...(videoTrackCount >= MAX_VIDEO_TRACKS
+                ? styles.toolBtnDisabled
+                : {})
+            }}
+            onClick={() => addVideoTrack()}
+            disabled={videoTrackCount >= MAX_VIDEO_TRACKS}
+            title={
+              videoTrackCount >= MAX_VIDEO_TRACKS
+                ? `비디오 트랙은 최대 ${MAX_VIDEO_TRACKS}개까지 추가할 수 있습니다`
+                : '비디오 트랙 추가'
+            }
+            data-testid="add-video-track-button"
+          >
+            +
+          </button>
+
+          <div style={styles.toolbarSep} />
+
+          {/* 선택 도구 */}
+          <button
+            type="button"
+            style={{
+              ...styles.toolBtn,
+              ...(toolMode === 'select' ? styles.toolBtnActive : {})
+            }}
+            onClick={() => setToolMode('select')}
+            aria-pressed={toolMode === 'select'}
+            title="선택 도구 — 클립을 클릭해 선택"
+            data-testid="tool-select-button"
+          >
+            ▦
+          </button>
+          {/* 분할 도구 (split mode) */}
+          <button
+            type="button"
+            style={{
+              ...styles.toolBtn,
+              ...(toolMode === 'split' ? styles.toolBtnActive : {})
+            }}
+            onClick={() => setToolMode('split')}
+            aria-pressed={toolMode === 'split'}
+            title="분할 도구 — 레인 위 클립을 클릭한 지점에서 분할"
+            data-testid="tool-split-button"
+          >
+            ✂
+          </button>
+
+          <div style={styles.toolbarSep} />
+
+          {/* 실행취소 / 다시실행 */}
+          <button
+            type="button"
+            style={{
+              ...styles.toolBtn,
+              ...(canUndo ? {} : styles.toolBtnDisabled)
+            }}
+            onClick={() => undo()}
+            disabled={!canUndo}
+            title="실행 취소 (Ctrl+Z)"
+            data-testid="timeline-undo-button"
+          >
+            ↶
+          </button>
+          <button
+            type="button"
+            style={{
+              ...styles.toolBtn,
+              ...(canRedo ? {} : styles.toolBtnDisabled)
+            }}
+            onClick={() => redo()}
+            disabled={!canRedo}
+            title="다시 실행 (Ctrl+Shift+Z)"
+            data-testid="timeline-redo-button"
+          >
+            ↷
+          </button>
+
+          <div style={styles.toolbarSep} />
+
+          {/* 분할(Split) at playhead */}
+          <button
+            type="button"
+            style={{
+              ...styles.toolBtn,
+              ...(canSplit ? {} : styles.toolBtnDisabled)
+            }}
+            onClick={() => handleSplitAtPlayhead()}
+            disabled={!canSplit}
+            title="선택 클립을 플레이헤드에서 분할 (S)"
+            data-testid="timeline-split-button"
+          >
+            ⑂
+          </button>
+          {/* 앞 삭제 분할 — 분할 후 왼쪽(앞) 조각 삭제 */}
+          <button
+            type="button"
+            style={{
+              ...styles.toolBtn,
+              ...(canSplit ? {} : styles.toolBtnDisabled)
+            }}
+            onClick={() => handleSplitDelete('before')}
+            disabled={!canSplit}
+            title="플레이헤드 앞부분 삭제 (분할 후 앞 조각 제거)"
+            data-testid="timeline-split-delete-before-button"
+          >
+            ⇤
+          </button>
+          {/* 뒤 삭제 분할 — 분할 후 오른쪽(뒤) 조각 삭제 */}
+          <button
+            type="button"
+            style={{
+              ...styles.toolBtn,
+              ...(canSplit ? {} : styles.toolBtnDisabled)
+            }}
+            onClick={() => handleSplitDelete('after')}
+            disabled={!canSplit}
+            title="플레이헤드 뒷부분 삭제 (분할 후 뒤 조각 제거)"
+            data-testid="timeline-split-delete-after-button"
+          >
+            ⇥
+          </button>
+          {/* 삭제(Delete) */}
+          <button
+            type="button"
+            style={{
+              ...styles.toolBtn,
+              ...(canDelete ? {} : styles.toolBtnDisabled)
+            }}
+            onClick={() => handleDeleteSelected()}
+            disabled={!canDelete}
+            title="선택 클립 삭제 (Delete)"
+            data-testid="timeline-delete-button"
+          >
+            🗑
+          </button>
+
+          <div style={styles.toolbarSep} />
+
+          {/* 마커(Marker) */}
+          <button
+            type="button"
+            style={styles.toolBtn}
+            onClick={() => handleAddMarker()}
+            title="플레이헤드에 마커 추가"
+            data-testid="timeline-add-marker-button"
+          >
+            ⚑
+          </button>
+          {markers.length > 0 && (
+            <button
+              type="button"
+              style={styles.toolBtn}
+              onClick={() => clearMarkers()}
+              title={`마커 모두 제거 (${markers.length}개)`}
+              data-testid="timeline-clear-markers-button"
+            >
+              ⌦
+            </button>
+          )}
         </div>
-        <button
-          style={styles.zoomBtn}
-          onClick={() => setPps(pps * ZOOM_FACTOR)}
-          aria-label="확대"
-          data-testid="timeline-zoom-in"
-        >
-          +
-        </button>
-        <button
-          style={{
-            ...styles.zoomBtn,
-            marginLeft: 16,
-            opacity: videoTrackCount >= MAX_VIDEO_TRACKS ? 0.4 : 1,
-            cursor:
-              videoTrackCount >= MAX_VIDEO_TRACKS ? 'not-allowed' : 'pointer'
-          }}
-          onClick={() => addVideoTrack()}
-          disabled={videoTrackCount >= MAX_VIDEO_TRACKS}
-          title={
-            videoTrackCount >= MAX_VIDEO_TRACKS
-              ? `비디오 트랙은 최대 ${MAX_VIDEO_TRACKS}개까지 추가할 수 있습니다`
-              : '비디오 트랙 추가'
-          }
-          data-testid="add-video-track-button"
-        >
-          + 비디오 트랙
-        </button>
-        <div style={{ marginLeft: 16 }}>
-          Ctrl/Cmd + 휠로 확대·축소 · Alt 누르면 스냅 해제
+
+        <div style={styles.flex1} />
+
+        {/* ---- RIGHT GROUP: voice record · snap · A/V link · zoom ---- */}
+        <div style={styles.toolbarGroup}>
+          {/* 음성 녹음 */}
+          <button
+            type="button"
+            style={{
+              ...styles.toolBtn,
+              ...(recording ? styles.toolBtnRecording : {})
+            }}
+            onClick={() =>
+              recording ? handleStopRecording() : handleStartRecording()
+            }
+            aria-pressed={recording}
+            title={recording ? '녹음 중지 후 트랙에 삽입' : '음성 녹음'}
+            data-testid="timeline-record-button"
+          >
+            {recording ? '⏹' : '🎙'}
+          </button>
+          {recording && (
+            <span style={styles.recTimer} data-testid="timeline-record-timer">
+              {Math.floor(recordElapsed / 60)}:
+              {String(recordElapsed % 60).padStart(2, '0')}
+            </span>
+          )}
+
+          <div style={styles.toolbarSep} />
+
+          {/* 스냅 토글 */}
+          <button
+            type="button"
+            style={{
+              ...styles.toolBtn,
+              ...(snapEnabled ? styles.toolBtnActive : {})
+            }}
+            onClick={() => setSnapEnabled(!snapEnabled)}
+            aria-pressed={snapEnabled}
+            title={
+              snapEnabled
+                ? '스냅 켜짐 — 클릭하면 끔 (Alt 드래그로 일시 해제)'
+                : '스냅 꺼짐 — 클릭하면 켬'
+            }
+            data-testid="timeline-snap-toggle"
+          >
+            ⌗
+          </button>
+          {/* 영상-오디오 링크 토글 */}
+          <button
+            type="button"
+            style={{
+              ...styles.toolBtn,
+              ...(avLinkEnabled ? styles.toolBtnActive : {})
+            }}
+            onClick={() => setAvLinkEnabled(!avLinkEnabled)}
+            aria-pressed={avLinkEnabled}
+            title="영상-오디오 링크 (링크된 클립 함께 이동) — 준비 중"
+            data-testid="timeline-avlink-toggle"
+          >
+            🔗
+          </button>
+
+          <div style={styles.toolbarSep} />
+
+          {/* 줌: 핏 · − · 슬라이더 · + */}
+          <button
+            type="button"
+            style={styles.toolBtn}
+            onClick={() => handleFit()}
+            title="타임라인 핏 — 전체 콘텐츠를 화면에 맞춤"
+            data-testid="timeline-fit-button"
+          >
+            ⤢
+          </button>
+          <button
+            type="button"
+            style={styles.toolBtn}
+            onClick={() => setPps(pps / ZOOM_FACTOR)}
+            aria-label="축소"
+            title="축소"
+            data-testid="timeline-zoom-out"
+          >
+            −
+          </button>
+          <input
+            type="range"
+            min={MIN_PPS}
+            max={MAX_PPS}
+            step={1}
+            value={Math.round(pps)}
+            onChange={(e) => setPps(Number(e.target.value))}
+            style={styles.zoomSlider}
+            aria-label="줌 슬라이더"
+            title="줌 슬라이더"
+            data-testid="timeline-zoom-slider"
+          />
+          <button
+            type="button"
+            style={styles.toolBtn}
+            onClick={() => setPps(pps * ZOOM_FACTOR)}
+            aria-label="확대"
+            title="확대"
+            data-testid="timeline-zoom-in"
+          >
+            +
+          </button>
+          <div
+            style={{ minWidth: 52, textAlign: 'center' }}
+            data-testid="timeline-zoom-level"
+          >
+            {Math.round(pps)} px/s
+          </div>
         </div>
       </div>
+      {recordError && (
+        <div
+          style={{
+            flexShrink: 0,
+            padding: '4px 10px',
+            background: '#2a0d0d',
+            borderBottom: '1px solid #4a1f1f',
+            color: '#fca5a5',
+            fontSize: 11,
+            cursor: 'pointer'
+          }}
+          onClick={() => setRecordError(null)}
+          role="button"
+          data-testid="timeline-record-error"
+        >
+          녹음 오류: {recordError} (클릭하여 닫기)
+        </div>
+      )}
       <div
         style={styles.ruler}
         onMouseDown={handleRulerMouseDown}
@@ -904,6 +1506,27 @@ export function Timeline(props: TimelineProps): JSX.Element {
                 data-beat-ms={b}
               />
             ))}
+          {/* Phase 5 — markers. Click a pin to remove it. */}
+          {markers.map((m) => (
+            <div
+              key={m.id}
+              style={{ ...styles.rulerMarker, left: (m.atMs / 1000) * pps }}
+              data-testid="ruler-marker"
+              data-marker-id={m.id}
+              data-marker-ms={m.atMs}
+              title={`마커 · ${(m.atMs / 1000).toFixed(2)}s — 클릭하여 제거`}
+              onMouseDown={(e) => {
+                // Don't let the ruler scrub-seek when removing a marker.
+                e.stopPropagation()
+              }}
+              onClick={(e) => {
+                e.stopPropagation()
+                removeMarker(m.id)
+              }}
+            >
+              <div style={styles.rulerMarkerFlag} />
+            </div>
+          ))}
         </div>
       </div>
       <div style={styles.body} ref={bodyRef}>
@@ -921,6 +1544,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
               data-track-muted={track.muted ? 'true' : 'false'}
               data-track-solo={track.solo ? 'true' : 'false'}
               data-track-role={track.role ?? ''}
+              onContextMenu={(e) => handleTrackHeaderContext(e, track)}
+              title="우클릭: 트랙 메뉴"
             >
               <div style={styles.trackHeaderRow}>
                 <span style={styles.trackHeaderName}>{track.name}</span>
@@ -988,6 +1613,13 @@ export function Timeline(props: TimelineProps): JSX.Element {
                 width: laneWidth
               }}
               onClick={handleLaneClick}
+              onContextMenu={(e) => {
+                // Right-click on the empty lane background (not a clip — clips
+                // stopPropagation in their own onContextMenu) opens the track
+                // menu, same as right-clicking the track header.
+                if (e.target !== e.currentTarget) return
+                handleTrackHeaderContext(e, track)
+              }}
               onDragOver={(e) => handleLaneDragOver(e, track)}
               onDragLeave={(e) => handleLaneDragLeave(e, track)}
               onDrop={(e) => handleLaneDrop(e, track)}
@@ -998,14 +1630,28 @@ export function Timeline(props: TimelineProps): JSX.Element {
                 const left = clipLeft(clip, pps)
                 const w = clipWidth(clip, pps)
                 const isCap = isCaptionClip(clip)
+                const isOverlay = isOverlayClip(clip)
                 const isSel = clip.id === selectedClipId
                 const label = isCap
                   ? getClipSourceText(clip) || '(빈 자막)'
-                  : `clip ${clip.id.slice(-4)}`
-                const speedLabel =
-                  isMediaClip(clip) && (clip.speed ?? 1) !== 1
-                    ? ` · ${(clip.speed ?? 1).toFixed(2)}×`
-                    : ''
+                  : isOverlayClip(clip)
+                    ? overlaySourceLabel(clip.source)
+                    : `clip ${clip.id.slice(-4)}`
+                // Phase 3.10 — a curve clip shows a min→max speed RANGE; a
+                // constant clip keeps the single-value label (only when != 1).
+                let speedLabel = ''
+                if (isMediaClip(clip)) {
+                  if (hasSpeedCurve(clip)) {
+                    const speeds = (clip.speedKeyframes ?? []).map(
+                      (kf) => kf.speed
+                    )
+                    const lo = Math.min(...speeds)
+                    const hi = Math.max(...speeds)
+                    speedLabel = ` · ${lo.toFixed(1)}×→${hi.toFixed(1)}×`
+                  } else if ((clip.speed ?? 1) !== 1) {
+                    speedLabel = ` · ${(clip.speed ?? 1).toFixed(2)}×`
+                  }
+                }
                 // Phase 2.5 — waveform bg for audio-bearing media clips.
                 // Math: the PNG covers the full source media. We map a
                 // [trimInMs..trimOutMs] window onto [0..w] pixels so trimmed
@@ -1035,6 +1681,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
                     style={{
                       ...styles.clip,
                       ...(isCap ? styles.captionClip : {}),
+                      ...(isOverlay ? styles.overlayClip : {}),
                       ...waveformBg,
                       ...(isSel ? styles.clipSelected : {}),
                       ...(audioMuted ? { opacity: 0.5 } : {}),
@@ -1043,7 +1690,11 @@ export function Timeline(props: TimelineProps): JSX.Element {
                     }}
                     title={label + speedLabel}
                     data-testid={
-                      isCap ? 'caption-clip-block' : 'media-clip-block'
+                      isCap
+                        ? 'caption-clip-block'
+                        : isOverlay
+                          ? 'overlay-clip-block'
+                          : 'media-clip-block'
                     }
                     data-clip-id={clip.id}
                     data-clip-kind={clip.kind}
@@ -1071,17 +1722,30 @@ export function Timeline(props: TimelineProps): JSX.Element {
                       style={{
                         ...styles.clipBody,
                         left: isMediaClip(clip) ? HANDLE_PX : 0,
-                        right: isMediaClip(clip) ? HANDLE_PX : 0
+                        right: isMediaClip(clip) ? HANDLE_PX : 0,
+                        cursor: toolMode === 'split' ? 'col-resize' : 'grab'
                       }}
                       data-testid="clip-body"
                       data-clip-id={clip.id}
-                      onMouseDown={(e) => onClipBodyMouseDown(e, clip, track)}
+                      onMouseDown={(e) => {
+                        // Split tool — clicking a clip splits it; never drags.
+                        if (toolMode === 'split') {
+                          e.stopPropagation()
+                          return
+                        }
+                        onClipBodyMouseDown(e, clip, track)
+                      }}
                       onClick={(e) => {
                         e.stopPropagation()
+                        if (toolMode === 'split') {
+                          handleSplitToolClick(e, clip)
+                          return
+                        }
                         handleSelect(clip.id)
                       }}
                       onDoubleClick={(e) => {
                         e.stopPropagation()
+                        if (toolMode === 'split') return
                         if (isCap) onEditCaption(clip.id)
                       }}
                     >
@@ -1160,8 +1824,9 @@ export function Timeline(props: TimelineProps): JSX.Element {
                       </div>
                     )}
                     {/* Transform indicator (Phase 3) — small tag when the
-                        clip has a non-identity static transform. */}
-                    {isMediaClip(clip) &&
+                        clip has a non-identity static transform. Phase 3.8 —
+                        overlay clips also carry a transform. */}
+                    {(isMediaClip(clip) || isOverlayClip(clip)) &&
                       clip.transform &&
                       !isIdentityTransform(getClipTransform(clip)) && (
                         <div
@@ -1187,8 +1852,10 @@ export function Timeline(props: TimelineProps): JSX.Element {
                       )}
                     {/* Keyframe indicator (Phase 3.5) — badge distinct from
                         the Phase 3 transform-indicator when the clip has an
-                        active (>= 2 keyframe) animation track. */}
-                    {isMediaClip(clip) && hasTransformKeyframes(clip) && (
+                        active (>= 2 keyframe) animation track. Phase 3.8 —
+                        overlay clips share the keyframe infra. */}
+                    {(isMediaClip(clip) || isOverlayClip(clip)) &&
+                      hasTransformKeyframes(clip) && (
                       <div
                         data-testid="keyframe-indicator"
                         data-clip-id={clip.id}
@@ -1267,11 +1934,41 @@ export function Timeline(props: TimelineProps): JSX.Element {
                           ◐
                         </div>
                       )}
+                    {/* Speed-curve indicator (Phase 3.10) — amber badge in
+                        the TOP-LEFT corner, just below the crop badge (top
+                        22) so it never collides with the crop (top 4),
+                        keyframe (bottom-left), transform (bottom-right),
+                        filter FX (top-right) or color-adjust (top-right 22)
+                        badges. Shown when the clip has an active speed
+                        curve. */}
+                    {isMediaClip(clip) && hasSpeedCurve(clip) && (
+                      <div
+                        data-testid="speed-curve-indicator"
+                        data-clip-id={clip.id}
+                        style={{
+                          position: 'absolute',
+                          left: 4,
+                          top: 22,
+                          padding: '1px 5px',
+                          borderRadius: 3,
+                          background: 'rgba(245, 158, 11, 0.95)',
+                          color: '#1a1a1a',
+                          fontSize: 9,
+                          fontWeight: 700,
+                          pointerEvents: 'none',
+                          zIndex: 4
+                        }}
+                        title="속도 커브"
+                      >
+                        ⤳
+                      </div>
+                    )}
                     {/* Keyframe marker row (Phase 3.5) — one diamond per
                         keyframe, positioned by clip-relative atMs. Click →
                         seek; horizontal drag → re-time; right/Alt-click →
-                        remove. */}
-                    {isMediaClip(clip) && hasTransformKeyframes(clip) && (
+                        remove. Phase 3.8 — overlay clips too. */}
+                    {(isMediaClip(clip) || isOverlayClip(clip)) &&
+                      hasTransformKeyframes(clip) && (
                       <div
                         style={styles.keyframeMarkerRow}
                         data-testid="keyframe-marker-row"
@@ -1356,7 +2053,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
               : undefined
           }
           onTransformChange={
-            isMediaClip(ctxClip)
+            isMediaClip(ctxClip) || isOverlayClip(ctxClip)
               ? (partial): void => {
                   // Phase 3.5 redirect:
                   //  - active keyframe track + playhead ON a keyframe →
@@ -1383,7 +2080,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
               : undefined
           }
           onTransformReset={
-            isMediaClip(ctxClip)
+            isMediaClip(ctxClip) || isOverlayClip(ctxClip)
               ? (): void => {
                   resetClipTransform(ctxClip.id)
                 }
@@ -1433,7 +2130,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
               : undefined
           }
           onAddKeyframe={
-            isMediaClip(ctxClip)
+            isMediaClip(ctxClip) || isOverlayClip(ctxClip)
               ? (): void => {
                   // "키프레임 추가/갱신" — addTransformKeyframe seeds a track
                   // (two keyframes) on the first call, or inserts/replaces
@@ -1446,7 +2143,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
               : undefined
           }
           onRemoveKeyframeAtPlayhead={
-            isMediaClip(ctxClip)
+            isMediaClip(ctxClip) || isOverlayClip(ctxClip)
               ? (): void => {
                   if (ctxKeyframeIndex >= 0) {
                     removeTransformKeyframe(ctxClip.id, ctxKeyframeIndex)
@@ -1455,13 +2152,155 @@ export function Timeline(props: TimelineProps): JSX.Element {
               : undefined
           }
           keyframeCount={
-            isMediaClip(ctxClip)
+            isMediaClip(ctxClip) || isOverlayClip(ctxClip)
               ? ctxClip.transformKeyframes?.length ?? 0
               : 0
           }
-          isOnKeyframe={isMediaClip(ctxClip) && ctxKeyframeIndex >= 0}
+          isOnKeyframe={
+            (isMediaClip(ctxClip) || isOverlayClip(ctxClip)) &&
+            ctxKeyframeIndex >= 0
+          }
+          onAddSpeedKeyframe={
+            isMediaClip(ctxClip)
+              ? (): void => {
+                  // "속도 키프레임 추가/갱신" — addSpeedKeyframe seeds the
+                  // curve (two keyframes) on the first call, or inserts/
+                  // replaces one within the dedup window on later calls.
+                  // atMs is a SOURCE offset → map the playhead through the
+                  // inverse integral.
+                  const srcOff = sourceOffsetForTimelineOffset(
+                    ctxClip,
+                    playheadMs - ctxClip.startMs
+                  )
+                  addSpeedKeyframe(ctxClip.id, srcOff)
+                }
+              : undefined
+          }
+          onUpdateSpeedKeyframeAtPlayhead={
+            isMediaClip(ctxClip)
+              ? (s: number): void => {
+                  if (ctxSpeedKeyframeIndex >= 0) {
+                    updateSpeedKeyframe(ctxClip.id, ctxSpeedKeyframeIndex, {
+                      speed: s
+                    })
+                  }
+                }
+              : undefined
+          }
+          onRemoveSpeedKeyframeAtPlayhead={
+            isMediaClip(ctxClip)
+              ? (): void => {
+                  if (ctxSpeedKeyframeIndex >= 0) {
+                    removeSpeedKeyframe(ctxClip.id, ctxSpeedKeyframeIndex)
+                  }
+                }
+              : undefined
+          }
+          onClearSpeedCurve={
+            isMediaClip(ctxClip)
+              ? (): void => {
+                  clearSpeedKeyframes(ctxClip.id)
+                }
+              : undefined
+          }
+          speedKeyframeCount={
+            isMediaClip(ctxClip) ? ctxClip.speedKeyframes?.length ?? 0 : 0
+          }
+          isOnSpeedKeyframe={
+            isMediaClip(ctxClip) && ctxSpeedKeyframeIndex >= 0
+          }
+          speedAtPlayhead={
+            isMediaClip(ctxClip)
+              ? hasSpeedCurve(ctxClip)
+                ? getSpeedAt(
+                    ctxClip,
+                    sourceOffsetForTimelineOffset(
+                      ctxClip,
+                      playheadMs - ctxClip.startMs
+                    )
+                  )
+                : ctxClip.speed ?? 1
+              : 1
+          }
+          onOverlayStyleChange={
+            isOverlayClip(ctxClip) && ctxClip.source.type === 'shape'
+              ? (partial): void => {
+                  // Shape-style edit — merge into source.style and persist
+                  // via updateOverlay. ctxClip narrowed to a shape overlay.
+                  if (!isOverlayClip(ctxClip)) return
+                  if (ctxClip.source.type !== 'shape') return
+                  updateOverlay(ctxClip.id, {
+                    source: {
+                      type: 'shape',
+                      style: { ...ctxClip.source.style, ...partial }
+                    }
+                  })
+                }
+              : undefined
+          }
           onClose={() => setCtx(null)}
         />
+      )}
+
+      {trackCtx && trackCtxTrack && (
+        (() => {
+          const t = trackCtxTrack
+          const sameKind = project.tracks.filter((x) => x.kind === t.kind)
+          const sameKindCount = sameKind.length
+          // Per-kind cap → headroom for adding more.
+          const cap =
+            t.kind === 'video'
+              ? MAX_VIDEO_TRACKS
+              : t.kind === 'audio'
+                ? MAX_AUDIO_TRACKS
+                : Number.POSITIVE_INFINITY
+          const addHeadroom = cap - sameKindCount
+          // Delete guard: the last video track + the last caption track
+          // cannot be removed (mirrors the store's removeTracks guard).
+          const deleteDisabled =
+            (t.kind === 'video' && sameKindCount <= 1) ||
+            (t.kind === 'caption' && sameKindCount <= 1)
+          // Bulk delete picks the N most-recently-positioned same-kind
+          // tracks, skipping the survivor we must keep for video/caption.
+          const pickBulkDeleteIds = (count: number): string[] => {
+            const mustKeepOne = t.kind === 'video' || t.kind === 'caption'
+            const deletable = mustKeepOne ? sameKind.slice(1) : sameKind
+            // Remove from the end (newest) first.
+            return deletable.slice(-count).map((x) => x.id)
+          }
+          return (
+            <TrackContextMenu
+              track={t}
+              x={trackCtx.x}
+              y={trackCtx.y}
+              deleteDisabled={deleteDisabled}
+              sameKindCount={sameKindCount}
+              addHeadroom={addHeadroom}
+              onRename={(name) => renameTrack(t.id, name)}
+              onAddOne={() => {
+                if (t.kind === 'audio') {
+                  addTrack('audio', t.role ?? 'voice')
+                } else {
+                  addTrack(t.kind)
+                }
+              }}
+              onAddSubmix={() => addAudioSubmixTrack()}
+              onDeleteOne={() => removeTrack(t.id)}
+              onAddMany={(count) => {
+                if (t.kind === 'audio') {
+                  addTracks('audio', count, t.role ?? 'voice')
+                } else {
+                  addTracks(t.kind, count)
+                }
+              }}
+              onDeleteMany={(count) => {
+                const ids = pickBulkDeleteIds(count)
+                if (ids.length > 0) removeTracks(ids)
+              }}
+              onClose={() => setTrackCtx(null)}
+            />
+          )
+        })()
       )}
     </div>
   )

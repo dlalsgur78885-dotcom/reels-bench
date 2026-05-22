@@ -5,6 +5,7 @@ import type {
   ColorAdjust,
   CropRect,
   FilterPreset,
+  ShapeStyle,
   TransitionKind
 } from '../../../shared/project'
 import {
@@ -16,6 +17,7 @@ import {
   IDENTITY_CROP,
   isCaptionClip,
   isMediaClip,
+  isOverlayClip,
   MAX_CLIP_SPEED,
   MAX_COLOR_ADJUST,
   MAX_TRANSFORM_OFFSET,
@@ -83,6 +85,24 @@ interface ClipContextMenuProps {
   keyframeCount?: number
   /** True when the playhead currently sits on an existing keyframe. */
   isOnKeyframe?: boolean
+  // --- Phase 3.10 speed-curve editing (media clips only) ---
+  /** Add (or update) a speed keyframe at the current playhead. */
+  onAddSpeedKeyframe?: () => void
+  /** Update the speed of the keyframe under the playhead (per-keyframe slider). */
+  onUpdateSpeedKeyframeAtPlayhead?: (speed: number) => void
+  /** Remove the speed keyframe under the current playhead (if any). */
+  onRemoveSpeedKeyframeAtPlayhead?: () => void
+  /** Clear the clip's speed curve entirely (keeps the constant speed). */
+  onClearSpeedCurve?: () => void
+  /** Number of speed keyframes on the clip's curve (0 when constant). */
+  speedKeyframeCount?: number
+  /** True when the playhead currently sits on an existing speed keyframe. */
+  isOnSpeedKeyframe?: boolean
+  /** Effective speed at the playhead (instantaneous curve value, or constant). */
+  speedAtPlayhead?: number
+  // --- Phase 3.8 overlay shape style (shape overlay clips only) ---
+  /** Merge a partial ShapeStyle onto a shape overlay's source.style. */
+  onOverlayStyleChange?: (partial: Partial<ShapeStyle>) => void
   onClose: () => void
 }
 
@@ -292,6 +312,24 @@ function captionRows(): MenuRow[] {
   ]
 }
 
+/** Build the row list for an overlay clip (Phase 3.8). */
+function overlayRows(): MenuRow[] {
+  return [
+    { key: 'duplicate', label: '복제', shortcut: 'Ctrl+D' },
+    { key: 'delete', label: '삭제', shortcut: 'Delete', destructive: true }
+  ]
+}
+
+/** Default style for a shape-style fall-back (kept local to avoid an import). */
+const SHAPE_STYLE_FALLBACK: ShapeStyle = {
+  shape: 'rectangle',
+  fill: '#ffffff',
+  fillOpacity: 1,
+  stroke: 'none',
+  strokeWidth: 0,
+  cornerRadius: 0
+}
+
 export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
   const {
     clip,
@@ -313,6 +351,14 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
     onRemoveKeyframeAtPlayhead,
     keyframeCount,
     isOnKeyframe,
+    onAddSpeedKeyframe,
+    onUpdateSpeedKeyframeAtPlayhead,
+    onRemoveSpeedKeyframeAtPlayhead,
+    onClearSpeedCurve,
+    speedKeyframeCount,
+    isOnSpeedKeyframe,
+    speedAtPlayhead,
+    onOverlayStyleChange,
     onClose
   } = props
   const ref = useRef<HTMLDivElement>(null)
@@ -322,12 +368,21 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
   const [showTransform, setShowTransform] = useState(false)
   const [showCrop, setShowCrop] = useState(false)
   const [showColorAdjust, setShowColorAdjust] = useState(false)
+  const [showShapeStyle, setShowShapeStyle] = useState(false)
 
   // Always recompute on each render so playhead/clip changes drive the gate.
-  const rows = isCaptionClip(clip) ? captionRows() : mediaRows(clip, playheadMs)
+  // 3-way switch on clip.kind: caption / overlay / media.
+  const rows = isCaptionClip(clip)
+    ? captionRows()
+    : isOverlayClip(clip)
+      ? overlayRows()
+      : mediaRows(clip, playheadMs)
 
   // Read current speed (default 1) from the media clip; captions don't have one.
   const speed = isMediaClip(clip) ? clip.speed ?? 1 : 1
+  // Phase 3.10 — a clip has an ACTIVE variable speed curve when it carries
+  // >= 2 speed keyframes (mirrors `hasSpeedCurve`). Drives the curve sub-UI.
+  const speedCurveActive = (speedKeyframeCount ?? 0) >= 2
   const transitionKind: TransitionKind = isMediaClip(clip)
     ? clip.transitionIn?.kind ?? 'none'
     : 'none'
@@ -341,9 +396,11 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
   // Current transform — Phase 3.5: resolved via getTransformAt at the
   // playhead so a keyframed clip shows the INTERPOLATED value. For a static
   // clip getTransformAt falls back to the Phase 3 getClipTransform path.
-  const transform: ClipTransform = isMediaClip(clip)
-    ? getTransformAt(clip, playheadMs ?? clip.startMs)
-    : { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 }
+  // Phase 3.8 — overlay clips carry the same ClipTransform.
+  const transform: ClipTransform =
+    isMediaClip(clip) || isOverlayClip(clip)
+      ? getTransformAt(clip, playheadMs ?? clip.startMs)
+      : { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 }
   // Phase 3.6 — current crop rect (full-frame identity when no crop set).
   const cropRect: CropRect = isMediaClip(clip)
     ? getClipCropRect(clip) ?? IDENTITY_CROP
@@ -352,6 +409,11 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
   const colorAdjust: ColorAdjust = isMediaClip(clip)
     ? getClipColorAdjust(clip) ?? NEUTRAL_COLOR_ADJUST
     : NEUTRAL_COLOR_ADJUST
+  // Phase 3.8 — current shape style for a shape overlay (fallback otherwise).
+  const shapeStyle: ShapeStyle =
+    isOverlayClip(clip) && clip.source.type === 'shape'
+      ? clip.source.style
+      : SHAPE_STYLE_FALLBACK
   // Source aspect ratio (W/H). Fall back to 1 when unknown so the centered
   // max-area preset math stays finite.
   const srcAspect =
@@ -597,9 +659,9 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
         </>
       )}
 
-      {/* Transform sub-menu — media clips only. Numeric panel is the
+      {/* Transform sub-menu — media + overlay clips. Numeric panel is the
           committed UI for Phase 3 (on-canvas drag handles deferred). */}
-      {isMediaClip(clip) && onTransformChange && (
+      {(isMediaClip(clip) || isOverlayClip(clip)) && onTransformChange && (
         <>
           <div style={styles.separator} />
           <div
@@ -1110,6 +1172,180 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
         </>
       )}
 
+      {/* Shape-style sub-menu (Phase 3.8) — shape overlay clips only.
+          Fill / fill-opacity / stroke / stroke-width / corner-radius. */}
+      {isOverlayClip(clip) &&
+        clip.source.type === 'shape' &&
+        onOverlayStyleChange && (
+          <>
+            <div style={styles.separator} />
+            <div
+              role="menuitem"
+              data-testid="menu-overlay-style"
+              style={styles.item}
+              onMouseEnter={(e) => {
+                ;(e.currentTarget as HTMLDivElement).style.background =
+                  '#2a2a2a'
+              }}
+              onMouseLeave={(e) => {
+                ;(e.currentTarget as HTMLDivElement).style.background =
+                  'transparent'
+              }}
+              onClick={() => setShowShapeStyle((v) => !v)}
+            >
+              <span>도형 스타일{showShapeStyle ? '' : '…'}</span>
+              <span style={styles.shortcut}>{shapeStyle.shape}</span>
+            </div>
+            {showShapeStyle && (
+              <div
+                style={styles.speedPanel}
+                data-testid="menu-overlay-style-panel"
+              >
+                {/* Fill color */}
+                <div style={styles.transformRow}>
+                  <span style={styles.transformLabel}>채움색</span>
+                  <input
+                    type="color"
+                    value={
+                      shapeStyle.fill === 'none' ? '#ffffff' : shapeStyle.fill
+                    }
+                    onChange={(e) =>
+                      onOverlayStyleChange({ fill: e.target.value })
+                    }
+                    data-testid="menu-overlay-fill"
+                    aria-label="채움색"
+                    style={{ flex: 1, height: 24, cursor: 'pointer' }}
+                  />
+                  <button
+                    type="button"
+                    style={styles.preset}
+                    data-testid="menu-overlay-fill-none"
+                    onClick={() => onOverlayStyleChange({ fill: 'none' })}
+                  >
+                    없음
+                  </button>
+                </div>
+                {/* Fill opacity */}
+                <div style={styles.transformRow}>
+                  <span style={styles.transformLabel}>채움 투명</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={shapeStyle.fillOpacity}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value)
+                      if (!Number.isFinite(v)) return
+                      onOverlayStyleChange({ fillOpacity: v })
+                    }}
+                    style={styles.slider}
+                    data-testid="menu-overlay-fill-opacity"
+                    aria-label="채움 불투명도"
+                  />
+                  <span style={{ ...styles.shortcut, width: 36 }}>
+                    {Math.round(shapeStyle.fillOpacity * 100)}%
+                  </span>
+                </div>
+                {/* Stroke color */}
+                <div style={styles.transformRow}>
+                  <span style={styles.transformLabel}>선색</span>
+                  <input
+                    type="color"
+                    value={
+                      shapeStyle.stroke === 'none'
+                        ? '#ffffff'
+                        : shapeStyle.stroke
+                    }
+                    onChange={(e) =>
+                      onOverlayStyleChange({ stroke: e.target.value })
+                    }
+                    data-testid="menu-overlay-stroke"
+                    aria-label="선색"
+                    style={{ flex: 1, height: 24, cursor: 'pointer' }}
+                  />
+                  <button
+                    type="button"
+                    style={styles.preset}
+                    data-testid="menu-overlay-stroke-none"
+                    onClick={() => onOverlayStyleChange({ stroke: 'none' })}
+                  >
+                    없음
+                  </button>
+                </div>
+                {/* Stroke width */}
+                <div style={styles.transformRow}>
+                  <span style={styles.transformLabel}>선 굵기</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={40}
+                    step={1}
+                    value={shapeStyle.strokeWidth}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10)
+                      if (!Number.isFinite(v)) return
+                      onOverlayStyleChange({ strokeWidth: v })
+                    }}
+                    style={styles.slider}
+                    data-testid="menu-overlay-stroke-width"
+                    aria-label="선 굵기"
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={40}
+                    step={1}
+                    value={shapeStyle.strokeWidth}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10)
+                      if (!Number.isFinite(v)) return
+                      onOverlayStyleChange({ strokeWidth: v })
+                    }}
+                    style={styles.speedInput}
+                    aria-label="선 굵기 숫자"
+                  />
+                </div>
+                {/* Corner radius — rectangle only. */}
+                <div style={styles.transformRow}>
+                  <span style={styles.transformLabel}>모서리</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={50}
+                    step={1}
+                    value={shapeStyle.cornerRadius}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10)
+                      if (!Number.isFinite(v)) return
+                      onOverlayStyleChange({ cornerRadius: v })
+                    }}
+                    style={styles.slider}
+                    data-testid="menu-overlay-corner-radius"
+                    aria-label="모서리 둥글기"
+                    disabled={shapeStyle.shape !== 'rectangle'}
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={50}
+                    step={1}
+                    value={shapeStyle.cornerRadius}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10)
+                      if (!Number.isFinite(v)) return
+                      onOverlayStyleChange({ cornerRadius: v })
+                    }}
+                    style={styles.speedInput}
+                    aria-label="모서리 둥글기 숫자"
+                    disabled={shapeStyle.shape !== 'rectangle'}
+                  />
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
       {/* Speed sub-menu is media-only. */}
       {isMediaClip(clip) && onSpeedChange && (
         <>
@@ -1131,19 +1367,127 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
           </div>
           {showSpeed && (
             <div style={styles.speedPanel} data-testid="menu-speed-panel">
+              {/* Phase 3.10 — speed-curve toggle. When ON, the clip uses a
+                  variable speed curve and the constant slider below is
+                  disabled; when OFF the constant slider drives onSpeedChange
+                  (unchanged legacy behavior). */}
+              {onAddSpeedKeyframe && (
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    marginBottom: 8,
+                    cursor: 'pointer',
+                    fontSize: 11,
+                    color: '#9aa0a6'
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={speedCurveActive}
+                    data-testid="speed-curve-toggle"
+                    aria-label="속도 커브 사용"
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        // Turn ON — seed the curve (two keyframes) via the
+                        // store's addSpeedKeyframe.
+                        onAddSpeedKeyframe()
+                      } else {
+                        // Turn OFF — drop the curve, keep the constant speed.
+                        onClearSpeedCurve?.()
+                      }
+                    }}
+                  />
+                  <span>속도 커브 사용</span>
+                </label>
+              )}
+              {/* Speed-curve controls — modeled on the Phase 3.5
+                  transform-keyframe row. Visible only when the curve is on. */}
+              {onAddSpeedKeyframe && speedCurveActive && (
+                <>
+                  <div style={styles.keyframeRow}>
+                    <button
+                      type="button"
+                      style={styles.keyframeBtn}
+                      data-testid="menu-speed-add-keyframe"
+                      onClick={() => onAddSpeedKeyframe()}
+                    >
+                      {isOnSpeedKeyframe
+                        ? '속도 키프레임 갱신'
+                        : '현재 위치에 속도 키프레임 추가'}
+                    </button>
+                    <button
+                      type="button"
+                      style={{
+                        ...styles.keyframeBtn,
+                        ...(isOnSpeedKeyframe ? {} : styles.keyframeBtnDisabled)
+                      }}
+                      data-testid="menu-speed-remove-keyframe"
+                      disabled={!isOnSpeedKeyframe}
+                      onClick={() => {
+                        if (!isOnSpeedKeyframe) return
+                        onRemoveSpeedKeyframeAtPlayhead?.()
+                      }}
+                    >
+                      키프레임 삭제
+                    </button>
+                    <span
+                      style={styles.keyframeCountBadge}
+                      data-testid="speed-keyframe-count"
+                    >
+                      {speedKeyframeCount ?? 0}
+                    </span>
+                  </div>
+                  {/* Per-keyframe speed slider — edits the speed of the
+                      keyframe under the playhead. Disabled when not on one. */}
+                  <div style={styles.transformRow}>
+                    <span style={styles.transformLabel}>키프레임 속도</span>
+                    <input
+                      type="range"
+                      min={MIN_CLIP_SPEED}
+                      max={MAX_CLIP_SPEED}
+                      step={0.05}
+                      value={speedAtPlayhead ?? 1}
+                      onChange={(e) => {
+                        const v = parseFloat(e.target.value)
+                        if (!Number.isFinite(v)) return
+                        onUpdateSpeedKeyframeAtPlayhead?.(v)
+                      }}
+                      style={styles.slider}
+                      data-testid="menu-speed-keyframe-slider"
+                      aria-label="키프레임 속도"
+                      disabled={!isOnSpeedKeyframe}
+                    />
+                    <span style={{ ...styles.shortcut, width: 40 }}>
+                      {(speedAtPlayhead ?? 1).toFixed(2)}×
+                    </span>
+                  </div>
+                </>
+              )}
+              {/* Constant-speed presets + slider — drives onSpeedChange.
+                  Disabled while a speed curve is active (the user must turn
+                  the curve off first; setClipSpeed would otherwise clear it). */}
               <div style={styles.presetRow}>
                 {SPEED_PRESETS.map((p) => {
-                  const active = Math.abs(speed - p) < 0.001
+                  const active = !speedCurveActive && Math.abs(speed - p) < 0.001
                   return (
                     <button
                       key={p}
                       type="button"
                       style={{
                         ...styles.preset,
-                        ...(active ? styles.presetActive : {})
+                        ...(active ? styles.presetActive : {}),
+                        ...(speedCurveActive
+                          ? { opacity: 0.4, cursor: 'not-allowed' }
+                          : {})
                       }}
                       data-testid={`menu-speed-preset-${p}`}
-                      onClick={() => onSpeedChange(p)}
+                      disabled={speedCurveActive}
+                      onClick={() => {
+                        if (speedCurveActive) return
+                        onSpeedChange(p)
+                      }}
                     >
                       {p}×
                     </button>
@@ -1161,6 +1505,7 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                   style={styles.slider}
                   data-testid="menu-speed-slider"
                   aria-label="속도"
+                  disabled={speedCurveActive}
                 />
                 <input
                   type="number"
@@ -1176,6 +1521,7 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                   style={styles.speedInput}
                   data-testid="menu-speed-input"
                   aria-label="속도 숫자"
+                  disabled={speedCurveActive}
                 />
               </div>
             </div>

@@ -1,19 +1,25 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MediaLibrary } from '../components/MediaLibrary'
+import { OverlayLibrary } from '../components/OverlayLibrary'
 import { PreviewCanvas } from '../components/PreviewCanvas'
+import { SocialPreviewSelector } from '../components/SocialPreviewOverlay'
 import { SilenceRemoveDialog } from '../components/SilenceRemoveDialog'
 import { Timeline } from '../components/Timeline'
 import { Transport } from '../components/Transport'
 import { CaptionEditor } from '../components/CaptionEditor'
+import { EffectsPanel } from '../components/EffectsPanel'
 import { ExportDialog } from '../components/ExportDialog'
 import { PrefillDialog } from '../components/PrefillDialog'
+import { SttDialog } from '../components/SttDialog'
 import { Toast, type ToastVariant } from '../components/Toast'
 import type { PrefillResult } from '../lib/prefillFromReel'
 import { getTotalDurationMs, useProjectStore, useUndoRedo } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import {
   isMediaClip,
+  isOverlayClip,
   type AspectRatio,
+  type Clip,
   type VideoAudioClip
 } from '../../../shared/project'
 import {
@@ -181,6 +187,44 @@ const styles = {
     fontSize: 9,
     color: '#94a3b8',
     fontVariantNumeric: 'tabular-nums'
+  } as React.CSSProperties,
+  // Left-panel tab host (미디어 / 오버레이).
+  leftPanel: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    minWidth: 280,
+    background: '#141414',
+    borderRight: '1px solid #2a2a2a',
+    overflow: 'hidden'
+  } as React.CSSProperties,
+  leftTabBar: {
+    flexShrink: 0,
+    display: 'flex',
+    gap: 4,
+    padding: '8px 10px',
+    borderBottom: '1px solid #2a2a2a',
+    background: '#101010'
+  } as React.CSSProperties,
+  leftTabBtn: {
+    flex: 1,
+    background: '#1a1a1a',
+    color: '#9aa0a6',
+    border: '1px solid #2a2a2a',
+    borderRadius: 6,
+    padding: '6px 8px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer'
+  } as React.CSSProperties,
+  leftTabBtnActive: {
+    background: '#6366f1',
+    color: '#fff',
+    borderColor: '#6366f1'
+  } as React.CSSProperties,
+  leftPanelBody: {
+    flex: 1,
+    minHeight: 0,
+    overflow: 'hidden'
   } as React.CSSProperties
 }
 
@@ -230,7 +274,13 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     null
   )
   const [exportOpen, setExportOpen] = useState(false)
+  // Phase 7 — CapCut-style docked 효과 panel. Transient UI state only: this
+  // toggle and the panel's inner tab are NOT part of the project schema/undo.
+  const [effectsOpen, setEffectsOpen] = useState(false)
+  // Left-panel tab — 미디어 가져오기 vs 오버레이 요소 (Phase 3.8).
+  const [leftTab, setLeftTab] = useState<'media' | 'overlay'>('media')
   const [prefillOpen, setPrefillOpen] = useState(false)
+  const [sttOpen, setSttOpen] = useState(false)
   const [toast, setToast] = useState<{
     message: string
     variant: ToastVariant
@@ -259,6 +309,15 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     }
   }, [])
 
+  const handleSttComplete = useCallback((count: number): void => {
+    setToast({
+      message: `자막 ${count}개를 생성했습니다`,
+      variant: 'success',
+      id: Date.now()
+    })
+    setSttOpen(false)
+  }, [])
+
   // Phase 2.5 — manual BPM + beat snap UI.
   const bpm = useTimelineUi((s) => s.bpm)
   const setBpm = useTimelineUi((s) => s.setBpm)
@@ -270,6 +329,27 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     () => getTotalDurationMs(project),
     [project]
   )
+
+  // The currently selected clip, if it's effect-eligible (media or overlay).
+  // Captions are edited via CaptionEditor instead, so they don't qualify.
+  const effectsClipId = useMemo<string | null>(() => {
+    if (!selectedClipId) return null
+    let found: Clip | null = null
+    for (const t of project.tracks) {
+      const c = t.clips.find((cc) => cc.id === selectedClipId)
+      if (c) {
+        found = c
+        break
+      }
+    }
+    if (!found) return null
+    return isMediaClip(found) || isOverlayClip(found) ? found.id : null
+  }, [selectedClipId, project])
+
+  // The 효과 panel is shown only when the user has toggled it on AND an
+  // effect-eligible clip is selected. The caption editor takes the same
+  // 360px right slot, so it wins when a caption is being edited.
+  const showEffectsPanel = effectsOpen && !editingCaptionId && !!effectsClipId
 
   // Recompute beats whenever BPM or total duration changes — but ONLY if
   // current beats originated from the metronome. When prefill loads real
@@ -385,6 +465,13 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         return
       }
 
+      // Ctrl/Cmd+T → open the 자동 자막 생성 (STT) dialog.
+      if ((e.ctrlKey || e.metaKey) && (e.key === 't' || e.key === 'T')) {
+        e.preventDefault()
+        setSttOpen(true)
+        return
+      }
+
       const store = useProjectStore.getState()
       const ui = useTimelineUi.getState()
       const fps = store.project.fps || 30
@@ -437,7 +524,18 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         }
         return
       }
-      if ((e.key === 's' || e.key === 'S') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // 분할(자르기): S (모디파이어 없음) 또는 Ctrl/Cmd+B (캡컷 표준 단축키).
+      // 'ㅠ' = 한글 2벌식 자판에서 B 키 (undo/redo의 'ㅋ' 처리와 동일 패턴).
+      const isSplitKey =
+        ((e.key === 's' || e.key === 'S') &&
+          !e.ctrlKey &&
+          !e.metaKey &&
+          !e.altKey) ||
+        ((e.ctrlKey || e.metaKey) &&
+          !e.altKey &&
+          !e.shiftKey &&
+          (e.key === 'b' || e.key === 'B' || e.key === 'ㅠ'))
+      if (isSplitKey) {
         e.preventDefault()
         let target = null as null | { kind: string }
         for (const t of store.project.tracks) {
@@ -605,6 +703,31 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         </button>
         <button
           style={styles.primaryBtn}
+          onClick={() => setSttOpen(true)}
+          data-testid="open-stt-dialog"
+          title="자동 자막 생성 (Ctrl+T)"
+        >
+          자동 자막 생성
+        </button>
+        <button
+          type="button"
+          style={{
+            ...styles.secondaryBtn,
+            ...(effectsOpen
+              ? { background: '#6366f1', borderColor: '#6366f1', color: '#fff' }
+              : {}),
+            ...(effectsClipId ? {} : { opacity: 0.5, cursor: 'not-allowed' })
+          }}
+          onClick={() => setEffectsOpen((v) => !v)}
+          disabled={!effectsClipId}
+          aria-pressed={effectsOpen}
+          data-testid="toggle-effects-panel"
+          title="효과 패널 — 영상/오버레이 클립 선택 시 사용"
+        >
+          효과
+        </button>
+        <button
+          style={styles.primaryBtn}
           onClick={() => setExportOpen(true)}
           data-testid="open-export-dialog"
           title="내보내기 (Ctrl+E)"
@@ -617,10 +740,59 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         )}
       </div>
 
-      <div style={editingCaptionId ? styles.bodyWithEditor : styles.body}>
-        <MediaLibrary />
+      <div
+        style={
+          editingCaptionId || showEffectsPanel
+            ? styles.bodyWithEditor
+            : styles.body
+        }
+      >
+        <div style={styles.leftPanel}>
+          <div style={styles.leftTabBar} data-testid="left-panel-tabs">
+            <button
+              type="button"
+              style={{
+                ...styles.leftTabBtn,
+                ...(leftTab === 'media' ? styles.leftTabBtnActive : {})
+              }}
+              onClick={() => setLeftTab('media')}
+              data-testid="media-library-tab"
+              aria-pressed={leftTab === 'media'}
+            >
+              미디어
+            </button>
+            <button
+              type="button"
+              style={{
+                ...styles.leftTabBtn,
+                ...(leftTab === 'overlay' ? styles.leftTabBtnActive : {})
+              }}
+              onClick={() => setLeftTab('overlay')}
+              data-testid="media-overlay-tab"
+              aria-pressed={leftTab === 'overlay'}
+            >
+              오버레이
+            </button>
+          </div>
+          <div style={styles.leftPanelBody}>
+            {leftTab === 'media' ? <MediaLibrary /> : <OverlayLibrary />}
+          </div>
+        </div>
         <div style={styles.right}>
           <div style={styles.previewArea}>
+            {/* Phase 6 — SNS 플랫폼 미리보기 selector. Pinned to the preview
+                area's top-right; picking a platform overlays its UI chrome
+                onto the preview (purely visual — no effect on export). */}
+            <div
+              style={{
+                position: 'absolute',
+                top: 8,
+                right: 8,
+                zIndex: 5
+              }}
+            >
+              <SocialPreviewSelector />
+            </div>
             <div
               style={{
                 ...styles.previewBox,
@@ -693,6 +865,17 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
             onClose={() => setEditingCaptionId(null)}
           />
         )}
+        {/* Phase 7 — docked 효과 panel. Mutually exclusive with the caption
+            editor (both occupy the right 360px slot). Renders only for an
+            effect-eligible (media/overlay) clip while toggled on. */}
+        {showEffectsPanel && effectsClipId && (
+          <EffectsPanel
+            project={project}
+            clipId={effectsClipId}
+            playheadMs={playheadMs}
+            onClose={() => setEffectsOpen(false)}
+          />
+        )}
       </div>
       {silenceTargetClipId && (
         <SilenceRemoveDialog
@@ -708,6 +891,11 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         open={prefillOpen}
         onClose={() => setPrefillOpen(false)}
         onComplete={handlePrefillComplete}
+      />
+      <SttDialog
+        open={sttOpen}
+        onClose={() => setSttOpen(false)}
+        onComplete={handleSttComplete}
       />
       {toast && (
         <Toast

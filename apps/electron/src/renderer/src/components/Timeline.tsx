@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ulid } from 'ulid'
 import {
+  getClipBlurRegions,
   getClipColorAdjust,
   getClipCropRect,
   getClipDuration,
+  getClipMotionTracks,
   getClipSourceText,
   getClipTransform,
   getSpeedAt,
@@ -36,6 +38,7 @@ import {
   useTimelineUi
 } from '../store/timelineUi'
 import { startVoiceRecording, type VoiceRecorder } from '../lib/voiceRecording'
+import { useTrackingStore } from '../store/tracking'
 import { ClipContextMenu } from './ClipContextMenu'
 import { TrackContextMenu } from './TrackContextMenu'
 import { MEDIA_DRAG_MIME } from './MediaLibrary'
@@ -488,6 +491,23 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const resetClipCrop = useProjectStore((s) => s.resetClipCrop)
   const setClipColorAdjust = useProjectStore((s) => s.setClipColorAdjust)
   const resetClipColorAdjust = useProjectStore((s) => s.resetClipColorAdjust)
+  const setClipNoiseReduction = useProjectStore((s) => s.setClipNoiseReduction)
+  const addBlurRegion = useProjectStore((s) => s.addBlurRegion)
+  const updateBlurRegion = useProjectStore((s) => s.updateBlurRegion)
+  const removeBlurRegion = useProjectStore((s) => s.removeBlurRegion)
+  const removeMotionTrack = useProjectStore((s) => s.removeMotionTrack)
+  const bindBlurRegionToTrack = useProjectStore(
+    (s) => s.bindBlurRegionToTrack
+  )
+  const bindOverlayToTrack = useProjectStore((s) => s.bindOverlayToTrack)
+  const bindCaptionToTrack = useProjectStore((s) => s.bindCaptionToTrack)
+  // Phase 3.13 — transient motion-tracking job store.
+  const trackBeginJob = useTrackingStore((s) => s.beginTrackJob)
+  const trackCancelJob = useTrackingStore((s) => s.cancelTrackJob)
+  const trackSetDrawMode = useTrackingStore((s) => s.setDrawMode)
+  const trackJobClipId = useTrackingStore((s) => s.clipId)
+  const trackJobStatus = useTrackingStore((s) => s.status)
+  const trackJobPercent = useTrackingStore((s) => s.percent)
   const addTransformKeyframe = useProjectStore((s) => s.addTransformKeyframe)
   const updateTransformKeyframe = useProjectStore(
     (s) => s.updateTransformKeyframe
@@ -1963,6 +1983,36 @@ export function Timeline(props: TimelineProps): JSX.Element {
                         ⤳
                       </div>
                     )}
+                    {/* Blur-region indicator (Phase 3.11) — purple badge in
+                        the TOP-LEFT corner, just below the speed-curve badge
+                        (top 40) so it never collides with the crop (top 4),
+                        speed-curve (top 22), keyframe (bottom-left), transform
+                        (bottom-right), filter FX (top-right) or color-adjust
+                        (top-right 22) badges. Shown when the clip has one or
+                        more mosaic/blur regions. */}
+                    {isMediaClip(clip) &&
+                      getClipBlurRegions(clip).length > 0 && (
+                        <div
+                          data-testid="blur-region-indicator"
+                          data-clip-id={clip.id}
+                          style={{
+                            position: 'absolute',
+                            left: 4,
+                            top: 40,
+                            padding: '1px 5px',
+                            borderRadius: 3,
+                            background: 'rgba(147, 51, 234, 0.95)',
+                            color: '#f5f5f5',
+                            fontSize: 9,
+                            fontWeight: 700,
+                            pointerEvents: 'none',
+                            zIndex: 4
+                          }}
+                          title="모자이크/블러 적용됨"
+                        >
+                          ▦
+                        </div>
+                      )}
                     {/* Keyframe marker row (Phase 3.5) — one diamond per
                         keyframe, positioned by clip-relative atMs. Click →
                         seek; horizontal drag → re-time; right/Alt-click →
@@ -2127,6 +2177,123 @@ export function Timeline(props: TimelineProps): JSX.Element {
               ? (): void => {
                   resetClipColorAdjust(ctxClip.id)
                 }
+              : undefined
+          }
+          noiseReduction={
+            isMediaClip(ctxClip) ? ctxClip.noiseReduction ?? 0 : undefined
+          }
+          onNoiseReductionChange={
+            isMediaClip(ctxClip)
+              ? (s): void => {
+                  // Noise reduction is EXPORT-ONLY — straight to the store
+                  // action; the preview audio graph is untouched.
+                  setClipNoiseReduction(ctxClip.id, s)
+                }
+              : undefined
+          }
+          blurRegions={
+            isMediaClip(ctxClip) ? getClipBlurRegions(ctxClip) : undefined
+          }
+          onAddBlurRegion={
+            isMediaClip(ctxClip)
+              ? (): void => {
+                  // Mosaic/blur regions are STATIC — no keyframe redirect.
+                  addBlurRegion(ctxClip.id)
+                }
+              : undefined
+          }
+          onUpdateBlurRegion={
+            isMediaClip(ctxClip)
+              ? (regionId, partial): void => {
+                  updateBlurRegion(ctxClip.id, regionId, partial)
+                }
+              : undefined
+          }
+          onRemoveBlurRegion={
+            isMediaClip(ctxClip)
+              ? (regionId): void => {
+                  removeBlurRegion(ctxClip.id, regionId)
+                }
+              : undefined
+          }
+          /* --- Phase 3.13 motion tracking --- */
+          motionTracks={
+            isMediaClip(ctxClip)
+              ? getClipMotionTracks(ctxClip)
+              : undefined
+          }
+          onStartMotionTrackDraw={
+            isMediaClip(ctxClip)
+              ? (): void => {
+                  // Arm the preview box-draw overlay for this clip; the
+                  // tracking job starts implicitly on box-draw mouse-up.
+                  trackSetDrawMode(true, ctxClip.id)
+                }
+              : undefined
+          }
+          onCancelMotionTrack={(): void => {
+            trackCancelJob()
+          }}
+          onRetrackMotionTrack={
+            isMediaClip(ctxClip)
+              ? (track): void => {
+                  // Re-run tracking from the existing track's source rect.
+                  trackBeginJob(ctxClip.id, track.sourceRect)
+                }
+              : undefined
+          }
+          onDeleteMotionTrack={
+            isMediaClip(ctxClip)
+              ? (trackId): void => {
+                  removeMotionTrack(ctxClip.id, trackId)
+                }
+              : undefined
+          }
+          motionTrackJobStatus={trackJobStatus}
+          motionTrackJobPercent={trackJobPercent}
+          motionTrackJobActive={
+            (trackJobStatus === 'preparing' ||
+              trackJobStatus === 'tracking') &&
+            trackJobClipId === ctxClip.id
+          }
+          onBindBlurRegionToTrack={
+            isMediaClip(ctxClip)
+              ? (regionId, trackId): void => {
+                  bindBlurRegionToTrack(ctxClip.id, regionId, trackId)
+                }
+              : undefined
+          }
+          onBindOverlayToTrack={
+            isOverlayClip(ctxClip)
+              ? (trackId): void => {
+                  bindOverlayToTrack(ctxClip.id, trackId)
+                }
+              : undefined
+          }
+          onBindCaptionToTrack={
+            isCaptionClip(ctxClip)
+              ? (trackId): void => {
+                  bindCaptionToTrack(ctxClip.id, trackId)
+                }
+              : undefined
+          }
+          allMotionTracks={
+            isOverlayClip(ctxClip) || isCaptionClip(ctxClip)
+              ? project.tracks.flatMap((t) =>
+                  t.clips.flatMap((c) =>
+                    isMediaClip(c)
+                      ? getClipMotionTracks(c).map((mt) => ({
+                          id: mt.id,
+                          name: mt.name
+                        }))
+                      : []
+                  )
+                )
+              : undefined
+          }
+          boundMotionTrackId={
+            isOverlayClip(ctxClip) || isCaptionClip(ctxClip)
+              ? ctxClip.motionTrackId
               : undefined
           }
           onAddKeyframe={

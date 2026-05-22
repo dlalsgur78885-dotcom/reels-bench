@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import type {
+  BlurRegion,
   Clip,
   ClipTransform,
   ColorAdjust,
   CropRect,
   FilterPreset,
+  MotionTrack,
   ShapeStyle,
   TransitionKind
 } from '../../../shared/project'
 import {
+  BLUR_EFFECT_KINDS,
+  BLUR_REGION_SHAPES,
   DEFAULT_TRANSITION_MS,
   FILTER_PRESETS,
   getClipColorAdjust,
@@ -18,12 +22,17 @@ import {
   isCaptionClip,
   isMediaClip,
   isOverlayClip,
+  MAX_BLUR_REGIONS_PER_CLIP,
+  MAX_BLUR_STRENGTH,
   MAX_CLIP_SPEED,
   MAX_COLOR_ADJUST,
   MAX_TRANSFORM_OFFSET,
   MAX_TRANSFORM_ROTATION,
   MAX_TRANSFORM_SCALE,
   MAX_TRANSITION_MS,
+  MAX_NOISE_REDUCTION,
+  MIN_BLUR_REGION_SIZE,
+  MIN_BLUR_STRENGTH,
   MIN_CLIP_SPEED,
   MIN_COLOR_ADJUST,
   MIN_CROP_SIZE,
@@ -31,6 +40,8 @@ import {
   MIN_TRANSFORM_ROTATION,
   MIN_TRANSFORM_SCALE,
   MIN_TRANSITION_MS,
+  MIN_NOISE_REDUCTION,
+  DEFAULT_NOISE_REDUCTION,
   NEUTRAL_COLOR_ADJUST,
   TRANSITION_KINDS
 } from '../../../shared/project'
@@ -40,6 +51,7 @@ import {
   TRANSITION_LABELS,
   filterPresetToCss
 } from '../../../shared/filterPresets'
+import { BrandSwatchRow } from './BrandSwatchRow'
 
 interface ClipContextMenuProps {
   clip: Clip
@@ -76,6 +88,60 @@ interface ClipContextMenuProps {
   onColorAdjustChange?: (partial: Partial<ColorAdjust>) => void
   /** Reset the clip's color adjustment to neutral. Media clips only. */
   onColorAdjustReset?: () => void
+  // --- Phase 4 noise reduction (media clips only) ---
+  /** The clip's current noise-reduction strength (0..100, 0 = off). Media clips only. */
+  noiseReduction?: number
+  /** Set the clip's noise-reduction strength (0..100, 0 = off). Media clips only. */
+  onNoiseReductionChange?: (strength: number) => void
+  // --- Phase 3.11 mosaic / blur regions (media clips only) ---
+  /** The clip's current mosaic/blur regions (sanitized). Media clips only. */
+  blurRegions?: BlurRegion[]
+  /** Append a new mosaic/blur region to the clip. Media clips only. */
+  onAddBlurRegion?: () => void
+  /** Merge a partial onto the region matched by id. Media clips only. */
+  onUpdateBlurRegion?: (
+    regionId: string,
+    partial: Partial<BlurRegion>
+  ) => void
+  /** Remove the region matched by id. Media clips only. */
+  onRemoveBlurRegion?: (regionId: string) => void
+  // --- Phase 3.13 motion tracking ---
+  /** The clip's current motion tracks (sanitized). Media clips only. */
+  motionTracks?: MotionTrack[]
+  /** Arm the box-draw overlay for this clip. Media clips only. */
+  onStartMotionTrackDraw?: () => void
+  /** Cancel the running tracking job. */
+  onCancelMotionTrack?: () => void
+  /** Re-run tracking from a track's source rect. Media clips only. */
+  onRetrackMotionTrack?: (track: MotionTrack) => void
+  /** Delete a motion track by id. Media clips only. */
+  onDeleteMotionTrack?: (trackId: string) => void
+  /** Live tracking-job status for this clip (or null when no job runs). */
+  motionTrackJobStatus?: 'idle' | 'preparing' | 'tracking' | 'done' | 'error'
+  /** Live tracking-job progress 0..100 (only meaningful while a job runs). */
+  motionTrackJobPercent?: number
+  /** True when a tracking job is currently running for THIS clip. */
+  motionTrackJobActive?: boolean
+  /**
+   * Bind a blur region to a motion track (null clears). Media clips only —
+   * surfaces a dropdown in the blur-region panel.
+   */
+  onBindBlurRegionToTrack?: (
+    regionId: string,
+    trackId: string | null
+  ) => void
+  /** Bind THIS overlay clip to a motion track (null clears). Overlay clips only. */
+  onBindOverlayToTrack?: (trackId: string | null) => void
+  /** Bind THIS caption clip to a motion track (null clears). Caption clips only. */
+  onBindCaptionToTrack?: (trackId: string | null) => void
+  /**
+   * All motion tracks in the WHOLE project (id + name) — used to populate the
+   * overlay / caption binding dropdown, since their bindable tracks live on
+   * other (media) clips.
+   */
+  allMotionTracks?: ReadonlyArray<{ id: string; name: string }>
+  /** Currently-bound motion track id for an overlay / caption clip (if any). */
+  boundMotionTrackId?: string
   // --- Phase 3.5 keyframe editing (media clips only) ---
   /** Add (or update) a transform keyframe at the current playhead. */
   onAddKeyframe?: () => void
@@ -347,6 +413,25 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
     sourceAspect,
     onColorAdjustChange,
     onColorAdjustReset,
+    noiseReduction: noiseReductionProp,
+    onNoiseReductionChange,
+    blurRegions,
+    onAddBlurRegion,
+    onUpdateBlurRegion,
+    onRemoveBlurRegion,
+    motionTracks,
+    onStartMotionTrackDraw,
+    onCancelMotionTrack,
+    onRetrackMotionTrack,
+    onDeleteMotionTrack,
+    motionTrackJobStatus,
+    motionTrackJobPercent,
+    motionTrackJobActive,
+    onBindBlurRegionToTrack,
+    onBindOverlayToTrack,
+    onBindCaptionToTrack,
+    allMotionTracks,
+    boundMotionTrackId,
     onAddKeyframe,
     onRemoveKeyframeAtPlayhead,
     keyframeCount,
@@ -368,7 +453,13 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
   const [showTransform, setShowTransform] = useState(false)
   const [showCrop, setShowCrop] = useState(false)
   const [showColorAdjust, setShowColorAdjust] = useState(false)
+  const [showDenoise, setShowDenoise] = useState(false)
+  const [showBlur, setShowBlur] = useState(false)
+  const [showMotionTrack, setShowMotionTrack] = useState(false)
   const [showShapeStyle, setShowShapeStyle] = useState(false)
+  // Phase 3.11 — which mosaic/blur region the panel is editing. null until
+  // the user picks one (or the first region is auto-selected on open).
+  const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null)
 
   // Always recompute on each render so playhead/clip changes drive the gate.
   // 3-way switch on clip.kind: caption / overlay / media.
@@ -409,6 +500,12 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
   const colorAdjust: ColorAdjust = isMediaClip(clip)
     ? getClipColorAdjust(clip) ?? NEUTRAL_COLOR_ADJUST
     : NEUTRAL_COLOR_ADJUST
+  // Phase 4 — current noise-reduction strength (0 = off). Media clips only.
+  // Prefer the live clip field; fall back to the prop (kept in sync by parent).
+  const noiseReduction = isMediaClip(clip)
+    ? clip.noiseReduction ?? noiseReductionProp ?? 0
+    : 0
+  const denoiseOn = noiseReduction > 0
   // Phase 3.8 — current shape style for a shape overlay (fallback otherwise).
   const shapeStyle: ShapeStyle =
     isOverlayClip(clip) && clip.source.type === 'shape'
@@ -653,6 +750,87 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                 <span style={{ ...styles.shortcut, width: 36 }}>
                   {Math.round(filterIntensity * 100)}%
                 </span>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Noise-reduction sub-menu (Phase 4) — media clips only. Per-clip
+          audio noise reduction. EXPORT-ONLY: the preview audio graph is not
+          denoised; the hint line states this. Modeled on the 필터 sub-menu. */}
+      {isMediaClip(clip) && onNoiseReductionChange && (
+        <>
+          <div style={styles.separator} />
+          <div
+            role="menuitem"
+            data-testid="menu-denoise"
+            style={styles.item}
+            onMouseEnter={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = '#2a2a2a'
+            }}
+            onMouseLeave={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = 'transparent'
+            }}
+            onClick={() => setShowDenoise((v) => !v)}
+          >
+            <span>노이즈 제거{showDenoise ? '' : '…'}</span>
+            <span style={styles.shortcut}>
+              {denoiseOn ? `켜짐 (${noiseReduction})` : '꺼짐'}
+            </span>
+          </div>
+          {showDenoise && (
+            <div style={styles.speedPanel} data-testid="menu-denoise-panel">
+              {/* On/off toggle — modeled on the speed-curve checkbox. */}
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  marginBottom: 8,
+                  cursor: 'pointer',
+                  fontSize: 11,
+                  color: '#9aa0a6'
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={denoiseOn}
+                  data-testid="denoise-toggle"
+                  aria-label="노이즈 제거"
+                  onChange={(e) => {
+                    onNoiseReductionChange(
+                      e.target.checked ? DEFAULT_NOISE_REDUCTION : 0
+                    )
+                  }}
+                />
+                <span>노이즈 제거 사용</span>
+              </label>
+              {/* Strength slider — disabled while OFF. */}
+              <div style={styles.speedRow}>
+                <input
+                  type="range"
+                  min={MIN_NOISE_REDUCTION}
+                  max={MAX_NOISE_REDUCTION}
+                  step={5}
+                  value={noiseReduction}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10)
+                    if (!Number.isFinite(v)) return
+                    onNoiseReductionChange(v)
+                  }}
+                  style={styles.slider}
+                  data-testid="menu-denoise-strength"
+                  aria-label="노이즈 제거 강도"
+                  disabled={!denoiseOn}
+                />
+                <span style={{ ...styles.shortcut, width: 36 }}>
+                  {noiseReduction}
+                </span>
+              </div>
+              {/* Export-only hint — preview is intentionally not denoised. */}
+              <div style={{ ...styles.shortcut, marginTop: 6 }}>
+                내보내기 시 적용 — 미리듣기에는 반영되지 않습니다
               </div>
             </div>
           )}
@@ -1172,6 +1350,553 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
         </>
       )}
 
+      {/* Mosaic / blur sub-menu (Phase 3.11) — media clips only. Static
+          per-clip masking regions (no keyframes, no on-canvas handles).
+          Numeric panel modeled on the 크롭 sub-menu. */}
+      {isMediaClip(clip) && onAddBlurRegion && (
+        <>
+          <div style={styles.separator} />
+          <div
+            role="menuitem"
+            data-testid="menu-blur"
+            style={styles.item}
+            onMouseEnter={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = '#2a2a2a'
+            }}
+            onMouseLeave={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = 'transparent'
+            }}
+            onClick={() => setShowBlur((v) => !v)}
+          >
+            <span>모자이크/마스크{showBlur ? '' : '…'}</span>
+            <span style={styles.shortcut}>{(blurRegions ?? []).length}</span>
+          </div>
+          {showBlur &&
+            (() => {
+              const regions = blurRegions ?? []
+              // Resolve the selected region — fall back to the first region
+              // when the stored selection no longer exists (e.g. removed).
+              const selected =
+                regions.find((r) => r.id === selectedRegionId) ??
+                regions[0] ??
+                null
+              const atMax = regions.length >= MAX_BLUR_REGIONS_PER_CLIP
+              return (
+                <div
+                  style={styles.speedPanel}
+                  data-testid="menu-blur-panel"
+                >
+                  {/* Region selector chips. */}
+                  {regions.length > 0 && (
+                    <div style={styles.presetRow}>
+                      {regions.map((r, i) => {
+                        const active = selected?.id === r.id
+                        return (
+                          <button
+                            key={r.id}
+                            type="button"
+                            style={{
+                              ...styles.preset,
+                              ...(active ? styles.presetActive : {})
+                            }}
+                            data-testid={`menu-blur-region-${r.id}`}
+                            onClick={() => setSelectedRegionId(r.id)}
+                          >
+                            {`#${i + 1}`}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                  {/* Add / remove region buttons. */}
+                  <div style={styles.keyframeRow}>
+                    <button
+                      type="button"
+                      style={{
+                        ...styles.keyframeBtn,
+                        ...(atMax ? styles.keyframeBtnDisabled : {})
+                      }}
+                      data-testid="menu-blur-add"
+                      disabled={atMax}
+                      onClick={() => {
+                        if (atMax) return
+                        onAddBlurRegion()
+                      }}
+                    >
+                      영역 추가
+                    </button>
+                    <button
+                      type="button"
+                      style={{
+                        ...styles.keyframeBtn,
+                        ...(selected ? {} : styles.keyframeBtnDisabled)
+                      }}
+                      data-testid="menu-blur-remove"
+                      disabled={!selected}
+                      onClick={() => {
+                        if (!selected) return
+                        onRemoveBlurRegion?.(selected.id)
+                      }}
+                    >
+                      영역 삭제
+                    </button>
+                  </div>
+                  {/* Per-region controls — only when a region is selected. */}
+                  {selected && (
+                    <>
+                      {/* Effect toggle (모자이크 / 블러 / 오브젝트 제거). */}
+                      <div style={styles.presetRow}>
+                        {BLUR_EFFECT_KINDS.map((kind) => {
+                          const active = selected.effect === kind
+                          return (
+                            <button
+                              key={kind}
+                              type="button"
+                              style={{
+                                ...styles.preset,
+                                ...(active ? styles.presetActive : {})
+                              }}
+                              data-testid={`menu-blur-effect-${kind}`}
+                              onClick={() =>
+                                onUpdateBlurRegion?.(selected.id, {
+                                  effect: kind
+                                })
+                              }
+                            >
+                              {kind === 'mosaic'
+                                ? '모자이크'
+                                : kind === 'blur'
+                                  ? '블러'
+                                  : '오브젝트 제거'}
+                            </button>
+                          )
+                        })}
+                      </div>
+                      {/* Shape toggle (사각형 / 타원). Hidden for 'remove' —
+                          delogo is rectangle-only. */}
+                      {selected.effect !== 'remove' && (
+                        <div style={styles.presetRow}>
+                          {BLUR_REGION_SHAPES.map((shape) => {
+                            const active = selected.shape === shape
+                            return (
+                              <button
+                                key={shape}
+                                type="button"
+                                style={{
+                                  ...styles.preset,
+                                  ...(active ? styles.presetActive : {})
+                                }}
+                                data-testid={`menu-blur-shape-${shape}`}
+                                onClick={() =>
+                                  onUpdateBlurRegion?.(selected.id, { shape })
+                                }
+                              >
+                                {shape === 'rectangle' ? '사각형' : '타원'}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      )}
+                      {/* Helper text — shown only for 'remove'. delogo is an
+                          edge-interpolation filter, not AI inpainting. */}
+                      {selected.effect === 'remove' && (
+                        <div
+                          style={{ ...styles.shortcut, marginTop: 2 }}
+                          data-testid="menu-blur-remove-hint"
+                        >
+                          작은 로고·워터마크 제거에 적합합니다. 배경이
+                          단순할수록 깔끔하게 지워집니다.
+                        </div>
+                      )}
+                      {/* Strength — hidden for 'remove' (delogo has no strength
+                          parameter). */}
+                      {selected.effect !== 'remove' && (
+                        <div style={styles.transformRow}>
+                          <span style={styles.transformLabel}>강도</span>
+                          <input
+                            type="range"
+                            min={MIN_BLUR_STRENGTH}
+                            max={MAX_BLUR_STRENGTH}
+                            step={1}
+                            value={selected.strength}
+                            onChange={(e) => {
+                              const v = parseInt(e.target.value, 10)
+                              if (!Number.isFinite(v)) return
+                              onUpdateBlurRegion?.(selected.id, { strength: v })
+                            }}
+                            style={styles.slider}
+                            data-testid="menu-blur-strength"
+                            aria-label="강도"
+                          />
+                          <input
+                            type="number"
+                            min={MIN_BLUR_STRENGTH}
+                            max={MAX_BLUR_STRENGTH}
+                            step={1}
+                            value={selected.strength}
+                            onChange={(e) => {
+                              const v = parseInt(e.target.value, 10)
+                              if (!Number.isFinite(v)) return
+                              onUpdateBlurRegion?.(selected.id, { strength: v })
+                            }}
+                            style={styles.speedInput}
+                            aria-label="강도 숫자"
+                          />
+                        </div>
+                      )}
+                      {/* X */}
+                      <div style={styles.transformRow}>
+                        <span style={styles.transformLabel}>X</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={selected.x}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value)
+                            if (!Number.isFinite(v)) return
+                            onUpdateBlurRegion?.(selected.id, { x: v })
+                          }}
+                          style={styles.slider}
+                          data-testid="menu-blur-x"
+                          aria-label="모자이크 X"
+                        />
+                        <input
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={Number(selected.x.toFixed(2))}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value)
+                            if (!Number.isFinite(v)) return
+                            onUpdateBlurRegion?.(selected.id, { x: v })
+                          }}
+                          style={styles.speedInput}
+                          aria-label="모자이크 X 숫자"
+                        />
+                      </div>
+                      {/* Y */}
+                      <div style={styles.transformRow}>
+                        <span style={styles.transformLabel}>Y</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={selected.y}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value)
+                            if (!Number.isFinite(v)) return
+                            onUpdateBlurRegion?.(selected.id, { y: v })
+                          }}
+                          style={styles.slider}
+                          data-testid="menu-blur-y"
+                          aria-label="모자이크 Y"
+                        />
+                        <input
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={Number(selected.y.toFixed(2))}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value)
+                            if (!Number.isFinite(v)) return
+                            onUpdateBlurRegion?.(selected.id, { y: v })
+                          }}
+                          style={styles.speedInput}
+                          aria-label="모자이크 Y 숫자"
+                        />
+                      </div>
+                      {/* W */}
+                      <div style={styles.transformRow}>
+                        <span style={styles.transformLabel}>너비</span>
+                        <input
+                          type="range"
+                          min={MIN_BLUR_REGION_SIZE}
+                          max={1}
+                          step={0.01}
+                          value={selected.w}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value)
+                            if (!Number.isFinite(v)) return
+                            onUpdateBlurRegion?.(selected.id, { w: v })
+                          }}
+                          style={styles.slider}
+                          data-testid="menu-blur-w"
+                          aria-label="모자이크 너비"
+                        />
+                        <input
+                          type="number"
+                          min={MIN_BLUR_REGION_SIZE}
+                          max={1}
+                          step={0.01}
+                          value={Number(selected.w.toFixed(2))}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value)
+                            if (!Number.isFinite(v)) return
+                            onUpdateBlurRegion?.(selected.id, { w: v })
+                          }}
+                          style={styles.speedInput}
+                          aria-label="모자이크 너비 숫자"
+                        />
+                      </div>
+                      {/* H */}
+                      <div style={styles.transformRow}>
+                        <span style={styles.transformLabel}>높이</span>
+                        <input
+                          type="range"
+                          min={MIN_BLUR_REGION_SIZE}
+                          max={1}
+                          step={0.01}
+                          value={selected.h}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value)
+                            if (!Number.isFinite(v)) return
+                            onUpdateBlurRegion?.(selected.id, { h: v })
+                          }}
+                          style={styles.slider}
+                          data-testid="menu-blur-h"
+                          aria-label="모자이크 높이"
+                        />
+                        <input
+                          type="number"
+                          min={MIN_BLUR_REGION_SIZE}
+                          max={1}
+                          step={0.01}
+                          value={Number(selected.h.toFixed(2))}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value)
+                            if (!Number.isFinite(v)) return
+                            onUpdateBlurRegion?.(selected.id, { h: v })
+                          }}
+                          style={styles.speedInput}
+                          aria-label="모자이크 높이 숫자"
+                        />
+                      </div>
+                      {/* Phase 3.13 — bind this region to a motion track on
+                          the same clip. "없음" clears the binding. */}
+                      {onBindBlurRegionToTrack && (
+                        <div style={styles.transformRow}>
+                          <span style={styles.transformLabel}>
+                            모션 트랙에 고정
+                          </span>
+                          <select
+                            data-testid={`motion-track-bind-select-${selected.id}`}
+                            value={selected.motionTrackId ?? ''}
+                            onChange={(e) => {
+                              const v = e.target.value
+                              onBindBlurRegionToTrack(
+                                selected.id,
+                                v === '' ? null : v
+                              )
+                            }}
+                            style={{
+                              ...styles.speedInput,
+                              width: 'auto',
+                              flex: 1,
+                              textAlign: 'left'
+                            }}
+                            aria-label="모션 트랙에 고정"
+                          >
+                            <option value="">없음</option>
+                            {(motionTracks ?? []).map((mt) => (
+                              <option key={mt.id} value={mt.id}>
+                                {mt.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )
+            })()}
+        </>
+      )}
+
+      {/* Motion-tracking sub-menu (Phase 3.13) — media clips only. Mirrors the
+          모자이크/마스크 panel: a 박스 그리기 button arms the box-draw overlay
+          on the preview, a progress bar + 취소 button cover a running job, and
+          a per-track chip list exposes 다시 트래킹 / 삭제. */}
+      {isMediaClip(clip) && onStartMotionTrackDraw && (
+        <>
+          <div style={styles.separator} />
+          <div
+            role="menuitem"
+            data-testid="menu-motion-track"
+            style={styles.item}
+            onMouseEnter={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = '#2a2a2a'
+            }}
+            onMouseLeave={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background =
+                'transparent'
+            }}
+            onClick={() => setShowMotionTrack((v) => !v)}
+          >
+            <span>모션 트래킹{showMotionTrack ? '' : '…'}</span>
+            <span style={styles.shortcut}>
+              {(motionTracks ?? []).length}
+            </span>
+          </div>
+          {showMotionTrack && (
+            <div
+              style={styles.speedPanel}
+              data-testid="menu-motion-track-panel"
+            >
+              {/* 박스 그리기 — arms the preview box-draw overlay. Tracking
+                  starts implicitly on box-draw mouse-up. */}
+              <div style={styles.keyframeRow}>
+                <button
+                  type="button"
+                  style={{
+                    ...styles.keyframeBtn,
+                    ...(motionTrackJobActive
+                      ? styles.keyframeBtnDisabled
+                      : {})
+                  }}
+                  data-testid="motion-track-draw-start"
+                  disabled={!!motionTrackJobActive}
+                  onClick={() => {
+                    if (motionTrackJobActive) return
+                    onStartMotionTrackDraw()
+                    onClose()
+                  }}
+                >
+                  박스 그리기
+                </button>
+              </div>
+              {/* Live job — progress bar + 취소. */}
+              {motionTrackJobActive && (
+                <>
+                  <div
+                    data-testid="motion-track-progress"
+                    data-percent={motionTrackJobPercent ?? 0}
+                    data-status={motionTrackJobStatus ?? 'idle'}
+                    style={{
+                      height: 8,
+                      borderRadius: 4,
+                      background: '#1f2937',
+                      overflow: 'hidden',
+                      marginBottom: 8
+                    }}
+                  >
+                    <div
+                      style={{
+                        height: '100%',
+                        width: `${Math.max(
+                          0,
+                          Math.min(100, motionTrackJobPercent ?? 0)
+                        )}%`,
+                        background: '#10b981',
+                        transition: 'width 0.2s ease'
+                      }}
+                    />
+                  </div>
+                  <div style={styles.keyframeRow}>
+                    <button
+                      type="button"
+                      style={styles.keyframeBtn}
+                      data-testid="motion-track-cancel"
+                      onClick={() => onCancelMotionTrack?.()}
+                    >
+                      취소
+                    </button>
+                  </div>
+                </>
+              )}
+              {/* Per-track chip list — 다시 트래킹 / 삭제. */}
+              {(motionTracks ?? []).map((mt) => (
+                <div
+                  key={mt.id}
+                  data-testid={`motion-track-chip-${mt.id}`}
+                  data-track-status={mt.status}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    marginTop: 6
+                  }}
+                >
+                  <span style={{ flex: 1, fontSize: 11 }}>
+                    {mt.name}
+                    <span style={styles.shortcut}>
+                      {' '}
+                      · {mt.points.length}점 · {mt.status}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    style={styles.preset}
+                    data-testid={`motion-track-retrack-${mt.id}`}
+                    disabled={!!motionTrackJobActive}
+                    onClick={() => onRetrackMotionTrack?.(mt)}
+                  >
+                    다시 트래킹
+                  </button>
+                  <button
+                    type="button"
+                    style={{ ...styles.preset, color: '#fca5a5' }}
+                    data-testid={`motion-track-delete-${mt.id}`}
+                    onClick={() => onDeleteMotionTrack?.(mt.id)}
+                  >
+                    삭제
+                  </button>
+                </div>
+              ))}
+              {(motionTracks ?? []).length === 0 && !motionTrackJobActive && (
+                <div style={{ ...styles.shortcut, marginTop: 4 }}>
+                  박스를 그려 객체를 추적하세요
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Motion-track binding dropdown (Phase 3.13) — overlay / caption clips.
+          Their bindable tracks live on OTHER (media) clips, so the picker is
+          populated from the whole-project track list. */}
+      {(isOverlayClip(clip) && onBindOverlayToTrack) ||
+      (isCaptionClip(clip) && onBindCaptionToTrack) ? (
+        <>
+          <div style={styles.separator} />
+          <div style={styles.speedPanel} data-testid="menu-motion-track-panel">
+            <div style={styles.transformRow}>
+              <span style={styles.transformLabel}>모션 트랙에 고정</span>
+              <select
+                data-testid="motion-track-bind-select"
+                value={boundMotionTrackId ?? ''}
+                onChange={(e) => {
+                  const v = e.target.value
+                  const next = v === '' ? null : v
+                  if (isOverlayClip(clip)) onBindOverlayToTrack?.(next)
+                  else if (isCaptionClip(clip)) onBindCaptionToTrack?.(next)
+                }}
+                style={{
+                  ...styles.speedInput,
+                  width: 'auto',
+                  flex: 1,
+                  textAlign: 'left'
+                }}
+                aria-label="모션 트랙에 고정"
+              >
+                <option value="">없음</option>
+                {(allMotionTracks ?? []).map((mt) => (
+                  <option key={mt.id} value={mt.id}>
+                    {mt.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </>
+      ) : null}
+
       {/* Shape-style sub-menu (Phase 3.8) — shape overlay clips only.
           Fill / fill-opacity / stroke / stroke-width / corner-radius. */}
       {isOverlayClip(clip) &&
@@ -1225,6 +1950,10 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                     없음
                   </button>
                 </div>
+                <BrandSwatchRow
+                  label="브랜드"
+                  onPick={(hex) => onOverlayStyleChange({ fill: hex })}
+                />
                 {/* Fill opacity */}
                 <div style={styles.transformRow}>
                   <span style={styles.transformLabel}>채움 투명</span>
@@ -1273,6 +2002,10 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                     없음
                   </button>
                 </div>
+                <BrandSwatchRow
+                  label="브랜드"
+                  onPick={(hex) => onOverlayStyleChange({ stroke: hex })}
+                />
                 {/* Stroke width */}
                 <div style={styles.transformRow}>
                   <span style={styles.transformLabel}>선 굵기</span>

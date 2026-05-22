@@ -37,6 +37,8 @@ import {
 import { probeCapabilities } from '../ffmpeg/capabilities'
 import {
   colorAdjustToFfmpeg,
+  curvesToFfmpeg,
+  hslToFfmpeg,
   filterPresetToFfmpeg,
   transitionKindToXfade
 } from '../../shared/filterPresets'
@@ -48,6 +50,12 @@ import {
   isOverlayClip,
   getClipTransform,
   getClipColorAdjust,
+  getClipCurves,
+  getClipHsl,
+  getClipBlurRegions,
+  getClipDenoise,
+  blurRegionBlurRadiusPx,
+  blurRegionMosaicBlockPx,
   getOverlayBaseSize,
   isIdentityTransform,
   hasTransformKeyframes,
@@ -66,12 +74,18 @@ import {
   CAPTION_SLIDE_FRAC,
   CAPTION_POP_START_SCALE,
   MAX_CAPTION_TYPEWRITER_STEPS,
+  findMotionTrack,
+  TRACK_EXPORT_STEP_MS,
+  MAX_TRACK_EXPORT_KEYFRAMES,
+  type BlurRegion,
   type CaptionAnimation,
   type CaptionClip,
   type ClipTransform,
+  type MotionTrack,
   type OverlayClip,
   type Project,
   type Track,
+  type TrackPoint,
   type TransformableClip,
   type TransformKeyframe,
   type VideoAudioClip
@@ -310,6 +324,94 @@ function probeXfadeAvailable(ffmpegPath: string): Promise<boolean> {
       }
       if (xfadeAvailableCache === null) {
         xfadeAvailableCache = false
+        resolve(false)
+      }
+    }, 3_000)
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — afftdn availability probe. Mirrors probeXfadeAvailable exactly:
+// spawn `ffmpeg -hide_banner -filters`, match `/\bafftdn\b\s+A->A/` in stdout,
+// cache result, 3s timeout → false.
+// ---------------------------------------------------------------------------
+let afftdnAvailableCache: boolean | null = null
+
+function probeAfftdnAvailable(ffmpegPath: string): Promise<boolean> {
+  if (afftdnAvailableCache !== null) return Promise.resolve(afftdnAvailableCache)
+  return new Promise<boolean>((resolve) => {
+    const proc = spawn(ffmpegPath, ['-hide_banner', '-filters'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true
+    })
+    let stdout = ''
+    proc.stdout.setEncoding('utf8')
+    proc.stdout.on('data', (chunk: string) => {
+      stdout += chunk
+      if (stdout.length > 256 * 1024) stdout = stdout.slice(-256 * 1024)
+    })
+    proc.on('error', () => {
+      afftdnAvailableCache = false
+      resolve(false)
+    })
+    proc.on('close', () => {
+      // Match a line like " ... afftdn            A->A       ..."
+      const has = /\bafftdn\b\s+A->A/.test(stdout)
+      afftdnAvailableCache = has
+      resolve(has)
+    })
+    setTimeout(() => {
+      try {
+        proc.kill('SIGKILL')
+      } catch {
+        /* ignore */
+      }
+      if (afftdnAvailableCache === null) {
+        afftdnAvailableCache = false
+        resolve(false)
+      }
+    }, 3_000)
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.12 — huesaturation availability probe. Mirrors probeAfftdnAvailable
+// exactly: spawn `ffmpeg -hide_banner -filters`, match `/\bhuesaturation\b/`
+// in stdout, cache result, 3s timeout → false.
+// curves= is ancient (since ffmpeg 2.x) and always present — no probe needed.
+// ---------------------------------------------------------------------------
+let hueSatAvailableCache: boolean | null = null
+
+function probeHueSaturationAvailable(ffmpegPath: string): Promise<boolean> {
+  if (hueSatAvailableCache !== null) return Promise.resolve(hueSatAvailableCache)
+  return new Promise<boolean>((resolve) => {
+    const proc = spawn(ffmpegPath, ['-hide_banner', '-filters'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true
+    })
+    let stdout = ''
+    proc.stdout.on('data', (chunk: string) => {
+      stdout += chunk
+      if (stdout.length > 256 * 1024) stdout = stdout.slice(-256 * 1024)
+    })
+    proc.on('error', () => {
+      hueSatAvailableCache = false
+      resolve(false)
+    })
+    proc.on('close', () => {
+      // Match a line like " ... huesaturation     V->V    Apply hue-saturation..."
+      const has = /\bhuesaturation\b/.test(stdout)
+      hueSatAvailableCache = has
+      resolve(has)
+    })
+    setTimeout(() => {
+      try {
+        proc.kill('SIGKILL')
+      } catch {
+        /* ignore */
+      }
+      if (hueSatAvailableCache === null) {
+        hueSatAvailableCache = false
         resolve(false)
       }
     }, 3_000)
@@ -773,6 +875,21 @@ function atempoChain(speed: number): string {
   return parts.join(',')
 }
 
+/**
+ * Phase 4 — per-clip noise-reduction filter string.
+ *
+ * Maps noiseReduction 1..100 → afftdn nr= 6.24..30.00 dB (linear interpolation
+ * so strength 1 = gentle, 100 = aggressive). Returns '' when off so the caller
+ * can unconditionally push the result and the parts array stays byte-identical
+ * to pre-Phase-4 for clips with noiseReduction absent / 0.
+ */
+function denoiseChain(clip: VideoAudioClip): string {
+  const s = getClipDenoise(clip)
+  if (s === null) return ''
+  const nr = (6 + (s / 100) * 24).toFixed(2) // strength 1..100 → 6.24..30.00 dB
+  return `afftdn=nr=${nr}:nf=-25`
+}
+
 // ---------------------------------------------------------------------------
 // Phase 3.5 — keyframe expression compiler.
 // ---------------------------------------------------------------------------
@@ -1051,6 +1168,309 @@ function buildTransformSubchain(
   return fragment
 }
 
+// ---------------------------------------------------------------------------
+// Phase 3.11 — mosaic / blur region sub-chain builder.
+//
+// CRITICAL INVARIANT: `getClipBlurRegions(clip)` returns [] for any clip that
+// has no blurRegions (absent, empty, or all-malformed) → this function returns
+// '' → `fragment` in buildVideoSegmentChain stays byte-identical to pre-3.11.
+//
+// When regions ARE present the helper:
+//   1. Continues the current unlabelled chain end with `split=2` (comma).
+//   2. Per region: crop the patch, apply effect, optionally alpha-mask it as
+//      an ellipse, then overlay back onto the base frame.
+//   3. Terminates with `;[br_out_S_lastN]null` so that buildTransformSubchain
+//      (which starts with `,format=rgba,...`) or the bare `[${out}]` label can
+//      be appended cleanly — matching the xt_* path convention exactly.
+//
+// Label namespace: `br_*_${labelSuffix}_${i}` — never collides with
+// pre/bg/main/xt_*/vN/vtrack*/vcomp* namespaces. `labelSuffix` =
+// String(seg.inputIdx), globally unique per ffmpeg input.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the mosaic/blur region sub-chain for a single clip.
+ *
+ * @param clip        — VideoAudioClip whose blurRegions are read via getClipBlurRegions.
+ * @param W           — Canvas width in pixels.
+ * @param H           — Canvas height in pixels.
+ * @param labelSuffix — Globally unique suffix (String(seg.inputIdx)).
+ * @param project     — Full project snapshot; used to resolve motionTrackId.
+ * @returns A filter-fragment string to append to `fragment`, or '' when there
+ *          are no regions (byte-identical invariant).
+ */
+function buildBlurRegionsSubchain(
+  clip: VideoAudioClip,
+  W: number,
+  H: number,
+  labelSuffix: string,
+  project: Project
+): string {
+  const regions = getClipBlurRegions(clip)
+  if (regions.length === 0) return ''
+
+  let frag = ''
+  // `prev` is the label of the current full-canvas frame at the start of each
+  // region iteration. For region 0 we label the incoming unlabelled chain end
+  // by using split=2 (comma-continuation) — the first [br_base_S_0] output
+  // becomes `prev` for region 1, etc.
+  let prev = ''
+
+  for (let i = 0; i < regions.length; i++) {
+    const region: BlurRegion = regions[i]
+    const s = labelSuffix
+
+    // --- pixel size (yuv420p even-alignment) — always fixed for the patch ---
+    let rw = Math.round(region.w * W)
+    let rh = Math.round(region.h * H)
+    // Floor to even (yuv420p). Min 2.
+    rw = Math.max(2, rw - (rw % 2))
+    rh = Math.max(2, rh - (rh % 2))
+
+    // -------------------------------------------------------------------------
+    // Phase 3.13 — motion-track follow for blur regions.
+    //
+    // Gate: the region ONLY takes the time-varying path when ALL three hold:
+    //   1. region.motionTrackId is set (non-empty string).
+    //   2. findMotionTrack resolves it to an existing MotionTrack.
+    //   3. The track has >= 2 points (getTrackPositionAt would return non-null).
+    //
+    // When ANY of those is false (no motionTrackId, dangling id, <2 points,
+    // motionTracks absent entirely) → the legacy CONSTANT-coordinate path runs
+    // VERBATIM — byte-identical to the pre-Phase-3.13 graph.
+    // -------------------------------------------------------------------------
+    let xExpr: string
+    let yExpr: string
+
+    const resolvedTrack: MotionTrack | null =
+      region.motionTrackId
+        ? findMotionTrack(project, region.motionTrackId)
+        : null
+
+    const useTrack =
+      resolvedTrack !== null && resolvedTrack.points.length >= 2
+
+    if (useTrack) {
+      // -----------------------------------------------------------------------
+      // Time-varying path: sample track.points at TRACK_EXPORT_STEP_MS spacing,
+      // keeping at most MAX_TRACK_EXPORT_KEYFRAMES (first & last always kept).
+      //
+      // track.points are already sanitized + sorted ascending by atMs by
+      // getClipMotionTracks (called inside findMotionTrack). resolvedTrack is
+      // the sanitized copy.
+      //
+      // Decimation: walk the point array and emit one point per step bucket.
+      // The step boundary is TRACK_EXPORT_STEP_MS ms from the previous emitted
+      // point's atMs — this produces at most ceil(trackDurMs/STEP)+1 candidates,
+      // then we cap to MAX_TRACK_EXPORT_KEYFRAMES by uniform sub-sampling if
+      // needed.
+      // -----------------------------------------------------------------------
+      const pts: TrackPoint[] = resolvedTrack.points
+
+      // --- Decimate ---
+      const decimated: TrackPoint[] = [pts[0]]
+      let lastEmittedMs = pts[0].atMs
+      for (let pi = 1; pi < pts.length - 1; pi++) {
+        if (pts[pi].atMs - lastEmittedMs >= TRACK_EXPORT_STEP_MS) {
+          decimated.push(pts[pi])
+          lastEmittedMs = pts[pi].atMs
+        }
+      }
+      // Always include the last point.
+      if (pts[pts.length - 1] !== decimated[decimated.length - 1]) {
+        decimated.push(pts[pts.length - 1])
+      }
+
+      // --- Cap to MAX_TRACK_EXPORT_KEYFRAMES by uniform stride sub-sampling ---
+      let sampled: TrackPoint[]
+      if (decimated.length <= MAX_TRACK_EXPORT_KEYFRAMES) {
+        sampled = decimated
+      } else {
+        // Uniform stride, always include first and last.
+        const stride = (decimated.length - 1) / (MAX_TRACK_EXPORT_KEYFRAMES - 1)
+        sampled = []
+        for (let ki = 0; ki < MAX_TRACK_EXPORT_KEYFRAMES; ki++) {
+          const idx = ki === MAX_TRACK_EXPORT_KEYFRAMES - 1
+            ? decimated.length - 1
+            : Math.round(ki * stride)
+          sampled.push(decimated[idx])
+        }
+      }
+
+      // --- Build TransformKeyframe-shaped objects for keyframeExpr.
+      //
+      // keyframeExpr works on TransformKeyframe[] + a picker (t: ClipTransform).
+      // We synthesize fake TransformKeyframes whose `transform` carries:
+      //   x → the time-varying TOP-LEFT pixel x for the blur patch
+      //   y → the time-varying TOP-LEFT pixel y
+      //
+      // track point gives CENTER fraction (px, py) of the CANVAS.
+      // Blur patch top-left = center - half patch size, clamped to canvas.
+      //   topLeftX = px * W - rw/2,  clamped [0, W-rw]
+      //   topLeftY = py * H - rh/2,  clamped [0, H-rh]
+      //
+      // We store these pre-computed pixel values in the fake ClipTransform's
+      // `x` and `y` fields (picker just reads those directly — no further
+      // scaling inside keyframeExpr).
+      // -----------------------------------------------------------------------
+      const fakeKfs: TransformKeyframe[] = sampled.map((pt) => {
+        // For 'remove' (delogo) regions the box must never touch a frame edge
+        // mid-animation — delogo aborts with "Invalid argument" if x=0 or the
+        // box reaches W/H. Clamp to [1, W-rw-1] / [1, H-rh-1] instead of the
+        // [0, W-rw] / [0, H-rh] used for mosaic/blur (byte-identical for those).
+        const xLo = region.effect === 'remove' ? 1 : 0
+        const yLo = region.effect === 'remove' ? 1 : 0
+        const xHi = region.effect === 'remove' ? W - rw - 1 : W - rw
+        const yHi = region.effect === 'remove' ? H - rh - 1 : H - rh
+        const topLeftX = Math.min(xHi, Math.max(xLo, pt.x * W - rw / 2))
+        const topLeftY = Math.min(yHi, Math.max(yLo, pt.y * H - rh / 2))
+        return {
+          atMs: pt.atMs,
+          transform: {
+            x: topLeftX,
+            y: topLeftY,
+            scale: 1,    // unused by pickers below
+            rotation: 0, // unused
+            opacity: 1   // unused
+          }
+        }
+      })
+
+      // keyframeExpr uses varName 't' (filter-local time in seconds, same as
+      // the crop/overlay filter context in filter_complex).
+      xExpr = keyframeExpr(fakeKfs, (t) => t.x, 't')
+      yExpr = keyframeExpr(fakeKfs, (t) => t.y, 't')
+
+      // If keyframeExpr returned a bare constant (all points identical x or y)
+      // the expression is still valid and correct — ffmpeg evaluates it as a
+      // constant, which is fine.
+    } else {
+      // -----------------------------------------------------------------------
+      // Constant-coordinate path — UNCHANGED from pre-Phase-3.13.
+      // Byte-identical for: no motionTrackId, dangling id, <2 points.
+      // -----------------------------------------------------------------------
+      const rx = Math.round(region.x * W)
+      const ry = Math.round(region.y * H)
+      xExpr = String(rx)
+      yExpr = String(ry)
+    }
+
+    const baseLabel  = `br_base_${s}_${i}`
+    const srcLabel   = `br_src_${s}_${i}`
+    const cropLabel  = `br_crop_${s}_${i}`
+    const patchLabel = `br_patch_${s}_${i}`
+    const outLabel   = `br_out_${s}_${i}`
+
+    // -------------------------------------------------------------------------
+    // Phase 3.14 — object removal via delogo.
+    //
+    // delogo operates IN-PLACE on the full frame — it needs no split/crop/overlay
+    // dance. It also ERRORS if any edge of its box touches a frame boundary
+    // (x=0 or x+w=W etc. → ffmpeg "Invalid argument"). Safety:
+    //   - clampBlurRegion already insets 'remove' regions by REMOVAL_REGION_EDGE_INSET
+    //     in fractional space so that Math.round(coord * dim) rarely lands on 0 or dim.
+    //   - We add a second integer-level clamp here as a defensive backstop in case
+    //     Math.round nudges a fractional-inset value back onto an edge pixel.
+    //
+    // For motion-tracked 'remove' regions the fakeKfs build above already uses
+    // [1, W-rw-1] / [1, H-rh-1] bounds (gated on effect==='remove') so every
+    // keyframe pixel coordinate is safe.
+    //
+    // Shape is ignored — delogo is rectangle-only; an ellipse 'remove' region
+    // just delogos its bounding rect.
+    // Strength is ignored — delogo has no strength parameter.
+    //
+    // Label chain: delogo consumes the current `prev` (or the unlabelled chain
+    // end on i===0 via comma-continuation) and produces `outLabel`, keeping the
+    // same prev→outLabel invariant as the split/crop/overlay path. The `continue`
+    // skips the rest of the loop body so no label collision occurs.
+    // -------------------------------------------------------------------------
+    if (region.effect === 'remove') {
+      if (useTrack) {
+        // Time-varying: xExpr/yExpr already use the inset-clamped fakeKfs values.
+        // Wrap in quotes for the delogo filter (it accepts expressions via the F flag).
+        const dxArg = `'${xExpr}'`
+        const dyArg = `'${yExpr}'`
+        if (i === 0) {
+          frag += `,delogo=x=${dxArg}:y=${dyArg}:w=${rw}:h=${rh}:show=0[${outLabel}]`
+        } else {
+          frag += `;[${prev}]delogo=x=${dxArg}:y=${dyArg}:w=${rw}:h=${rh}:show=0[${outLabel}]`
+        }
+      } else {
+        // Static: rx/ry come from Math.round — apply integer safety clamp so the
+        // box stays >= 1px from every frame edge regardless of rounding.
+        const rx = Math.round(region.x * W)
+        const ry = Math.round(region.y * H)
+        const dx = Math.min(W - rw - 1, Math.max(1, rx))
+        const dy = Math.min(H - rh - 1, Math.max(1, ry))
+        if (i === 0) {
+          frag += `,delogo=x=${dx}:y=${dy}:w=${rw}:h=${rh}:show=0[${outLabel}]`
+        } else {
+          frag += `;[${prev}]delogo=x=${dx}:y=${dy}:w=${rw}:h=${rh}:show=0[${outLabel}]`
+        }
+      }
+      prev = outLabel
+      continue
+    }
+
+    // Step 1: split the current frame into base (keep) + source (to crop).
+    if (i === 0) {
+      // Comma-continuation: the unlabelled chain end feeds directly into split.
+      frag += `,split=2[${baseLabel}][${srcLabel}]`
+    } else {
+      // prev = br_out_S_{i-1} — a labelled output from the previous overlay.
+      frag += `;[${prev}]split=2[${baseLabel}][${srcLabel}]`
+    }
+
+    // Step 2: crop the patch out of the source copy.
+    // When time-varying, xExpr/yExpr are ffmpeg t-expressions.
+    // ffmpeg crop accepts expressions for x/y (4th and 5th positional args).
+    // Format: crop=w:h:x:y — x/y must be quoted when they contain expressions.
+    const xArg = useTrack ? `'${xExpr}'` : xExpr
+    const yArg = useTrack ? `'${yExpr}'` : yExpr
+    frag += `;[${srcLabel}]crop=${rw}:${rh}:${xArg}:${yArg}[${cropLabel}]`
+
+    // Step 3: apply effect.
+    if (region.effect === 'blur') {
+      const radius = blurRegionBlurRadiusPx(region)
+      frag += `;[${cropLabel}]boxblur=${radius}:1`
+    } else {
+      // mosaic: scale down (neighbor) then scale back up (neighbor).
+      const block = blurRegionMosaicBlockPx(region, W, H)
+      const mwPx = Math.max(1, Math.floor(rw / block))
+      const mhPx = Math.max(1, Math.floor(rh / block))
+      frag += `;[${cropLabel}]scale=${mwPx}:${mhPx}:flags=neighbor,scale=${rw}:${rh}:flags=neighbor`
+    }
+
+    // Step 4: ellipse alpha-mask (rectangle skips this — opaque patch).
+    if (region.shape === 'ellipse') {
+      // format=rgba so alpha channel is available, then geq paints alpha.
+      // Commas inside geq function calls must be escaped as \, in filter_complex.
+      // The ellipse test: (X - rw/2)^2 / (rw/2)^2 + (Y - rh/2)^2 / (rh/2)^2 <= 1
+      frag +=
+        `,format=rgba` +
+        `,geq=r='r(X\\,Y)':g='g(X\\,Y)':b='b(X\\,Y)'` +
+        `:a='if(lte(pow((X-${rw}/2)/(${rw}/2)\\,2)+pow((Y-${rh}/2)/(${rh}/2)\\,2)\\,1)\\,255\\,0)'`
+    }
+
+    // Close the effect chain with a label.
+    frag += `[${patchLabel}]`
+
+    // Step 5: overlay the processed patch back onto the base frame.
+    // Same time-varying x/y expressions as the crop step.
+    frag += `;[${baseLabel}][${patchLabel}]overlay=${xArg}:${yArg}:format=auto[${outLabel}]`
+
+    prev = outLabel
+  }
+
+  // Terminate with ;[last_out]null so buildTransformSubchain (`,format=rgba,...`)
+  // and/or the bare `[out]` label both append cleanly — matching the xt_* path.
+  const lastOut = `br_out_${labelSuffix}_${regions.length - 1}`
+  frag += `;[${lastOut}]null`
+
+  return frag
+}
+
 /**
  * Build the per-clip video filter chain (excluding the xfade join).
  *
@@ -1070,7 +1490,9 @@ function buildVideoSegmentChain(
   seg: VideoSegment,
   preset: MainPreset,
   captionPngMap?: CaptionPngMap,
-  isBaseLayer = true
+  isBaseLayer = true,
+  options: { hueSatAvailable?: boolean } = {},
+  project?: Project
 ): {
   /** Filter chain label (output pad name). */
   out: string
@@ -1104,6 +1526,21 @@ function buildVideoSegmentChain(
   //      and `parts` stays byte-identical to the pre-Phase-3.7 graph.
   const ca = colorAdjustToFfmpeg(getClipColorAdjust(seg.clip))
   if (ca) parts.push(ca)
+  // 2.6. TONE CURVES (Phase 3.12). Stacks AFTER manual color-adjust, BEFORE
+  //      fps normalization. CRITICAL INVARIANT: getClipCurves returns null for
+  //      an absent OR all-identity curve set → curvesToFfmpeg returns '' → the
+  //      `if` is skipped and `parts` stays byte-identical to the pre-Phase-3.12
+  //      graph.
+  const cv = curvesToFfmpeg(getClipCurves(seg.clip))
+  if (cv) parts.push(cv)
+  // 2.7. HSL SECONDARY GRADING (Phase 3.12). Requires ffmpeg's `huesaturation`
+  //      filter — probe-gated; when absent, HSL is silently omitted from export
+  //      (curves are unaffected). Same byte-identical invariant: getClipHsl
+  //      returns null for absent/neutral.
+  if (options.hueSatAvailable !== false) {
+    const hs = hslToFfmpeg(getClipHsl(seg.clip))
+    if (hs) parts.push(hs)
+  }
   // 3. fps normalization (so xfade durations line up cleanly, and all layers
   //    share the same timebase before overlay).
   parts.push(`fps=${preset.fps}`)
@@ -1209,6 +1646,25 @@ function buildVideoSegmentChain(
     }
   }
 
+  // 5.5. MOSAIC / BLUR REGIONS (Phase 3.11 / 3.13). Runs on the canvas-sized
+  //      frame AFTER aspect-fit so canvas-relative region coords match the
+  //      preview, and BEFORE the transform sub-chain so a region moves WITH
+  //      the clip.
+  //      INVARIANT: getClipBlurRegions returns [] for a clip with no regions →
+  //      buildBlurRegionsSubchain returns '' → `fragment` stays byte-identical.
+  //      Phase 3.13: `project` is threaded through so bound blur regions can
+  //      resolve their motionTrackId. When project is undefined (should not
+  //      happen in practice — buildVideoSegmentChain is always called from
+  //      stitchVideoTrack which receives project) we pass a minimal sentinel
+  //      that makes findMotionTrack return null → constant-coord fallback.
+  fragment += buildBlurRegionsSubchain(
+    seg.clip,
+    W,
+    H,
+    String(seg.inputIdx),
+    project ?? { tracks: [], media: {}, id: '', name: '', aspectRatio: '9:16', width: W, height: H, fps: 30, createdAt: 0, updatedAt: 0 }
+  )
+
   // 6. Transform sub-chain — delegated to the shared helper so overlay clips
   //    can reuse EXACTLY the same logic. For media clips labelSuffix =
   //    String(seg.inputIdx), which reproduces the BYTE-IDENTICAL intermediate
@@ -1223,7 +1679,7 @@ function buildVideoSegmentChain(
 /** Build the per-clip audio filter chain (returns the output label). */
 function buildAudioSegmentChain(
   seg: AudioSegment,
-  options: { inputHasAudio?: (inputIdx: number) => boolean } = {}
+  options: { inputHasAudio?: (inputIdx: number) => boolean; denoiseAvailable?: boolean } = {}
 ): { out: string; fragment: string } | null {
   // ffmpeg 6 rejects the `[N:a:0?]` syntax in filter_complex — see top-of-file
   // comment near `probeHasAudio`. We instead skip the segment if its source
@@ -1245,6 +1701,12 @@ function buildAudioSegmentChain(
   const parts: string[] = []
   parts.push(`atrim=start=${trimInSec.toFixed(4)}:duration=${srcDurSec.toFixed(4)}`)
   parts.push('asetpts=PTS-STARTPTS')
+  // Phase 4 — noise reduction on the RAW source, before tempo/gain/fade.
+  // Capability-gated: no-op when the bundled ffmpeg lacks afftdn.
+  if (options.denoiseAvailable !== false) {
+    const dn = denoiseChain(seg.clip)
+    if (dn) parts.push(dn)
+  }
   const tempo = atempoChain(speed)
   if (tempo) parts.push(tempo)
 
@@ -1294,14 +1756,16 @@ function stitchVideoTrack(
   layerIndex: number,
   preset: MainPreset,
   xfadeAvailable: boolean,
-  captionPngMap?: CaptionPngMap
+  captionPngMap?: CaptionPngMap,
+  hueSatAvailable = true,
+  project?: Project
 ): { fragments: string[]; trackLabel: string } {
   const isBase = layerIndex === 0
   const fragments: string[] = []
   const segOutputs: string[] = []
 
   for (const seg of segments) {
-    const { out, fragment } = buildVideoSegmentChain(seg, preset, captionPngMap, isBase)
+    const { out, fragment } = buildVideoSegmentChain(seg, preset, captionPngMap, isBase, { hueSatAvailable }, project)
     fragments.push(fragment)
     segOutputs.push(out)
   }
@@ -1413,7 +1877,9 @@ function stitchVideo(
   videoTrackLayers: VideoSegment[][],
   preset: MainPreset,
   xfadeAvailable = true,
-  captionPngMap?: CaptionPngMap
+  captionPngMap?: CaptionPngMap,
+  hueSatAvailable = true,
+  project?: Project
 ): { graph: string; finalLabel: string } {
   const allFragments: string[] = []
 
@@ -1436,7 +1902,9 @@ function stitchVideo(
       layerIndex,
       preset,
       xfadeAvailable,
-      captionPngMap
+      captionPngMap,
+      hueSatAvailable,
+      project
     )
     for (const f of fragments) allFragments.push(f)
     trackLabels.push(trackLabel)
@@ -1544,6 +2012,24 @@ function captionSlideYExpr(
  *
  * Returns the new final label + filter fragments. When the map is empty,
  * returns the input label unchanged (no-op chain).
+ *
+ * // TODO Phase 3.13 caption track-follow:
+ * // Caption-clip position is baked into the PNG at render time (position comes
+ * // from CaptionStyle.yPosition, which is static). Making caption position
+ * // time-varying via a motionTrackId requires either:
+ * //   (a) Re-rendering the caption PNG at a neutral y=0 and driving its overlay
+ * //       y-offset with a track-derived keyframeExpr (similar to captionSlideYExpr
+ * //       but derived from TrackPoint.y rather than the slide animation), or
+ * //   (b) Changing the caption render step to produce a full-canvas PNG with the
+ * //       caption at (0,0) and using a time-varying overlay=x='...':y='...' here.
+ * // This is deferred because it requires coordinated changes in:
+ * //   - renderCaptionToFile (renderer/main captions/render.ts) to support neutral-y
+ * //     rendering, and
+ * //   - the CaptionPng data structure to carry a motionTrackId.
+ * // The blur-region (Part A) and overlay (Part B) paths are complete.
+ * // Captions with motionTrackId today fall back gracefully to static behavior —
+ * // the CaptionClip.motionTrackId field is present in the contract but stitchCaptions
+ * // does not read captionClip directly (it reads CaptionPng entries). No regression.
  */
 function stitchCaptions(
   inputVideoLabel: string,
@@ -1729,7 +2215,8 @@ function collectOverlays(project: Project): OverlayClip[] {
 function stitchOverlays(
   inputVideoLabel: string,
   overlayPngMap: OverlayPngMap,
-  preset: MainPreset
+  preset: MainPreset,
+  project?: Project
 ): { graph: string; finalLabel: string } {
   if (overlayPngMap.size === 0) {
     return { graph: '', finalLabel: inputVideoLabel }
@@ -1753,8 +2240,100 @@ function stitchOverlays(
     // labelSuffix is based on clip.id slice to be unique and never collide
     // with media-clip labels (which use numeric inputIdx strings).
     const ovLabelSuffix = `ov_${ov.clip.id.slice(-8)}`
+
+    // -------------------------------------------------------------------------
+    // Phase 3.13 — motion-track follow for overlay clips (Part B).
+    //
+    // Gate: same three-way check as blur regions.
+    //   1. overlayClip.motionTrackId is set.
+    //   2. findMotionTrack resolves it.
+    //   3. The track has >= 2 points.
+    //
+    // When true: synthesize TransformKeyframes from the decimated track points
+    // and pass a shallow-cloned overlay clip with those keyframes to
+    // buildTransformSubchain — it picks up the existing hasTransformKeyframes
+    // path, no new expression logic needed.
+    //
+    // Coordinate mapping (CONFIRMED from buildTransformSubchain source):
+    //   ClipTransform.x/y are canvas-CENTER-relative FRACTIONS:
+    //     x=0  → horizontally centred   (pad offset = (ow-iw)/2)
+    //     x=0.5 → shifted right by W/2
+    //   TrackPoint.x/y are canvas-absolute fractions (0=left/top, 1=right/bottom):
+    //     object CENTER at (px, py) → transform offset = (px - 0.5, py - 0.5)
+    //
+    // When false (no motionTrackId, dangling id, <2 pts, project undefined):
+    //   ov.clip passes through UNCHANGED → byte-identical to pre-3.13.
+    // -------------------------------------------------------------------------
+    let clipForTransform: OverlayClip = ov.clip
+
+    const resolvedOvTrack: MotionTrack | null =
+      project && ov.clip.motionTrackId
+        ? findMotionTrack(project, ov.clip.motionTrackId)
+        : null
+
+    const useOvTrack =
+      resolvedOvTrack !== null && resolvedOvTrack.points.length >= 2
+
+    if (useOvTrack) {
+      // Decimate track points (same logic as blur region path above).
+      const pts: TrackPoint[] = resolvedOvTrack.points
+
+      const decimated: TrackPoint[] = [pts[0]]
+      let lastEmittedMs = pts[0].atMs
+      for (let pi = 1; pi < pts.length - 1; pi++) {
+        if (pts[pi].atMs - lastEmittedMs >= TRACK_EXPORT_STEP_MS) {
+          decimated.push(pts[pi])
+          lastEmittedMs = pts[pi].atMs
+        }
+      }
+      if (pts[pts.length - 1] !== decimated[decimated.length - 1]) {
+        decimated.push(pts[pts.length - 1])
+      }
+
+      let sampled: TrackPoint[]
+      if (decimated.length <= MAX_TRACK_EXPORT_KEYFRAMES) {
+        sampled = decimated
+      } else {
+        const stride = (decimated.length - 1) / (MAX_TRACK_EXPORT_KEYFRAMES - 1)
+        sampled = []
+        for (let ki = 0; ki < MAX_TRACK_EXPORT_KEYFRAMES; ki++) {
+          const idx = ki === MAX_TRACK_EXPORT_KEYFRAMES - 1
+            ? decimated.length - 1
+            : Math.round(ki * stride)
+          sampled.push(decimated[idx])
+        }
+      }
+
+      // Get the overlay's static scale + rotation + opacity as fallbacks.
+      // The track drives x and y; static transform fields drive everything else.
+      const baseXform = getClipTransform(ov.clip)
+
+      // Build TransformKeyframe[] from sampled track points.
+      // Each keyframe atMs is the clip-relative ms from the track sample.
+      // x/y: convert canvas-absolute center fraction → canvas-centered fraction.
+      const synthKfs: TransformKeyframe[] = sampled.map((pt) => ({
+        atMs: pt.atMs,
+        transform: {
+          x: pt.x - 0.5,
+          y: pt.y - 0.5,
+          scale: pt.scale !== undefined ? pt.scale * baseXform.scale : baseXform.scale,
+          rotation: baseXform.rotation,
+          opacity: baseXform.opacity
+        }
+      }))
+
+      // Shallow-clone the overlay clip with synthesized keyframes injected.
+      // We do NOT mutate ov.clip — a fresh object is constructed.
+      clipForTransform = {
+        ...ov.clip,
+        transformKeyframes: synthKfs,
+        // Clear the static transform so hasTransformKeyframes path takes over.
+        transform: undefined
+      }
+    }
+
     const transformFragment = buildTransformSubchain(
-      ov.clip,
+      clipForTransform,
       W,
       H,
       ovLabelSuffix,
@@ -1780,7 +2359,7 @@ function stitchOverlays(
 function stitchAudio(
   segments: AudioSegment[],
   project: Project,
-  options: { inputHasAudio?: (inputIdx: number) => boolean } = {}
+  options: { inputHasAudio?: (inputIdx: number) => boolean; denoiseAvailable?: boolean } = {}
 ): { graph: string; finalLabel: string | null } {
   if (segments.length === 0) return { graph: '', finalLabel: null }
 
@@ -1793,7 +2372,10 @@ function stitchAudio(
     const isBgm = seg.track.role === 'bgm'
     const isMuted = seg.track.muted || seg.clip.isMuted
     if (isMuted) continue
-    const built = buildAudioSegmentChain(seg, { inputHasAudio: options.inputHasAudio })
+    const built = buildAudioSegmentChain(seg, {
+      inputHasAudio: options.inputHasAudio,
+      denoiseAvailable: options.denoiseAvailable
+    })
     if (!built) continue
     fragments.push(built.fragment)
     segByLabel.push({
@@ -1926,6 +2508,22 @@ function buildExportPlan(
      * the filter graph is byte-identical to pre-Phase-3.8.
      */
     overlayPngs?: OverlayPngMap
+    /**
+     * Phase 4 — whether the bundled ffmpeg supports the `afftdn` filter.
+     * When false, per-clip noise reduction is silently skipped (audio graph
+     * is byte-identical to pre-Phase-4). Defaults to true when omitted so
+     * the plan-only IPC and unit tests see the full graph without probing.
+     */
+    denoiseAvailable?: boolean
+    /**
+     * Phase 3.12 — whether the bundled ffmpeg supports the `huesaturation`
+     * filter. When false, per-clip HSL secondary grading is silently skipped
+     * (video graph is byte-identical to pre-Phase-3.12 for those clips).
+     * Curves are unaffected (curves= is always present). Defaults to true
+     * when omitted so the plan-only IPC and unit tests see the full graph
+     * without probing.
+     */
+    hueSatAvailable?: boolean
   } = {}
 ): ExportPlan {
   const preset = PRESETS[presetKey]
@@ -1937,20 +2535,25 @@ function buildExportPlan(
   }
 
   const xfadeAvailable = options.xfadeAvailable ?? true
+  const hueSatAvailable = options.hueSatAvailable ?? true
   const captionPngs = options.captionPngs
   const overlayPngs = options.overlayPngs
   const { graph: videoGraph, finalLabel: stitchedVideoLabel } = stitchVideo(
     videoTrackLayers,
     preset,
     xfadeAvailable,
-    captionPngs
+    captionPngs,
+    hueSatAvailable,
+    project
   )
 
   // Phase 3.8: composite overlay PNGs BELOW captions (spec §3.3 pipeline order:
   // stitchVideo → stitchOverlays → stitchCaptions). No-op when overlayPngs is
   // absent / empty — the label passes through unchanged.
+  // Phase 3.13: project is passed so stitchOverlays can resolve motionTrackId
+  // for overlay clips.
   const { graph: overlayGraph, finalLabel: afterOverlayLabel } = overlayPngs && overlayPngs.size > 0
-    ? stitchOverlays(stitchedVideoLabel, overlayPngs, preset)
+    ? stitchOverlays(stitchedVideoLabel, overlayPngs, preset, project)
     : { graph: '', finalLabel: stitchedVideoLabel }
 
   // Composite caption PNGs onto the stitched video. No-op when captionPngs
@@ -1968,7 +2571,7 @@ function buildExportPlan(
   const { graph: audioGraph, finalLabel: audioLabel } = stitchAudio(
     audioSegments,
     project,
-    { inputHasAudio }
+    { inputHasAudio, denoiseAvailable: options.denoiseAvailable }
   )
 
   // Combine. If no audio, still emit a silent stream for compliance with
@@ -2193,6 +2796,8 @@ async function runExport(
   }
 
   const xfadeAvailable = await probeXfadeAvailable(ffmpegPath)
+  const denoiseAvailable = await probeAfftdnAvailable(ffmpegPath)
+  const hueSatAvailable = await probeHueSaturationAvailable(ffmpegPath)
 
   // Probe each unique input path for audio presence. We do this in the
   // runtime path (not in buildPlan) because the plan-only IPC just needs
@@ -2421,6 +3026,8 @@ async function runExport(
   try {
     plan = buildExportPlan(project, options.presetKey, safeOutput, {
       xfadeAvailable,
+      denoiseAvailable,
+      hueSatAvailable,
       inputsWithAudio,
       codec: chosenCodec,
       overlayPngs: overlayPngs.size > 0 ? overlayPngs : undefined,
@@ -2638,8 +3245,10 @@ export function registerExportHandlers(): void {
         allowPath(outputPath)
         const ffmpegPath = resolveFfmpegPath()
         const xfadeAvailable = await probeXfadeAvailable(ffmpegPath)
+        const hueSatAvailablePlan = await probeHueSaturationAvailable(ffmpegPath)
         const plan = buildExportPlan(project, presetKey, outputPath, {
-          xfadeAvailable
+          xfadeAvailable,
+          hueSatAvailable: hueSatAvailablePlan
         })
         return {
           ok: true,
@@ -2682,6 +3291,7 @@ export const __test = {
   buildExportPlan,
   escapeDrawtext,
   atempoChain,
+  denoiseChain,
   keyframeExpr,
   collectSegments,
   collectOverlays,

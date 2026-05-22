@@ -125,6 +125,89 @@ export interface ColorAdjust {
   temperature: number
 }
 
+// -----------------------------------------------------------------------------
+// Phase 3.11 — static mosaic / blur regions. Hide faces / logos / sensitive
+// info by mosaicking or blurring a sub-rectangle of the FINAL CANVAS.
+// -----------------------------------------------------------------------------
+/**
+ * Region effect kind. 'mosaic'/'blur' obscure the region; 'remove' (Phase 3.14)
+ * ERASES it via ffmpeg `delogo` — object removal, filling from the box edges.
+ */
+export type BlurEffectKind = 'mosaic' | 'blur' | 'remove'
+/** Region shape. */
+export type BlurRegionShape = 'rectangle' | 'ellipse'
+
+/**
+ * One static mosaic/blur region masking a sub-rect of the final canvas.
+ * Coordinates are CANVAS-relative fractions: x/y = top-left (0..1), w/h = size
+ * (0..1). STATIC ONLY — no keyframes (motion tracking is a separate feature).
+ */
+export interface BlurRegion {
+  /** Stable id (lets the UI select/update/remove one of several). */
+  id: string
+  shape: BlurRegionShape
+  x: number
+  y: number
+  w: number
+  h: number
+  effect: BlurEffectKind
+  /** Effect strength 0..100 (mosaic block size / blur radius). */
+  strength: number
+  /**
+   * Phase 3.13 — when set, this region FOLLOWS the named motion track on its
+   * own clip: its x/y become time-varying. Absent ⇒ static legacy behavior. A
+   * dangling id (track since deleted) ⇒ resolver falls back to static.
+   */
+  motionTrackId?: string
+}
+
+// -----------------------------------------------------------------------------
+// Phase 3.12 — curves + HSL secondary color grading. STATIC ONLY (no keyframes).
+// Both STACK on top of `filterPreset` and `colorAdjust` (preset → colorAdjust →
+// curves → HSL). Absent / identity / neutral = no-op → byte-identical export.
+// -----------------------------------------------------------------------------
+
+/** One control point on a tone curve. Both coords are 0..1 (input → output). */
+export interface CurvePoint {
+  x: number
+  y: number
+}
+
+/** The four independently-editable tone-curve channels. */
+export type CurveChannelKey = 'master' | 'red' | 'green' | 'blue'
+
+/**
+ * Per-clip tone curves. Four channels, each an ordered list of control points
+ * (ascending x, 0..1). Identity channel = the diagonal [{0,0},{1,1}]. Absent /
+ * all-identity = no-op. Sanitized lazily by `getClipCurves` (null = identity).
+ */
+export interface ClipCurves {
+  master: CurvePoint[]
+  red: CurvePoint[]
+  green: CurvePoint[]
+  blue: CurvePoint[]
+}
+
+/**
+ * The 6 hue bands ffmpeg's `huesaturation` filter natively targets. CapCut
+ * shows 8 — orange is folded into red/yellow, purple into magenta (documented,
+ * intentional v1 scope; matching the export filter's real capability).
+ */
+export type HslBandKey = 'red' | 'yellow' | 'green' | 'cyan' | 'blue' | 'magenta'
+
+/** Hue / Saturation / Luminance offsets for one HSL band. All 0 = neutral. */
+export interface HslBandAdjust {
+  /** -100..100. Mapped to ±180° hue rotation on export. */
+  hue: number
+  /** -100..100. Mapped to ±1.0 saturation on export. */
+  saturation: number
+  /** -100..100. Mapped to ±1.0 `intensity` (lightness) on export. */
+  luminance: number
+}
+
+/** Per-clip HSL secondary grading: one HslBandAdjust per band. */
+export type ClipHsl = Record<HslBandKey, HslBandAdjust>
+
 export type FilterPreset =
   | 'none'
   | 'cinematic'
@@ -171,6 +254,12 @@ export interface VideoAudioClip {
   fadeOutMs?: number
   /** Per-clip mute (overrides gain). Default false. */
   isMuted?: boolean
+  /**
+   * Phase 4 — background-noise reduction strength, 0..100. 0 / absent = OFF
+   * (byte-identical legacy audio graph). Export-only (ffmpeg `afftdn`);
+   * resolved defensively by `getClipDenoise` (null when off).
+   */
+  noiseReduction?: number
   // -----------------------------------------------------------------
   // Phase 2.6 — transitions + filter presets (optional, backwards-compatible).
   // -----------------------------------------------------------------
@@ -217,6 +306,41 @@ export interface VideoAudioClip {
    * Back-filled lazily by `getClipColorAdjust` (null = neutral). No migration.
    */
   colorAdjust?: ColorAdjust
+  // -----------------------------------------------------------------
+  // Phase 3.11 — static mosaic / blur regions (optional, BC-safe).
+  // -----------------------------------------------------------------
+  /**
+   * Static mosaic/blur regions masking sub-rects of the final canvas. Absent /
+   * empty = none (byte-identical legacy export + preview). STATIC ONLY.
+   * Sanitized lazily by `getClipBlurRegions` ([] when absent). No migration.
+   */
+  blurRegions?: BlurRegion[]
+  // -----------------------------------------------------------------
+  // Phase 3.12 — curves + HSL secondary color grading (optional, BC-safe).
+  // -----------------------------------------------------------------
+  /**
+   * Static tone curves (4 channels). Absent / all-identity = no-op
+   * (byte-identical legacy export + preview). Resolved by `getClipCurves`
+   * (null = identity). No migration.
+   */
+  curves?: ClipCurves
+  /**
+   * Static HSL secondary grading (6 hue bands). Absent / all-neutral = no-op
+   * (byte-identical legacy export). Resolved by `getClipHsl` (null = neutral).
+   * Export-only when ffmpeg lacks `huesaturation` (probe-gated). No migration.
+   */
+  hsl?: ClipHsl
+  // -----------------------------------------------------------------
+  // Phase 3.13 — motion tracks (optional, BC-safe).
+  // -----------------------------------------------------------------
+  /**
+   * Motion tracks computed on this clip by tracking a user-drawn box across
+   * its frames. Absent / empty = none. A track is consumed only when a blur
+   * region / overlay / caption BINDS to it via `motionTrackId`; tracking data
+   * alone never changes the export graph. Resolved by `getClipMotionTracks`.
+   * No migration.
+   */
+  motionTracks?: MotionTrack[]
 }
 
 /** Visual preset for a caption block. */
@@ -306,6 +430,12 @@ export interface CaptionClip {
    * Back-filled lazily by `getCaptionAnimation` (null = none). No migration.
    */
   animation?: CaptionAnimation
+  /**
+   * Phase 3.13 — when set, this caption FOLLOWS the named motion track (located
+   * across the project by id). Absent ⇒ static legacy behavior. Dangling id ⇒
+   * static fallback.
+   */
+  motionTrackId?: string
 }
 
 // -----------------------------------------------------------------------------
@@ -362,11 +492,69 @@ export interface OverlayClip {
   /** Ordered transform keyframes (Phase 3.5 infra, shared with media clips). */
   transformKeyframes?: TransformKeyframe[]
   /**
+   * Phase 3.13 — when set, this overlay FOLLOWS the named motion track (located
+   * across the project by id). Absent ⇒ static legacy behavior. Dangling id ⇒
+   * static fallback.
+   */
+  motionTrackId?: string
+  /**
    * Base element size BEFORE transform.scale, as a fraction of canvas
    * width/height. `transform.scale/x/y/rotation/opacity` apply on top.
    */
   baseWidthFrac: number
   baseHeightFrac: number
+}
+
+// -----------------------------------------------------------------------------
+// Phase 3.13 — motion tracking. A MotionTrack is a per-time position curve
+// produced by tracking a user-drawn box across a media clip's frames. A blur
+// region / overlay / caption may BIND to a track (motionTrackId) so it FOLLOWS
+// the tracked object. Tracks are stored PER media clip; positions are clip-
+// relative so they survive clip moves + duplication, like TransformKeyframe.
+// Absent / empty / nothing-bound = byte-identical legacy export + preview.
+// -----------------------------------------------------------------------------
+
+/**
+ * One tracked sample. `atMs` is clip-relative (offset from clip.startMs). x/y
+ * are CANVAS-relative fractions of the tracked object's CENTER (0..1, 0,0 =
+ * top-left). `scale` is a multiplier vs. the source box size at atMs 0 (1 =
+ * unchanged); absent ⇒ treat as 1.
+ */
+export interface TrackPoint {
+  atMs: number
+  x: number
+  y: number
+  scale?: number
+}
+
+/**
+ * Status of a track's compute job. 'partial' = the tracker lost the object
+ * before the clip end (points cover [0, lastGoodMs] only).
+ */
+export type MotionTrackStatus =
+  | 'pending'
+  | 'tracking'
+  | 'complete'
+  | 'partial'
+  | 'failed'
+
+/**
+ * A motion track attached to a media clip. `sourceRect` is the box the user
+ * drew at track-start (canvas-relative fractions, top-left origin). `points`
+ * is the dense output curve, ascending by atMs.
+ */
+export interface MotionTrack {
+  id: string
+  /** Human label, e.g. "트랙 1". */
+  name: string
+  /** User-drawn box at track-start: canvas-relative fractions. */
+  sourceRect: { x: number; y: number; w: number; h: number }
+  /** Dense tracked positions, clip-relative ascending atMs. */
+  points: TrackPoint[]
+  status: MotionTrackStatus
+  /** Nominal spacing between points in ms (≈ 1000/fps). Diagnostics. */
+  samplePeriodMs: number
+  createdAt: number
 }
 
 /** Union: every clip on a track. Use `clip.kind` to narrow safely. */
@@ -454,6 +642,11 @@ export const MIN_GAIN_DB = -60
 export const MAX_GAIN_DB = 12
 /** Default ducking attenuation for a BGM track when a voice clip plays. */
 export const DEFAULT_DUCKING_DB = -12
+/** Noise-reduction strength range (Phase 4). 0 = off. */
+export const MIN_NOISE_REDUCTION = 0
+export const MAX_NOISE_REDUCTION = 100
+/** Strength applied when the noise-reduction toggle is first switched ON. */
+export const DEFAULT_NOISE_REDUCTION = 50
 
 // ---------------------------------------------------------------------------
 // Transition / filter constants (Phase 2.6).
@@ -547,6 +740,117 @@ export const NEUTRAL_COLOR_ADJUST: ColorAdjust = {
 /** Min/max for every color-adjust field (signed, 0 = neutral). */
 export const MIN_COLOR_ADJUST = -100
 export const MAX_COLOR_ADJUST = 100
+/**
+ * Phase 3.15 — auto color correction caps each computed slider at a MODERATE
+ * magnitude so auto never pushes a slider to the manual ±100 extremes (it must
+ * stay tasteful — the user can still drag past this afterward). Bounds only the
+ * AUTO-computed values; see `shared/autoColor.ts`.
+ */
+export const AUTO_COLOR_MAX_MAGNITUDE = 60
+
+// ---------------------------------------------------------------------------
+// Mosaic / blur region constants (Phase 3.11).
+// ---------------------------------------------------------------------------
+/** Hard cap on regions per clip (UI + ffmpeg graph-length guard). */
+export const MAX_BLUR_REGIONS_PER_CLIP = 8
+/** Smallest allowed region edge as a fraction of the canvas dimension. */
+export const MIN_BLUR_REGION_SIZE = 0.03
+export const MIN_BLUR_STRENGTH = 0
+export const MAX_BLUR_STRENGTH = 100
+/** Default strength for a freshly added region. */
+export const DEFAULT_BLUR_STRENGTH = 55
+/** Default effect for a freshly added region. */
+export const DEFAULT_BLUR_EFFECT: BlurEffectKind = 'mosaic'
+export const BLUR_EFFECT_KINDS: readonly BlurEffectKind[] = [
+  'mosaic',
+  'blur',
+  'remove'
+]
+export const BLUR_REGION_SHAPES: readonly BlurRegionShape[] = [
+  'rectangle',
+  'ellipse'
+]
+/** Default rect for a freshly added region — centered, ~30% of canvas. */
+export const DEFAULT_BLUR_REGION_RECT = { x: 0.35, y: 0.35, w: 0.3, h: 0.3 }
+/**
+ * Phase 3.14 — minimum inset (canvas fraction) a 'remove' (delogo) region must
+ * keep from every frame edge. ffmpeg's `delogo` filter ERRORS if its box
+ * touches an edge — it interpolates from the pixel ring just outside the box.
+ * Applied only to 'remove' regions by `clampBlurRegion`; 'mosaic'/'blur' use
+ * inset 0 → their canonical output stays byte-identical to pre-Phase-3.14.
+ */
+export const REMOVAL_REGION_EDGE_INSET = 0.004
+
+// ---------------------------------------------------------------------------
+// Curves + HSL color-grading constants (Phase 3.12).
+// ---------------------------------------------------------------------------
+/** Identity tone curve — the diagonal: input maps to itself. */
+export const IDENTITY_CURVE: CurvePoint[] = [
+  { x: 0, y: 0 },
+  { x: 1, y: 1 }
+]
+/** Identity for all four channels — the no-op ClipCurves. */
+export const IDENTITY_CLIP_CURVES: ClipCurves = {
+  master: IDENTITY_CURVE,
+  red: IDENTITY_CURVE,
+  green: IDENTITY_CURVE,
+  blue: IDENTITY_CURVE
+}
+/** A curve must keep its two endpoints. */
+export const MIN_CURVE_POINTS = 2
+/** Hard cap on points per channel (UI + ffmpeg arg-length guard). */
+export const MAX_CURVE_POINTS = 16
+export const CURVE_CHANNEL_KEYS: readonly CurveChannelKey[] = [
+  'master',
+  'red',
+  'green',
+  'blue'
+]
+
+/** Neutral (no-op) adjust for one HSL band. */
+export const NEUTRAL_HSL_BAND: HslBandAdjust = {
+  hue: 0,
+  saturation: 0,
+  luminance: 0
+}
+export const HSL_BAND_KEYS: readonly HslBandKey[] = [
+  'red',
+  'yellow',
+  'green',
+  'cyan',
+  'blue',
+  'magenta'
+]
+/** Neutral (no-op) ClipHsl — every band at zero. */
+export const NEUTRAL_CLIP_HSL: ClipHsl = {
+  red: { ...NEUTRAL_HSL_BAND },
+  yellow: { ...NEUTRAL_HSL_BAND },
+  green: { ...NEUTRAL_HSL_BAND },
+  cyan: { ...NEUTRAL_HSL_BAND },
+  blue: { ...NEUTRAL_HSL_BAND },
+  magenta: { ...NEUTRAL_HSL_BAND }
+}
+export const MIN_HSL_ADJUST = -100
+export const MAX_HSL_ADJUST = 100
+
+// ---------------------------------------------------------------------------
+// Motion-tracking constants (Phase 3.13).
+// ---------------------------------------------------------------------------
+/** Hard cap on motion tracks per clip (UI + JSON-size guard). */
+export const MAX_MOTION_TRACKS_PER_CLIP = 4
+/** Hard cap on points per track (≈ 60 s @ 30 fps; graph-length guard). */
+export const MAX_TRACK_POINTS = 1800
+/** Smallest drawable track-box edge as a fraction of the canvas dimension. */
+export const MIN_TRACK_SOURCE_SIZE = 0.04
+/** Default nominal spacing between track samples (ms). */
+export const DEFAULT_TRACK_SAMPLE_PERIOD_MS = 33
+/**
+ * Track-point spacing used to BUILD the export t-expression — emit at most one
+ * keyframe per this much output ms so `filter_complex` stays bounded.
+ */
+export const TRACK_EXPORT_STEP_MS = 100
+/** Hard cap on keyframes a bound track contributes to one ffmpeg expression. */
+export const MAX_TRACK_EXPORT_KEYFRAMES = 60
 
 // ---------------------------------------------------------------------------
 // Overlay element constants (Phase 3.8).
@@ -665,6 +969,22 @@ export function isMediaClip(clip: Clip): clip is VideoAudioClip {
 /** Type-narrowed predicate: is this clip a caption clip? */
 export function isCaptionClip(clip: Clip): clip is CaptionClip {
   return clip.kind === 'caption'
+}
+
+/**
+ * Resolve a clip's effective noise-reduction strength (1..100), or null when
+ * off. Defensive (clip may arrive over IPC unvalidated): non-finite → 0,
+ * clamped to [MIN, MAX]; 0 → null so callers cheaply skip work.
+ */
+export function getClipDenoise(clip: VideoAudioClip): number | null {
+  const v = clip.noiseReduction
+  if (v === undefined) return null
+  const n = Number.isFinite(v) ? v : 0
+  const clamped = Math.min(
+    MAX_NOISE_REDUCTION,
+    Math.max(MIN_NOISE_REDUCTION, n)
+  )
+  return clamped <= 0 ? null : clamped
 }
 
 /** Type-narrowed predicate: is this clip an overlay clip? */
@@ -1110,4 +1430,388 @@ export function resolveSpeedSegments(
     prevSrc = srcEnd
   }
   return segs
+}
+
+// ---------------------------------------------------------------------------
+// Mosaic / blur region helpers (Phase 3.11) — pure, importable from any layer.
+// ---------------------------------------------------------------------------
+
+function clampBlurNum(v: number, lo: number, hi: number, d: number): number {
+  const n = Number.isFinite(v) ? v : d
+  return Math.min(hi, Math.max(lo, n))
+}
+
+/** True iff a region is an object-removal (delogo) region. */
+export function isRemovalRegion(r: BlurRegion): boolean {
+  return r.effect === 'remove'
+}
+
+/** Clamp/sanitize one region into a canonical form (preserves `id`). */
+export function clampBlurRegion(r: BlurRegion): BlurRegion {
+  const shape: BlurRegionShape = (
+    BLUR_REGION_SHAPES as readonly string[]
+  ).includes(r.shape)
+    ? r.shape
+    : 'rectangle'
+  const effect: BlurEffectKind = (
+    BLUR_EFFECT_KINDS as readonly string[]
+  ).includes(r.effect)
+    ? r.effect
+    : DEFAULT_BLUR_EFFECT
+  // Phase 3.14: a 'remove' (delogo) region must keep an inset from every frame
+  // edge. mosaic/blur use inset 0 → the arithmetic below collapses to exactly
+  // the pre-Phase-3.14 clamp, keeping their canonical output byte-identical.
+  const inset = effect === 'remove' ? REMOVAL_REGION_EDGE_INSET : 0
+  const maxSize = 1 - 2 * inset
+  const w = Math.min(
+    maxSize,
+    Math.max(MIN_BLUR_REGION_SIZE, clampBlurNum(r.w, MIN_BLUR_REGION_SIZE, 1, 0.3))
+  )
+  const h = Math.min(
+    maxSize,
+    Math.max(MIN_BLUR_REGION_SIZE, clampBlurNum(r.h, MIN_BLUR_REGION_SIZE, 1, 0.3))
+  )
+  let x = clampBlurNum(r.x, 0, 1, 0)
+  let y = clampBlurNum(r.y, 0, 1, 0)
+  if (x + w > 1 - inset) x = 1 - inset - w
+  if (y + h > 1 - inset) y = 1 - inset - h
+  x = Math.max(inset, x)
+  y = Math.max(inset, y)
+  const strength = clampBlurNum(
+    r.strength,
+    MIN_BLUR_STRENGTH,
+    MAX_BLUR_STRENGTH,
+    DEFAULT_BLUR_STRENGTH
+  )
+  // Phase 3.13: preserve motionTrackId when present (optional binding field).
+  // clampBlurRegion was originally written before Phase 3.13 and must forward
+  // any extra fields it doesn't canonicalise so the export pipeline can resolve
+  // motion-track bindings after this sanitisation pass.
+  const base: BlurRegion = { id: r.id, shape, x, y, w, h, effect, strength }
+  if (typeof r.motionTrackId === 'string' && r.motionTrackId) {
+    base.motionTrackId = r.motionTrackId
+  }
+  return base
+}
+
+/**
+ * Resolve a clip's effective mosaic/blur regions — a sanitized array, or []
+ * when there are none. Defensive: drops malformed entries, fills a synthetic
+ * id when missing, truncates to MAX_BLUR_REGIONS_PER_CLIP. Order preserved.
+ */
+export function getClipBlurRegions(clip: VideoAudioClip): BlurRegion[] {
+  const raw = clip.blurRegions
+  if (!Array.isArray(raw) || raw.length === 0) return []
+  const out: BlurRegion[] = []
+  for (
+    let i = 0;
+    i < raw.length && out.length < MAX_BLUR_REGIONS_PER_CLIP;
+    i++
+  ) {
+    const r = raw[i]
+    if (!r || typeof r !== 'object') continue
+    const id = typeof r.id === 'string' && r.id ? r.id : `region-${i}`
+    out.push(clampBlurRegion({ ...r, id }))
+  }
+  return out
+}
+
+/** boxblur luma radius (px) for a region's blur effect. */
+export function blurRegionBlurRadiusPx(region: BlurRegion): number {
+  return Math.round(2 + (clampBlurNum(region.strength, 0, 100, 55) / 100) * 38)
+}
+
+/** Mosaic block edge in canvas px for a region (strength → block size). */
+export function blurRegionMosaicBlockPx(
+  region: BlurRegion,
+  canvasW: number,
+  canvasH: number
+): number {
+  const shortEdgePx = Math.min(region.w * canvasW, region.h * canvasH)
+  const s = clampBlurNum(region.strength, 0, 100, 55) / 100
+  const block = 6 + s * Math.max(0, shortEdgePx / 8 - 6)
+  return Math.max(2, Math.round(block))
+}
+
+// ---------------------------------------------------------------------------
+// Curves + HSL helpers (Phase 3.12) — pure, importable from any layer.
+// All resolvers are DEFENSIVE: the project arrives over IPC unvalidated.
+// ---------------------------------------------------------------------------
+
+/** Tolerance for treating a coordinate / band value as "on the line / zero". */
+const CURVE_EPS = 1e-6
+
+/**
+ * Canonicalize one tone-curve channel: coerce every coord finite & clamp to
+ * [0,1], drop non-finite points, sort ascending by x, dedupe equal-x points
+ * (last wins). Falls back to IDENTITY_CURVE when fewer than 2 points survive.
+ */
+export function sanitizeCurveChannel(raw: unknown): CurvePoint[] {
+  if (!Array.isArray(raw)) return IDENTITY_CURVE
+  const pts: CurvePoint[] = []
+  for (const p of raw) {
+    if (!p || typeof p !== 'object') continue
+    const x = (p as CurvePoint).x
+    const y = (p as CurvePoint).y
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+    pts.push({
+      x: Math.min(1, Math.max(0, x)),
+      y: Math.min(1, Math.max(0, y))
+    })
+  }
+  pts.sort((a, b) => a.x - b.x)
+  const deduped: CurvePoint[] = []
+  for (const p of pts) {
+    const prev = deduped[deduped.length - 1]
+    if (prev && Math.abs(prev.x - p.x) <= CURVE_EPS) deduped[deduped.length - 1] = p
+    else deduped.push(p)
+  }
+  if (deduped.length < MIN_CURVE_POINTS) return IDENTITY_CURVE
+  return deduped.slice(0, MAX_CURVE_POINTS)
+}
+
+/** True iff every point of a (sanitized) channel lies on the y = x diagonal. */
+export function isIdentityCurveChannel(pts: CurvePoint[]): boolean {
+  return pts.every((p) => Math.abs(p.x - p.y) <= CURVE_EPS)
+}
+
+/** Canonicalize a full ClipCurves (never null) — used by the store. */
+export function sanitizeClipCurves(raw: unknown): ClipCurves {
+  const r = (raw ?? {}) as Partial<ClipCurves>
+  return {
+    master: sanitizeCurveChannel(r.master),
+    red: sanitizeCurveChannel(r.red),
+    green: sanitizeCurveChannel(r.green),
+    blue: sanitizeCurveChannel(r.blue)
+  }
+}
+
+/** True iff all four channels are identity. */
+export function isIdentityClipCurves(c: ClipCurves): boolean {
+  return CURVE_CHANNEL_KEYS.every((k) => isIdentityCurveChannel(c[k]))
+}
+
+/**
+ * Resolve a clip's effective tone curves, or null when identity. Defensive:
+ * every channel is canonicalized (finite/clamped/sorted/deduped); a neutral
+ * (all-identity) result returns null so callers skip work — keeping the export
+ * graph byte-identical to the pre-Phase-3.12 graph for unadjusted clips.
+ */
+export function getClipCurves(clip: VideoAudioClip): ClipCurves | null {
+  if (!clip.curves) return null
+  const c = sanitizeClipCurves(clip.curves)
+  return isIdentityClipCurves(c) ? null : c
+}
+
+/** Canonicalize one HSL band: each field coerced finite & clamped to range. */
+export function sanitizeHslBand(raw: unknown): HslBandAdjust {
+  const r = (raw ?? {}) as Partial<HslBandAdjust>
+  const f = (v: unknown): number => {
+    const n = typeof v === 'number' && Number.isFinite(v) ? v : 0
+    return Math.min(MAX_HSL_ADJUST, Math.max(MIN_HSL_ADJUST, n))
+  }
+  return { hue: f(r.hue), saturation: f(r.saturation), luminance: f(r.luminance) }
+}
+
+/** True iff a band is neutral (all three offsets zero). */
+export function isNeutralHslBand(b: HslBandAdjust): boolean {
+  return (
+    Math.abs(b.hue) <= CURVE_EPS &&
+    Math.abs(b.saturation) <= CURVE_EPS &&
+    Math.abs(b.luminance) <= CURVE_EPS
+  )
+}
+
+/** Canonicalize a full ClipHsl (never null) — used by the store. */
+export function sanitizeClipHsl(raw: unknown): ClipHsl {
+  const r = (raw ?? {}) as Partial<Record<HslBandKey, unknown>>
+  return {
+    red: sanitizeHslBand(r.red),
+    yellow: sanitizeHslBand(r.yellow),
+    green: sanitizeHslBand(r.green),
+    cyan: sanitizeHslBand(r.cyan),
+    blue: sanitizeHslBand(r.blue),
+    magenta: sanitizeHslBand(r.magenta)
+  }
+}
+
+/** True iff every HSL band is neutral. */
+export function isNeutralClipHsl(h: ClipHsl): boolean {
+  return HSL_BAND_KEYS.every((k) => isNeutralHslBand(h[k]))
+}
+
+/**
+ * Resolve a clip's effective HSL grading, or null when neutral. Defensive:
+ * unknown band keys dropped, missing bands → neutral, every field clamped. A
+ * neutral (all-zero) result returns null so callers skip work.
+ */
+export function getClipHsl(clip: VideoAudioClip): ClipHsl | null {
+  if (!clip.hsl) return null
+  const h = sanitizeClipHsl(clip.hsl)
+  return isNeutralClipHsl(h) ? null : h
+}
+
+// ---------------------------------------------------------------------------
+// Motion-tracking helpers (Phase 3.13) — pure, importable from any layer.
+// All resolvers are DEFENSIVE: the project arrives over IPC unvalidated.
+// ---------------------------------------------------------------------------
+
+const MOTION_TRACK_STATUSES: readonly MotionTrackStatus[] = [
+  'pending',
+  'tracking',
+  'complete',
+  'partial',
+  'failed'
+]
+
+/** Sanitize one TrackPoint: finite-coerce, clamp x/y to [0,1], scale > 0. */
+export function clampTrackPoint(p: TrackPoint): TrackPoint {
+  const num = (v: unknown, fallback: number): number =>
+    typeof v === 'number' && Number.isFinite(v) ? v : fallback
+  const rawScale = num(p?.scale, 1)
+  return {
+    atMs: Math.max(0, num(p?.atMs, 0)),
+    x: Math.min(1, Math.max(0, num(p?.x, 0.5))),
+    y: Math.min(1, Math.max(0, num(p?.y, 0.5))),
+    scale: rawScale > 0 ? rawScale : 1
+  }
+}
+
+/**
+ * Resolve a clip's motion tracks — a sanitized array, or [] when there are
+ * none. Defensive: drops malformed entries, fills synthetic id/name, sorts &
+ * dedupes each track's points ascending by atMs, truncates to MAX_TRACK_POINTS,
+ * caps to MAX_MOTION_TRACKS_PER_CLIP. (Pattern: getClipBlurRegions.)
+ */
+export function getClipMotionTracks(clip: VideoAudioClip): MotionTrack[] {
+  const raw = clip.motionTracks
+  if (!Array.isArray(raw) || raw.length === 0) return []
+  const clampFrac = (v: unknown): number => {
+    const n = typeof v === 'number' && Number.isFinite(v) ? v : 0
+    return Math.min(1, Math.max(0, n))
+  }
+  const out: MotionTrack[] = []
+  for (
+    let i = 0;
+    i < raw.length && out.length < MAX_MOTION_TRACKS_PER_CLIP;
+    i++
+  ) {
+    const t = raw[i]
+    if (!t || typeof t !== 'object') continue
+    const pointsRaw = Array.isArray(t.points) ? t.points : []
+    const points: TrackPoint[] = []
+    for (const p of pointsRaw) {
+      if (!p || typeof p !== 'object') continue
+      points.push(clampTrackPoint(p))
+    }
+    points.sort((a, b) => a.atMs - b.atMs)
+    const deduped: TrackPoint[] = []
+    for (const p of points) {
+      const prev = deduped[deduped.length - 1]
+      if (prev && Math.abs(prev.atMs - p.atMs) < 1e-6) {
+        deduped[deduped.length - 1] = p
+      } else {
+        deduped.push(p)
+      }
+    }
+    const sr =
+      t.sourceRect && typeof t.sourceRect === 'object'
+        ? t.sourceRect
+        : { x: 0, y: 0, w: 0, h: 0 }
+    out.push({
+      id: typeof t.id === 'string' && t.id ? t.id : `track-${i}`,
+      name: typeof t.name === 'string' && t.name ? t.name : `트랙 ${i + 1}`,
+      sourceRect: {
+        x: clampFrac(sr.x),
+        y: clampFrac(sr.y),
+        w: clampFrac(sr.w),
+        h: clampFrac(sr.h)
+      },
+      points: deduped.slice(0, MAX_TRACK_POINTS),
+      status: MOTION_TRACK_STATUSES.includes(t.status) ? t.status : 'complete',
+      samplePeriodMs:
+        typeof t.samplePeriodMs === 'number' &&
+        Number.isFinite(t.samplePeriodMs) &&
+        t.samplePeriodMs > 0
+          ? t.samplePeriodMs
+          : DEFAULT_TRACK_SAMPLE_PERIOD_MS,
+      createdAt:
+        typeof t.createdAt === 'number' && Number.isFinite(t.createdAt)
+          ? t.createdAt
+          : 0
+    })
+  }
+  return out
+}
+
+/**
+ * Find a motion track by id anywhere in the project — tracks live on media
+ * clips. Returns null when not found (callers fall back to static behavior).
+ */
+export function findMotionTrack(
+  project: Project,
+  trackId: string
+): MotionTrack | null {
+  if (!trackId) return null
+  for (const track of project.tracks) {
+    for (const clip of track.clips) {
+      if (clip.kind !== 'media') continue
+      const found = getClipMotionTracks(clip).find((m) => m.id === trackId)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+/**
+ * Resolve a track's position at a clip-relative ms — linear interpolation
+ * between the two surrounding points, hold-clamped before the first / after
+ * the last. Returns null when the track has < 2 points (caller falls back to
+ * static). Every returned field is finite. (Pattern: getTransformAt.)
+ */
+export function getTrackPositionAt(
+  track: MotionTrack,
+  clipRelativeMs: number
+): { x: number; y: number; scale: number } | null {
+  const pts = track.points
+  if (!Array.isArray(pts) || pts.length < 2) return null
+  const t = Number.isFinite(clipRelativeMs) ? clipRelativeMs : 0
+  const first = pts[0]
+  if (t <= first.atMs) {
+    return { x: first.x, y: first.y, scale: first.scale ?? 1 }
+  }
+  const last = pts[pts.length - 1]
+  if (t >= last.atMs) {
+    return { x: last.x, y: last.y, scale: last.scale ?? 1 }
+  }
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1]
+    const b = pts[i]
+    if (t <= b.atMs) {
+      const span = b.atMs - a.atMs
+      const f = span > 1e-6 ? (t - a.atMs) / span : 0
+      const as = a.scale ?? 1
+      const bs = b.scale ?? 1
+      return {
+        x: a.x + (b.x - a.x) * f,
+        y: a.y + (b.y - a.y) * f,
+        scale: as + (bs - as) * f
+      }
+    }
+  }
+  return { x: last.x, y: last.y, scale: last.scale ?? 1 }
+}
+
+/**
+ * True iff `motionTrackId` resolves to an existing, usable (≥ 2-point) track —
+ * callers skip the time-varying path entirely when false, preserving the
+ * byte-identical export/preview invariant.
+ */
+export function isBoundToTrack(
+  motionTrackId: string | undefined,
+  project: Project
+): boolean {
+  if (!motionTrackId) return false
+  const track = findMotionTrack(project, motionTrackId)
+  return !!track && track.points.length >= 2
 }

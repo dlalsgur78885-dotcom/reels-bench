@@ -1,10 +1,13 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   Clip,
+  ClipHsl,
   ClipTransform,
   ColorAdjust,
   CropRect,
   FilterPreset,
+  HslBandAdjust,
+  HslBandKey,
   Project,
   TransitionKind
 } from '../../../shared/project'
@@ -13,13 +16,17 @@ import {
   FILTER_PRESETS,
   getClipColorAdjust,
   getClipCropRect,
+  getClipHsl,
+  getClipMotionTracks,
   getTransformAt,
   hasTransformKeyframes,
+  HSL_BAND_KEYS,
   IDENTITY_CROP,
   isMediaClip,
   isOverlayClip,
   MAX_CLIP_SPEED,
   MAX_COLOR_ADJUST,
+  MAX_HSL_ADJUST,
   MAX_TRANSFORM_OFFSET,
   MAX_TRANSFORM_ROTATION,
   MAX_TRANSFORM_SCALE,
@@ -27,21 +34,27 @@ import {
   MIN_CLIP_SPEED,
   MIN_COLOR_ADJUST,
   MIN_CROP_SIZE,
+  MIN_HSL_ADJUST,
   MIN_KEYFRAME_GAP_MS,
   MIN_TRANSFORM_OFFSET,
   MIN_TRANSFORM_ROTATION,
   MIN_TRANSFORM_SCALE,
   MIN_TRANSITION_MS,
+  NEUTRAL_CLIP_HSL,
   NEUTRAL_COLOR_ADJUST,
   TRANSITION_KINDS
 } from '../../../shared/project'
 import {
   COLOR_ADJUST_LABELS,
   FILTER_PRESET_LABELS,
+  HSL_BAND_LABELS,
+  HSL_BAND_SWATCHES,
   TRANSITION_LABELS,
   filterPresetToCss
 } from '../../../shared/filterPresets'
 import { useProjectStore } from '../store/project'
+import { computeAutoColorAdjust } from '../lib/autoColorAnalysis'
+import { CurveEditor } from './CurveEditor'
 
 /**
  * Phase 7 — CapCut-style docked Effects panel.
@@ -315,7 +328,12 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   const resetClipCrop = useProjectStore((s) => s.resetClipCrop)
   const setClipColorAdjust = useProjectStore((s) => s.setClipColorAdjust)
   const resetClipColorAdjust = useProjectStore((s) => s.resetClipColorAdjust)
+  const applyAutoColorAdjust = useProjectStore((s) => s.applyAutoColorAdjust)
+  const setClipHslBand = useProjectStore((s) => s.setClipHslBand)
+  const resetClipHsl = useProjectStore((s) => s.resetClipHsl)
   const addTransformKeyframe = useProjectStore((s) => s.addTransformKeyframe)
+  // Phase 3.13 — overlay → motion-track binding.
+  const bindOverlayToTrack = useProjectStore((s) => s.bindOverlayToTrack)
   const updateTransformKeyframe = useProjectStore(
     (s) => s.updateTransformKeyframe
   )
@@ -324,8 +342,35 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   )
 
   const [tab, setTab] = useState<EffectTab>('transform')
+  // HSL band selection — transient UI state (not in the project schema).
+  const [hslBand, setHslBand] = useState<HslBandKey>('red')
+
+  // Phase 3.15 — auto color correction: transient analysis status + an
+  // AbortController so a clip change / unmount cancels an in-flight analysis
+  // (prevents a stale write onto the wrong — or a gone — clip).
+  const [autoColorStatus, setAutoColorStatus] = useState<
+    'idle' | 'analyzing' | 'error'
+  >('idle')
+  const autoColorAbortRef = useRef<AbortController | null>(null)
+  // Always-current selected clip id — read inside the async auto-color
+  // handler to detect a clip switch that happened mid-analysis.
+  const clipIdRef = useRef<string>(clipId)
+  clipIdRef.current = clipId
 
   const clip = useMemo(() => findClip(project, clipId), [project, clipId])
+
+  // Phase 3.15 — abort any in-flight auto-color analysis when the selected
+  // clip changes or the panel unmounts, and reset the transient status so the
+  // button never shows a stale "분석 중…" / error for a different clip.
+  useEffect(() => {
+    return (): void => {
+      autoColorAbortRef.current?.abort()
+      autoColorAbortRef.current = null
+    }
+  }, [clipId])
+  useEffect(() => {
+    setAutoColorStatus('idle')
+  }, [clipId])
 
   // Keyframe index under the playhead — mirrors Timeline's ctxKeyframeIndex.
   const keyframeIndex = useMemo<number>(() => {
@@ -377,6 +422,10 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   const colorAdjust: ColorAdjust = isMedia
     ? getClipColorAdjust(clip) ?? NEUTRAL_COLOR_ADJUST
     : NEUTRAL_COLOR_ADJUST
+  const hsl: ClipHsl = isMedia
+    ? getClipHsl(clip) ?? NEUTRAL_CLIP_HSL
+    : NEUTRAL_CLIP_HSL
+  const hslBandAdjust: HslBandAdjust = hsl[hslBand]
   const speed = isMedia ? clip.speed ?? 1 : 1
   const transitionKind: TransitionKind = isMedia
     ? clip.transitionIn?.kind ?? 'none'
@@ -413,6 +462,52 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
       }
     } else {
       setClipTransform(clip.id, partial)
+    }
+  }
+
+  /**
+   * Auto color correction — analyze the selected clip's media and replace the
+   * 4-slider color adjustment in one shot. Guards against a stale write: the
+   * clip id is captured in the closure and the result is only applied if that
+   * clip is still selected (an AbortController also cancels on clip change).
+   */
+  const handleAutoColor = async (): Promise<void> => {
+    if (!isMedia) return
+    const media = project.media[clip.mediaId]
+    if (!media || media.kind === 'audio') {
+      setAutoColorStatus('error')
+      return
+    }
+    // Cancel any prior in-flight analysis before starting a new one.
+    autoColorAbortRef.current?.abort()
+    const controller = new AbortController()
+    autoColorAbortRef.current = controller
+    const targetClipId = clip.id
+    setAutoColorStatus('analyzing')
+    try {
+      const result = await computeAutoColorAdjust(clip, media.path, {
+        signal: controller.signal
+      })
+      // Stale-write guard: only apply if this analysis is still the current
+      // one AND its clip is still the selected clip.
+      if (
+        autoColorAbortRef.current === controller &&
+        !controller.signal.aborted &&
+        clipIdRef.current === targetClipId
+      ) {
+        applyAutoColorAdjust(targetClipId, result)
+        setAutoColorStatus('idle')
+      }
+    } catch (err) {
+      // An abort is expected on clip change / unmount — not an error to show.
+      if (err instanceof DOMException && err.name === 'AbortError') return
+      if (autoColorAbortRef.current === controller) {
+        setAutoColorStatus('error')
+      }
+    } finally {
+      if (autoColorAbortRef.current === controller) {
+        autoColorAbortRef.current = null
+      }
     }
   }
 
@@ -576,6 +671,45 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 키프레임에 반영돼요. (애니메이션 탭 참고)
               </p>
             )}
+            {/* Phase 3.13 — bind an overlay clip to a motion track. The
+                bindable tracks live on the project's media clips. */}
+            {isOverlay && (
+              <div style={{ marginTop: 12 }} data-testid="effects-section-motion-track">
+                <p style={styles.sectionLabel}>모션 트랙에 고정</p>
+                <div style={{ height: 6 }} />
+                <select
+                  data-testid={`motion-track-bind-select-${clip.id}`}
+                  value={isOverlayClip(clip) ? clip.motionTrackId ?? '' : ''}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    bindOverlayToTrack(clip.id, v === '' ? null : v)
+                  }}
+                  style={{
+                    width: '100%',
+                    background: '#0a0a0a',
+                    color: '#f5f5f5',
+                    border: '1px solid #2a2a2a',
+                    borderRadius: 4,
+                    padding: '4px 6px',
+                    fontSize: 12
+                  }}
+                  aria-label="모션 트랙에 고정"
+                >
+                  <option value="">없음</option>
+                  {project.tracks
+                    .flatMap((t) =>
+                      t.clips.flatMap((c) =>
+                        isMediaClip(c) ? getClipMotionTracks(c) : []
+                      )
+                    )
+                    .map((mt) => (
+                      <option key={mt.id} value={mt.id}>
+                        {mt.name}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            )}
           </div>
         )}
 
@@ -728,6 +862,32 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
             {/* Color adjust */}
             <p style={styles.sectionLabel}>색 보정</p>
             <div style={{ height: 6 }} />
+            {/* Auto color correction (Phase 3.15) — one-tap analyze + fill. */}
+            <button
+              type="button"
+              style={{
+                ...styles.resetBtn,
+                ...(autoColorStatus === 'analyzing'
+                  ? styles.keyframeBtnDisabled
+                  : null)
+              }}
+              onClick={() => {
+                void handleAutoColor()
+              }}
+              disabled={autoColorStatus === 'analyzing'}
+              data-testid="effects-coloradjust-auto"
+            >
+              {autoColorStatus === 'analyzing' ? '분석 중…' : '자동 보정'}
+            </button>
+            {autoColorStatus === 'error' && (
+              <p
+                style={{ ...styles.hint, marginTop: 4 }}
+                data-testid="effects-coloradjust-auto-error"
+              >
+                자동 보정에 실패했어요.
+              </p>
+            )}
+            <div style={{ height: 8 }} />
             {(
               ['brightness', 'contrast', 'saturation', 'temperature'] as const
             ).map((k) =>
@@ -752,6 +912,87 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
             >
               색 보정 초기화
             </button>
+
+            <hr style={styles.divider} />
+
+            {/* Tone curves (Phase 3.12) */}
+            <p style={styles.sectionLabel}>곡선</p>
+            <div style={{ height: 6 }} />
+            <div data-testid="effects-section-curves">
+              <CurveEditor clipId={clip.id} />
+            </div>
+
+            <hr style={styles.divider} />
+
+            {/* HSL secondary grading (Phase 3.12) */}
+            <p style={styles.sectionLabel}>HSL</p>
+            <div style={{ height: 6 }} />
+            <div data-testid="hsl-panel">
+              {/* Band selector — 6 color swatches, one active. */}
+              <div style={styles.presetRow}>
+                {HSL_BAND_KEYS.map((b) => {
+                  const active = hslBand === b
+                  return (
+                    <button
+                      key={b}
+                      type="button"
+                      data-testid={`hsl-band-${b}`}
+                      aria-pressed={active}
+                      onClick={() => setHslBand(b)}
+                      title={HSL_BAND_LABELS[b]}
+                      style={{
+                        width: 30,
+                        height: 30,
+                        borderRadius: 6,
+                        background: HSL_BAND_SWATCHES[b],
+                        border: active
+                          ? '2px solid #f5f5f5'
+                          : '1px solid #374151',
+                        cursor: 'pointer',
+                        padding: 0
+                      }}
+                    />
+                  )
+                })}
+              </div>
+              <div style={{ height: 8 }} />
+              {(['hue', 'saturation', 'luminance'] as const).map((field) => {
+                const label =
+                  field === 'hue'
+                    ? '색상'
+                    : field === 'saturation'
+                      ? '채도'
+                      : '광도'
+                return (
+                  <div key={field} data-testid={`hsl-slider-${field}`}>
+                    {sliderRow(
+                      label,
+                      hslBandAdjust[field],
+                      MIN_HSL_ADJUST,
+                      MAX_HSL_ADJUST,
+                      1,
+                      (v) => setClipHslBand(clip.id, hslBand, { [field]: v }),
+                      `hsl-slider-${field}`,
+                      0,
+                      true
+                    )}
+                  </div>
+                )
+              })}
+              <p style={{ ...styles.hint, marginTop: 6 }}>
+                미리보기는 근사값입니다 — 정확한 색은 내보내기 결과를
+                확인하세요.
+              </p>
+              <div style={{ height: 8 }} />
+              <button
+                type="button"
+                style={styles.resetBtn}
+                onClick={() => resetClipHsl(clip.id)}
+                data-testid="hsl-reset"
+              >
+                HSL 초기화
+              </button>
+            </div>
 
             <hr style={styles.divider} />
 

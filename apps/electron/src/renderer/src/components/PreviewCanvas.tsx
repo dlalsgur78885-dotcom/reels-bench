@@ -1,18 +1,25 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   CAPTION_POP_START_SCALE,
   CAPTION_SLIDE_FRAC,
+  blurRegionBlurRadiusPx,
+  blurRegionMosaicBlockPx,
+  findMotionTrack,
   getCaptionAnimWindows,
   getCaptionAnimation,
+  getClipBlurRegions,
   getClipColorAdjust,
   getClipCropRect,
+  getClipCurves,
   getOverlayBaseSize,
   getSpeedAt,
+  getTrackPositionAt,
   getTransformAt,
   hasSpeedCurve,
   isCaptionClip,
   isMediaClip,
   isOverlayClip,
+  MIN_TRACK_SOURCE_SIZE,
   sourceOffsetForTimelineOffset,
   type CaptionClip,
   type CaptionSpan,
@@ -24,8 +31,13 @@ import {
   type Track,
   type VideoAudioClip
 } from '../../../shared/project'
-import { colorAdjustToCss, filterPresetToCss } from '../../../shared/filterPresets'
+import {
+  colorAdjustToCss,
+  filterPresetToCss,
+  sampleCurveTable
+} from '../../../shared/filterPresets'
 import { useTimelineUi } from '../store/timelineUi'
+import { useTrackingStore } from '../store/tracking'
 import { toMediaUrl } from '../lib/mediaUrl'
 import { SocialPreviewOverlay } from './SocialPreviewOverlay'
 import {
@@ -477,8 +489,9 @@ function CaptionOverlay(props: {
   caption: CaptionClip
   fittedHeight: number
   playheadMs: number
+  project: Project
 }): JSX.Element {
-  const { caption, fittedHeight, playheadMs } = props
+  const { caption, fittedHeight, playheadMs, project } = props
   const { style } = caption
   const REF_HEIGHT = 1920
   const scaledFontSize =
@@ -492,30 +505,63 @@ function CaptionOverlay(props: {
     playheadMs,
     fittedHeight
   )
-  const containerStyle: React.CSSProperties = {
-    position: 'absolute',
-    bottom: `${bottomPct}%`,
-    width: 'max-content',
-    maxWidth: '90%',
-    pointerEvents: 'none',
-    display: 'flex',
-    justifyContent: alignToFlex(style.align),
-    textAlign: style.align,
-    fontSize: scaledFontSize,
-    lineHeight: 1.25,
-    fontWeight: 700,
-    letterSpacing: 0.2,
-    whiteSpace: 'normal',
-    wordBreak: 'keep-all',
-    ...alignToHorizontalAnchor(style.align),
-    ...presetExtras(style),
-    ...backgroundFor(style)
-  }
-  // INVARIANT: an un-animated caption (anim === null) writes NEITHER `opacity`
-  // nor a modified `transform` — the spread above already set `transform` via
-  // alignToHorizontalAnchor, and `opacity` stays absent → rendered DOM is
-  // byte-identical to the legacy path. Only when there IS animation do we
-  // append the extra transform / multiply opacity onto the container.
+  // Phase 3.13 — track-aware caption position. ONLY when the caption binds to
+  // a resolvable ≥2-point motion track do we override the static anchoring
+  // (bottom% + align-based left/right) with the tracked center. INVARIANT: an
+  // unbound caption (no motionTrackId, or a dangling id) → trackPos is null →
+  // the static path runs untouched, byte-identical legacy DOM.
+  const boundTrack = caption.motionTrackId
+    ? findMotionTrack(project, caption.motionTrackId)
+    : null
+  const trackPos =
+    boundTrack && boundTrack.points.length >= 2
+      ? getTrackPositionAt(boundTrack, playheadMs - caption.startMs)
+      : null
+  const containerStyle: React.CSSProperties = trackPos
+    ? {
+        // Track-bound path — center the caption on the tracked point.
+        position: 'absolute',
+        left: `${trackPos.x * 100}%`,
+        top: `${trackPos.y * 100}%`,
+        transform: 'translate(-50%, -50%)',
+        width: 'max-content',
+        maxWidth: '90%',
+        pointerEvents: 'none',
+        display: 'flex',
+        justifyContent: alignToFlex(style.align),
+        textAlign: style.align,
+        fontSize: scaledFontSize,
+        lineHeight: 1.25,
+        fontWeight: 700,
+        letterSpacing: 0.2,
+        whiteSpace: 'normal',
+        wordBreak: 'keep-all',
+        ...presetExtras(style),
+        ...backgroundFor(style)
+      }
+    : {
+        position: 'absolute',
+        bottom: `${bottomPct}%`,
+        width: 'max-content',
+        maxWidth: '90%',
+        pointerEvents: 'none',
+        display: 'flex',
+        justifyContent: alignToFlex(style.align),
+        textAlign: style.align,
+        fontSize: scaledFontSize,
+        lineHeight: 1.25,
+        fontWeight: 700,
+        letterSpacing: 0.2,
+        whiteSpace: 'normal',
+        wordBreak: 'keep-all',
+        ...alignToHorizontalAnchor(style.align),
+        ...presetExtras(style),
+        ...backgroundFor(style)
+      }
+  // INVARIANT: an un-animated, unbound caption writes NEITHER `opacity` nor a
+  // modified `transform` beyond alignToHorizontalAnchor's — rendered DOM is
+  // byte-identical to the legacy path. When there IS animation we append the
+  // extra transform / multiply opacity onto the container.
   if (anim) {
     const baseTransform =
       typeof containerStyle.transform === 'string'
@@ -535,6 +581,7 @@ function CaptionOverlay(props: {
       data-anim-entrance={anim?.entrance ?? 'none'}
       data-anim-exit={anim?.exit ?? 'none'}
       data-revealed-spans={revealSpanCount}
+      data-motion-track-id={trackPos ? caption.motionTrackId : undefined}
       style={containerStyle}
     >
       <div style={{ display: 'inline' }}>
@@ -618,11 +665,25 @@ function OverlayShapeSvg(props: { style: ShapeStyle }): JSX.Element {
 function OverlayElement(props: {
   clip: OverlayClip
   playheadMs: number
+  project: Project
 }): JSX.Element {
-  const { clip, playheadMs } = props
+  const { clip, playheadMs, project } = props
   // Phase 3.5 transform — resolved at the playhead so keyframed overlays
   // animate. Identical CSS math to the video layer.
   const t = getTransformAt(clip, playheadMs)
+  // Phase 3.13 — track-aware position override. ONLY when the overlay binds
+  // to a resolvable ≥2-point motion track do we shift the base box to the
+  // tracked center. INVARIANT: an unbound overlay (no motionTrackId, or a
+  // dangling id) keeps the centered 50%/50% box — byte-identical legacy DOM.
+  const boundTrack = clip.motionTrackId
+    ? findMotionTrack(project, clip.motionTrackId)
+    : null
+  // Track positions are clip-relative; the overlay clip's own startMs maps
+  // the global playhead into the same clip-relative space the track uses.
+  const trackPos =
+    boundTrack && boundTrack.points.length >= 2
+      ? getTrackPositionAt(boundTrack, playheadMs - clip.startMs)
+      : null
   const cssTransform = `translate(${t.x * 100}%, ${t.y * 100}%) scale(${
     t.scale
   }) rotate(${t.rotation}deg)`
@@ -632,8 +693,8 @@ function OverlayElement(props: {
   // CSS transform (translate/scale/rotate) + opacity apply on top.
   const boxStyle: React.CSSProperties = {
     position: 'absolute',
-    left: '50%',
-    top: '50%',
+    left: trackPos ? `${trackPos.x * 100}%` : '50%',
+    top: trackPos ? `${trackPos.y * 100}%` : '50%',
     width: `${w * 100}%`,
     height: `${h * 100}%`,
     // Center first, then apply the clip transform.
@@ -648,6 +709,7 @@ function OverlayElement(props: {
       data-testid="overlay-element"
       data-overlay-id={clip.id}
       data-overlay-type={src.type}
+      data-motion-track-id={trackPos ? clip.motionTrackId : undefined}
     >
       {(src.type === 'image' || src.type === 'sticker') && (
         <img
@@ -675,6 +737,121 @@ function OverlayElement(props: {
 }
 
 // ---------------------------------------------------------------------------
+// Motion-track box-draw overlay (Phase 3.13).
+//
+// Rendered as a direct child of the fitted-rect ONLY while the tracking store's
+// drawMode is on. Mouse down/move/up rubber-bands a rectangle; on mouse-up the
+// pixel rect is converted to canvas fractions (the fitted-rect IS the canvas,
+// so a fraction is simply pixel / fitted-size), the MIN_TRACK_SOURCE_SIZE floor
+// is enforced, and beginTrackJob is fired. Exits draw mode afterwards.
+// ---------------------------------------------------------------------------
+function MotionTrackDrawLayer(props: { zIndex: number }): JSX.Element {
+  const { zIndex } = props
+  const drawClipId = useTrackingStore((s) => s.drawClipId)
+  const beginTrackJob = useTrackingStore((s) => s.beginTrackJob)
+  const setDrawMode = useTrackingStore((s) => s.setDrawMode)
+  const layerRef = useRef<HTMLDivElement>(null)
+  // Rubber-band state — pixel coords relative to this layer.
+  const [drag, setDrag] = useState<{
+    x0: number
+    y0: number
+    x1: number
+    y1: number
+  } | null>(null)
+
+  const rectPx = drag
+    ? {
+        left: Math.min(drag.x0, drag.x1),
+        top: Math.min(drag.y0, drag.y1),
+        width: Math.abs(drag.x1 - drag.x0),
+        height: Math.abs(drag.y1 - drag.y0)
+      }
+    : null
+
+  const onDown = (e: React.MouseEvent): void => {
+    const el = layerRef.current
+    if (!el) return
+    const box = el.getBoundingClientRect()
+    const x = e.clientX - box.left
+    const y = e.clientY - box.top
+    setDrag({ x0: x, y0: y, x1: x, y1: y })
+  }
+  const onMove = (e: React.MouseEvent): void => {
+    if (!drag) return
+    const el = layerRef.current
+    if (!el) return
+    const box = el.getBoundingClientRect()
+    setDrag({
+      ...drag,
+      x1: e.clientX - box.left,
+      y1: e.clientY - box.top
+    })
+  }
+  const onUp = (): void => {
+    const el = layerRef.current
+    if (!el || !drag) {
+      setDrag(null)
+      return
+    }
+    const box = el.getBoundingClientRect()
+    const w = box.width || 1
+    const h = box.height || 1
+    // Pixel rect → canvas fractions (the layer fills the canvas exactly).
+    let fx = Math.min(drag.x0, drag.x1) / w
+    let fy = Math.min(drag.y0, drag.y1) / h
+    let fw = Math.abs(drag.x1 - drag.x0) / w
+    let fh = Math.abs(drag.y1 - drag.y0) / h
+    setDrag(null)
+    // Enforce the minimum source size on each axis.
+    if (fw < MIN_TRACK_SOURCE_SIZE) fw = MIN_TRACK_SOURCE_SIZE
+    if (fh < MIN_TRACK_SOURCE_SIZE) fh = MIN_TRACK_SOURCE_SIZE
+    // Clamp the box fully inside the canvas after the floor.
+    fx = Math.min(Math.max(0, fx), 1 - fw)
+    fy = Math.min(Math.max(0, fy), 1 - fh)
+    if (drawClipId) {
+      beginTrackJob(drawClipId, { x: fx, y: fy, w: fw, h: fh })
+    } else {
+      // No target clip — just leave draw mode.
+      setDrawMode(false)
+    }
+  }
+
+  return (
+    <div
+      ref={layerRef}
+      data-testid="motion-track-draw-layer"
+      onMouseDown={onDown}
+      onMouseMove={onMove}
+      onMouseUp={onUp}
+      onMouseLeave={() => drag && onUp()}
+      style={{
+        position: 'absolute',
+        inset: 0,
+        zIndex,
+        cursor: 'crosshair',
+        background: 'rgba(0,0,0,0.18)'
+      }}
+    >
+      {rectPx && (
+        <div
+          data-testid="motion-track-draw-rect"
+          style={{
+            position: 'absolute',
+            left: rectPx.left,
+            top: rectPx.top,
+            width: rectPx.width,
+            height: rectPx.height,
+            border: '2px solid #10b981',
+            background: 'rgba(16,185,129,0.15)',
+            pointerEvents: 'none'
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main PreviewCanvas — wires real <video> + N <audio> elements to the
 // playhead via the WebAudio routing graph.
 //
@@ -690,6 +867,10 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   // Phase 6 — SNS 플랫폼 미리보기. Transient UI state; never touches the
   // project / export. 'none' (default) renders no chrome.
   const socialPlatform = useTimelineUi((s) => s.socialPreviewPlatform)
+  // Phase 3.13 — motion-track draw mode + the target clip for the box-draw
+  // overlay. Transient tracking-store state; never persisted.
+  const trackingDrawMode = useTrackingStore((s) => s.drawMode)
+  const trackingDrawClipId = useTrackingStore((s) => s.drawClipId)
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasAspect = project.width / Math.max(1, project.height)
   const fitted = useFittedRect(containerRef, canvasAspect)
@@ -1264,10 +1445,18 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           // clip with no `colorAdjust`, colorAdjustToCss(null) === '' → it is
           // dropped → the string is byte-identical to the prior preset-only
           // value (regression-critical — see export.spec.ts).
+          // Phase 3.12 — tone curves. CSS `filter:` cannot do curves, so we
+          // emit a hidden SVG <filter> with two chained feComponentTransfer
+          // stages (per-channel curve, then master curve) and reference it via
+          // url(#curve-<id>). INVARIANT: when getClipCurves(clip) is null we
+          // append NOTHING — the `filter:` string + DOM stay byte-identical to
+          // the pre-Phase-3.12 value (regression-critical — see export.spec).
+          const clipCurves = clip ? getClipCurves(clip) : null
           const combinedFilter = clip
             ? [
                 filterPresetToCss(clip.filterPreset, clip.filterIntensity ?? 1),
-                colorAdjustToCss(getClipColorAdjust(clip))
+                colorAdjustToCss(getClipColorAdjust(clip)),
+                clipCurves ? `url(#curve-${clip.id})` : ''
               ]
                 .filter((s) => s.length > 0)
                 .join(' ') || 'none'
@@ -1325,14 +1514,234 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               }
             />
           )
-          if (!cr) return videoEl
+          // Phase 3.11 — mosaic / blur regions. A non-empty list means we
+          // overlay one masking div per region as a DIRECT CHILD of the
+          // fitted-rect (NOT inside the crop-wrapper — a child there would be
+          // double-transformed). INVARIANT: when getClipBlurRegions(clip) is
+          // [] we render NOTHING new — the existing DOM stays byte-identical.
+          const blurRegions = clip ? getClipBlurRegions(clip) : []
+          const blurLayer =
+            clip && blurRegions.length > 0 ? (
+              <div
+                key={`${track.id}-blur`}
+                data-testid="blur-region-layer"
+                data-track-id={track.id}
+                data-region-count={blurRegions.length}
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  pointerEvents: 'none',
+                  zIndex
+                }}
+              >
+                {blurRegions.map((region) => {
+                  // BLUR → real CSS backdrop blur. MOSAIC → there is no CSS
+                  // pixelate primitive, so we APPROXIMATE it with a heavy
+                  // backdrop blur scaled off the export block size (like
+                  // filterPresetToCss approximates the export LUT). The
+                  // export does a TRUE mosaic; preview ≈ export.
+                  const MOSAIC_K = 0.6
+                  const radiusPx =
+                    region.effect === 'blur'
+                      ? blurRegionBlurRadiusPx(region)
+                      : MOSAIC_K *
+                        blurRegionMosaicBlockPx(
+                          region,
+                          project.width,
+                          project.height
+                        )
+                  const blurCss = `blur(${radiusPx}px)`
+                  // Phase 3.13 — track-aware position override. ONLY when the
+                  // region binds to a resolvable ≥2-point motion track on
+                  // THIS clip do we replace the static left/top with the
+                  // tracked center. INVARIANT: an unbound region (no
+                  // motionTrackId, or a dangling id) takes the static path
+                  // below — byte-identical legacy DOM.
+                  const boundTrack = region.motionTrackId
+                    ? findMotionTrack(project, region.motionTrackId)
+                    : null
+                  const trackPos =
+                    boundTrack && boundTrack.points.length >= 2
+                      ? getTrackPositionAt(
+                          boundTrack,
+                          playheadMs - clip.startMs
+                        )
+                      : null
+                  // center → top-left.
+                  const leftCss = trackPos
+                    ? `${(trackPos.x - region.w / 2) * 100}%`
+                    : `${region.x * 100}%`
+                  const topCss = trackPos
+                    ? `${(trackPos.y - region.h / 2) * 100}%`
+                    : `${region.y * 100}%`
+                  // Phase 3.14 — 'remove' (object removal) regions cannot be
+                  // inpainted in the preview. Instead of a backdrop blur we
+                  // render a NEUTRAL hatched placeholder + a "제거 영역" label
+                  // that signals the area will be erased on export (preview is
+                  // approximate). INVARIANT: 'mosaic'/'blur' regions take the
+                  // backdrop-filter path below — byte-identical legacy DOM.
+                  if (region.effect === 'remove') {
+                    return (
+                      <div
+                        key={region.id}
+                        data-testid="blur-region"
+                        data-region-id={region.id}
+                        data-region-effect={region.effect}
+                        data-region-shape={region.shape}
+                        data-motion-track-id={
+                          trackPos ? region.motionTrackId : undefined
+                        }
+                        style={{
+                          position: 'absolute',
+                          left: leftCss,
+                          top: topCss,
+                          width: `${region.w * 100}%`,
+                          height: `${region.h * 100}%`,
+                          overflow: 'hidden',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          border: '1px dashed rgba(255,255,255,0.55)',
+                          backgroundColor: 'rgba(20,20,20,0.45)',
+                          backgroundImage:
+                            'repeating-linear-gradient(' +
+                            '45deg,' +
+                            'rgba(255,255,255,0.16) 0px,' +
+                            'rgba(255,255,255,0.16) 6px,' +
+                            'rgba(255,255,255,0) 6px,' +
+                            'rgba(255,255,255,0) 12px)'
+                        }}
+                      >
+                        <span
+                          data-testid="blur-region-remove-label"
+                          style={{
+                            fontSize: 11,
+                            lineHeight: 1.2,
+                            color: 'rgba(255,255,255,0.9)',
+                            background: 'rgba(0,0,0,0.55)',
+                            padding: '1px 6px',
+                            borderRadius: 3,
+                            whiteSpace: 'nowrap',
+                            pointerEvents: 'none'
+                          }}
+                        >
+                          제거 영역
+                        </span>
+                      </div>
+                    )
+                  }
+                  return (
+                    <div
+                      key={region.id}
+                      data-testid="blur-region"
+                      data-region-id={region.id}
+                      data-region-effect={region.effect}
+                      data-region-shape={region.shape}
+                      data-motion-track-id={
+                        trackPos ? region.motionTrackId : undefined
+                      }
+                      style={{
+                        position: 'absolute',
+                        left: leftCss,
+                        top: topCss,
+                        width: `${region.w * 100}%`,
+                        height: `${region.h * 100}%`,
+                        overflow: 'hidden',
+                        borderRadius: region.shape === 'ellipse' ? '50%' : 0,
+                        backdropFilter: blurCss,
+                        WebkitBackdropFilter: blurCss
+                      }}
+                    />
+                  )
+                })}
+              </div>
+            ) : null
+
+          // Phase 3.12 — hidden SVG <filter> hosting the clip's tone curves.
+          // Two chained feComponentTransfer stages = per-channel curve, then
+          // master curve (master ∘ red/green/blue) — exact, no manual table
+          // composition. INVARIANT: emitted ONLY when clipCurves is non-null,
+          // so the DOM stays byte-identical for un-graded clips. The <svg> is
+          // zero-size + aria-hidden — it only carries the filter definition.
+          const CURVE_STEPS = 33
+          const curveTable = (pts: { x: number; y: number }[]): string =>
+            sampleCurveTable(pts, CURVE_STEPS)
+              .map((v) => v.toFixed(4))
+              .join(' ')
+          const curveFilterSvg =
+            clip && clipCurves ? (
+              <svg
+                key={`${track.id}-curve`}
+                data-testid="curve-filter-svg"
+                data-clip-id={clip.id}
+                aria-hidden="true"
+                width={0}
+                height={0}
+                style={{ position: 'absolute', width: 0, height: 0 }}
+              >
+                <defs>
+                  <filter
+                    id={`curve-${clip.id}`}
+                    colorInterpolationFilters="sRGB"
+                  >
+                    {/* Stage 1 — per-channel R/G/B curves. */}
+                    <feComponentTransfer>
+                      <feFuncR
+                        type="table"
+                        tableValues={curveTable(clipCurves.red)}
+                      />
+                      <feFuncG
+                        type="table"
+                        tableValues={curveTable(clipCurves.green)}
+                      />
+                      <feFuncB
+                        type="table"
+                        tableValues={curveTable(clipCurves.blue)}
+                      />
+                    </feComponentTransfer>
+                    {/* Stage 2 — master curve applied to all channels. */}
+                    <feComponentTransfer>
+                      <feFuncR
+                        type="table"
+                        tableValues={curveTable(clipCurves.master)}
+                      />
+                      <feFuncG
+                        type="table"
+                        tableValues={curveTable(clipCurves.master)}
+                      />
+                      <feFuncB
+                        type="table"
+                        tableValues={curveTable(clipCurves.master)}
+                      />
+                    </feComponentTransfer>
+                  </filter>
+                </defs>
+              </svg>
+            ) : null
+
+          if (!cr) {
+            // Un-cropped path. When the clip has no blur regions AND no tone
+            // curves, return the bare <video> exactly as before (byte-
+            // identical DOM). Otherwise emit the extras alongside it.
+            if (!blurLayer && !curveFilterSvg) return videoEl
+            return (
+              <Fragment key={track.id}>
+                {videoEl}
+                {curveFilterSvg}
+                {blurLayer}
+              </Fragment>
+            )
+          }
           // Cropped path: wrap the <video> in an overflow:hidden div. The
           // wrapper carries the layer zIndex + the CSS transform/opacity; the
           // inner <video> (unchanged ref + data-* attrs — the WebAudio graph
           // wraps the element, not the div) is sized/translated above so only
           // the crop sub-rect is visible. Outermost node keyed with track.id
           // so React reconciliation stays stable across crop on/off toggles.
-          return (
+          // The blur layer (Phase 3.11) is emitted as a SIBLING of the crop
+          // wrapper (direct child of the fitted-rect) so it is NOT
+          // double-transformed by the wrapper's CSS transform.
+          const cropWrapper = (
             <div
               key={track.id}
               data-testid="preview-crop-wrapper"
@@ -1351,6 +1760,14 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
             >
               {videoEl}
             </div>
+          )
+          if (!blurLayer && !curveFilterSvg) return cropWrapper
+          return (
+            <Fragment key={track.id}>
+              {cropWrapper}
+              {curveFilterSvg}
+              {blurLayer}
+            </Fragment>
           )
         })}
         {/* One <audio> per audio track. Wrapped exactly once by the
@@ -1404,7 +1821,12 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           data-testid="overlay-layer"
         >
           {activeOverlays.map((o) => (
-            <OverlayElement key={o.id} clip={o} playheadMs={playheadMs} />
+            <OverlayElement
+              key={o.id}
+              clip={o}
+              playheadMs={playheadMs}
+              project={project}
+            />
           ))}
         </div>
 
@@ -1445,6 +1867,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               caption={c}
               fittedHeight={fitted.height}
               playheadMs={playheadMs}
+              project={project}
             />
           ))}
         </div>
@@ -1464,6 +1887,47 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
         >
           <SocialPreviewOverlay platform={socialPlatform} />
         </div>
+
+        {/* Motion-track markers (Phase 3.13) — a faint box at the tracked
+            position for every ≥2-point track on a video layer active at the
+            playhead. Purely diagnostic; never affects export. */}
+        {videoLayers.map(({ clip }) => {
+          const tracks = clip.motionTracks
+          if (!Array.isArray(tracks) || tracks.length === 0) return null
+          return tracks.map((mt) => {
+            if (mt.points.length < 2) return null
+            const pos = getTrackPositionAt(mt, playheadMs - clip.startMs)
+            if (!pos) return null
+            const bw = mt.sourceRect.w * (pos.scale || 1)
+            const bh = mt.sourceRect.h * (pos.scale || 1)
+            return (
+              <div
+                key={`${clip.id}-${mt.id}`}
+                data-testid="motion-track-marker"
+                data-track-id={mt.id}
+                data-clip-id={clip.id}
+                style={{
+                  position: 'absolute',
+                  left: `${(pos.x - bw / 2) * 100}%`,
+                  top: `${(pos.y - bh / 2) * 100}%`,
+                  width: `${bw * 100}%`,
+                  height: `${bh * 100}%`,
+                  border: '1px dashed rgba(16,185,129,0.65)',
+                  boxShadow: '0 0 0 1px rgba(0,0,0,0.4)',
+                  pointerEvents: 'none',
+                  zIndex: socialZIndex + 1
+                }}
+              />
+            )
+          })
+        })}
+
+        {/* Motion-track box-draw overlay (Phase 3.13). Rendered ONLY while the
+            tracking store's drawMode is armed; sits above everything so the
+            user can rubber-band a box over the current frame. */}
+        {trackingDrawMode && trackingDrawClipId && (
+          <MotionTrackDrawLayer zIndex={socialZIndex + 2} />
+        )}
 
         <style>{`
           @keyframes reels-pulse {

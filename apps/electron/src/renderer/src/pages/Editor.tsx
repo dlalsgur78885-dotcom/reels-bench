@@ -11,8 +11,10 @@ import { EffectsPanel } from '../components/EffectsPanel'
 import { ExportDialog } from '../components/ExportDialog'
 import { PrefillDialog } from '../components/PrefillDialog'
 import { SttDialog } from '../components/SttDialog'
+import { AutoEditDialog } from '../components/AutoEditDialog'
 import { Toast, type ToastVariant } from '../components/Toast'
 import type { PrefillResult } from '../lib/prefillFromReel'
+import type { AutoEditSummary } from '../lib/autoEdit'
 import { getTotalDurationMs, useProjectStore, useUndoRedo } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import {
@@ -281,6 +283,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   const [leftTab, setLeftTab] = useState<'media' | 'overlay'>('media')
   const [prefillOpen, setPrefillOpen] = useState(false)
   const [sttOpen, setSttOpen] = useState(false)
+  const [autoEditOpen, setAutoEditOpen] = useState(false)
   const [toast, setToast] = useState<{
     message: string
     variant: ToastVariant
@@ -317,6 +320,25 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     })
     setSttOpen(false)
   }, [])
+
+  const handleAutoEditComplete = useCallback(
+    (summary: AutoEditSummary): void => {
+      const parts = [
+        `무음 ${summary.rangesRemoved}개 구간 · ${(
+          summary.msRemoved / 1000
+        ).toFixed(1)}초 제거`
+      ]
+      if (summary.captionsAdded > 0) {
+        parts.push(`자막 ${summary.captionsAdded}개 생성`)
+      }
+      setToast({
+        message: `자동 편집 완료 — ${parts.join(', ')}`,
+        variant: 'success',
+        id: Date.now()
+      })
+    },
+    []
+  )
 
   // Phase 2.5 — manual BPM + beat snap UI.
   const bpm = useTimelineUi((s) => s.bpm)
@@ -469,6 +491,19 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
       if ((e.ctrlKey || e.metaKey) && (e.key === 't' || e.key === 'T')) {
         e.preventDefault()
         setSttOpen(true)
+        return
+      }
+
+      // Ctrl/Cmd+Shift+A → open the 자동 편집 (auto rough-cut) dialog.
+      // 'ㅁ' = the Hangul 2-set key under A (matches the undo/redo 'ㅋ' style).
+      // The Shift combo here can't clash with redo (redo keys on z/Z/ㅋ or y).
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        e.shiftKey &&
+        (e.key === 'a' || e.key === 'A' || e.key === 'ㅁ')
+      ) {
+        e.preventDefault()
+        setAutoEditOpen(true)
         return
       }
 
@@ -710,6 +745,14 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           자동 자막 생성
         </button>
         <button
+          style={styles.primaryBtn}
+          onClick={() => setAutoEditOpen(true)}
+          data-testid="open-autoedit-dialog"
+          title="자동 러프컷 (Ctrl+Shift+A)"
+        >
+          자동 편집
+        </button>
+        <button
           type="button"
           style={{
             ...styles.secondaryBtn,
@@ -896,6 +939,11 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         open={sttOpen}
         onClose={() => setSttOpen(false)}
         onComplete={handleSttComplete}
+      />
+      <AutoEditDialog
+        open={autoEditOpen}
+        onClose={() => setAutoEditOpen(false)}
+        onComplete={handleAutoEditComplete}
       />
       {toast && (
         <Toast

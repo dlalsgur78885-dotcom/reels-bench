@@ -8,6 +8,10 @@ import {
   IPC_CHANNELS,
   type BeatDetectOptions,
   type BeatMarker,
+  type BrandKit,
+  type BrandKitImportLogoResult,
+  type BrandKitWriteInput,
+  type BrandLogoVariant,
   type DownloadResult,
   type ElectronApi,
   type ExportBuildPlanResult,
@@ -159,6 +163,23 @@ const api: ElectronApi = {
       ext: string
     ): Promise<SaveRecordingResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.recording.saveAudio, bytes, ext)
+  },
+  brandKit: {
+    read: (): Promise<BrandKit> =>
+      ipcRenderer.invoke(IPC_CHANNELS.brandKit.read),
+    write: (input: BrandKitWriteInput): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.brandKit.write, input),
+    importLogo: (
+      variant: BrandLogoVariant,
+      sourcePath: string
+    ): Promise<BrandKitImportLogoResult> =>
+      ipcRenderer.invoke(
+        IPC_CHANNELS.brandKit.importLogo,
+        variant,
+        sourcePath
+      ),
+    removeLogo: (variant: BrandLogoVariant): Promise<BrandKit> =>
+      ipcRenderer.invoke(IPC_CHANNELS.brandKit.removeLogo, variant)
   },
   stt: {
     transcribe: (opts: SttTranscribeOptions): Promise<SttResult> =>

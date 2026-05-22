@@ -22,6 +22,7 @@ import {
   PRESET_LABELS,
   makeStyleFromPreset
 } from '../lib/captionPresets'
+import { BrandSwatchRow } from './BrandSwatchRow'
 
 interface CaptionEditorProps {
   project: Project
@@ -627,6 +628,10 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
                   >
                     초기화
                   </button>
+                  <BrandSwatchRow
+                    label="브랜드"
+                    onPick={(hex) => setSpanColor(selectedSpanIdx!, hex)}
+                  />
                 </div>
               )}
             </>

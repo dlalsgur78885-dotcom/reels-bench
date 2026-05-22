@@ -3,14 +3,19 @@ import { create, useStore } from 'zustand'
 import { temporal, type TemporalState } from 'zundo'
 import {
   ASPECT_RATIO_DIMENSIONS,
+  DEFAULT_BLUR_EFFECT,
+  DEFAULT_BLUR_REGION_RECT,
+  DEFAULT_BLUR_STRENGTH,
   DEFAULT_DUCKING_DB,
   DEFAULT_TRANSITION_MS,
   IDENTITY_CROP,
   MAX_AUDIO_TRACKS,
+  MAX_BLUR_REGIONS_PER_CLIP,
   MAX_CLIP_SPEED,
   MAX_COLOR_ADJUST,
   MAX_GAIN_DB,
   MAX_KEYFRAMES_PER_CLIP,
+  MAX_MOTION_TRACKS_PER_CLIP,
   MAX_SPEED_KEYFRAMES_PER_CLIP,
   MAX_TRANSFORM_OFFSET,
   MAX_TRANSFORM_ROTATION,
@@ -23,20 +28,35 @@ import {
   MIN_CROP_SIZE,
   MIN_GAIN_DB,
   MIN_KEYFRAME_GAP_MS,
+  MIN_NOISE_REDUCTION,
+  MAX_NOISE_REDUCTION,
   MIN_SPEED_KEYFRAME_GAP_MS,
   MIN_TRANSFORM_OFFSET,
   MIN_TRANSFORM_ROTATION,
   MIN_TRANSFORM_SCALE,
   MIN_TRANSITION_MS,
   NEUTRAL_COLOR_ADJUST,
+  IDENTITY_CLIP_CURVES,
+  NEUTRAL_CLIP_HSL,
+  NEUTRAL_HSL_BAND,
+  MIN_CURVE_POINTS,
+  MAX_CURVE_POINTS,
+  MIN_HSL_ADJUST,
+  MAX_HSL_ADJUST,
   type AspectRatio,
+  type BlurRegion,
   type CaptionClip,
   type Clip,
   type ColorAdjust,
   type ClipTransform,
   type CropRect,
+  type CurveChannelKey,
+  type CurvePoint,
   type FilterPreset,
+  type HslBandAdjust,
+  type HslBandKey,
   type MediaAsset,
+  type MotionTrack,
   type OverlayClip,
   type Project,
   type Track,
@@ -46,6 +66,7 @@ import {
   type TransformKeyframe,
   type TransitionKind,
   type VideoAudioClip,
+  clampBlurRegion,
   getClipDuration,
   getClipTimelineDuration,
   getClipTransform,
@@ -59,6 +80,10 @@ import {
   isMediaClip,
   isNeutralColorAdjust,
   isOverlayClip,
+  sanitizeClipCurves,
+  isIdentityClipCurves,
+  sanitizeClipHsl,
+  isNeutralClipHsl,
   sourceOffsetForTimelineOffset
 } from '../../../shared/project'
 import type { SilenceRange } from '../../../shared/ipc'
@@ -358,6 +383,13 @@ export interface ProjectStore {
   setClipFade(clipId: string, fadeInMs: number, fadeOutMs: number): void
   /** Set per-clip mute. */
   setClipMuted(clipId: string, muted: boolean): void
+  /**
+   * Set a media clip's noise-reduction strength (0..100). 0 (or any value
+   * clamping to <= 0) stores `undefined` (OFF — lean snapshots). Export-only;
+   * the preview audio graph is untouched. No-op for non-media clips and for
+   * non-finite inputs.
+   */
+  setClipNoiseReduction(clipId: string, strength: number): void
   /** Set track-wide mute. */
   setTrackMuted(trackId: string, muted: boolean): void
   /** Set track-wide solo. */
@@ -369,6 +401,16 @@ export interface ProjectStore {
    * is not a media clip, or `ranges` is empty.
    */
   removeSilencesFromClip(clipId: string, ranges: SilenceRange[]): string[]
+  /**
+   * Ripple-close every gap on a single track: sort the track's clips by
+   * `startMs`, then translate each clip so it butts directly against the
+   * previous one (or, for the first clip, keeps its original `startMs`).
+   * Per-clip duration is preserved exactly — only `startMs`/`endMs` shift; a
+   * clip is NEVER pushed to the right (`shift` is clamped `>= 0`). Trims,
+   * speed, keyframes, transitions etc. are untouched.
+   * Returns the total milliseconds removed (sum of every clip's left-shift).
+   */
+  rippleCloseTrackGaps(trackId: string): number
 
   // --- Transitions + filters (Phase 2.6, media clips only) ---
   /** Set the incoming transition on a media clip. kind='none' clears it. */
@@ -411,8 +453,127 @@ export interface ProjectStore {
    * undo snapshots lean). No-op for caption clips and for non-finite inputs.
    */
   setClipColorAdjust(clipId: string, partial: Partial<ColorAdjust>): void
+  /**
+   * Auto color correction (Phase 3.15) — REPLACE a media clip's whole
+   * `colorAdjust` with `clampColorAdjust(adjust)` (auto overwrites prior
+   * manual values, unlike `setClipColorAdjust` which merges). A neutral
+   * result collapses to `undefined`. No-op for caption clips and for
+   * non-finite inputs. Produces exactly one zundo snapshot.
+   */
+  applyAutoColorAdjust(clipId: string, adjust: ColorAdjust): void
   /** Clear a media clip's color adjustment (back to neutral). */
   resetClipColorAdjust(clipId: string): void
+
+  // --- Tone curves + HSL secondary grading (Phase 3.12, media clips only) ---
+  /**
+   * Update one tone-curve control point's x/y (each clamped to [0,1]) on a
+   * media clip. The whole `curves` object is re-sanitized via
+   * `sanitizeClipCurves`; an all-identity result is stored as `undefined`
+   * (keeps persisted JSON + undo snapshots lean). No-op for caption clips,
+   * for non-finite input, and when `pointIndex` is out of range.
+   */
+  setCurvePoint(
+    clipId: string,
+    channel: CurveChannelKey,
+    pointIndex: number,
+    p: Partial<CurvePoint>
+  ): void
+  /**
+   * Insert a control point into one curve channel of a media clip. The
+   * sanitizer sorts + dedupes. No-op for caption clips, for non-finite input,
+   * and when the channel already holds MAX_CURVE_POINTS points.
+   */
+  addCurvePoint(
+    clipId: string,
+    channel: CurveChannelKey,
+    p: CurvePoint
+  ): void
+  /**
+   * Remove the control point at `pointIndex` from one curve channel of a
+   * media clip. No-op when removal would drop the channel below
+   * MIN_CURVE_POINTS, for caption clips, and when the index is out of range.
+   */
+  removeCurvePoint(
+    clipId: string,
+    channel: CurveChannelKey,
+    pointIndex: number
+  ): void
+  /** Clear a media clip's tone curves (back to identity). */
+  resetCurves(clipId: string): void
+  /**
+   * Merge a partial HslBandAdjust into one band of a media clip's HSL
+   * grading, clamping each field to [MIN_HSL_ADJUST, MAX_HSL_ADJUST]. The
+   * whole `hsl` object is re-sanitized; an all-neutral result is stored as
+   * `undefined`. No-op for caption clips and for non-finite input.
+   */
+  setClipHslBand(
+    clipId: string,
+    band: HslBandKey,
+    partial: Partial<HslBandAdjust>
+  ): void
+  /** Clear a media clip's HSL secondary grading (back to neutral). */
+  resetClipHsl(clipId: string): void
+
+  // --- Mosaic / blur regions (Phase 3.11, media clips only) ---
+  /**
+   * Append a new mosaic/blur region to a media clip — centered, ~30% of the
+   * canvas, mosaic effect, default strength. No-op for non-media clips and
+   * when the clip already has MAX_BLUR_REGIONS_PER_CLIP regions.
+   */
+  addBlurRegion(clipId: string): void
+  /**
+   * Merge a partial onto the region matched by `regionId`, then clamp/sanitize
+   * the result via `clampBlurRegion`. No-op for non-media clips, when the
+   * region is not found, and for non-finite numeric input.
+   */
+  updateBlurRegion(
+    clipId: string,
+    regionId: string,
+    partial: Partial<BlurRegion>
+  ): void
+  /**
+   * Drop the region matched by `regionId`. When the array becomes empty,
+   * `blurRegions` is set to `undefined` (keeps persisted JSON + undo
+   * snapshots lean). No-op for non-media clips and when not found.
+   */
+  removeBlurRegion(clipId: string, regionId: string): void
+
+  // --- Motion tracks (Phase 3.13, media clips only) ---
+  /**
+   * Add OR replace (by id) a motion track on a media clip. Capped at
+   * MAX_MOTION_TRACKS_PER_CLIP — silently no-op once full (when adding a NEW
+   * track; replacing an existing id always succeeds). No-op for non-media
+   * clips and when the clip is missing.
+   */
+  setMotionTrack(clipId: string, track: MotionTrack): void
+  /**
+   * Drop the motion track matched by `trackId`. ALSO clears every dangling
+   * binding: any blur region on this clip, and any overlay / caption clip
+   * across the project, whose `motionTrackId === trackId` is reset to
+   * `undefined`. When the last track is removed, `motionTracks` is set to
+   * `undefined` (NOT []). No-op for non-media clips and when not found.
+   */
+  removeMotionTrack(clipId: string, trackId: string): void
+  /**
+   * Bind (or unbind, with `null`) a blur region to a motion track on the same
+   * clip. `null` clears the binding (field → `undefined`). No-op for non-media
+   * clips and when the region is not found.
+   */
+  bindBlurRegionToTrack(
+    clipId: string,
+    regionId: string,
+    trackId: string | null
+  ): void
+  /**
+   * Bind (or unbind, with `null`) an overlay clip to a motion track. `null`
+   * clears the binding. No-op when the overlay clip is missing.
+   */
+  bindOverlayToTrack(overlayClipId: string, trackId: string | null): void
+  /**
+   * Bind (or unbind, with `null`) a caption clip to a motion track. `null`
+   * clears the binding. No-op when the caption clip is missing.
+   */
+  bindCaptionToTrack(captionClipId: string, trackId: string | null): void
 
   // --- Transform keyframe animation (Phase 3.5, media clips only) ---
   /**
@@ -1178,6 +1339,35 @@ export const useProjectStore = create<ProjectStore>()(
     schedulePersist(next)
   },
 
+  setClipNoiseReduction(clipId: string, strength: number): void {
+    const numeric = Number(strength)
+    if (!Number.isFinite(numeric)) return
+    const clamped = Math.max(
+      MIN_NOISE_REDUCTION,
+      Math.min(MAX_NOISE_REDUCTION, numeric)
+    )
+    // Store `undefined` when OFF (clamped <= 0) — keeps persisted JSON + undo
+    // snapshots lean, mirroring setClipColorAdjust's neutral-collapse.
+    const nextVal = clamped <= 0 ? undefined : Math.round(clamped)
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      if ((c.noiseReduction ?? undefined) === nextVal) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, noiseReduction: nextVal }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
   setTrackMuted(trackId: string, muted: boolean): void {
     const project = get().project
     let changed = false
@@ -1361,6 +1551,56 @@ export const useProjectStore = create<ProjectStore>()(
     set({ project: next })
     schedulePersist(next)
     return ids
+  },
+
+  rippleCloseTrackGaps(trackId: string): number {
+    const project = get().project
+    const trackIdx = project.tracks.findIndex((t) => t.id === trackId)
+    if (trackIdx === -1) return 0
+    const track = project.tracks[trackIdx]
+    if (track.clips.length === 0) return 0
+
+    // Work on a startMs-sorted copy; the first clip anchors the timeline.
+    const ordered = [...track.clips].sort((a, b) => a.startMs - b.startMs)
+    let cursor = ordered[0].startMs
+    let totalRemoved = 0
+    let changed = false
+
+    // Map clip id → translated {startMs,endMs} so we can rebuild in the
+    // ORIGINAL clips[] order (only positions move; order is preserved).
+    const shifted = new Map<string, { startMs: number; endMs: number }>()
+    for (const clip of ordered) {
+      // Never push a clip right — a clip already at/behind the cursor keeps
+      // its position and simply advances the cursor.
+      const shift = Math.max(0, clip.startMs - cursor)
+      const newStart = clip.startMs - shift
+      const newEnd = clip.endMs - shift
+      if (shift > 0) {
+        totalRemoved += shift
+        changed = true
+      }
+      shifted.set(clip.id, { startMs: newStart, endMs: newEnd })
+      cursor = newEnd
+    }
+    if (!changed) return 0
+
+    const tracks = project.tracks.map((t, i) => {
+      if (i !== trackIdx) return t
+      const clips = t.clips.map((c) => {
+        const pos = shifted.get(c.id)
+        if (!pos || (pos.startMs === c.startMs && pos.endMs === c.endMs)) {
+          return c
+        }
+        // Only translate the timeline window — per-clip duration is preserved
+        // exactly; trims/speed/keyframes/transitions are untouched.
+        return { ...c, startMs: pos.startMs, endMs: pos.endMs }
+      })
+      return { ...t, clips }
+    })
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+    return totalRemoved
   },
 
   // --------------------------------------------------------------------
@@ -1575,6 +1815,37 @@ export const useProjectStore = create<ProjectStore>()(
     schedulePersist(next)
   },
 
+  applyAutoColorAdjust(clipId, adjust): void {
+    if (!adjust || typeof adjust !== 'object') return
+    // Reject any non-finite numeric input outright (caller bug → no-op).
+    for (const v of Object.values(adjust)) {
+      if (!Number.isFinite(v)) return
+    }
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      // Color adjust is a media-only concept; silently ignore captions.
+      if (!isMediaClip(c)) return t
+      // REPLACE the whole colorAdjust — auto overwrites prior manual values
+      // (unlike setClipColorAdjust which merges a partial onto the current).
+      const replaced = clampColorAdjust(adjust)
+      const updated: VideoAudioClip = isNeutralColorAdjust(replaced)
+        ? { ...c, colorAdjust: undefined }
+        : { ...c, colorAdjust: replaced }
+      const clips = [...t.clips]
+      clips[idx] = updated
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
   resetClipColorAdjust(clipId: string): void {
     const project = get().project
     let changed = false
@@ -1585,6 +1856,471 @@ export const useProjectStore = create<ProjectStore>()(
       if (!isMediaClip(c)) return t
       const clips = [...t.clips]
       clips[idx] = { ...c, colorAdjust: undefined }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // --------------------------------------------------------------------
+  // Tone curves + HSL secondary grading (Phase 3.12) — media clips only.
+  //
+  // Every mutation re-sanitizes the whole field (sanitizeClipCurves /
+  // sanitizeClipHsl) so the stored object is canonical, then neutral-
+  // collapses (identity curves / neutral HSL → `undefined`) — keeping the
+  // persisted JSON + undo snapshots lean and the export byte-identical for
+  // un-graded clips. Mirrors setClipColorAdjust's structure exactly.
+  // --------------------------------------------------------------------
+  setCurvePoint(clipId, channel, pointIndex, p): void {
+    if (!p || typeof p !== 'object') return
+    // Reject any non-finite numeric input outright (caller bug → no-op).
+    for (const v of Object.values(p)) {
+      if (v !== undefined && !Number.isFinite(v)) return
+    }
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      // Curves are a media-only concept; silently ignore captions.
+      if (!isMediaClip(c)) return t
+      // Base on the clip's curves, or identity when it has none.
+      const base = sanitizeClipCurves(c.curves ?? IDENTITY_CLIP_CURVES)
+      const pts = base[channel]
+      if (!pts || pointIndex < 0 || pointIndex >= pts.length) return t
+      const clamp01 = (v: number): number => Math.min(1, Math.max(0, v))
+      const nextPts = pts.map((pt, i) =>
+        i === pointIndex
+          ? {
+              x: clamp01(p.x !== undefined ? p.x : pt.x),
+              y: clamp01(p.y !== undefined ? p.y : pt.y)
+            }
+          : pt
+      )
+      const merged = sanitizeClipCurves({ ...base, [channel]: nextPts })
+      const updated: VideoAudioClip = isIdentityClipCurves(merged)
+        ? { ...c, curves: undefined }
+        : { ...c, curves: merged }
+      const clips = [...t.clips]
+      clips[idx] = updated
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  addCurvePoint(clipId, channel, p): void {
+    if (!p || typeof p !== 'object') return
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const base = sanitizeClipCurves(c.curves ?? IDENTITY_CLIP_CURVES)
+      // Hard cap — silently no-op once full.
+      if (base[channel].length >= MAX_CURVE_POINTS) return t
+      const clamp01 = (v: number): number => Math.min(1, Math.max(0, v))
+      const inserted: CurvePoint[] = [
+        ...base[channel],
+        { x: clamp01(p.x), y: clamp01(p.y) }
+      ]
+      // sanitizeClipCurves sorts + dedupes the inserted point.
+      const merged = sanitizeClipCurves({ ...base, [channel]: inserted })
+      const updated: VideoAudioClip = isIdentityClipCurves(merged)
+        ? { ...c, curves: undefined }
+        : { ...c, curves: merged }
+      const clips = [...t.clips]
+      clips[idx] = updated
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  removeCurvePoint(clipId, channel, pointIndex): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const base = sanitizeClipCurves(c.curves ?? IDENTITY_CLIP_CURVES)
+      const pts = base[channel]
+      if (pointIndex < 0 || pointIndex >= pts.length) return t
+      // Refuse to drop below the minimum point count.
+      if (pts.length <= MIN_CURVE_POINTS) return t
+      const nextPts = pts.filter((_, i) => i !== pointIndex)
+      const merged = sanitizeClipCurves({ ...base, [channel]: nextPts })
+      const updated: VideoAudioClip = isIdentityClipCurves(merged)
+        ? { ...c, curves: undefined }
+        : { ...c, curves: merged }
+      const clips = [...t.clips]
+      clips[idx] = updated
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  resetCurves(clipId: string): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, curves: undefined }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  setClipHslBand(clipId, band, partial): void {
+    if (!partial || typeof partial !== 'object') return
+    // Reject any non-finite numeric input outright (caller bug → no-op).
+    for (const v of Object.values(partial)) {
+      if (v !== undefined && !Number.isFinite(v)) return
+    }
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      // HSL is a media-only concept; silently ignore captions.
+      if (!isMediaClip(c)) return t
+      const base = sanitizeClipHsl(c.hsl ?? NEUTRAL_CLIP_HSL)
+      const clampAdj = (v: number): number =>
+        Math.min(MAX_HSL_ADJUST, Math.max(MIN_HSL_ADJUST, v))
+      const cur = base[band] ?? { ...NEUTRAL_HSL_BAND }
+      const nextBand: HslBandAdjust = {
+        hue: clampAdj(partial.hue !== undefined ? partial.hue : cur.hue),
+        saturation: clampAdj(
+          partial.saturation !== undefined ? partial.saturation : cur.saturation
+        ),
+        luminance: clampAdj(
+          partial.luminance !== undefined ? partial.luminance : cur.luminance
+        )
+      }
+      const merged = sanitizeClipHsl({ ...base, [band]: nextBand })
+      const updated: VideoAudioClip = isNeutralClipHsl(merged)
+        ? { ...c, hsl: undefined }
+        : { ...c, hsl: merged }
+      const clips = [...t.clips]
+      clips[idx] = updated
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  resetClipHsl(clipId: string): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, hsl: undefined }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // --------------------------------------------------------------------
+  // Mosaic / blur regions (Phase 3.11) — media clips only.
+  // --------------------------------------------------------------------
+  addBlurRegion(clipId: string): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      // Blur regions are a media-only concept; silently ignore captions.
+      if (!isMediaClip(c)) return t
+      // Hard cap — silently no-op once full.
+      if ((c.blurRegions?.length ?? 0) >= MAX_BLUR_REGIONS_PER_CLIP) return t
+      const region: BlurRegion = {
+        id: newId(),
+        shape: 'rectangle',
+        effect: DEFAULT_BLUR_EFFECT,
+        strength: DEFAULT_BLUR_STRENGTH,
+        ...DEFAULT_BLUR_REGION_RECT
+      }
+      const clips = [...t.clips]
+      clips[idx] = { ...c, blurRegions: [...(c.blurRegions ?? []), region] }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  updateBlurRegion(clipId, regionId, partial): void {
+    if (!partial || typeof partial !== 'object') return
+    // Reject any non-finite numeric input outright (caller bug → no-op).
+    for (const v of Object.values(partial)) {
+      if (typeof v === 'number' && !Number.isFinite(v)) return
+    }
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const regions = c.blurRegions
+      if (!Array.isArray(regions)) return t
+      const rIdx = regions.findIndex((r) => r.id === regionId)
+      if (rIdx === -1) return t
+      // Merge the partial onto the matched region, then clamp/sanitize so the
+      // stored region is already canonical (id preserved).
+      const merged = clampBlurRegion({ ...regions[rIdx], ...partial, id: regionId })
+      const nextRegions = [...regions]
+      nextRegions[rIdx] = merged
+      const clips = [...t.clips]
+      clips[idx] = { ...c, blurRegions: nextRegions }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  removeBlurRegion(clipId: string, regionId: string): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const regions = c.blurRegions
+      if (!Array.isArray(regions)) return t
+      const nextRegions = regions.filter((r) => r.id !== regionId)
+      if (nextRegions.length === regions.length) return t
+      const clips = [...t.clips]
+      // Empty → store `undefined` (NOT []) so persisted JSON + undo snapshots
+      // stay lean, mirroring crop / colorAdjust.
+      clips[idx] = {
+        ...c,
+        blurRegions: nextRegions.length > 0 ? nextRegions : undefined
+      }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // --------------------------------------------------------------------
+  // Motion tracks (Phase 3.13) — media clips only. Mirrors the blur-region
+  // immutable-map + touch() + schedulePersist() pattern. zundo tracks
+  // `project` so undo/redo of these is automatic.
+  // --------------------------------------------------------------------
+  setMotionTrack(clipId: string, track: MotionTrack): void {
+    if (!track || typeof track !== 'object' || !track.id) return
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      // Motion tracks are a media-only concept.
+      if (!isMediaClip(c)) return t
+      const existing = c.motionTracks ?? []
+      const replaceIdx = existing.findIndex((m) => m.id === track.id)
+      let nextTracks: MotionTrack[]
+      if (replaceIdx >= 0) {
+        // Replace in place — capacity is unaffected.
+        nextTracks = [...existing]
+        nextTracks[replaceIdx] = track
+      } else {
+        // New track — silently no-op once the per-clip cap is hit.
+        if (existing.length >= MAX_MOTION_TRACKS_PER_CLIP) return t
+        nextTracks = [...existing, track]
+      }
+      const clips = [...t.clips]
+      clips[idx] = { ...c, motionTracks: nextTracks }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  removeMotionTrack(clipId: string, trackId: string): void {
+    if (!trackId) return
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const clips = t.clips.map((c) => {
+        // 1) Drop the track from the owning media clip, AND clear any blur
+        //    region on that same clip bound to it.
+        if (c.id === clipId && isMediaClip(c)) {
+          const existing = c.motionTracks
+          if (!Array.isArray(existing)) return c
+          const filtered = existing.filter((m) => m.id !== trackId)
+          if (filtered.length === existing.length) {
+            // Track id absent — nothing to remove on this clip. The binding
+            // sweep below still runs (handled in the generic branch).
+          }
+          // Empty → undefined (NOT []), keeping persisted JSON lean.
+          const nextMotionTracks =
+            filtered.length > 0 ? filtered : undefined
+          // Clear dangling blur-region bindings on this clip.
+          let nextBlur = c.blurRegions
+          if (Array.isArray(nextBlur)) {
+            let blurChanged = false
+            const swept = nextBlur.map((r) => {
+              if (r.motionTrackId === trackId) {
+                blurChanged = true
+                const { motionTrackId: _drop, ...rest } = r
+                return rest
+              }
+              return r
+            })
+            if (blurChanged) nextBlur = swept
+          }
+          if (
+            nextMotionTracks !== existing ||
+            nextBlur !== c.blurRegions ||
+            filtered.length !== existing.length
+          ) {
+            changed = true
+          }
+          return { ...c, motionTracks: nextMotionTracks, blurRegions: nextBlur }
+        }
+        // 2) Clear dangling overlay / caption bindings ANYWHERE in the project.
+        if (
+          (isOverlayClip(c) || isCaptionClip(c)) &&
+          c.motionTrackId === trackId
+        ) {
+          changed = true
+          const { motionTrackId: _drop, ...rest } = c
+          return rest as Clip
+        }
+        return c
+      })
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  bindBlurRegionToTrack(clipId, regionId, trackId): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const regions = c.blurRegions
+      if (!Array.isArray(regions)) return t
+      const rIdx = regions.findIndex((r) => r.id === regionId)
+      if (rIdx === -1) return t
+      const nextRegions = [...regions]
+      if (trackId === null) {
+        // Unbind — drop the field entirely.
+        const { motionTrackId: _drop, ...rest } = regions[rIdx]
+        nextRegions[rIdx] = rest
+      } else {
+        nextRegions[rIdx] = { ...regions[rIdx], motionTrackId: trackId }
+      }
+      const clips = [...t.clips]
+      clips[idx] = { ...c, blurRegions: nextRegions }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  bindOverlayToTrack(overlayClipId, trackId): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === overlayClipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isOverlayClip(c)) return t
+      const clips = [...t.clips]
+      if (trackId === null) {
+        const { motionTrackId: _drop, ...rest } = c
+        clips[idx] = rest as Clip
+      } else {
+        clips[idx] = { ...c, motionTrackId: trackId }
+      }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  bindCaptionToTrack(captionClipId, trackId): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === captionClipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isCaptionClip(c)) return t
+      const clips = [...t.clips]
+      if (trackId === null) {
+        const { motionTrackId: _drop, ...rest } = c
+        clips[idx] = rest as Clip
+      } else {
+        clips[idx] = { ...c, motionTrackId: trackId }
+      }
       changed = true
       return { ...t, clips }
     })

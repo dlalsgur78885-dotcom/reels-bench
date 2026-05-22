@@ -62,8 +62,47 @@ export const IPC_CHANNELS = {
     cancel: 'stt:cancel',
     progress: 'stt:progress',
     modelStatus: 'stt:modelStatus'
+  },
+  brandKit: {
+    read: 'brandKit:read',
+    write: 'brandKit:write',
+    importLogo: 'brandKit:importLogo',
+    removeLogo: 'brandKit:removeLogo'
   }
 } as const
+
+// ---------------------------------------------------------------------------
+// Brand Kit — app-level, persisted to userData/brand-kit.json (not project data).
+// ---------------------------------------------------------------------------
+export type BrandLogoVariant = 'light' | 'dark'
+
+export interface BrandLogo {
+  variant: BrandLogoVariant
+  /** Absolute app-managed path inside userData/brand/. */
+  path: string
+  naturalWidth: number
+  naturalHeight: number
+}
+
+export interface BrandKit {
+  version: 1
+  /** 0..2 entries, at most one per variant. */
+  logos: BrandLogo[]
+  /** Lowercase #rrggbb hex, deduped, capped at 24. */
+  colors: string[]
+  /** Optional brand font family NAME (no file shipped). */
+  fontFamily?: string
+}
+
+/** Renderer-writable subset — logos are mutated only via importLogo/removeLogo. */
+export interface BrandKitWriteInput {
+  colors: string[]
+  fontFamily?: string
+}
+
+export type BrandKitImportLogoResult =
+  | { ok: true; logo: BrandLogo }
+  | { ok: false; error: string }
 
 // ---------------------------------------------------------------------------
 // Audio analysis types (Phase 2.5).
@@ -518,7 +557,10 @@ export interface ElectronApi {
   }
   download: {
     /**
-     * Download a remote https video to `userData/imports/<sanitized>.mp4`.
+     * Download a remote https media file to `userData/imports/<sanitized>`.
+     * Handles video AND audio (`.mp3`/`.wav`/`.m4a` — `sanitizeName` preserves
+     * the extension; the standard probe classifies audio): used by the music
+     * library tab to fetch tracks as well as by the video import tabs.
      * Returns the local path on success; surfaces httpStatus for 403/etc.
      * Renderer should fall back to `getReelVideoUrl(shortcode)` re-scrape
      * when the URL expires (common for FB ad reels).
@@ -572,6 +614,19 @@ export interface ElectronApi {
     modelStatus(model?: SttModelKey): Promise<SttModelStatus>
     /** Subscribe to streaming transcription progress. Returns an unsubscribe fn. */
     onProgress(cb: (e: SttProgress) => void): () => void
+  }
+  brandKit: {
+    /** Read the brand kit (empty default when the file is missing). */
+    read(): Promise<BrandKit>
+    /** Persist colors + fontFamily (logos preserved on disk). */
+    write(input: BrandKitWriteInput): Promise<void>
+    /** Copy a picked image into userData/brand/ as the variant's logo. */
+    importLogo(
+      variant: BrandLogoVariant,
+      sourcePath: string
+    ): Promise<BrandKitImportLogoResult>
+    /** Remove a logo variant; returns the updated kit. */
+    removeLogo(variant: BrandLogoVariant): Promise<BrandKit>
   }
 }
 

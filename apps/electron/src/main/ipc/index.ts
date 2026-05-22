@@ -9,6 +9,7 @@ import { registerDownloadHandlers } from './download'
 import { registerUpdaterHandlers } from './updater'
 import { registerSttHandlers } from './stt'
 import { registerRecordingHandlers } from './recording'
+import { registerBrandKitHandlers } from './brand-kit'
 
 export function registerIpcHandlers(): void {
   registerFfmpegHandlers()
@@ -22,4 +23,5 @@ export function registerIpcHandlers(): void {
   registerUpdaterHandlers()
   registerSttHandlers()
   registerRecordingHandlers()
+  registerBrandKitHandlers()
 }

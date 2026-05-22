@@ -5,7 +5,21 @@
  * Preview values are deliberately cheap; the real "look" is applied at export
  * via the `toFfmpegFilter()` helper which builds eq/hue/curves chains.
  */
-import type { ColorAdjust, FilterPreset } from './project'
+import type {
+  ClipCurves,
+  ClipHsl,
+  ColorAdjust,
+  CurveChannelKey,
+  CurvePoint,
+  FilterPreset,
+  HslBandKey
+} from './project'
+import {
+  CURVE_CHANNEL_KEYS,
+  HSL_BAND_KEYS,
+  isIdentityCurveChannel,
+  isNeutralHslBand
+} from './project'
 
 /** CSS `filter` string for the preview canvas. Returns empty for 'none'. */
 export function filterPresetToCss(
@@ -248,4 +262,133 @@ export function colorAdjustToFfmpeg(
     chain.push(`colortemperature=temperature=${kelvin}`)
   }
   return chain.join(',')
+}
+
+// ---------------------------------------------------------------------------
+// Curves + HSL color grading (Phase 3.12) — pure, shared.
+// ---------------------------------------------------------------------------
+
+/** Human labels for the four curve channels (UI). */
+export const CURVE_CHANNEL_LABELS: Record<CurveChannelKey, string> = {
+  master: 'RGB',
+  red: '빨강',
+  green: '초록',
+  blue: '파랑'
+}
+
+/** Human labels for the six HSL bands (UI). */
+export const HSL_BAND_LABELS: Record<HslBandKey, string> = {
+  red: '빨강',
+  yellow: '노랑',
+  green: '초록',
+  cyan: '청록',
+  blue: '파랑',
+  magenta: '자홍'
+}
+
+/** Representative swatch color (CSS) for each HSL band (UI). */
+export const HSL_BAND_SWATCHES: Record<HslBandKey, string> = {
+  red: '#e5484d',
+  yellow: '#f5d90a',
+  green: '#46a758',
+  cyan: '#0bc5c5',
+  blue: '#3b82f6',
+  magenta: '#d946ef'
+}
+
+/** ffmpeg `curves` channel-option name for each logical channel. */
+const CURVE_CHANNEL_FFMPEG: Record<CurveChannelKey, string> = {
+  master: 'master',
+  red: 'r',
+  green: 'g',
+  blue: 'b'
+}
+
+/** ffmpeg `huesaturation` `colors` flag for each HSL band. */
+const HSL_BAND_FFMPEG: Record<HslBandKey, string> = {
+  red: 'r',
+  yellow: 'y',
+  green: 'g',
+  cyan: 'c',
+  blue: 'b',
+  magenta: 'm'
+}
+
+/**
+ * ffmpeg `curves=` fragment for a clip's tone curves, or '' for null / all-
+ * identity. No leading/trailing comma — caller chains it AFTER
+ * `colorAdjustToFfmpeg`. Only non-identity channels are emitted. Each channel's
+ * point list is single-quote-wrapped (it contains spaces) — parseable inside
+ * `filter_complex` since the whole graph is one argv element (no shell).
+ *   curves=master='0.0000/0.0000 0.5000/0.6000 1.0000/1.0000':b='0.0000/0.0500 1.0000/0.9500'
+ */
+export function curvesToFfmpeg(c: ClipCurves | null | undefined): string {
+  if (!c) return ''
+  const segs: string[] = []
+  for (const key of CURVE_CHANNEL_KEYS) {
+    const pts = c[key]
+    if (!Array.isArray(pts) || isIdentityCurveChannel(pts)) continue
+    const list = pts
+      .map((p) => `${p.x.toFixed(4)}/${p.y.toFixed(4)}`)
+      .join(' ')
+    segs.push(`${CURVE_CHANNEL_FFMPEG[key]}='${list}'`)
+  }
+  return segs.length > 0 ? `curves=${segs.join(':')}` : ''
+}
+
+/**
+ * ffmpeg fragment for HSL secondary grading — one `huesaturation=` per non-
+ * neutral band, comma-joined. '' for null / all-neutral. Maps the UI's signed
+ * -100..100 sliders → hue ±180°, saturation/intensity ±1.0. Caller chains it
+ * AFTER `curvesToFfmpeg`, and ONLY when ffmpeg has the `huesaturation` filter
+ * (probe-gated in export).
+ */
+export function hslToFfmpeg(h: ClipHsl | null | undefined): string {
+  if (!h) return ''
+  const segs: string[] = []
+  for (const key of HSL_BAND_KEYS) {
+    const b = h[key]
+    if (!b || isNeutralHslBand(b)) continue
+    const hue = ((b.hue / 100) * 180).toFixed(2)
+    const sat = (b.saturation / 100).toFixed(3)
+    const intensity = (b.luminance / 100).toFixed(3)
+    segs.push(
+      `huesaturation=hue=${hue}:saturation=${sat}` +
+        `:intensity=${intensity}:colors=${HSL_BAND_FFMPEG[key]}`
+    )
+  }
+  return segs.join(',')
+}
+
+/** Piecewise-linear curve interpolation; flat extrapolation outside [first,last]. */
+function interpCurve(pts: CurvePoint[], x: number): number {
+  if (pts.length === 0) return x
+  if (x <= pts[0].x) return pts[0].y
+  const last = pts[pts.length - 1]
+  if (x >= last.x) return last.y
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1]
+    const b = pts[i]
+    if (x <= b.x) {
+      const span = b.x - a.x
+      if (span <= 1e-9) return b.y
+      return a.y + ((x - a.x) / span) * (b.y - a.y)
+    }
+  }
+  return last.y
+}
+
+/**
+ * Sample an interpolated curve at `steps` evenly-spaced inputs in [0,1] →
+ * output values for an SVG `<feFunc* tableValues>` attribute. Used by the live
+ * preview (CSS `filter:` cannot do tone curves; SVG feComponentTransfer can).
+ */
+export function sampleCurveTable(pts: CurvePoint[], steps: number): number[] {
+  const n = Math.max(2, Math.floor(steps))
+  const out: number[] = []
+  for (let i = 0; i < n; i++) {
+    const x = i / (n - 1)
+    out.push(Math.min(1, Math.max(0, interpCurve(pts, x))))
+  }
+  return out
 }

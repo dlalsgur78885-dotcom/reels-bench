@@ -25,9 +25,25 @@ import {
 import { importFromUrl } from '../lib/mediaImport'
 import { cuesToClips, addClipsToStore } from '../lib/captions'
 import { submitSeedanceJob, uploadSeedanceImage, type ReelSummary } from '../lib/api'
+import {
+  fetchMusicLibrary,
+  type MusicCategory,
+  type MusicTrackItem
+} from '../lib/musicLibrary'
 import { useAiJobs } from '../store/aiJobs'
+import { useProjectStore, newId } from '../store/project'
+import { useTimelineUi } from '../store/timelineUi'
+import { BrandKitPanel } from './BrandKitPanel'
+import type { VideoAudioClip, Clip } from '../../../shared/project'
 
-export type ImportTab = 'local' | 'library' | 'tts' | 'ai' | 'internal'
+export type ImportTab =
+  | 'local'
+  | 'library'
+  | 'tts'
+  | 'ai'
+  | 'internal'
+  | 'music'
+  | 'brand'
 
 interface ImportPanelProps {
   tab: ImportTab
@@ -242,6 +258,134 @@ const styles = {
     background: '#0d0d0d',
     border: '1px solid #2a2a2a',
     borderRadius: 6
+  } as React.CSSProperties,
+  // ── 음악 라이브러리 ──
+  filterBar: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6
+  } as React.CSSProperties,
+  chipRow: {
+    display: 'flex',
+    gap: 4
+  } as React.CSSProperties,
+  chip: {
+    flex: '1 1 auto',
+    background: '#1a1a1a',
+    color: '#9aa0a6',
+    border: '1px solid #2a2a2a',
+    borderRadius: 6,
+    padding: '5px 8px',
+    fontSize: 11,
+    fontWeight: 600,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap'
+  } as React.CSSProperties,
+  chipActive: {
+    background: '#10b981',
+    color: '#04231a',
+    borderColor: '#10b981'
+  } as React.CSSProperties,
+  searchInput: {
+    background: '#0d0d0d',
+    color: '#f5f5f5',
+    border: '1px solid #2a2a2a',
+    borderRadius: 6,
+    padding: '6px 10px',
+    fontSize: 12,
+    width: '100%',
+    boxSizing: 'border-box'
+  } as React.CSSProperties,
+  musicList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6
+  } as React.CSSProperties,
+  musicRow: {
+    background: '#1a1a1a',
+    border: '1px solid #2a2a2a',
+    borderRadius: 8,
+    padding: '8px 10px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10
+  } as React.CSSProperties,
+  musicGlyph: {
+    fontSize: 18,
+    width: 24,
+    textAlign: 'center',
+    flexShrink: 0,
+    color: '#94a3b8'
+  } as React.CSSProperties,
+  musicInfo: {
+    flex: 1,
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2
+  } as React.CSSProperties,
+  musicTitle: {
+    fontSize: 12,
+    fontWeight: 600,
+    color: '#e2e8f0',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  } as React.CSSProperties,
+  musicMeta: {
+    fontSize: 10,
+    color: '#64748b',
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 6,
+    alignItems: 'center'
+  } as React.CSSProperties,
+  musicTag: {
+    background: '#0d0d0d',
+    border: '1px solid #2a2a2a',
+    borderRadius: 4,
+    padding: '1px 5px',
+    fontSize: 9,
+    color: '#94a3b8'
+  } as React.CSSProperties,
+  musicPreviewNote: {
+    fontSize: 10,
+    color: '#fca5a5'
+  } as React.CSSProperties,
+  musicBtns: {
+    display: 'flex',
+    gap: 4,
+    flexShrink: 0
+  } as React.CSSProperties,
+  iconBtn: {
+    background: '#1f2937',
+    color: '#f5f5f5',
+    border: '1px solid #374151',
+    borderRadius: 6,
+    padding: '5px 9px',
+    fontSize: 12,
+    cursor: 'pointer',
+    lineHeight: 1
+  } as React.CSSProperties,
+  addBtn: {
+    background: '#10b981',
+    color: '#04231a',
+    border: 'none',
+    borderRadius: 6,
+    padding: '5px 10px',
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: 'pointer'
+  } as React.CSSProperties,
+  loadMore: {
+    background: '#1f2937',
+    color: '#f5f5f5',
+    border: '1px solid #374151',
+    borderRadius: 6,
+    padding: '8px 14px',
+    fontSize: 12,
+    cursor: 'pointer',
+    alignSelf: 'center'
   } as React.CSSProperties
 }
 
@@ -855,6 +999,386 @@ function phaseLabel(j: {
 }
 
 // ===========================================================================
+// 음악 라이브러리 — 음악·효과음 카탈로그 (미리듣기 + 오디오 트랙 삽입).
+// ===========================================================================
+/** ms → "MM:SS". */
+function fmtMmSs(ms: number): string {
+  if (!ms || ms <= 0) return '0:00'
+  const totalSec = Math.round(ms / 1000)
+  const mm = Math.floor(totalSec / 60)
+  const ss = totalSec % 60
+  return `${mm}:${String(ss).padStart(2, '0')}`
+}
+
+/**
+ * 타임라인 [startMs, startMs+durMs) 구간과 겹치는 클립이 있으면, 겹치는
+ * 클립들 중 가장 늦은 끝(endMs) 뒤로 밀어 비어있는 시작점을 돌려준다.
+ * 겹치는 게 없으면 startMs 그대로.
+ */
+function resolvePlacementMs(
+  clips: Clip[],
+  startMs: number,
+  durMs: number
+): number {
+  const wantEnd = startMs + durMs
+  let maxOverlapEnd = -1
+  for (const c of clips) {
+    if (c.startMs < wantEnd && c.endMs > startMs) {
+      if (c.endMs > maxOverlapEnd) maxOverlapEnd = c.endMs
+    }
+  }
+  return maxOverlapEnd >= 0 ? maxOverlapEnd : startMs
+}
+
+const MUSIC_CATEGORY_CHIPS: { key: 'all' | MusicCategory; label: string }[] = [
+  { key: 'all', label: '전체' },
+  { key: 'music', label: '음악' },
+  { key: 'sfx', label: '효과음' }
+]
+
+function MusicLibraryTab({
+  onNotice
+}: {
+  onNotice: ImportPanelProps['onNotice']
+}): JSX.Element {
+  const [items, setItems] = useState<MusicTrackItem[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [category, setCategory] = useState<'all' | MusicCategory>('all')
+  const [query, setQuery] = useState('')
+  /** 300ms 디바운스된 검색어 — 실제 fetch 트리거. */
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [addedIds, setAddedIds] = useState<Set<string>>(new Set())
+  const [nextCursor, setNextCursor] = useState<string | undefined>(undefined)
+  const [loadingMore, setLoadingMore] = useState(false)
+  // ── 미리듣기 상태 ──
+  const [previewingId, setPreviewingId] = useState<string | null>(null)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  /**
+   * 미리듣기 전용 단일 <audio>. 타임라인 transport(useTimelineUi)와 절대
+   * 연동하지 않는다 — 재생/일시정지가 타임라인과 무관하게 독립 동작.
+   */
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  if (audioRef.current === null && typeof Audio !== 'undefined') {
+    audioRef.current = new Audio()
+  }
+
+  // 검색어 디바운스 (300ms).
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query), 300)
+    return () => clearTimeout(t)
+  }, [query])
+
+  // category / 디바운스 검색어 변경 시 첫 페이지 재조회.
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    fetchMusicLibrary({ category, q: debouncedQuery })
+      .then((res) => {
+        if (cancelled) return
+        setItems(res.items)
+        setNextCursor(res.nextCursor)
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return
+        setError(e instanceof Error ? e.message : String(e))
+        setItems([])
+        setNextCursor(undefined)
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [category, debouncedQuery])
+
+  // 미리듣기 audio 이벤트 — ended/error/pause 시 재생 표시 해제.
+  useEffect(() => {
+    const el = audioRef.current
+    if (!el) return
+    const onEnded = (): void => setPreviewingId(null)
+    const onPause = (): void => setPreviewingId(null)
+    const onErr = (): void => {
+      setPreviewingId(null)
+      setPreviewError(el.dataset.trackId ?? null)
+    }
+    el.addEventListener('ended', onEnded)
+    el.addEventListener('pause', onPause)
+    el.addEventListener('error', onErr)
+    return () => {
+      el.removeEventListener('ended', onEnded)
+      el.removeEventListener('pause', onPause)
+      el.removeEventListener('error', onErr)
+    }
+  }, [])
+
+  // 언마운트 시 미리듣기 정리.
+  useEffect(() => {
+    return () => {
+      const el = audioRef.current
+      if (el) {
+        el.pause()
+        el.removeAttribute('src')
+        el.load()
+      }
+    }
+  }, [])
+
+  const togglePreview = useCallback((it: MusicTrackItem) => {
+    const el = audioRef.current
+    if (!el) return
+    setPreviewError(null)
+    // 같은 행을 다시 누르면 정지.
+    if (previewingId === it.id) {
+      el.pause()
+      setPreviewingId(null)
+      return
+    }
+    // 다른 행 선택 — 이전 미리듣기 정지 후 새로 재생.
+    el.pause()
+    el.dataset.trackId = it.id
+    el.src = it.previewUrl ?? it.downloadUrl
+    el.currentTime = 0
+    setPreviewingId(it.id)
+    void el.play().catch(() => {
+      setPreviewingId(null)
+      setPreviewError(it.id)
+    })
+  }, [previewingId])
+
+  const onAdd = useCallback(
+    async (it: MusicTrackItem) => {
+      setBusyId(it.id)
+      const r = await importFromUrl(it.downloadUrl, {
+        suggestedName: `${it.id}${it.ext}`,
+        displayName: it.artist ? `${it.title} · ${it.artist}` : it.title
+      })
+      if (!r.ok || !r.asset) {
+        setBusyId(null)
+        onNotice(`추가 실패: ${r.error ?? '알 수 없는 오류'}`, 'error')
+        return
+      }
+      const asset = r.asset
+      const store = useProjectStore.getState()
+      // 트랙 해석 — 음악은 BGM, 효과음은 SFX 트랙.
+      let trackId: string
+      if (it.category === 'music') {
+        trackId = store.ensureAudioTrack('bgm')
+      } else {
+        const sfxTrack = store.project.tracks.find(
+          (t) => t.kind === 'audio' && t.role === 'sfx'
+        )
+        if (sfxTrack) {
+          trackId = sfxTrack.id
+        } else {
+          const created = store.addTrack('audio', 'sfx')
+          if (created) {
+            trackId = created
+          } else {
+            // 오디오 트랙 cap 도달 — BGM 트랙으로 폴백.
+            trackId = store.ensureAudioTrack('bgm')
+            onNotice(
+              '효과음 트랙을 만들 수 없어 BGM 트랙에 추가했습니다',
+              'error'
+            )
+          }
+        }
+      }
+      // 플레이헤드 위치에 배치 — 겹치면 겹친 클립 끝 뒤로.
+      const playheadMs = useTimelineUi.getState().playheadMs
+      const targetTrack = useProjectStore
+        .getState()
+        .project.tracks.find((t) => t.id === trackId)
+      const startMs = resolvePlacementMs(
+        targetTrack?.clips ?? [],
+        playheadMs,
+        asset.durationMs
+      )
+      const clip: VideoAudioClip = {
+        id: newId(),
+        kind: 'media',
+        mediaId: asset.id,
+        trackId,
+        startMs,
+        endMs: startMs + asset.durationMs,
+        trimInMs: 0,
+        trimOutMs: asset.durationMs,
+        speed: 1
+      }
+      useProjectStore.getState().addClip(clip)
+      setAddedIds((prev) => new Set(prev).add(it.id))
+      setBusyId(null)
+      onNotice(`"${it.title}" 추가됨`, 'info')
+    },
+    [onNotice]
+  )
+
+  const loadMore = useCallback(() => {
+    if (!nextCursor || loadingMore) return
+    setLoadingMore(true)
+    fetchMusicLibrary({ category, q: debouncedQuery, cursor: nextCursor })
+      .then((res) => {
+        setItems((prev) => [...prev, ...res.items])
+        setNextCursor(res.nextCursor)
+      })
+      .catch((e: unknown) =>
+        onNotice(
+          `더 불러오기 실패: ${e instanceof Error ? e.message : String(e)}`,
+          'error'
+        )
+      )
+      .finally(() => setLoadingMore(false))
+  }, [nextCursor, loadingMore, category, debouncedQuery, onNotice])
+
+  const retry = useCallback(() => {
+    // debouncedQuery 의존 effect를 다시 트리거하기 위해 강제로 동일값 set.
+    setDebouncedQuery((q) => q)
+    setLoading(true)
+    setError(null)
+    fetchMusicLibrary({ category, q: debouncedQuery })
+      .then((res) => {
+        setItems(res.items)
+        setNextCursor(res.nextCursor)
+      })
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : String(e))
+      )
+      .finally(() => setLoading(false))
+  }, [category, debouncedQuery])
+
+  // 필터 바 — 어느 상태에서나 보이게 상단에 고정.
+  const filterBar = (
+    <div style={styles.filterBar}>
+      <div style={styles.chipRow}>
+        {MUSIC_CATEGORY_CHIPS.map((c) => (
+          <button
+            key={c.key}
+            style={{
+              ...styles.chip,
+              ...(category === c.key ? styles.chipActive : {})
+            }}
+            onClick={() => setCategory(c.key)}
+            data-testid={`music-chip-${c.key}`}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
+      <input
+        style={styles.searchInput}
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="제목·아티스트·분위기 검색"
+        data-testid="music-search"
+      />
+    </div>
+  )
+
+  return (
+    <div style={styles.body}>
+      {filterBar}
+      {loading ? (
+        <div style={styles.state}>음악 라이브러리 불러오는 중…</div>
+      ) : error ? (
+        <>
+          <div style={styles.errorBox}>불러오기 실패: {error}</div>
+          <button style={styles.retry} onClick={retry}>
+            다시 시도
+          </button>
+        </>
+      ) : items.length === 0 ? (
+        <div style={styles.state}>
+          {query.trim()
+            ? '검색 결과가 없습니다.'
+            : '음악 라이브러리가 비어있습니다.'}
+        </div>
+      ) : (
+        <>
+          <div style={styles.musicList} data-testid="music-list">
+            {items.map((it) => {
+              const busy = busyId === it.id
+              const added = addedIds.has(it.id)
+              const playing = previewingId === it.id
+              return (
+                <div
+                  key={it.id}
+                  style={{
+                    ...styles.musicRow,
+                    opacity: busy ? 0.6 : 1,
+                    borderColor: added ? '#10b981' : '#2a2a2a'
+                  }}
+                  data-testid={`music-row-${it.id}`}
+                  title={it.title}
+                >
+                  <div style={styles.musicGlyph}>
+                    {it.category === 'sfx' ? '🔊' : '♪'}
+                  </div>
+                  <div style={styles.musicInfo}>
+                    <div style={styles.musicTitle}>
+                      {added ? '✓ ' : ''}
+                      {it.title}
+                    </div>
+                    <div style={styles.musicMeta}>
+                      {it.artist && <span>{it.artist}</span>}
+                      <span>{fmtMmSs(it.durationMs)}</span>
+                      {it.bpm != null && (
+                        <span style={styles.musicTag}>{it.bpm} BPM</span>
+                      )}
+                      {it.mood && (
+                        <span style={styles.musicTag}>{it.mood}</span>
+                      )}
+                      {it.genre && (
+                        <span style={styles.musicTag}>{it.genre}</span>
+                      )}
+                    </div>
+                    {previewError === it.id && (
+                      <div style={styles.musicPreviewNote}>
+                        미리듣기를 재생할 수 없습니다
+                      </div>
+                    )}
+                  </div>
+                  <div style={styles.musicBtns}>
+                    <button
+                      style={styles.iconBtn}
+                      onClick={() => togglePreview(it)}
+                      data-testid={`music-preview-${it.id}`}
+                      title={playing ? '미리듣기 정지' : '미리듣기'}
+                    >
+                      {playing ? '⏸' : '▶'}
+                    </button>
+                    <button
+                      style={styles.addBtn}
+                      onClick={() => void onAdd(it)}
+                      disabled={busy}
+                      data-testid={`music-add-${it.id}`}
+                    >
+                      {busy ? '추가 중…' : '추가'}
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          {nextCursor && (
+            <button
+              style={styles.loadMore}
+              onClick={loadMore}
+              disabled={loadingMore}
+              data-testid="music-load-more"
+            >
+              {loadingMore ? '불러오는 중…' : '더 보기'}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+// ===========================================================================
 // 라우터.
 // ===========================================================================
 export function ImportPanel({ tab, onNotice }: ImportPanelProps): JSX.Element {
@@ -867,6 +1391,10 @@ export function ImportPanel({ tab, onNotice }: ImportPanelProps): JSX.Element {
       return <AiGenerateTab onNotice={onNotice} />
     case 'internal':
       return <InternalReelsTab onNotice={onNotice} />
+    case 'music':
+      return <MusicLibraryTab onNotice={onNotice} />
+    case 'brand':
+      return <BrandKitPanel onNotice={onNotice} />
     default:
       // 'local' 탭은 부모(MediaLibrary)가 직접 렌더 — 여기 도달하지 않음.
       return <div style={styles.state} />

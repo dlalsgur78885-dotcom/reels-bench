@@ -107,6 +107,12 @@ function validateTranscribeOptions(raw: unknown): SttTranscribeOptions {
     }
     opts.model = o.model as SttModelKey
   }
+  if (o.granularity !== undefined) {
+    if (o.granularity !== 'segment' && o.granularity !== 'word') {
+      throw new Error('[stt] transcribe: granularity must be segment|word')
+    }
+    opts.granularity = o.granularity
+  }
   return opts
 }
 

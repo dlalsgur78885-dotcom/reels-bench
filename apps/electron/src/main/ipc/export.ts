@@ -40,6 +40,7 @@ import {
   curvesToFfmpeg,
   hslToFfmpeg,
   filterPresetToFfmpeg,
+  retouchToFfmpeg,
   transitionKindToXfade
 } from '../../shared/filterPresets'
 import {
@@ -54,6 +55,7 @@ import {
   getClipHsl,
   getClipBlurRegions,
   getClipDenoise,
+  getClipRetouch,
   blurRegionBlurRadiusPx,
   blurRegionMosaicBlockPx,
   getOverlayBaseSize,
@@ -63,8 +65,15 @@ import {
   getCaptionAnimation,
   getCaptionAnimWindows,
   hasSpeedCurve,
+  getSpeedAt,
+  hasFreezeFrames,
+  getClipFreezeFrames,
   resolveSpeedSegments,
   getTransformAt,
+  getClipDeletedRanges,
+  hasTranscriptDeletions,
+  isClipReversed,
+  getClipTimelineDuration,
   MAX_TRANSFORM_OFFSET,
   MAX_TRANSFORM_ROTATION,
   MAX_TRANSFORM_SCALE,
@@ -81,12 +90,15 @@ import {
   type CaptionAnimation,
   type CaptionClip,
   type ClipTransform,
+  type DeletedRange,
   type MotionTrack,
   type OverlayClip,
   type Project,
   type Track,
   type TrackPoint,
   type TransformableClip,
+  type FreezeFrame,
+  type SpeedKeyframe,
   type TransformKeyframe,
   type VideoAudioClip
 } from '../../shared/project'
@@ -448,6 +460,12 @@ interface VideoSegment {
    * layer only) vs. transparent-pad path (upper layers).
    */
   layerIndex: number
+  /**
+   * Phase 3.16 — when set this segment is a freeze-frame hold, not a moving
+   * piece. `durationMs` is the held timeline duration; the synthetic clip's
+   * trimInMs points at the exact source frame to hold.
+   */
+  freeze?: { durationMs: number }
 }
 
 /**
@@ -532,6 +550,177 @@ interface AudioSegment {
   inputIdx: number
   /** True if this is the audio of a video-track clip (uses same input but 0:a stream). */
   fromVideoTrack: boolean
+  /**
+   * Phase 3.16 — when set this segment is a freeze-frame hold; audio is
+   * silence for `durationMs`. No source stream is read.
+   */
+  freeze?: { durationMs: number }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.17 — transcript-deletion survivor decomposition.
+//
+// When a clip has transcript deletions, its source window is divided into
+// "survivors" — contiguous source ranges that were NOT deleted. Each survivor
+// becomes a synthetic VideoAudioClip with:
+//   - trimInMs/trimOutMs spanning only that survivor's source window.
+//   - deletedRanges/transcript cleared (no recursion).
+//   - speedKeyframes/freezeFrames filtered and re-based to the new trimInMs.
+//   - startMs/endMs on the timeline laid end-to-end from the original startMs.
+//
+// When the clip has NO effective deletions this returns [clip] unchanged, so
+// the call site is always byte-identical for deletion-free clips.
+//
+// Speed-keyframe strategy: we keep keyframes whose source offset (from the
+// original trimInMs) falls inside this survivor's source window, then re-base
+// them so atMs is relative to the survivor's new trimInMs. If fewer than 2
+// keyframes survive, we drop speedKeyframes entirely and fall back to the
+// constant `speed` field (sampled as the clip's declared speed). This is the
+// simplest correct approach — a sub-window of a variable-speed clip with a
+// sparse keyframe set will play at the constant-speed fallback, which is
+// far preferable to a crash or a corrupt filter graph.
+// ---------------------------------------------------------------------------
+
+/**
+ * Decompose a clip that has transcript deletions into an ordered array of
+ * synthetic "survivor" sub-clips — the source windows that survive after
+ * deletion.  Each survivor has `deletedRanges: undefined` so subsequent
+ * speed/freeze expansion sees a clean clip.  Survivors are laid end-to-end on
+ * the timeline starting at `clip.startMs`.
+ *
+ * If the clip has no effective deletions (`hasTranscriptDeletions` false),
+ * returns `[clip]` unchanged — byte-identical.
+ */
+function expandDeletedRanges(clip: VideoAudioClip): VideoAudioClip[] {
+  if (!hasTranscriptDeletions(clip)) return [clip]
+
+  const deleted: DeletedRange[] = getClipDeletedRanges(clip)
+  const origTrimIn = clip.trimInMs
+  const origTrimOut = clip.trimOutMs
+
+  // Build survivor source windows: gaps in [origTrimIn, origTrimOut] not
+  // covered by any deleted range.
+  const survivors: Array<{ srcLo: number; srcHi: number }> = []
+  let cursor = origTrimIn
+  for (const d of deleted) {
+    if (d.sourceStartMs > cursor) {
+      survivors.push({ srcLo: cursor, srcHi: d.sourceStartMs })
+    }
+    cursor = Math.max(cursor, d.sourceEndMs)
+  }
+  if (cursor < origTrimOut) {
+    survivors.push({ srcLo: cursor, srcHi: origTrimOut })
+  }
+
+  // Drop zero-width survivors (shouldn't happen after getClipDeletedRanges
+  // filtering but be defensive).
+  const validSurvivors = survivors.filter((s) => s.srcHi - s.srcLo > 0)
+  if (validSurvivors.length === 0) {
+    // All source was deleted — no output. Return empty array; the caller must
+    // skip this clip entirely.
+    return []
+  }
+
+  // Lay survivors end-to-end on the timeline starting at clip.startMs.
+  let timelineCursor = clip.startMs
+  const result: VideoAudioClip[] = []
+
+  for (const { srcLo, srcHi } of validSurvivors) {
+    // Build a synthetic survivor clip (shallow clone, overrides below).
+    const synth: VideoAudioClip = {
+      ...clip,
+      trimInMs: srcLo,
+      trimOutMs: srcHi,
+      // Remove deletion-related fields so downstream expansion is clean.
+      deletedRanges: undefined,
+      transcript: undefined,
+    }
+
+    // -----------------------------------------------------------------
+    // Speed-keyframe re-basing.
+    // SpeedKeyframe.atMs is a source offset from the ORIGINAL trimInMs.
+    //
+    // When the original clip has an active speed curve (>= 2 keyframes),
+    // we RESTRICT the curve to this survivor's source window [a, b] where
+    // a = srcLo - origTrimIn and b = srcHi - origTrimIn (both are source
+    // offsets from the original trimInMs).
+    //
+    // The restricted curve is built as:
+    //   [{ atMs: 0,   speed: getSpeedAt(clip, a) },        // synthesized lo boundary
+    //    ...interior original keyframes with atMs in (a,b), re-based by -a,
+    //    { atMs: b-a, speed: getSpeedAt(clip, b) }]        // synthesized hi boundary
+    //
+    // This always yields >= 2 keyframes, so the curve is preserved.
+    // getClipTimelineDuration(synth) will then integrate the SAME piecewise-
+    // linear curve over [0, b-a] that the store integrated over [a, b] in
+    // the original clip, guaranteeing duration consistency.
+    //
+    // When the original clip has NO active speed curve (constant speed),
+    // the survivor inherits the constant `speed` field — no keyframes
+    // synthesized (byte-identical to pre-fix behaviour for constant-speed
+    // clips).
+    // -----------------------------------------------------------------
+    if (hasSpeedCurve(clip)) {
+      const srcLoOffset = srcLo - origTrimIn   // a: survivor lo as source offset from orig trimIn
+      const srcHiOffset = srcHi - origTrimIn   // b: survivor hi as source offset from orig trimIn
+      const survivorDur = srcHiOffset - srcLoOffset
+
+      // Interior original keyframes strictly inside (a, b), re-based by -a.
+      const interior = (clip.speedKeyframes as SpeedKeyframe[])
+        .filter((kf) => kf.atMs > srcLoOffset && kf.atMs < srcHiOffset)
+        .map((kf) => ({ atMs: kf.atMs - srcLoOffset, speed: kf.speed }))
+
+      // Synthesized boundary keyframes at the exact survivor edges.
+      const loBoundary: SpeedKeyframe = { atMs: 0,          speed: getSpeedAt(clip, srcLoOffset) }
+      const hiBoundary: SpeedKeyframe = { atMs: survivorDur, speed: getSpeedAt(clip, srcHiOffset) }
+
+      // Merge: boundary + interior, sort ascending, dedupe same-atMs (keep first).
+      const merged: SpeedKeyframe[] = [loBoundary, ...interior, hiBoundary]
+      merged.sort((a, b) => a.atMs - b.atMs)
+      const deduped: SpeedKeyframe[] = []
+      for (const kf of merged) {
+        if (deduped.length === 0 || kf.atMs !== deduped[deduped.length - 1].atMs) {
+          deduped.push(kf)
+        }
+      }
+      // deduped always has >= 2 entries (loBoundary at 0 and hiBoundary at survivorDur
+      // are distinct because survivorDur > 0, guaranteed by validSurvivors filter above).
+      synth.speedKeyframes = deduped
+    } else {
+      synth.speedKeyframes = undefined
+    }
+
+    // -----------------------------------------------------------------
+    // Freeze-frame re-basing.
+    // FreezeFrame.sourceMs is a source offset from the ORIGINAL trimInMs.
+    // Keep only freezes whose source falls within this survivor's source
+    // window, re-base to the survivor's new trimInMs.
+    // -----------------------------------------------------------------
+    if (Array.isArray(clip.freezeFrames) && clip.freezeFrames.length > 0) {
+      const srcLoOffset = srcLo - origTrimIn
+      const srcHiOffset = srcHi - origTrimIn
+      const keptFreezes: FreezeFrame[] = (clip.freezeFrames as FreezeFrame[])
+        .filter((f) => f.sourceMs >= srcLoOffset && f.sourceMs < srcHiOffset)
+        .map((f) => ({ sourceMs: f.sourceMs - srcLoOffset, durationMs: f.durationMs }))
+      synth.freezeFrames = keptFreezes.length > 0 ? keptFreezes : undefined
+    } else {
+      synth.freezeFrames = undefined
+    }
+
+    // -----------------------------------------------------------------
+    // Timeline placement: assign startMs/endMs for this survivor.
+    // getClipTimelineDuration on synth (which now has no deletions) gives
+    // the correct speed+freeze-aware duration for this source window.
+    // -----------------------------------------------------------------
+    const dur = getClipTimelineDuration(synth)
+    synth.startMs = timelineCursor
+    synth.endMs = timelineCursor + dur
+    timelineCursor += dur
+
+    result.push(synth)
+  }
+
+  return result
 }
 
 /**
@@ -549,7 +738,8 @@ interface AudioSegment {
  * TRACK — not a global ordering — so multi-track layouts don't cross-pollinate.
  */
 function collectSegments(
-  project: Project
+  project: Project,
+  exportFps = 30
 ): {
   videoTrackLayers: VideoSegment[][]
   videoSegments: VideoSegment[]
@@ -609,9 +799,10 @@ function collectSegments(
         transitionKind = clip.transitionIn.kind
       }
 
-      if (!hasSpeedCurve(clip)) {
+      if (!hasSpeedCurve(clip) && !hasFreezeFrames(clip) && !hasTranscriptDeletions(clip)) {
         // -----------------------------------------------------------------------
-        // FAST PATH: no speed curve — single segment, byte-identical to pre-3.10.
+        // FAST PATH: no speed curve, no freeze frames, no transcript deletions —
+        // single segment, byte-identical to pre-3.10 / pre-3.16 / pre-3.17.
         // -----------------------------------------------------------------------
         const inputIdx = inputs.length
         inputs.push(media.path)
@@ -629,129 +820,315 @@ function collectSegments(
           transitionKind,
           layerIndex
         })
-      } else {
+      } else if (hasTranscriptDeletions(clip) && !hasSpeedCurve(clip) && !hasFreezeFrames(clip)) {
         // -----------------------------------------------------------------------
-        // SPEED-CURVE PATH (Phase 3.10): expand into N constant-speed sub-segments.
-        // Each step gets its own -i (same file, different trim window — identical
-        // to the removeSilencesFromClip multi-input pattern).
+        // DELETION-ONLY PATH (Phase 3.17): decompose into survivor sub-clips,
+        // each of which has no deletions and no speed/freeze complexity, so each
+        // maps to exactly one VideoSegment via the fast path.
         // -----------------------------------------------------------------------
-        const steps = resolveSpeedSegments(clip)
-        let stepStartMs = clip.startMs
-
-        for (let si = 0; si < steps.length; si++) {
-          const step = steps[si]
-          const isFirst = si === 0
-          const isLast = si === steps.length - 1
-
-          const stepEndMs = isLast
-            ? clip.endMs // force last step to clip.endMs (kills rounding drift)
-            : stepStartMs + Math.round(step.outDurMs)
-
-          // Build a SYNTHETIC shallow-clone of the original clip for this step.
-          // trimInMs/trimOutMs are absolute source offsets (trimInMs + step window).
-          // startMs/endMs reflect this step's position on the timeline — required
-          // so buildAudioSegmentChain reads the correct adelay for embedded audio.
-          const syntheticClip: VideoAudioClip = {
-            ...clip,
-            startMs: stepStartMs,
-            endMs: stepEndMs,
-            trimInMs: clip.trimInMs + step.srcStartMs,
-            trimOutMs: clip.trimInMs + step.srcEndMs,
-            speed: step.speed,
-            speedKeyframes: undefined,
-            // Transition belongs only to the first step.
-            transitionIn: isFirst ? clip.transitionIn : undefined,
-            // Audio fades belong to the WHOLE clip: first step keeps fadeInMs,
-            // last step keeps fadeOutMs, intermediate steps get zero for both.
-            // This prevents every sub-segment from fading in and out.
-            fadeInMs:  isFirst ? (clip.fadeInMs ?? 0)  : 0,
-            fadeOutMs: isLast  ? (clip.fadeOutMs ?? 0) : 0,
-          }
-
-          // -----------------------------------------------------------------
-          // Transform-keyframe re-basing (spec §3a high-risk section).
-          //
-          // clip.transformKeyframes are clip-timeline-relative (atMs from clip.startMs=0).
-          // This step covers timeline window [stepStartMs, stepEndMs) — i.e.
-          // clip-local offsets [stepStartMs-clip.startMs, stepEndMs-clip.startMs).
-          //
-          // Strategy (mirrors splitClipAt in renderer store):
-          //   1. Compute clip-local offsets for this step's [lo, hi) window.
-          //   2. Collect keyframes whose atMs falls strictly inside (lo, hi).
-          //   3. Synthesise boundary keyframes at lo and hi via getTransformAt.
-          //   4. Re-base all keyframe atMs so 0 = stepStartMs on original timeline.
-          //   5. If <2 keyframes result: bake to static transform at step midpoint.
-          // -----------------------------------------------------------------
-          if (hasTransformKeyframes(clip)) {
-            const localLo = stepStartMs - clip.startMs   // clip-local start of this step
-            const localHi = stepEndMs - clip.startMs     // clip-local end of this step
-
-            // Synthesise boundary keyframes at lo and hi.
-            const tAtLo = getTransformAt(clip, clip.startMs + localLo)
-            const tAtHi = getTransformAt(clip, clip.startMs + localHi)
-
-            // Collect interior keyframes strictly inside (lo, hi).
-            const interior = (clip.transformKeyframes as TransformKeyframe[]).filter(
-              (kf) => kf.atMs > localLo && kf.atMs < localHi
-            )
-
-            // Assemble: boundary-lo, interior..., boundary-hi — then re-base.
-            const rawKfs: TransformKeyframe[] = [
-              { atMs: localLo, transform: tAtLo },
-              ...interior,
-              { atMs: localHi, transform: tAtHi }
-            ]
-            // Re-base: subtract localLo so the step's own start = atMs 0.
-            const rebased: TransformKeyframe[] = rawKfs.map((kf) => ({
-              atMs: kf.atMs - localLo,
-              transform: kf.transform
-            }))
-
-            // Deduplicate adjacent identical atMs (paranoia against lo===hi edge).
-            const deduped = rebased.filter(
-              (kf, idx) =>
-                idx === 0 || kf.atMs !== rebased[idx - 1].atMs
-            )
-
-            if (deduped.length >= 2) {
-              syntheticClip.transformKeyframes = deduped
-              syntheticClip.transform = undefined  // animated path wins
-            } else {
-              // <2 unique keyframes — bake to static transform at step midpoint.
-              syntheticClip.transformKeyframes = undefined
-              syntheticClip.transform = getTransformAt(
-                clip,
-                clip.startMs + Math.round((localLo + localHi) / 2)
-              )
-            }
-          }
-          // If no transform keyframes on original, syntheticClip.transform is
-          // already a copy of clip.transform (from the spread) — static path is
-          // unchanged and byte-identical.
-
+        const survivors = expandDeletedRanges(clip)
+        for (let si = 0; si < survivors.length; si++) {
+          const sv = survivors[si]
           const inputIdx = inputs.length
           inputs.push(media.path)
-
-          // Captions overlap check against this step's timeline window.
           const captions = allCaptionClips.filter(
-            (c) => c.endMs > stepStartMs && c.startMs < stepEndMs
+            (c) => c.endMs > sv.startMs && c.startMs < sv.endMs
           )
-
           layerSegments.push({
-            clip: syntheticClip,
+            clip: sv,
             track,
             inputIdx,
             captions,
-            startMs: stepStartMs,
-            endMs: stepEndMs,
-            // Only the first step carries the original clip's transition.
-            transitionInMs: isFirst ? transitionInMs : 0,
-            transitionKind: isFirst ? transitionKind : 'none',
+            startMs: sv.startMs,
+            endMs: sv.endMs,
+            // Transition applies only to the first survivor of the original clip.
+            transitionInMs: si === 0 ? transitionInMs : 0,
+            transitionKind: si === 0 ? transitionKind : 'none',
             layerIndex
           })
-
-          stepStartMs = stepEndMs
         }
+      } else {
+        // -----------------------------------------------------------------------
+        // EXPANSION PATH (Phase 3.10 / 3.16 / 3.17): build an ordered list of pieces
+        // (moving and freeze) then emit one VideoSegment per piece.
+        //
+        // Phase 3.17 survivor pre-pass: if the clip has transcript deletions,
+        // expandDeletedRanges decomposes it into deletion-free survivor sub-clips
+        // (already laid out on the timeline with correct startMs/endMs/trimInMs/
+        // trimOutMs and speed/freeze fields re-based). Each survivor is then run
+        // through the same speed+freeze expansion below. For a clip with no
+        // deletions, expandDeletedRanges returns [clip] unchanged → byte-identical.
+        //
+        // Step 1: resolveSpeedSegments gives the constant-speed moving pieces
+        //         in the SPEED-ONLY timeline domain (freeze-agnostic).
+        // Step 2: walk getClipFreezeFrames (sorted ascending by sourceMs) and
+        //         SPLIT the moving piece whose source window contains each
+        //         freeze.sourceMs into [pre, freeze, post] sub-pieces.
+        // Step 3: emit one synthetic clip + VideoSegment per piece.
+        // -----------------------------------------------------------------------
+
+        // --- Phase 3.16 helper constant ----------------------------------------
+        // One source frame at export fps, used as the trimOut span for freeze segs.
+        const ONE_FRAME_MS = 1000 / exportFps
+
+        // --- Phase 3.17 survivor pre-pass --------------------------------------
+        // expandDeletedRanges returns [clip] when there are no deletions, so
+        // the loop body runs exactly once — byte-identical to pre-3.17 behavior.
+        const expandedClips = expandDeletedRanges(clip)
+        // isVeryFirstPiece tracks whether we're at the very first piece across ALL
+        // survivors so we assign transitionInMs/transitionKind only once.
+        let isVeryFirstPiece = true
+
+        for (const ec of expandedClips) {
+        // --- Build ordered piece list ------------------------------------------
+        type MovingPiece = {
+          kind: 'moving'
+          srcStartMs: number   // source offset from ec.trimInMs
+          srcEndMs: number
+          speed: number
+          outDurMs: number
+        }
+        type FreezePiece = {
+          kind: 'freeze'
+          sourceMs: number     // source offset from ec.trimInMs (the frame to hold)
+          durationMs: number
+        }
+        type Piece = MovingPiece | FreezePiece
+
+        const speedSegs = resolveSpeedSegments(ec)
+        const freezes: FreezeFrame[] = getClipFreezeFrames(ec)
+
+        // Seed the piece list with the speed-segment moving pieces.
+        const pieces: Piece[] = speedSegs.map((s) => ({
+          kind: 'moving' as const,
+          srcStartMs: s.srcStartMs,
+          srcEndMs: s.srcEndMs,
+          speed: s.speed,
+          outDurMs: s.outDurMs
+        }))
+
+        // Insert freeze pieces by splitting the enclosing moving piece.
+        for (const freeze of freezes) {
+          const fs = freeze.sourceMs // source offset at which the freeze happens
+
+          // Find the moving piece that contains fs.
+          let foundIdx = -1
+          for (let pi = 0; pi < pieces.length; pi++) {
+            const p = pieces[pi]
+            if (p.kind !== 'moving') continue
+            if (fs >= p.srcStartMs && fs <= p.srcEndMs) {
+              foundIdx = pi
+              break
+            }
+          }
+          if (foundIdx < 0) continue // freeze outside source range — skip
+
+          const original = pieces[foundIdx] as MovingPiece
+
+          // Build pre, freeze, and post sub-pieces.
+          const newPieces: Piece[] = []
+
+          // pre-piece: [original.srcStartMs, fs)
+          if (fs > original.srcStartMs) {
+            const preSrcSpan = fs - original.srcStartMs
+            const preOutDur = original.speed > 0 ? preSrcSpan / original.speed : 0
+            newPieces.push({
+              kind: 'moving',
+              srcStartMs: original.srcStartMs,
+              srcEndMs: fs,
+              speed: original.speed,
+              outDurMs: preOutDur
+            })
+          }
+
+          // freeze piece
+          newPieces.push({
+            kind: 'freeze',
+            sourceMs: fs,
+            durationMs: freeze.durationMs
+          })
+
+          // post-piece: [fs, original.srcEndMs)
+          if (fs < original.srcEndMs) {
+            const postSrcSpan = original.srcEndMs - fs
+            const postOutDur = original.speed > 0 ? postSrcSpan / original.speed : 0
+            newPieces.push({
+              kind: 'moving',
+              srcStartMs: fs,
+              srcEndMs: original.srcEndMs,
+              speed: original.speed,
+              outDurMs: postOutDur
+            })
+          }
+
+          // Replace the original piece with the expanded sub-pieces.
+          pieces.splice(foundIdx, 1, ...newPieces)
+        }
+
+        // --- Emit one VideoSegment per piece -----------------------------------
+        let stepStartMs = ec.startMs
+        const totalPieces = pieces.length
+
+        for (let pi = 0; pi < totalPieces; pi++) {
+          const piece = pieces[pi]
+          const isFirst = pi === 0
+          const isLast = pi === totalPieces - 1
+          // isVeryFirstPiece: transition applies only to the very first piece
+          // across all survivors of the original clip.
+          const claimTransition = isVeryFirstPiece
+          if (isVeryFirstPiece) isVeryFirstPiece = false
+
+          if (piece.kind === 'freeze') {
+            // ---------------------------------------------------------------
+            // FREEZE PIECE: synthetic clip trimmed to ONE source frame.
+            // ---------------------------------------------------------------
+            const freezeStartMs = stepStartMs
+            const freezeEndMs = stepStartMs + piece.durationMs
+
+            // The source frame we hold: ec.trimInMs + piece.sourceMs
+            const freezeTrimIn = ec.trimInMs + piece.sourceMs
+            const freezeTrimOut = freezeTrimIn + ONE_FRAME_MS
+
+            const syntheticFreeze: VideoAudioClip = {
+              ...ec,
+              startMs: freezeStartMs,
+              endMs: freezeEndMs,
+              trimInMs: freezeTrimIn,
+              trimOutMs: freezeTrimOut,
+              speed: 1,
+              speedKeyframes: undefined,
+              freezeFrames: undefined,
+              // Transition belongs only to the very first piece of the original clip.
+              transitionIn: claimTransition ? clip.transitionIn : undefined,
+              fadeInMs: 0,
+              fadeOutMs: 0,
+            }
+
+            // Transform keyframes during a freeze: the frozen frame must hold
+            // STILL — synthesise two boundary keyframes both sampled at the
+            // single pre-freeze source instant (stepStartMs on the original
+            // timeline), so the result is a constant (non-animating) transform.
+            if (hasTransformKeyframes(ec)) {
+              const frozenT = getTransformAt(ec, freezeStartMs)
+              syntheticFreeze.transformKeyframes = [
+                { atMs: 0, transform: frozenT },
+                { atMs: piece.durationMs, transform: frozenT }
+              ]
+              syntheticFreeze.transform = undefined
+            }
+
+            const inputIdx = inputs.length
+            inputs.push(media.path)
+
+            const captions = allCaptionClips.filter(
+              (c) => c.endMs > freezeStartMs && c.startMs < freezeEndMs
+            )
+
+            layerSegments.push({
+              clip: syntheticFreeze,
+              track,
+              inputIdx,
+              captions,
+              startMs: freezeStartMs,
+              endMs: freezeEndMs,
+              transitionInMs: claimTransition ? transitionInMs : 0,
+              transitionKind: claimTransition ? transitionKind : 'none',
+              layerIndex,
+              freeze: { durationMs: piece.durationMs }
+            })
+
+            stepStartMs = freezeEndMs
+
+          } else {
+            // ---------------------------------------------------------------
+            // MOVING PIECE: same logic as the pre-3.16 speed-curve path.
+            // ---------------------------------------------------------------
+            const stepEndMs = isLast
+              ? ec.endMs // force last moving piece to ec.endMs (kills rounding drift)
+              : stepStartMs + Math.round(piece.outDurMs)
+
+            const syntheticClip: VideoAudioClip = {
+              ...ec,
+              startMs: stepStartMs,
+              endMs: stepEndMs,
+              trimInMs: ec.trimInMs + piece.srcStartMs,
+              trimOutMs: ec.trimInMs + piece.srcEndMs,
+              speed: piece.speed,
+              speedKeyframes: undefined,
+              freezeFrames: undefined,
+              // Transition belongs only to the first piece.
+              transitionIn: claimTransition ? clip.transitionIn : undefined,
+              // Audio fades: first piece keeps fadeInMs, last keeps fadeOutMs.
+              fadeInMs:  isFirst ? (ec.fadeInMs ?? 0)  : 0,
+              fadeOutMs: isLast  ? (ec.fadeOutMs ?? 0) : 0,
+            }
+
+            // -----------------------------------------------------------------
+            // Transform-keyframe re-basing — mirrors the original speed-curve
+            // path exactly, so the spec §3a guarantee is preserved.
+            // TransformKeyframe.atMs is clip-relative (from clip.startMs); the
+            // survivor ec has correct startMs/endMs so the same localLo/localHi
+            // logic works unchanged.
+            // -----------------------------------------------------------------
+            if (hasTransformKeyframes(ec)) {
+              const localLo = stepStartMs - ec.startMs
+              const localHi = stepEndMs - ec.startMs
+
+              const tAtLo = getTransformAt(ec, ec.startMs + localLo)
+              const tAtHi = getTransformAt(ec, ec.startMs + localHi)
+
+              const interior = (ec.transformKeyframes as TransformKeyframe[]).filter(
+                (kf) => kf.atMs > localLo && kf.atMs < localHi
+              )
+
+              const rawKfs: TransformKeyframe[] = [
+                { atMs: localLo, transform: tAtLo },
+                ...interior,
+                { atMs: localHi, transform: tAtHi }
+              ]
+              const rebased: TransformKeyframe[] = rawKfs.map((kf) => ({
+                atMs: kf.atMs - localLo,
+                transform: kf.transform
+              }))
+              const deduped = rebased.filter(
+                (kf, idx) => idx === 0 || kf.atMs !== rebased[idx - 1].atMs
+              )
+
+              if (deduped.length >= 2) {
+                syntheticClip.transformKeyframes = deduped
+                syntheticClip.transform = undefined
+              } else {
+                syntheticClip.transformKeyframes = undefined
+                syntheticClip.transform = getTransformAt(
+                  ec,
+                  ec.startMs + Math.round((localLo + localHi) / 2)
+                )
+              }
+            }
+
+            const inputIdx = inputs.length
+            inputs.push(media.path)
+
+            const captions = allCaptionClips.filter(
+              (c) => c.endMs > stepStartMs && c.startMs < stepEndMs
+            )
+
+            layerSegments.push({
+              clip: syntheticClip,
+              track,
+              inputIdx,
+              captions,
+              startMs: stepStartMs,
+              endMs: stepEndMs,
+              transitionInMs: claimTransition ? transitionInMs : 0,
+              transitionKind: claimTransition ? transitionKind : 'none',
+              layerIndex
+            })
+
+            stepStartMs = stepEndMs
+          }
+        }
+        } // end for (const ec of expandedClips)
       }
     }
     videoTrackLayers.push(layerSegments)
@@ -773,42 +1150,157 @@ function collectSegments(
       const media = project.media[c.mediaId]
       if (!media) continue
 
-      if (!hasSpeedCurve(c)) {
-        // Fast path: single audio segment — byte-identical to pre-3.10.
+      if (!hasSpeedCurve(c) && !hasFreezeFrames(c) && !hasTranscriptDeletions(c)) {
+        // Fast path: single audio segment — byte-identical to pre-3.10/3.16/3.17.
         const inputIdx = inputs.length
         inputs.push(media.path)
         audioSegments.push({ clip: c, track: t, inputIdx, fromVideoTrack: false })
-      } else {
-        // Speed-curve path: expand into N constant-speed audio segments.
-        // Fades belong to the WHOLE clip: fadeInMs only on first step,
-        // fadeOutMs only on last step, zero on all intermediate steps.
-        // startMs/endMs on the synthetic clone must track the step's timeline
-        // position so buildAudioSegmentChain emits the correct adelay.
-        const steps = resolveSpeedSegments(c)
-        let audioStepStartMs = c.startMs
-        for (let si = 0; si < steps.length; si++) {
-          const step = steps[si]
-          const isFirst = si === 0
-          const isLast = si === steps.length - 1
-          const audioStepEndMs = isLast
-            ? c.endMs
-            : audioStepStartMs + Math.round(step.outDurMs)
-          const syntheticAudio: VideoAudioClip = {
-            ...c,
-            startMs: audioStepStartMs,
-            endMs: audioStepEndMs,
-            trimInMs: c.trimInMs + step.srcStartMs,
-            trimOutMs: c.trimInMs + step.srcEndMs,
-            speed: step.speed,
-            speedKeyframes: undefined,
-            fadeInMs:  isFirst ? (c.fadeInMs ?? 0)  : 0,
-            fadeOutMs: isLast  ? (c.fadeOutMs ?? 0) : 0,
-          }
+      } else if (hasTranscriptDeletions(c) && !hasSpeedCurve(c) && !hasFreezeFrames(c)) {
+        // -----------------------------------------------------------------------
+        // AUDIO DELETION-ONLY PATH (Phase 3.17): decompose into survivor sub-clips.
+        // Deleted gaps produce NO audio (no anullsrc filler) — unlike a freeze,
+        // a deletion removes time entirely, so the next survivor's audio butts
+        // directly against the previous one.
+        // -----------------------------------------------------------------------
+        const audioSurvivors = expandDeletedRanges(c)
+        for (const sv of audioSurvivors) {
           const inputIdx = inputs.length
           inputs.push(media.path)
-          audioSegments.push({ clip: syntheticAudio, track: t, inputIdx, fromVideoTrack: false })
-          audioStepStartMs = audioStepEndMs
+          audioSegments.push({ clip: sv, track: t, inputIdx, fromVideoTrack: false })
         }
+      } else {
+        // Expansion path: mirrors the video expansion above but for audio.
+        // Phase 3.17 survivor pre-pass: expandDeletedRanges(c) returns [c] when
+        // there are no deletions → byte-identical. Each survivor is then expanded
+        // for speed/freeze below.
+        // Moving pieces get real audio segments; freeze pieces get silence.
+        const ONE_FRAME_MS_AUDIO = 1000 / exportFps
+
+        const audioExpandedClips = expandDeletedRanges(c)
+        for (const aec of audioExpandedClips) {
+
+        const speedSegsAudio = resolveSpeedSegments(aec)
+        const freezesAudio: FreezeFrame[] = getClipFreezeFrames(aec)
+
+        type AudioMovingPiece = {
+          kind: 'moving'
+          srcStartMs: number
+          srcEndMs: number
+          speed: number
+          outDurMs: number
+        }
+        type AudioFreezePiece = {
+          kind: 'freeze'
+          sourceMs: number
+          durationMs: number
+        }
+        type AudioPiece = AudioMovingPiece | AudioFreezePiece
+
+        const audioPieces: AudioPiece[] = speedSegsAudio.map((s) => ({
+          kind: 'moving' as const,
+          srcStartMs: s.srcStartMs,
+          srcEndMs: s.srcEndMs,
+          speed: s.speed,
+          outDurMs: s.outDurMs
+        }))
+
+        for (const freeze of freezesAudio) {
+          const fs = freeze.sourceMs
+          let foundIdx = -1
+          for (let pi = 0; pi < audioPieces.length; pi++) {
+            const p = audioPieces[pi]
+            if (p.kind !== 'moving') continue
+            if (fs >= p.srcStartMs && fs <= p.srcEndMs) {
+              foundIdx = pi
+              break
+            }
+          }
+          if (foundIdx < 0) continue
+          const orig = audioPieces[foundIdx] as AudioMovingPiece
+          const newPieces: AudioPiece[] = []
+          if (fs > orig.srcStartMs) {
+            const preSrcSpan = fs - orig.srcStartMs
+            newPieces.push({
+              kind: 'moving',
+              srcStartMs: orig.srcStartMs,
+              srcEndMs: fs,
+              speed: orig.speed,
+              outDurMs: orig.speed > 0 ? preSrcSpan / orig.speed : 0
+            })
+          }
+          newPieces.push({ kind: 'freeze', sourceMs: fs, durationMs: freeze.durationMs })
+          if (fs < orig.srcEndMs) {
+            const postSrcSpan = orig.srcEndMs - fs
+            newPieces.push({
+              kind: 'moving',
+              srcStartMs: fs,
+              srcEndMs: orig.srcEndMs,
+              speed: orig.speed,
+              outDurMs: orig.speed > 0 ? postSrcSpan / orig.speed : 0
+            })
+          }
+          audioPieces.splice(foundIdx, 1, ...newPieces)
+        }
+
+        let audioStepStartMs = aec.startMs
+        const totalAudioPieces = audioPieces.length
+        for (let pi = 0; pi < totalAudioPieces; pi++) {
+          const piece = audioPieces[pi]
+          const isFirst = pi === 0
+          const isLast = pi === totalAudioPieces - 1
+
+          if (piece.kind === 'freeze') {
+            const freezeStartMs = audioStepStartMs
+            const freezeEndMs = audioStepStartMs + piece.durationMs
+            // Synthetic clip stub — only startMs is used for adelay in the
+            // silence path; the audio segment chain will emit anullsrc instead
+            // of reading a source stream.
+            const syntheticFreezeAudio: VideoAudioClip = {
+              ...aec,
+              startMs: freezeStartMs,
+              endMs: freezeEndMs,
+              trimInMs: aec.trimInMs + piece.sourceMs,
+              trimOutMs: aec.trimInMs + piece.sourceMs + ONE_FRAME_MS_AUDIO,
+              speed: 1,
+              speedKeyframes: undefined,
+              freezeFrames: undefined,
+              fadeInMs: 0,
+              fadeOutMs: 0,
+            }
+            // No real input added — silence is synthesised by anullsrc.
+            // inputIdx = -1 signals to buildAudioSegmentChain that this is a
+            // freeze silence segment (no source stream to read).
+            audioSegments.push({
+              clip: syntheticFreezeAudio,
+              track: t,
+              inputIdx: -1,
+              fromVideoTrack: false,
+              freeze: { durationMs: piece.durationMs }
+            })
+            audioStepStartMs = freezeEndMs
+          } else {
+            const audioStepEndMs = isLast
+              ? aec.endMs
+              : audioStepStartMs + Math.round(piece.outDurMs)
+            const syntheticAudio: VideoAudioClip = {
+              ...aec,
+              startMs: audioStepStartMs,
+              endMs: audioStepEndMs,
+              trimInMs: aec.trimInMs + piece.srcStartMs,
+              trimOutMs: aec.trimInMs + piece.srcEndMs,
+              speed: piece.speed,
+              speedKeyframes: undefined,
+              freezeFrames: undefined,
+              fadeInMs:  isFirst ? (aec.fadeInMs ?? 0)  : 0,
+              fadeOutMs: isLast  ? (aec.fadeOutMs ?? 0) : 0,
+            }
+            const inputIdx = inputs.length
+            inputs.push(media.path)
+            audioSegments.push({ clip: syntheticAudio, track: t, inputIdx, fromVideoTrack: false })
+            audioStepStartMs = audioStepEndMs
+          }
+        }
+        } // end for (const aec of audioExpandedClips)
       }
     }
   }
@@ -819,20 +1311,30 @@ function collectSegments(
   // videoSegments — each synthetic seg.clip is already a constant-speed clone
   // with the correct trimInMs/trimOutMs/speed, and its inputIdx matches the
   // video input for that step.
+  //
+  // Phase 3.16: freeze video segments have NO source audio — the held frame
+  // is a still image. We skip them and instead emit a silence AudioSegment
+  // (freeze marker) so the audio timeline stays length-matched.
   for (const seg of videoSegments) {
-    // For speed-curve steps: carry fadeInMs only on first step, fadeOutMs
-    // only on last step (the synthetic video clone already has fade fields
-    // inherited from the spread — we need to zero them on intermediate steps).
-    // We detect "is a speed-curve step" by checking speedKeyframes === undefined
-    // AND the original clip had a curve. The synthetic clones from the video
-    // expansion above already have speedKeyframes=undefined and carry the
-    // correct per-step fade assignment made there, so we can use them directly.
-    audioSegments.push({
-      clip: seg.clip,
-      track: seg.track,
-      inputIdx: seg.inputIdx,
-      fromVideoTrack: true
-    })
+    if (seg.freeze) {
+      // Freeze video segment — emit a silence AudioSegment rather than
+      // reading the video input's audio stream.
+      audioSegments.push({
+        clip: seg.clip,
+        track: seg.track,
+        inputIdx: -1,
+        fromVideoTrack: true,
+        freeze: { durationMs: seg.freeze.durationMs }
+      })
+    } else {
+      // Normal moving segment — same as before.
+      audioSegments.push({
+        clip: seg.clip,
+        track: seg.track,
+        inputIdx: seg.inputIdx,
+        fromVideoTrack: true
+      })
+    }
   }
 
   return { videoTrackLayers, videoSegments, audioSegments, inputs }
@@ -888,6 +1390,10 @@ function denoiseChain(clip: VideoAudioClip): string {
   if (s === null) return ''
   const nr = (6 + (s / 100) * 24).toFixed(2) // strength 1..100 → 6.24..30.00 dB
   return `afftdn=nr=${nr}:nf=-25`
+}
+
+function retouchChain(clip: VideoAudioClip): string {
+  return retouchToFfmpeg(getClipRetouch(clip))
 }
 
 // ---------------------------------------------------------------------------
@@ -1500,6 +2006,122 @@ function buildVideoSegmentChain(
   fragment: string
 } {
   const out = `v${seg.inputIdx}`
+
+  // -----------------------------------------------------------------------
+  // Phase 3.16 — FREEZE SEGMENT path.
+  // For a freeze segment we replace the normal trim+setpts+speed chain with
+  // a one-frame trim + tpad=stop_mode=clone. ALL downstream filters (color
+  // grading, fps normalization, crop, scale/pad, blur regions, transform)
+  // run IDENTICALLY so the frozen frame is graded/positioned consistently.
+  // -----------------------------------------------------------------------
+  if (seg.freeze) {
+    const freezeDurSec = seg.freeze.durationMs / 1000
+    const srcFrameSec = seg.clip.trimInMs / 1000           // absolute source start of the one-frame window
+    const oneFrameSec = (1000 / preset.fps) / 1000         // duration of one frame at export fps
+
+    const freezeParts: string[] = []
+    // Trim exactly one source frame at the held instant.
+    freezeParts.push(`trim=start=${srcFrameSec.toFixed(4)}:duration=${oneFrameSec.toFixed(6)}`)
+    freezeParts.push('setpts=PTS-STARTPTS')
+    // Clone-pad that single frame out to the full freeze duration.
+    freezeParts.push(`tpad=stop_mode=clone:stop_duration=${freezeDurSec.toFixed(4)}`)
+
+    // Color grading chain (identical to normal path).
+    const fpFreeze = filterPresetToFfmpeg(seg.clip.filterPreset, seg.clip.filterIntensity ?? 1)
+    if (fpFreeze) freezeParts.push(fpFreeze)
+    const caFreeze = colorAdjustToFfmpeg(getClipColorAdjust(seg.clip))
+    if (caFreeze) freezeParts.push(caFreeze)
+    const cvFreeze = curvesToFfmpeg(getClipCurves(seg.clip))
+    if (cvFreeze) freezeParts.push(cvFreeze)
+    if (options.hueSatAvailable !== false) {
+      const hsFreeze = hslToFfmpeg(getClipHsl(seg.clip))
+      if (hsFreeze) freezeParts.push(hsFreeze)
+    }
+    // 2.8. RETOUCH / BEAUTY (Phase 3.21) — edge-preserving skin smoothing
+    //      (smartblur, luma-only). Stacks AFTER all colour grading, BEFORE fps
+    //      normalization + crop. smartblur is a core ffmpeg filter (no probe).
+    //      CRITICAL INVARIANT: getClipRetouch returns null for an absent OR 0
+    //      retouch → retouchToFfmpeg returns '' → the `if` is skipped → `freezeParts`
+    //      stays byte-identical to the pre-Phase-3.21 graph.
+    const rtFreeze = retouchToFfmpeg(getClipRetouch(seg.clip))
+    if (rtFreeze) freezeParts.push(rtFreeze)
+    freezeParts.push(`fps=${preset.fps}`)
+    const cropRectFreeze = getClipCropRect(seg.clip)
+    if (cropRectFreeze) {
+      const cw = cropRectFreeze.w.toFixed(6)
+      const ch = cropRectFreeze.h.toFixed(6)
+      const cx = cropRectFreeze.x.toFixed(6)
+      const cy = cropRectFreeze.y.toFixed(6)
+      freezeParts.push(
+        `crop=w=floor(iw*${cw}/2)*2:h=floor(ih*${ch}/2)*2:x=iw*${cx}:y=ih*${cy}`
+      )
+    }
+
+    const W = preset.width
+    const H = preset.height
+    const labelIn = `pre${seg.inputIdx}`
+    const freezePreChain = freezeParts.join(',')
+
+    let freezeFragment: string
+    if (isBaseLayer) {
+      const labelBg = `bg${seg.inputIdx}`
+      const labelMain = `main${seg.inputIdx}`
+      freezeFragment =
+        `[${seg.inputIdx}:v]${freezePreChain}[${labelIn}];` +
+        `[${labelIn}]split=2[${labelMain}src][${labelBg}src];` +
+        `[${labelBg}src]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=20:1,eq=brightness=-0.2[${labelBg}];` +
+        `[${labelMain}src]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0[${labelMain}];` +
+        `[${labelBg}][${labelMain}]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1`
+    } else {
+      freezeFragment =
+        `[${seg.inputIdx}:v]${freezePreChain}[${labelIn}];` +
+        `[${labelIn}]scale=${W}:${H}:force_original_aspect_ratio=decrease,` +
+        `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1`
+    }
+
+    // Captions during freeze (drawtext path only — static captions are valid
+    // over a held frame exactly as over a normal segment).
+    const freezeSegDurSec = Math.max(0.001, freezeDurSec)
+    if (seg.captions.length > 0) {
+      const drawtexts: string[] = []
+      for (const cap of seg.captions) {
+        if (captionPngMap && captionPngMap.has(cap.id)) continue
+        const localStart = Math.max(0, (cap.startMs - seg.startMs) / 1000)
+        const localEnd = Math.min(freezeSegDurSec, (cap.endMs - seg.startMs) / 1000)
+        if (localEnd <= localStart) continue
+        const txt = escapeDrawtext(cap.spans.map((sp) => sp.text).join(' ').slice(0, 500))
+        if (!txt) continue
+        const fontSize = Math.max(16, Math.round((cap.style.fontSize * H) / 1920))
+        const yPx = Math.round((1 - (1 - cap.style.yPosition)) * H - fontSize)
+        const yExpr = `${Math.max(0, Math.min(H - fontSize, yPx))}`
+        const hasBox = cap.style.background === 'solid' || cap.style.background === 'pill'
+        const drawArgs = [
+          `text='${txt}'`, `fontsize=${fontSize}`, `fontcolor=white`,
+          `borderw=2`, `bordercolor=black@0.7`,
+          `x=(w-text_w)/2`, `y=${yExpr}`,
+          `enable='between(t,${localStart.toFixed(3)},${localEnd.toFixed(3)})'`
+        ]
+        if (hasBox) drawArgs.push(`box=1`, `boxcolor=black@0.55`, `boxborderw=10`)
+        drawtexts.push(`drawtext=${drawArgs.join(':')}`)
+      }
+      if (drawtexts.length > 0) {
+        freezeFragment += ',' + drawtexts.join(',')
+      }
+    }
+
+    // Blur regions + transform sub-chain (identical to normal path).
+    freezeFragment += buildBlurRegionsSubchain(
+      seg.clip, W, H, String(seg.inputIdx),
+      project ?? { tracks: [], media: {}, id: '', name: '', aspectRatio: '9:16', width: W, height: H, fps: 30, createdAt: 0, updatedAt: 0 }
+    )
+    freezeFragment += buildTransformSubchain(seg.clip, W, H, String(seg.inputIdx), preset.fps)
+    freezeFragment += `[${out}]`
+    return { out, fragment: freezeFragment }
+  }
+
+  // -----------------------------------------------------------------------
+  // NORMAL (non-freeze) path — unchanged from pre-3.16.
+  // -----------------------------------------------------------------------
   const speed = seg.clip.speed ?? 1
   const segDurSec = Math.max(0.001, (seg.endMs - seg.startMs) / 1000)
   const trimInSec = seg.clip.trimInMs / 1000
@@ -1512,6 +2134,23 @@ function buildVideoSegmentChain(
   //    input. setpts resets the PTS so frames start at 0.
   parts.push(`trim=start=${trimInSec.toFixed(4)}:duration=${srcDurSec.toFixed(4)}`)
   parts.push('setpts=PTS-STARTPTS')
+  // Phase 3.19 — reverse the TRIMMED window.
+  // Gated on isClipReversed → a forward clip never adds these filters, so
+  // `parts` stays byte-identical to pre-3.19 for any non-reversed clip.
+  // `reverse` buffers only the trimmed window (already cut by `trim` above).
+  // An explicit `setpts=PTS-STARTPTS` follows because `reverse` re-orders
+  // frames but does not re-base PTS to 0. The filter runs BEFORE the speed
+  // `setpts` so we reverse at natural rate, then time-scale.
+  // Image clips (kind === 'image') are a looped single frame — `reverse` on a
+  // one-frame input is a harmless no-op, but we skip it cleanly when the media
+  // kind is readily available via `project.media`.
+  if (isClipReversed(seg.clip)) {
+    const mediaKind = project?.media[seg.clip.mediaId]?.kind
+    if (mediaKind !== 'image') {
+      parts.push('reverse')
+      parts.push('setpts=PTS-STARTPTS')
+    }
+  }
   if (Math.abs(speed - 1) > 1e-3) {
     parts.push(`setpts=PTS/${speed.toFixed(4)}`)
   }
@@ -1541,6 +2180,14 @@ function buildVideoSegmentChain(
     const hs = hslToFfmpeg(getClipHsl(seg.clip))
     if (hs) parts.push(hs)
   }
+  // 2.8. RETOUCH / BEAUTY (Phase 3.21) — edge-preserving skin smoothing
+  //      (smartblur, luma-only). Stacks AFTER all colour grading, BEFORE fps
+  //      normalization + crop. smartblur is a core ffmpeg filter (no probe).
+  //      CRITICAL INVARIANT: getClipRetouch returns null for an absent OR 0
+  //      retouch → retouchToFfmpeg returns '' → the `if` is skipped → `parts`
+  //      stays byte-identical to the pre-Phase-3.21 graph.
+  const rt = retouchToFfmpeg(getClipRetouch(seg.clip))
+  if (rt) parts.push(rt)
   // 3. fps normalization (so xfade durations line up cleanly, and all layers
   //    share the same timebase before overlay).
   parts.push(`fps=${preset.fps}`)
@@ -1681,6 +2328,37 @@ function buildAudioSegmentChain(
   seg: AudioSegment,
   options: { inputHasAudio?: (inputIdx: number) => boolean; denoiseAvailable?: boolean } = {}
 ): { out: string; fragment: string } | null {
+  // -----------------------------------------------------------------------
+  // Phase 3.16 — FREEZE SILENCE path.
+  // A freeze AudioSegment has no source stream (inputIdx === -1); we emit an
+  // anullsrc silence block of the correct duration placed on the timeline via
+  // adelay. The output label uses a synthetic index so it never collides with
+  // real input indices.
+  // -----------------------------------------------------------------------
+  if (seg.freeze) {
+    const freezeDurSec = seg.freeze.durationMs / 1000
+    const startDelayMs = seg.clip.startMs
+    // Build a unique output label from clip id + startMs (no real inputIdx).
+    const out = `a${seg.fromVideoTrack ? 'v' : 't'}frz_${seg.clip.id.slice(-6)}_${startDelayMs}`
+    const parts: string[] = []
+    // anullsrc is a SOURCE filter — no `[N:a:0]` input pad.
+    // atrim caps the generated silence to exactly the freeze duration.
+    parts.push(`anullsrc=channel_layout=stereo:sample_rate=44100`)
+    parts.push(`atrim=duration=${freezeDurSec.toFixed(4)}`)
+    parts.push('asetpts=PTS-STARTPTS')
+    if (startDelayMs > 0) {
+      parts.push(`adelay=${startDelayMs}|${startDelayMs}`)
+    }
+    parts.push('aformat=channel_layouts=stereo:sample_rates=44100')
+    // anullsrc needs no input pad — write the chain without a leading `[N:a:0]`.
+    const fragment = `${parts.join(',')}[${out}]`
+    return { out, fragment }
+  }
+
+  // -----------------------------------------------------------------------
+  // NORMAL (non-freeze) path — unchanged from pre-3.16.
+  // -----------------------------------------------------------------------
+
   // ffmpeg 6 rejects the `[N:a:0?]` syntax in filter_complex — see top-of-file
   // comment near `probeHasAudio`. We instead skip the segment if its source
   // input has no audio stream, and use a plain `[N:a:0]` specifier otherwise.
@@ -1701,6 +2379,18 @@ function buildAudioSegmentChain(
   const parts: string[] = []
   parts.push(`atrim=start=${trimInSec.toFixed(4)}:duration=${srcDurSec.toFixed(4)}`)
   parts.push('asetpts=PTS-STARTPTS')
+  // Phase 3.19 — reverse the TRIMMED audio window.
+  // Gated on isClipReversed → a forward clip never adds these filters, so
+  // `parts` stays byte-identical to pre-3.19 for any non-reversed clip.
+  // `areverse` buffers only the trimmed window (already cut by `atrim` above).
+  // `asetpts=PTS-STARTPTS` follows to re-base PTS after the reversal.
+  // Runs BEFORE denoise and atempo: reverse at natural rate, then tempo-scale.
+  // The audio-less guard above (`if (!hasAudio) return null`) already ensures
+  // we only reach this point when a real audio stream is present.
+  if (isClipReversed(seg.clip)) {
+    parts.push('areverse')
+    parts.push('asetpts=PTS-STARTPTS')
+  }
   // Phase 4 — noise reduction on the RAW source, before tempo/gain/fade.
   // Capability-gated: no-op when the bundled ffmpeg lacks afftdn.
   if (options.denoiseAvailable !== false) {
@@ -2529,7 +3219,7 @@ function buildExportPlan(
   const preset = PRESETS[presetKey]
   if (!preset) throw new Error(`[export] unknown preset: ${presetKey}`)
 
-  const { videoTrackLayers, videoSegments, audioSegments, inputs } = collectSegments(project)
+  const { videoTrackLayers, videoSegments, audioSegments, inputs } = collectSegments(project, preset.fps)
   if (videoSegments.length === 0) {
     throw new Error('[export] no video clips on timeline')
   }
@@ -2804,7 +3494,7 @@ async function runExport(
   // a representative filter graph for UI inspection; the real run, however,
   // must avoid `[N:a:0?]` (rejected by ffmpeg 6) and only emit chains for
   // inputs that actually have an audio stream.
-  const { inputs: probedInputs } = collectSegments(project) as { inputs: string[] }
+  const { inputs: probedInputs } = collectSegments(project, PRESETS[options.presetKey]?.fps ?? 30) as { inputs: string[] }
   const inputsWithAudio = new Set<number>()
   for (let i = 0; i < probedInputs.length; i++) {
     const p = probedInputs[i]
@@ -3292,6 +3982,7 @@ export const __test = {
   escapeDrawtext,
   atempoChain,
   denoiseChain,
+  retouchChain,
   keyframeExpr,
   collectSegments,
   collectOverlays,

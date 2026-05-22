@@ -41,6 +41,8 @@ import {
   MIN_TRANSFORM_SCALE,
   MIN_TRANSITION_MS,
   MIN_NOISE_REDUCTION,
+  MIN_FREEZE_MS,
+  MAX_FREEZE_MS,
   DEFAULT_NOISE_REDUCTION,
   NEUTRAL_COLOR_ADJUST,
   TRANSITION_KINDS
@@ -166,6 +168,28 @@ interface ClipContextMenuProps {
   isOnSpeedKeyframe?: boolean
   /** Effective speed at the playhead (instantaneous curve value, or constant). */
   speedAtPlayhead?: number
+  // --- 리버스 / 역재생 (reverse playback) — media clips only ---
+  /** True when the clip currently plays backwards. */
+  reversed?: boolean
+  /** True when reverse may be toggled ON (no speed curve / freeze / deletions). */
+  canReverse?: boolean
+  /** True when the trimmed source duration exceeds the soft cap → memory warn. */
+  reverseWarnLong?: boolean
+  /** Toggle reverse on the clip. */
+  onToggleReverse?: (reversed: boolean) => void
+  // --- Phase 3.16 freeze-frame editing (media clips only) ---
+  /** Insert a freeze frame at the current playhead's source position. */
+  onAddFreezeFrame: () => void
+  /** Update the held duration of the freeze under the playhead. */
+  onUpdateFreezeFrameAtPlayhead: (durationMs: number) => void
+  /** Remove the freeze frame under the current playhead. */
+  onRemoveFreezeFrameAtPlayhead: () => void
+  /** Number of freeze frames on the clip (0 when none). */
+  freezeFrameCount: number
+  /** True when the playhead currently sits inside an existing freeze plateau. */
+  isOnFreezeFrame: boolean
+  /** Held duration (ms) of the freeze under the playhead (DEFAULT when none). */
+  freezeDurationAtPlayhead: number
   // --- Phase 3.8 overlay shape style (shape overlay clips only) ---
   /** Merge a partial ShapeStyle onto a shape overlay's source.style. */
   onOverlayStyleChange?: (partial: Partial<ShapeStyle>) => void
@@ -443,11 +467,22 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
     speedKeyframeCount,
     isOnSpeedKeyframe,
     speedAtPlayhead,
+    reversed,
+    canReverse,
+    reverseWarnLong,
+    onToggleReverse,
+    onAddFreezeFrame,
+    onUpdateFreezeFrameAtPlayhead,
+    onRemoveFreezeFrameAtPlayhead,
+    freezeFrameCount,
+    isOnFreezeFrame,
+    freezeDurationAtPlayhead,
     onOverlayStyleChange,
     onClose
   } = props
   const ref = useRef<HTMLDivElement>(null)
   const [showSpeed, setShowSpeed] = useState(false)
+  const [showFreeze, setShowFreeze] = useState(false)
   const [showTransition, setShowTransition] = useState(false)
   const [showFilter, setShowFilter] = useState(false)
   const [showTransform, setShowTransform] = useState(false)
@@ -2100,10 +2135,69 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
           </div>
           {showSpeed && (
             <div style={styles.speedPanel} data-testid="menu-speed-panel">
+              {/* 리버스 / 역재생 — plays the clip backwards. Mutually
+                  exclusive with a speed curve / freeze / 자막 편집. When
+                  reverse is ON, the speed-curve toggle and freeze controls
+                  below are disabled (symmetric exclusivity). */}
+              {onToggleReverse && (
+                <>
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      marginBottom: reversed || !canReverse ? 4 : 8,
+                      cursor: canReverse ? 'pointer' : 'not-allowed',
+                      fontSize: 11,
+                      color: canReverse ? '#9aa0a6' : '#5f6368'
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!reversed}
+                      data-testid="reverse-toggle"
+                      aria-label="역재생"
+                      disabled={!canReverse}
+                      onChange={(e) => {
+                        if (!canReverse) return
+                        onToggleReverse(e.target.checked)
+                      }}
+                    />
+                    <span>역재생</span>
+                  </label>
+                  {!canReverse && (
+                    <div
+                      data-testid="reverse-conflict-hint"
+                      style={{
+                        fontSize: 10,
+                        color: '#5f6368',
+                        marginBottom: 8,
+                        lineHeight: 1.4
+                      }}
+                    >
+                      속도 커브 · 프리즈 · 자막 편집과 함께 쓸 수 없습니다
+                    </div>
+                  )}
+                  {reverseWarnLong && (
+                    <div
+                      data-testid="reverse-long-hint"
+                      style={{
+                        fontSize: 10,
+                        color: '#f5a623',
+                        marginBottom: 8,
+                        lineHeight: 1.4
+                      }}
+                    >
+                      긴 클립 역재생은 메모리를 많이 사용합니다
+                    </div>
+                  )}
+                </>
+              )}
               {/* Phase 3.10 — speed-curve toggle. When ON, the clip uses a
                   variable speed curve and the constant slider below is
                   disabled; when OFF the constant slider drives onSpeedChange
-                  (unchanged legacy behavior). */}
+                  (unchanged legacy behavior). Disabled when the clip is
+                  reversed (reverse ⊥ speed curve). */}
               {onAddSpeedKeyframe && (
                 <label
                   style={{
@@ -2111,9 +2205,9 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                     alignItems: 'center',
                     gap: 6,
                     marginBottom: 8,
-                    cursor: 'pointer',
+                    cursor: reversed ? 'not-allowed' : 'pointer',
                     fontSize: 11,
-                    color: '#9aa0a6'
+                    color: reversed ? '#5f6368' : '#9aa0a6'
                   }}
                 >
                   <input
@@ -2121,7 +2215,9 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                     checked={speedCurveActive}
                     data-testid="speed-curve-toggle"
                     aria-label="속도 커브 사용"
+                    disabled={!!reversed}
                     onChange={(e) => {
+                      if (reversed) return
                       if (e.target.checked) {
                         // Turn ON — seed the curve (two keyframes) via the
                         // store's addSpeedKeyframe.
@@ -2257,6 +2353,105 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                   disabled={speedCurveActive}
                 />
               </div>
+            </div>
+          )}
+        </>
+      )}
+      {/* Phase 3.16 — freeze-frame sub-menu is media-only. Modeled on the
+          speed panel above. A freeze inserts a held still at the playhead's
+          source position; the clip then continues. */}
+      {isMediaClip(clip) && (
+        <>
+          <div style={styles.separator} />
+          <div
+            role="menuitem"
+            data-testid="menu-freeze-frame"
+            style={styles.item}
+            onMouseEnter={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = '#2a2a2a'
+            }}
+            onMouseLeave={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = 'transparent'
+            }}
+            onClick={() => setShowFreeze((v) => !v)}
+          >
+            <span>프리즈 프레임{showFreeze ? '' : '…'}</span>
+            <span
+              style={styles.keyframeCountBadge}
+              data-testid="freeze-frame-count"
+            >
+              {freezeFrameCount}
+            </span>
+          </div>
+          {showFreeze && (
+            <div style={styles.speedPanel} data-testid="menu-freeze-frame-panel">
+              {/* Symmetric exclusivity — a reversed clip cannot also have
+                  freeze frames, so the freeze controls are disabled. */}
+              {isOnFreezeFrame ? (
+                <>
+                  {/* Playhead sits inside an existing freeze — offer delete +
+                      a duration slider for that freeze. */}
+                  <div style={styles.keyframeRow}>
+                    <button
+                      type="button"
+                      style={{
+                        ...styles.keyframeBtn,
+                        ...styles.destructive,
+                        ...(reversed ? styles.keyframeBtnDisabled : {})
+                      }}
+                      data-testid="menu-freeze-frame-remove"
+                      disabled={!!reversed}
+                      onClick={() => {
+                        if (reversed) return
+                        onRemoveFreezeFrameAtPlayhead()
+                      }}
+                    >
+                      프리즈 프레임 삭제
+                    </button>
+                  </div>
+                  <div style={styles.transformRow}>
+                    <span style={styles.transformLabel}>지속 시간</span>
+                    <input
+                      type="range"
+                      min={MIN_FREEZE_MS}
+                      max={MAX_FREEZE_MS}
+                      step={50}
+                      value={freezeDurationAtPlayhead}
+                      onChange={(e) => {
+                        if (reversed) return
+                        const v = parseFloat(e.target.value)
+                        if (!Number.isFinite(v)) return
+                        onUpdateFreezeFrameAtPlayhead(v)
+                      }}
+                      style={styles.slider}
+                      data-testid="freeze-frame-duration-slider"
+                      aria-label="프리즈 프레임 지속 시간"
+                      disabled={!!reversed}
+                    />
+                    <span style={{ ...styles.shortcut, width: 48 }}>
+                      {(freezeDurationAtPlayhead / 1000).toFixed(2)}s
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <div style={styles.keyframeRow}>
+                  <button
+                    type="button"
+                    style={{
+                      ...styles.keyframeBtn,
+                      ...(reversed ? styles.keyframeBtnDisabled : {})
+                    }}
+                    data-testid="menu-freeze-frame-add"
+                    disabled={!!reversed}
+                    onClick={() => {
+                      if (reversed) return
+                      onAddFreezeFrame()
+                    }}
+                  >
+                    현재 위치에 프리즈 프레임 추가
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </>

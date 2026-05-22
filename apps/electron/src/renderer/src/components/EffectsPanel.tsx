@@ -12,12 +12,14 @@ import type {
   TransitionKind
 } from '../../../shared/project'
 import {
+  DEFAULT_RETOUCH,
   DEFAULT_TRANSITION_MS,
   FILTER_PRESETS,
   getClipColorAdjust,
   getClipCropRect,
   getClipHsl,
   getClipMotionTracks,
+  getClipRetouch,
   getTransformAt,
   hasTransformKeyframes,
   HSL_BAND_KEYS,
@@ -36,6 +38,8 @@ import {
   MIN_CROP_SIZE,
   MIN_HSL_ADJUST,
   MIN_KEYFRAME_GAP_MS,
+  MIN_RETOUCH,
+  MAX_RETOUCH,
   MIN_TRANSFORM_OFFSET,
   MIN_TRANSFORM_ROTATION,
   MIN_TRANSFORM_SCALE,
@@ -53,8 +57,12 @@ import {
   filterPresetToCss
 } from '../../../shared/filterPresets'
 import { useProjectStore } from '../store/project'
-import { computeAutoColorAdjust } from '../lib/autoColorAnalysis'
+import {
+  computeAutoColorAdjust,
+  computeColorMatchAdjust
+} from '../lib/autoColorAnalysis'
 import { CurveEditor } from './CurveEditor'
+import { LayoutPanel } from './LayoutPanel'
 
 /**
  * Phase 7 — CapCut-style docked Effects panel.
@@ -81,14 +89,21 @@ interface EffectsPanelProps {
   onClose: () => void
 }
 
-type EffectTab = 'transform' | 'speed' | 'animation' | 'adjust' | 'transition'
+type EffectTab =
+  | 'transform'
+  | 'speed'
+  | 'animation'
+  | 'adjust'
+  | 'transition'
+  | 'layout'
 
 const TAB_LABELS: Record<EffectTab, string> = {
   transform: '변형',
   speed: '속도',
   animation: '애니메이션',
   adjust: '조정',
-  transition: '전환'
+  transition: '전환',
+  layout: '레이아웃'
 }
 
 const SPEED_PRESETS = [0.5, 1, 1.5, 2]
@@ -331,6 +346,7 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   const applyAutoColorAdjust = useProjectStore((s) => s.applyAutoColorAdjust)
   const setClipHslBand = useProjectStore((s) => s.setClipHslBand)
   const resetClipHsl = useProjectStore((s) => s.resetClipHsl)
+  const setClipRetouch = useProjectStore((s) => s.setClipRetouch)
   const addTransformKeyframe = useProjectStore((s) => s.addTransformKeyframe)
   // Phase 3.13 — overlay → motion-track binding.
   const bindOverlayToTrack = useProjectStore((s) => s.bindOverlayToTrack)
@@ -352,6 +368,15 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
     'idle' | 'analyzing' | 'error'
   >('idle')
   const autoColorAbortRef = useRef<AbortController | null>(null)
+
+  // Color match — transient (NOT schema) state: the chosen reference clip id,
+  // the analysis status, and an AbortController so a clip change / unmount
+  // cancels an in-flight match (prevents a stale write onto the wrong clip).
+  const [colorMatchRefId, setColorMatchRefId] = useState<string>('')
+  const [colorMatchStatus, setColorMatchStatus] = useState<
+    'idle' | 'analyzing' | 'error'
+  >('idle')
+  const colorMatchAbortRef = useRef<AbortController | null>(null)
   // Always-current selected clip id — read inside the async auto-color
   // handler to detect a clip switch that happened mid-analysis.
   const clipIdRef = useRef<string>(clipId)
@@ -366,10 +391,14 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
     return (): void => {
       autoColorAbortRef.current?.abort()
       autoColorAbortRef.current = null
+      colorMatchAbortRef.current?.abort()
+      colorMatchAbortRef.current = null
     }
   }, [clipId])
   useEffect(() => {
     setAutoColorStatus('idle')
+    setColorMatchStatus('idle')
+    setColorMatchRefId('')
   }, [clipId])
 
   // Keyframe index under the playhead — mirrors Timeline's ctxKeyframeIndex.
@@ -426,6 +455,8 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
     ? getClipHsl(clip) ?? NEUTRAL_CLIP_HSL
     : NEUTRAL_CLIP_HSL
   const hslBandAdjust: HslBandAdjust = hsl[hslBand]
+  // Retouch / beauty — current strength (0 = off). Media clips only.
+  const retouch = isMediaClip(clip) ? getClipRetouch(clip) ?? 0 : 0
   const speed = isMedia ? clip.speed ?? 1 : 1
   const transitionKind: TransitionKind = isMedia
     ? clip.transitionIn?.kind ?? 'none'
@@ -511,10 +542,73 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
     }
   }
 
+  /**
+   * Color match — analyze the selected clip AND a chosen reference clip, grade
+   * the selected clip's color toward the reference, and replace the 4-slider
+   * color adjustment in one shot. Structurally identical to `handleAutoColor`:
+   * same stale-write guard (clip-id closure capture + AbortController + the
+   * controller-identity check) so a mid-analysis clip switch is discarded.
+   */
+  const handleColorMatch = async (): Promise<void> => {
+    if (!isMedia) return
+    const media = project.media[clip.mediaId]
+    if (!media || media.kind === 'audio') {
+      setColorMatchStatus('error')
+      return
+    }
+    const refClip = findClip(project, colorMatchRefId)
+    if (!refClip || !isMediaClip(refClip)) {
+      setColorMatchStatus('error')
+      return
+    }
+    const refMedia = project.media[refClip.mediaId]
+    if (!refMedia || refMedia.kind === 'audio') {
+      setColorMatchStatus('error')
+      return
+    }
+    // Cancel any prior in-flight match before starting a new one.
+    colorMatchAbortRef.current?.abort()
+    const controller = new AbortController()
+    colorMatchAbortRef.current = controller
+    const targetClipId = clip.id
+    setColorMatchStatus('analyzing')
+    try {
+      const result = await computeColorMatchAdjust(
+        clip,
+        media.path,
+        refClip,
+        refMedia.path,
+        { signal: controller.signal }
+      )
+      // Stale-write guard: only apply if this match is still the current one
+      // AND its clip is still the selected clip.
+      if (
+        colorMatchAbortRef.current === controller &&
+        !controller.signal.aborted &&
+        clipIdRef.current === targetClipId
+      ) {
+        applyAutoColorAdjust(targetClipId, result)
+        setColorMatchStatus('idle')
+      }
+    } catch (err) {
+      // An abort is expected on clip change / unmount — not an error to show.
+      if (err instanceof DOMException && err.name === 'AbortError') return
+      if (colorMatchAbortRef.current === controller) {
+        setColorMatchStatus('error')
+      }
+    } finally {
+      if (colorMatchAbortRef.current === controller) {
+        colorMatchAbortRef.current = null
+      }
+    }
+  }
+
   // Available tabs depend on the clip kind. Overlays have no speed/transition.
+  // The 레이아웃 tab is always present (it works on the multi-selection, not
+  // the single `clipId` this panel is anchored to).
   const tabs: EffectTab[] = isMedia
-    ? ['transform', 'speed', 'animation', 'adjust', 'transition']
-    : ['transform', 'animation']
+    ? ['transform', 'speed', 'animation', 'adjust', 'transition', 'layout']
+    : ['transform', 'animation', 'layout']
   // Guard: if the current tab isn't valid for this clip, fall back.
   const activeTab: EffectTab = tabs.includes(tab) ? tab : 'transform'
 
@@ -527,7 +621,8 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
     onChange: (v: number) => void,
     testid: string,
     decimals = 2,
-    parseInt10 = false
+    parseInt10 = false,
+    disabled = false
   ): JSX.Element => (
     <div style={styles.row}>
       <span style={styles.ctrlLabel}>{label}</span>
@@ -537,6 +632,7 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
         max={max}
         step={step}
         value={value}
+        disabled={disabled}
         onChange={(e) => {
           const v = parseInt10
             ? parseInt(e.target.value, 10)
@@ -554,6 +650,7 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
         max={max}
         step={step}
         value={parseInt10 ? value : Number(value.toFixed(decimals))}
+        disabled={disabled}
         onChange={(e) => {
           const v = parseInt10
             ? parseInt(e.target.value, 10)
@@ -887,6 +984,66 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 자동 보정에 실패했어요.
               </p>
             )}
+            {/* Color match — pick a reference clip and grade toward it. */}
+            <div style={{ height: 6 }} />
+            <select
+              data-testid="effects-coloradjust-match-ref"
+              value={colorMatchRefId}
+              onChange={(e) => setColorMatchRefId(e.target.value)}
+              disabled={colorMatchStatus === 'analyzing'}
+              style={{
+                width: '100%',
+                background: '#0a0a0a',
+                color: '#f5f5f5',
+                border: '1px solid #2a2a2a',
+                borderRadius: 4,
+                padding: '4px 6px',
+                fontSize: 12
+              }}
+              aria-label="참조 클립"
+            >
+              <option value="">참조 클립 선택…</option>
+              {project.tracks
+                .flatMap((t) => t.clips)
+                .filter(
+                  (c) =>
+                    isMediaClip(c) &&
+                    c.id !== clip.id &&
+                    project.media[c.mediaId]?.kind !== 'audio'
+                )
+                .map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {isMediaClip(c)
+                      ? project.media[c.mediaId]?.fileName ?? c.id
+                      : c.id}
+                  </option>
+                ))}
+            </select>
+            <div style={{ height: 6 }} />
+            <button
+              type="button"
+              style={{
+                ...styles.resetBtn,
+                ...(colorMatchStatus === 'analyzing'
+                  ? styles.keyframeBtnDisabled
+                  : null)
+              }}
+              onClick={() => {
+                void handleColorMatch()
+              }}
+              disabled={colorMatchStatus === 'analyzing' || colorMatchRefId === ''}
+              data-testid="effects-coloradjust-match"
+            >
+              {colorMatchStatus === 'analyzing' ? '매칭 중…' : '컬러 매치'}
+            </button>
+            {colorMatchStatus === 'error' && (
+              <p
+                style={{ ...styles.hint, marginTop: 4 }}
+                data-testid="effects-coloradjust-match-error"
+              >
+                컬러 매치에 실패했어요.
+              </p>
+            )}
             <div style={{ height: 8 }} />
             {(
               ['brightness', 'contrast', 'saturation', 'temperature'] as const
@@ -993,6 +1150,60 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 HSL 초기화
               </button>
             </div>
+
+            {/* 리터치 / 뷰티 — edge-preserving skin smoothing. VIDEO clips
+                only (hidden for audio-kind media). EXPORT-accurate; the
+                preview only approximates with a tiny CSS blur. */}
+            {isMediaClip(clip) &&
+              project.media[clip.mediaId]?.kind !== 'audio' && (
+                <div data-testid="effects-section-retouch">
+                  <hr style={styles.divider} />
+                  <p style={styles.sectionLabel}>리터치 / 뷰티</p>
+                  <div style={{ height: 6 }} />
+                  {/* On/off toggle — ON applies DEFAULT_RETOUCH. */}
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      fontSize: 11,
+                      color: '#9aa0a6',
+                      marginBottom: 8
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={retouch > 0}
+                      data-testid="retouch-toggle"
+                      aria-label="리터치 / 뷰티"
+                      onChange={(e) => {
+                        setClipRetouch(
+                          clip.id,
+                          e.target.checked ? DEFAULT_RETOUCH : 0
+                        )
+                      }}
+                    />
+                    <span>리터치 / 뷰티</span>
+                  </label>
+                  <div style={{ opacity: retouch > 0 ? 1 : 0.5 }}>
+                    {sliderRow(
+                      '강도',
+                      retouch,
+                      MIN_RETOUCH,
+                      MAX_RETOUCH,
+                      1,
+                      (v) => setClipRetouch(clip.id, v),
+                      'effects-retouch',
+                      0,
+                      true,
+                      retouch <= 0
+                    )}
+                  </div>
+                  <p style={{ ...styles.hint, marginTop: 6 }}>
+                    내보내기 시 적용 — 미리보기는 근사값입니다.
+                  </p>
+                </div>
+              )}
 
             <hr style={styles.divider} />
 
@@ -1152,13 +1363,23 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
           </div>
         )}
 
-        {/* Overlay clips: no media-only tabs — show a hint when one is picked
-            while a media-only tab somehow stays active (defensive). */}
-        {isOverlay && activeTab !== 'transform' && activeTab !== 'animation' && (
-          <div style={styles.empty}>
-            이 효과는 영상 클립에서만 사용할 수 있어요.
+        {/* ---------------- 레이아웃 (collage / split-screen) ---------------- */}
+        {activeTab === 'layout' && (
+          <div data-testid="effects-section-layout">
+            <LayoutPanel />
           </div>
         )}
+
+        {/* Overlay clips: no media-only tabs — show a hint when one is picked
+            while a media-only tab somehow stays active (defensive). */}
+        {isOverlay &&
+          activeTab !== 'transform' &&
+          activeTab !== 'animation' &&
+          activeTab !== 'layout' && (
+            <div style={styles.empty}>
+              이 효과는 영상 클립에서만 사용할 수 있어요.
+            </div>
+          )}
       </div>
     </div>
   )

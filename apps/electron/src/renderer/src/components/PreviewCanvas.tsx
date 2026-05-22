@@ -11,12 +11,16 @@ import {
   getClipColorAdjust,
   getClipCropRect,
   getClipCurves,
+  getClipRetouch,
   getOverlayBaseSize,
   getSpeedAt,
   getTrackPositionAt,
   getTransformAt,
+  hasFreezeFrames,
   hasSpeedCurve,
+  hasTranscriptDeletions,
   isCaptionClip,
+  isClipReversed,
   isMediaClip,
   isOverlayClip,
   MIN_TRACK_SOURCE_SIZE,
@@ -47,23 +51,37 @@ import {
 } from '../lib/audioGraph'
 
 // ---------------------------------------------------------------------------
-// Source-time mapping (Phase 2.3 speed-aware; Phase 3.10 curve-aware).
+// Source-time mapping (Phase 2.3 speed-aware; Phase 3.10 curve-aware;
+// Phase 3.16 freeze-aware).
 //
 // timelineMs → source media currentTime, factoring playback speed and the
 // clip's trim window.
 //
 //   constant: currentTime = ((timelineMs-startMs)*speed + trimInMs) / 1000
 //             playbackRate = speed
-//   curve:    currentTime = (sourceOffsetForTimelineOffset(...) + trimInMs)/1000
+//   curve OR
+//   freeze:   currentTime = (sourceOffsetForTimelineOffset(...) + trimInMs)/1000
 //             playbackRate = getSpeedAt(clip, sourceOffset)  (instantaneous)
 //
-// The constant path is byte-identical to the pre-3.10 formula for any clip
-// without an active speed curve.
+// Phase 3.16 — a clip with freeze frames (even one without a speed curve)
+// takes the `sourceOffsetForTimelineOffset` path: that resolver returns a
+// HELD constant sourceMs during a freeze plateau, so the <video> currentTime
+// parks on the frozen frame for the freeze's duration. The constant path is
+// byte-identical to the pre-3.10 formula for any clip with NEITHER a speed
+// curve NOR freeze frames.
+//
+// Phase 3.17 — a clip with transcript deletions ALSO takes the
+// `sourceOffsetForTimelineOffset` path: that resolver is deletion-aware, so a
+// timeline offset past a deleted range maps to the compacted source position
+// (the preview skips deleted source during playback). A clip with NONE of
+// speed/freeze/deletions keeps the byte-identical linear path.
 // ---------------------------------------------------------------------------
 export function clipSourceTimeSec(clip: VideoAudioClip, timelineMs: number): number {
-  if (hasSpeedCurve(clip)) {
-    // Curve clip — map the elapsed TIMELINE offset through the inverse speed
-    // integral to the consumed SOURCE offset (from trimInMs).
+  if (hasSpeedCurve(clip) || hasFreezeFrames(clip) || hasTranscriptDeletions(clip)) {
+    // Curve, freeze and/or deletion clip — map the elapsed TIMELINE offset
+    // through the deletion-aware inverse mapping to the consumed SOURCE offset
+    // (from trimInMs). During a freeze plateau this is a held constant; past a
+    // deletion it jumps over the removed source.
     const sourceOffsetMs = sourceOffsetForTimelineOffset(
       clip,
       timelineMs - clip.startMs
@@ -72,6 +90,16 @@ export function clipSourceTimeSec(clip: VideoAudioClip, timelineMs: number): num
   }
   const speed = clip.speed ?? 1
   const offsetMs = (timelineMs - clip.startMs) * speed
+  // 리버스 / 역재생 — a reversed clip mirrors the trimmed source window:
+  // playhead 0 → end of source, playhead end → start of source. Reverse is
+  // mutually exclusive with curve/freeze/deletions, so this branch always
+  // owns the reversed case. A <video> cannot play backwards natively, so the
+  // per-tick currentTime seek IS the reverse playback (choppy but correct).
+  if (isClipReversed(clip)) {
+    const srcDur = Math.max(0, clip.trimOutMs - clip.trimInMs)
+    const revOffset = Math.min(srcDur, Math.max(0, srcDur - offsetMs))
+    return (clip.trimInMs + revOffset) / 1000
+  }
   return (offsetMs + clip.trimInMs) / 1000
 }
 
@@ -81,12 +109,23 @@ export function clipSourceTimeSec(clip: VideoAudioClip, timelineMs: number): num
  * preview ramps), which is why `timelineMs` is needed; pass the playhead.
  * For a non-curve clip the constant `speed` is returned (timelineMs ignored)
  * — byte-identical to the pre-3.10 behavior.
+ *
+ * Phase 3.16 — a freeze-only clip (no speed curve) also routes through the
+ * freeze-aware mapping: `getSpeedAt` on a freeze-only clip resolves to the
+ * constant `speed`, and the held frame is produced by `clipSourceTimeSec`
+ * parking `currentTime`, so the rate stays correct on either side of a
+ * freeze plateau without a separate branch.
  */
 export function clipPlaybackRate(
   clip: VideoAudioClip,
   timelineMs?: number
 ): number {
-  if (hasSpeedCurve(clip) && timelineMs !== undefined) {
+  if (
+    (hasSpeedCurve(clip) ||
+      hasFreezeFrames(clip) ||
+      hasTranscriptDeletions(clip)) &&
+    timelineMs !== undefined
+  ) {
     const sourceOffsetMs = sourceOffsetForTimelineOffset(
       clip,
       timelineMs - clip.startMs
@@ -1452,11 +1491,19 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           // append NOTHING — the `filter:` string + DOM stay byte-identical to
           // the pre-Phase-3.12 value (regression-critical — see export.spec).
           const clipCurves = clip ? getClipCurves(clip) : null
+          // 리터치 / 뷰티 — the preview cannot do edge-preserving smoothing;
+          // approximate with a deliberately tiny CSS blur (export-accurate,
+          // preview-approximate — like blur regions / HSL). Intensity 1..100
+          // maps to blur 0.018..1.8px. INVARIANT: when getClipRetouch(clip) is
+          // null we append NOTHING — the `.filter(...)` below drops it so the
+          // `filter:` string + DOM stay byte-identical for a retouch-off clip.
+          const rt = clip ? getClipRetouch(clip) : null
           const combinedFilter = clip
             ? [
                 filterPresetToCss(clip.filterPreset, clip.filterIntensity ?? 1),
                 colorAdjustToCss(getClipColorAdjust(clip)),
-                clipCurves ? `url(#curve-${clip.id})` : ''
+                clipCurves ? `url(#curve-${clip.id})` : '',
+                rt !== null ? `blur(${((rt / 100) * 1.8).toFixed(2)}px)` : ''
               ]
                 .filter((s) => s.length > 0)
                 .join(' ') || 'none'

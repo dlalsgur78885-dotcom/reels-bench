@@ -23,7 +23,8 @@ import type {
   SttModelKey,
   SttPhase,
   SttResult,
-  SttTranscribeOptions
+  SttTranscribeOptions,
+  SttWord
 } from '../../shared/ipc'
 import { resolveFfmpegPath } from '../ffmpeg/binary'
 import { assertPathAllowed } from '../ffmpeg/security'
@@ -144,6 +145,7 @@ function runWhisper(
   wavPath: string,
   outBase: string,
   language: SttLanguage,
+  wordMode: boolean,
   control: TranscribeControl,
   emit: TranscribeEmit
 ): Promise<void> {
@@ -157,6 +159,13 @@ function runWhisper(
       '-of', outBase, // output file base (whisper appends .json)
       '-pp' // print progress
     ]
+    // Word-granularity mode: `-ml 1` caps each segment at one character and
+    // `-sow` forces the split to land on word boundaries, so whisper emits one
+    // word per `transcription[]` entry. In segment mode the argv is unchanged
+    // (byte-identical to legacy caption behavior).
+    if (wordMode) {
+      argv.push('-ml', '1', '-sow')
+    }
     const proc = spawn(whisperPath, argv, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true
@@ -238,8 +247,52 @@ function segmentsToCues(
   return cues
 }
 
-function ok(jobId: string, cues: SttCue[], language: string, durationMs: number): SttResult {
-  return { jobId, ok: true, cues, language, durationMs }
+/** True when the trimmed text is empty or consists solely of punctuation. */
+function isPunctuationOnly(text: string): boolean {
+  // Strip every letter/number/CJK mark; if nothing speech-bearing remains the
+  // entry is punctuation-only (e.g. ".", "?!", "…", "—").
+  return text.replace(/[\p{L}\p{N}]/gu, '').trim().length === text.trim().length
+}
+
+/**
+ * Convert whisper JSON segments → SttWord[]. With `-ml 1 -sow` each
+ * `transcription[]` entry is a single word; mirrors `segmentsToCues`'
+ * NOISE_TOKENS filter and `endMs <= startMs` guard. Punctuation-only / empty
+ * entries are skipped — they carry no speech.
+ */
+function segmentsToWords(
+  segments: WhisperJsonSegment[],
+  offsetMs: number
+): SttWord[] {
+  const words: SttWord[] = []
+  for (const seg of segments) {
+    const from = seg?.offsets?.from
+    const to = seg?.offsets?.to
+    if (typeof from !== 'number' || typeof to !== 'number') continue
+    if (!Number.isFinite(from) || !Number.isFinite(to)) continue
+    const text = typeof seg.text === 'string' ? seg.text.trim() : ''
+    if (!text) continue
+    if (NOISE_TOKENS.has(text.toLowerCase())) continue
+    if (isPunctuationOnly(text)) continue
+    // offsets.from/to are already in milliseconds.
+    const startMs = Math.round(from) + offsetMs
+    let endMs = Math.round(to) + offsetMs
+    if (endMs <= startMs) endMs = startMs + 200
+    words.push({ text, startMs, endMs })
+  }
+  return words
+}
+
+function ok(
+  jobId: string,
+  cues: SttCue[],
+  language: string,
+  durationMs: number,
+  words?: SttWord[]
+): SttResult {
+  const result: SttResult = { jobId, ok: true, cues, language, durationMs }
+  if (words) result.words = words
+  return result
 }
 
 /**
@@ -254,6 +307,7 @@ export async function transcribe(
   const startedAt = Date.now()
   const model: SttModelKey = opts.model ?? 'base'
   const language: SttLanguage = opts.language ?? 'auto'
+  const wordMode = opts.granularity === 'word'
   const safeJobId = sanitizeJobId(opts.jobId)
 
   // (1) allow-list source + clamp the sub-range.
@@ -350,6 +404,7 @@ export async function transcribe(
         wavPath,
         jsonBase,
         language,
+        wordMode,
         control,
         emit
       )
@@ -394,6 +449,10 @@ export async function transcribe(
     }
     const segments = Array.isArray(parsed.transcription) ? parsed.transcription : []
     const cues = segmentsToCues(segments, offsetMs)
+    // Word mode runs whisper with `-ml 1` so every `transcription[]` entry is a
+    // single word — `cues` is still segment-derived for caption callers, while
+    // `words` carries the per-word timings. Segment mode omits `words` entirely.
+    const words = wordMode ? segmentsToWords(segments, offsetMs) : undefined
     const detectedLang =
       typeof parsed.result?.language === 'string' && parsed.result.language
         ? parsed.result.language
@@ -401,7 +460,7 @@ export async function transcribe(
 
     // (7) success.
     emit('done', 100)
-    return ok(opts.jobId, cues, detectedLang, Date.now() - startedAt)
+    return ok(opts.jobId, cues, detectedLang, Date.now() - startedAt, words)
   } finally {
     // (8) best-effort cleanup of temp WAV + JSON (also on cancel/throw).
     await cleanup()

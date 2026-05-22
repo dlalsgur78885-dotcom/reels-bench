@@ -16,6 +16,7 @@ export const IPC_CHANNELS = {
   },
   fs: {
     pickFile: 'fs:pickFile',
+    pickDirectory: 'fs:pickDirectory',
     saveFile: 'fs:saveFile',
     readProject: 'fs:readProject',
     writeProject: 'fs:writeProject',
@@ -324,6 +325,30 @@ export interface ExportRunResult {
 }
 
 // ---------------------------------------------------------------------------
+// Batch export (Phase 3.20) — the renderer runs N sequential `exporter:run`
+// calls, one per preset. These types describe the aggregate; there is NO new
+// `exporter:*` IPC channel — the batch is composed from existing single runs.
+// ---------------------------------------------------------------------------
+
+/** One preset's outcome within a batch export run. */
+export interface BatchExportItemResult {
+  presetKey: ExportPresetKey
+  outputPath: string
+  status: 'success' | 'failed' | 'cancelled' | 'skipped'
+  error?: string
+  durationMs?: number
+  usedEncoder?: AllowedCodec
+}
+
+/** Aggregate result of a whole batch export run. */
+export interface BatchExportResult {
+  items: BatchExportItemResult[]
+  successCount: number
+  failedCount: number
+  cancelled: boolean
+}
+
+// ---------------------------------------------------------------------------
 // Download pipeline (Phase 3.3 prefill).
 // ---------------------------------------------------------------------------
 
@@ -403,6 +428,12 @@ export interface SttTranscribeOptions {
   language?: SttLanguage
   /** Default 'base'. */
   model?: SttModelKey
+  /**
+   * Timestamp granularity (Phase 3.17). 'segment' (default) = legacy caption-
+   * sized cues only. 'word' = whisper runs with `-ml 1 -sow` and `SttResult`
+   * additionally carries `words[]` for text-based editing.
+   */
+  granularity?: 'segment' | 'word'
 }
 
 /** One transcribed cue. Shape-compatible with ParsedCaptionCue (sans id). */
@@ -410,6 +441,14 @@ export interface SttCue {
   startMs: number
   endMs: number
   text: string
+}
+
+/** One transcribed word with source-time bounds (Phase 3.17, word granularity). */
+export interface SttWord {
+  text: string
+  /** Absolute source-time bounds, ms (already offset-rebased for sub-ranges). */
+  startMs: number
+  endMs: number
 }
 
 export type SttPhase =
@@ -452,6 +491,8 @@ export type SttResult =
       jobId: string
       ok: true
       cues: SttCue[]
+      /** Populated only when `granularity: 'word'` was requested (Phase 3.17). */
+      words?: SttWord[]
       language: string
       durationMs: number
     }
@@ -490,6 +531,8 @@ export interface ElectronApi {
      */
     pickFile(filter?: FilePickerFilter[]): Promise<string | null>
     pickFiles(options?: PickFileOptions): Promise<string[]>
+    /** Pick an existing directory (Phase 3.20 batch export). null if cancelled. */
+    pickDirectory(): Promise<string | null>
     saveFile(defaultName?: string): Promise<string | null>
     readProject(): Promise<Project | null>
     writeProject(project: Project): Promise<void>

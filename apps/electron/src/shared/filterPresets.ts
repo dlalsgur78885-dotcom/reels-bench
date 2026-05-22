@@ -392,3 +392,31 @@ export function sampleCurveTable(pts: CurvePoint[], steps: number): number[] {
   }
   return out
 }
+
+// ---------------------------------------------------------------------------
+// Retouch / beauty (Phase 3.21) — edge-preserving skin smoothing.
+// `smartblur` is applied luma-only (chroma left at ffmpeg defaults = untouched)
+// so skin tone is preserved; `luma_threshold` protects edges (eyes/hair).
+// ---------------------------------------------------------------------------
+
+/**
+ * ffmpeg filter-chain fragment for per-clip retouch (skin smoothing). No
+ * leading/trailing comma — caller chains it. Returns '' for null / <= 0 so the
+ * caller can unconditionally push the result and keep a retouch-off clip's
+ * video graph byte-identical. `intensity` is the resolved 1..100 strength
+ * (caller passes `getClipRetouch(clip)`). `luma_strength` is capped at 0.75 so
+ * the result never goes fully plasticky.
+ */
+export function retouchToFfmpeg(
+  intensity: number | null | undefined
+): string {
+  if (intensity == null || !Number.isFinite(intensity) || intensity <= 0) {
+    return ''
+  }
+  const i = Math.min(100, Math.max(1, intensity))
+  const t = i / 100
+  const lr = (1.0 + 1.5 * t).toFixed(3)
+  const ls = (0.3 + 0.45 * t).toFixed(3)
+  const lt = Math.round(8 + 16 * t)
+  return `smartblur=lr=${lr}:ls=${ls}:lt=${lt}`
+}

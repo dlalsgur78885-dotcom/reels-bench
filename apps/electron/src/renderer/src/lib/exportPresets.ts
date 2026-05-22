@@ -88,6 +88,28 @@ export const EXPORT_PRESET_KEYS: readonly ExportPresetKey[] = [
   'high-quality'
 ]
 
+/**
+ * Output-filename suffix per preset, used by batch export so each preset's
+ * file is uniquely named. Dimensions/fps mirror the actual `EXPORT_PRESETS`
+ * entry. The full batch filename is `<projectSlug>_<suffix>.mp4`.
+ */
+export const PRESET_SUFFIX: Record<ExportPresetKey, string> = {
+  'instagram-reels': 'reels_1080x1920',
+  tiktok: 'tiktok_1080x1920',
+  'youtube-shorts': 'shorts_1080x1920',
+  'instagram-feed': 'feed_1080x1080',
+  'high-quality': 'hq_1080x1920_60fps'
+}
+
+/**
+ * Slugify a project name for use in an output filename. Same rule as
+ * ExportDialog's `defaultOutputName`: non-word / non-dash runs → `_`,
+ * capped at 64 chars, falls back to `export` for an empty name.
+ */
+export function projectSlug(name: string): string {
+  return (name || 'export').replace(/[^\w\-]+/g, '_').slice(0, 64)
+}
+
 /** Naive size estimate (bytes) from bitrate × duration. ±15% is normal. */
 export function estimateFileSizeBytes(
   presetKey: ExportPresetKey,

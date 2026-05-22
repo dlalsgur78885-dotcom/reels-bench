@@ -247,3 +247,82 @@ export function statsToColorAdjust(stats: FrameStats): ColorAdjust {
 
   return { brightness, contrast, saturation, temperature }
 }
+
+// ---------------------------------------------------------------------------
+// Color match (Phase 3.19) — grade a clip toward a REFERENCE clip's look.
+// Same machinery as auto color, but each axis targets the reference's measured
+// stat instead of a fixed neutral constant.
+// ---------------------------------------------------------------------------
+
+/** Computed match magnitudes below this snap to 0 — an already-similar clip
+ *  yields ≈ neutral (no-op). */
+export const MIN_MATCH_MAGNITUDE = 3
+
+// Per-axis match gains — separate names so they tune independently from the
+// auto-correct gains; seeded to the same values for parity.
+const MATCH_BRIGHTNESS_GAIN = 220
+const MATCH_CONTRAST_GAIN = 180
+const MATCH_SATURATION_GAIN = 200
+const MATCH_TEMPERATURE_GAIN = 320
+
+/** Clamp to the auto magnitude cap and round — color match must stay tasteful. */
+function clampMatch(v: number): number {
+  const n = Number.isFinite(v) ? v : 0
+  return Math.round(
+    Math.min(AUTO_COLOR_MAX_MAGNITUDE, Math.max(-AUTO_COLOR_MAX_MAGNITUDE, n))
+  )
+}
+
+/** Snap sub-threshold match magnitudes to 0. */
+function deadbandMatch(v: number): number {
+  return Math.abs(v) < MIN_MATCH_MAGNITUDE ? 0 : v
+}
+
+/**
+ * Color match — map a target clip's frame stats toward a REFERENCE clip's
+ * measured stats, producing a `ColorAdjust` that makes the target's grade
+ * resemble the reference. Pure twin of `statsToColorAdjust`, but each axis
+ * targets the reference's value, not a fixed neutral constant. Unlike auto
+ * color, contrast is fully symmetric (matching a flatter reference legitimately
+ * needs negative contrast). A degenerate reference (no color-eligible pixels)
+ * yields identity — there is no grade to match. Matching identical stats yields
+ * all-zero (dead-band). NOTE: matches the reference's RAW decoded footage —
+ * any grade already applied to the reference clip (CSS-only preview) is not
+ * reflected in its decoded pixels.
+ */
+export function statsToColorMatch(
+  target: FrameStats,
+  reference: FrameStats
+): ColorAdjust {
+  if (reference.sampleCount === 0) {
+    return { brightness: 0, contrast: 0, saturation: 0, temperature: 0 }
+  }
+
+  const brightness = deadbandMatch(
+    clampMatch((reference.meanLuma - target.meanLuma) * MATCH_BRIGHTNESS_GAIN)
+  )
+
+  const spreadT = target.lumaP99 - target.lumaP1
+  const spreadR = reference.lumaP99 - reference.lumaP1
+  const contrast = deadbandMatch(
+    clampMatch((spreadR - spreadT) * MATCH_CONTRAST_GAIN)
+  )
+
+  const saturation = deadbandMatch(
+    clampMatch(
+      (reference.meanSaturation - target.meanSaturation) * MATCH_SATURATION_GAIN
+    )
+  )
+
+  // Gray-world warm/cool balance: positive balance = bluer/cooler. If the
+  // target is bluer than the reference it must warm UP → positive temperature.
+  const balanceT = target.meanB - target.meanR
+  const balanceR = reference.meanB - reference.meanR
+  const balanceDelta = balanceT - balanceR
+  const temperature =
+    Math.abs(balanceDelta) >= RB_DEADBAND
+      ? deadbandMatch(clampMatch(balanceDelta * MATCH_TEMPERATURE_GAIN))
+      : 0
+
+  return { brightness, contrast, saturation, temperature }
+}

@@ -13,6 +13,8 @@ import {
   MAX_BLUR_REGIONS_PER_CLIP,
   MAX_CLIP_SPEED,
   MAX_COLOR_ADJUST,
+  MAX_FREEZE_FRAMES_PER_CLIP,
+  MAX_FREEZE_MS,
   MAX_GAIN_DB,
   MAX_KEYFRAMES_PER_CLIP,
   MAX_MOTION_TRACKS_PER_CLIP,
@@ -22,14 +24,20 @@ import {
   MAX_TRANSFORM_SCALE,
   MAX_TRANSITION_MS,
   MAX_VIDEO_TRACKS,
+  MAX_DELETED_RANGES_PER_CLIP,
+  MIN_DELETED_RANGE_GAP_MS,
   MIN_CLIP_MS,
   MIN_CLIP_SPEED,
   MIN_COLOR_ADJUST,
   MIN_CROP_SIZE,
+  MIN_FREEZE_MS,
+  DEFAULT_FREEZE_MS,
   MIN_GAIN_DB,
   MIN_KEYFRAME_GAP_MS,
   MIN_NOISE_REDUCTION,
   MAX_NOISE_REDUCTION,
+  MIN_RETOUCH,
+  MAX_RETOUCH,
   MIN_SPEED_KEYFRAME_GAP_MS,
   MIN_TRANSFORM_OFFSET,
   MIN_TRANSFORM_ROTATION,
@@ -47,12 +55,16 @@ import {
   type BlurRegion,
   type CaptionClip,
   type Clip,
+  type ClipTranscript,
   type ColorAdjust,
   type ClipTransform,
   type CropRect,
+  type DeletedRange,
+  type TranscriptWord,
   type CurveChannelKey,
   type CurvePoint,
   type FilterPreset,
+  type FreezeFrame,
   type HslBandAdjust,
   type HslBandKey,
   type MediaAsset,
@@ -68,13 +80,20 @@ import {
   type VideoAudioClip,
   clampBlurRegion,
   getClipDuration,
+  getClipDeletedRanges,
+  getClipFreezeFrames,
   getClipTimelineDuration,
   getClipTransform,
   getSpeedAt,
   getTransformAt,
+  getVisibleTranscriptWords,
+  hasClipTranscript,
+  hasFreezeFrames,
   hasSpeedCurve,
   hasTransformKeyframes,
   isCaptionClip,
+  isClipReversed,
+  canReverseClip,
   isIdentityCrop,
   isIdentityTransform,
   isMediaClip,
@@ -87,6 +106,11 @@ import {
   sourceOffsetForTimelineOffset
 } from '../../../shared/project'
 import type { SilenceRange } from '../../../shared/ipc'
+import {
+  cellToClipPlacement,
+  getLayoutPreset,
+  type LayoutPresetId
+} from '../../../shared/layoutPresets'
 
 // ---------------------------------------------------------------------------
 // Helpers.
@@ -260,6 +284,144 @@ function recomputeEndMsForSpeed(clip: VideoAudioClip): VideoAudioClip {
   return { ...clip, endMs: clip.startMs + dur }
 }
 
+// ---------------------------------------------------------------------------
+// Text-based editing helpers (Phase 3.17).
+// ---------------------------------------------------------------------------
+
+/**
+ * Filler-word lexicon for `removeFillerWords`. Matched case-insensitively
+ * against punctuation-stripped word text.
+ */
+const FILLER_LEXICON: ReadonlySet<string> = new Set([
+  '음',
+  '어',
+  '그',
+  '저',
+  '뭐',
+  '인제',
+  '이제',
+  'um',
+  'uh',
+  'er',
+  'ah',
+  'like'
+])
+
+/** Strip leading/trailing punctuation + whitespace, lowercase. */
+function normalizeWordText(text: string): string {
+  return String(text ?? '')
+    .toLowerCase()
+    .replace(/^[\s\p{P}]+|[\s\p{P}]+$/gu, '')
+}
+
+/**
+ * Merge a set of transcript words (by id) into minimal contiguous SOURCE
+ * ranges. Words are sorted by `sourceStartMs`; adjacent words within
+ * MIN_DELETED_RANGE_GAP_MS coalesce into one range. Returns ABSOLUTE source ms.
+ */
+function wordsToDeletedRanges(
+  words: TranscriptWord[],
+  wordIds: ReadonlySet<string>
+): DeletedRange[] {
+  const picked = words
+    .filter(
+      (w) =>
+        wordIds.has(w.id) &&
+        Number.isFinite(w.sourceStartMs) &&
+        Number.isFinite(w.sourceEndMs) &&
+        w.sourceEndMs > w.sourceStartMs
+    )
+    .map((w) => ({
+      sourceStartMs: Math.min(w.sourceStartMs, w.sourceEndMs),
+      sourceEndMs: Math.max(w.sourceStartMs, w.sourceEndMs)
+    }))
+    .sort((a, b) => a.sourceStartMs - b.sourceStartMs)
+  const out: DeletedRange[] = []
+  for (const r of picked) {
+    const last = out[out.length - 1]
+    if (last && r.sourceStartMs <= last.sourceEndMs + MIN_DELETED_RANGE_GAP_MS) {
+      if (r.sourceEndMs > last.sourceEndMs) last.sourceEndMs = r.sourceEndMs
+    } else {
+      out.push({ ...r })
+    }
+  }
+  return out
+}
+
+/**
+ * Subtract a set of [start,end] cut intervals from a list of deleted ranges —
+ * portions overlapping a cut interval are removed/trimmed; the rest survives.
+ * Used by `restoreTranscriptWords`. Both inputs/outputs are ABSOLUTE source ms.
+ */
+function subtractRanges(
+  ranges: DeletedRange[],
+  cuts: DeletedRange[]
+): DeletedRange[] {
+  let working = ranges.map((r) => ({ ...r }))
+  for (const cut of cuts) {
+    const next: DeletedRange[] = []
+    for (const r of working) {
+      // No overlap — keep as-is.
+      if (cut.sourceEndMs <= r.sourceStartMs || cut.sourceStartMs >= r.sourceEndMs) {
+        next.push(r)
+        continue
+      }
+      // Left remainder.
+      if (cut.sourceStartMs > r.sourceStartMs) {
+        next.push({
+          sourceStartMs: r.sourceStartMs,
+          sourceEndMs: cut.sourceStartMs
+        })
+      }
+      // Right remainder.
+      if (cut.sourceEndMs < r.sourceEndMs) {
+        next.push({
+          sourceStartMs: cut.sourceEndMs,
+          sourceEndMs: r.sourceEndMs
+        })
+      }
+    }
+    working = next
+  }
+  return working.filter((r) => r.sourceEndMs - r.sourceStartMs > 0)
+}
+
+/**
+ * Pure variant of the `rippleCloseTrackGaps` action — translate later clips on
+ * a track left so no gap opens after a clip shrinks. Used by the transcript
+ * actions to ripple within the SAME `set()` (one undo snapshot). Identical
+ * algorithm to the action: clip order preserved, only positions move, a clip
+ * never moves right. Returns a NEW tracks array (untouched tracks by ref).
+ */
+function rippleTracks(tracks: Track[], trackId: string): Track[] {
+  const trackIdx = tracks.findIndex((t) => t.id === trackId)
+  if (trackIdx === -1) return tracks
+  const track = tracks[trackIdx]
+  if (track.clips.length === 0) return tracks
+  const ordered = [...track.clips].sort((a, b) => a.startMs - b.startMs)
+  let cursor = ordered[0].startMs
+  let changed = false
+  const shifted = new Map<string, { startMs: number; endMs: number }>()
+  for (const clip of ordered) {
+    const shift = Math.max(0, clip.startMs - cursor)
+    const newStart = clip.startMs - shift
+    const newEnd = clip.endMs - shift
+    if (shift > 0) changed = true
+    shifted.set(clip.id, { startMs: newStart, endMs: newEnd })
+    cursor = newEnd
+  }
+  if (!changed) return tracks
+  return tracks.map((t, i) => {
+    if (i !== trackIdx) return t
+    const clips = t.clips.map((c) => {
+      const pos = shifted.get(c.id)
+      if (!pos || (pos.startMs === c.startMs && pos.endMs === c.endMs)) return c
+      return { ...c, startMs: pos.startMs, endMs: pos.endMs }
+    })
+    return { ...t, clips }
+  })
+}
+
 /**
  * Migration helper: an older persisted project may have:
  *   - clips without `kind` (assume 'media')
@@ -375,6 +537,15 @@ export interface ProjectStore {
    */
   setClipSpeed(clipId: string, speed: number): void
 
+  /**
+   * Toggle reverse (역재생) on a media clip. `reversed:true` is REFUSED
+   * (no-op) when `!canReverseClip(clip)` — reverse is mutually exclusive
+   * with a speed curve / freeze frames / transcript deletions. Reverse does
+   * NOT change the clip's timeline duration (endMs untouched). When `false`
+   * the field is omitted (BC-clean JSON). No-op for caption clips.
+   */
+  setClipReversed(clipId: string, reversed: boolean): void
+
   // --- Audio shaping (Phase 2.5, media clips only) ---
   /** Set a media clip's gain in dB, clamped to [MIN_GAIN_DB, MAX_GAIN_DB]. */
   setClipGainDb(clipId: string, db: number): void
@@ -390,6 +561,13 @@ export interface ProjectStore {
    * non-finite inputs.
    */
   setClipNoiseReduction(clipId: string, strength: number): void
+  /**
+   * Set a media clip's retouch / beauty strength (0..100). 0 (or any value
+   * clamping to <= 0) stores `undefined` (OFF — lean snapshots). Export-only;
+   * the preview only approximates with a tiny CSS blur. No-op for non-media
+   * clips and for non-finite inputs.
+   */
+  setClipRetouch(clipId: string, strength: number): void
   /** Set track-wide mute. */
   setTrackMuted(trackId: string, muted: boolean): void
   /** Set track-wide solo. */
@@ -645,6 +823,59 @@ export interface ProjectStore {
   clearSpeedKeyframes(clipId: string): void
 
   /**
+   * Insert a freeze frame at SOURCE offset `sourceMs` (ms from trimInMs). The
+   * frame sampled there is HELD for `durationMs` of timeline output (default
+   * DEFAULT_FREEZE_MS). Rejected when the clip already has
+   * MAX_FREEZE_FRAMES_PER_CLIP freezes, or `sourceMs`/`durationMs` non-finite.
+   * Recomputes endMs via `recomputeEndMsForSpeed` (freeze-aware). No-op for
+   * captions. Mirrors `addSpeedKeyframe`.
+   */
+  addFreezeFrame(clipId: string, sourceMs: number, durationMs?: number): void
+  /**
+   * Merge into the freeze frame at `freezeIndex`: re-base `sourceMs`/
+   * `durationMs` (the contract resolver re-clamps/sorts/dedupes). Recomputes
+   * endMs. Mirrors `updateSpeedKeyframe`.
+   */
+  updateFreezeFrame(
+    clipId: string,
+    freezeIndex: number,
+    partial: { sourceMs?: number; durationMs?: number }
+  ): void
+  /** Remove the freeze frame at `freezeIndex`. Recomputes endMs. */
+  removeFreezeFrame(clipId: string, freezeIndex: number): void
+  /** Clear every freeze frame on a clip. Recomputes endMs. */
+  clearFreezeFrames(clipId: string): void
+
+  // --- Text-based editing (Phase 3.17) — media clips only ---
+  /**
+   * Store a word-level transcript on a media clip (the immutable STT output).
+   * No-op for captions/overlays. Does NOT touch `deletedRanges` or `endMs` —
+   * a fresh transcript adds no deletions.
+   */
+  setClipTranscript(clipId: string, transcript: ClipTranscript): void
+  /**
+   * Delete the SOURCE ranges covered by the given transcript word ids. Selected
+   * words are mapped to `[sourceStartMs, sourceEndMs]`, contiguous words merged
+   * into minimal ranges, and appended to `deletedRanges`. endMs is recomputed
+   * (deletion-aware) and later clips ripple left. The clip's timeline footprint
+   * is never allowed below MIN_CLIP_MS — a deletion that would shrink it past
+   * that is clamped so a sliver survives. No-op for captions.
+   */
+  deleteTranscriptWords(clipId: string, wordIds: string[]): void
+  /**
+   * Restore the given transcript words — remove/trim any `deletedRanges`
+   * portions overlapping the words' source ranges. Recomputes endMs + ripples.
+   */
+  restoreTranscriptWords(clipId: string, wordIds: string[]): void
+  /**
+   * Delete every transcript word matching the filler lexicon
+   * (음·어·그·저·뭐·인제·이제·um·uh·er·ah·like). Returns the removed word ids.
+   */
+  removeFillerWords(clipId: string): string[]
+  /** Clear all transcript deletions on a clip (keeps the transcript itself). */
+  clearTranscriptDeletions(clipId: string): void
+
+  /**
    * Append a video track immediately after the last existing video track.
    * Returns the new track's id, or null if already at MAX_VIDEO_TRACKS.
    */
@@ -733,6 +964,43 @@ export interface ProjectStore {
   ): void
   /** Remove an overlay clip (alias of removeClip with kind guard). */
   removeOverlay(overlayId: string): void
+
+  // --- Collage / split-screen layout (Phase 3.18) ---
+  /**
+   * Arrange `clipIds` into the cells of a layout preset in ONE transaction.
+   *
+   * `clipIds[i]` is placed into `preset.cells[i]`; only the first
+   * `min(clipIds.length, preset.cells.length)` ids are used. For each layout
+   * clip this writes a static `transform` + `cropRect` (computed by
+   * `cellToClipPlacement` from the clip's media natural size and the canvas
+   * size), strips any `transformKeyframes` (a static cell placement conflicts
+   * with an animation), and tags the clip with a shared fresh `layoutGroupId`.
+   *
+   * Compositing: each cell's clip is moved onto a DISTINCT video track so the
+   * preview composites them as stacked layers — clip 0 keeps its track (bottom
+   * layer), later cells go onto higher tracks (the LAST cell ends up highest,
+   * so a PiP inset renders on top). New video tracks are created as needed; at
+   * MAX_VIDEO_TRACKS surplus clips fall back to the overlay track or are
+   * skipped (never crashes).
+   *
+   * Timing (`opts.alignTiming`, default true): every layout clip is given the
+   * earliest member's `startMs` and the SHORTEST member's duration so they all
+   * share a common on-screen window without over-extending any clip.
+   *
+   * No-op for empty / non-finite input or an unknown preset id.
+   */
+  applyLayout(
+    presetId: LayoutPresetId,
+    clipIds: string[],
+    opts?: { alignTiming?: boolean }
+  ): void
+  /**
+   * Undo a layout: for every clip carrying `layoutGroupId`, reset `transform`
+   * and `cropRect` back to identity/undefined and clear `layoutGroupId`. ONE
+   * transaction. NOTE: this only resets the visual placement — clips are NOT
+   * moved back to their original tracks (that history is not stored).
+   */
+  clearLayout(layoutGroupId: string): void
 
   /**
    * Replace the entire project with one loaded from disk. Used at startup.
@@ -1112,6 +1380,85 @@ export const useProjectStore = create<ProjectStore>()(
         rightSpeed = rightSpNorm[0]?.speed ?? boundarySpeed
       }
     }
+    // -------------------------------------------------------------------
+    // Phase 3.16 — freeze-frame split handling. PARALLEL to the speed-curve
+    // partition above. Freeze `sourceMs` is a SOURCE offset (ms from
+    // trimInMs); `offsetSourceMs` is the split's source offset within the
+    // ORIGINAL clip. Left keeps freezes with `sourceMs < offsetSourceMs`;
+    // right keeps `sourceMs >= offsetSourceMs`, re-based by `-offsetSourceMs`
+    // (the right clip's trimInMs becomes splitSource). No boundary freeze is
+    // synthesized — a freeze is a point insertion, not a curve. Both halves
+    // route through `recomputeEndMsForSpeed`. Empty halves drop the field.
+    // -------------------------------------------------------------------
+    let leftFreezes: FreezeFrame[] | undefined
+    let rightFreezes: FreezeFrame[] | undefined
+    if (hasFreezeFrames(orig)) {
+      const allFz = getClipFreezeFrames(orig)
+      const leftRaw = allFz.filter((f) => f.sourceMs < offsetSourceMs)
+      const rightRaw = allFz
+        .filter((f) => f.sourceMs >= offsetSourceMs)
+        .map((f) => ({
+          sourceMs: f.sourceMs - offsetSourceMs,
+          durationMs: f.durationMs
+        }))
+      leftFreezes = leftRaw.length > 0 ? leftRaw : undefined
+      rightFreezes = rightRaw.length > 0 ? rightRaw : undefined
+    }
+    // -------------------------------------------------------------------
+    // Phase 3.17 — text-based-editing split handling. PARALLEL to the
+    // freeze-frame partition above. `transcript.words` + `deletedRanges` are
+    // ABSOLUTE source ms, so the split is keyed on `splitSource` (the absolute
+    // source ms of the split point) — NOT a re-based offset. The {...orig}
+    // spread carries both fields verbatim to each half; we OVERRIDE them so
+    // each half keeps only its own source window's words/ranges.
+    //   - words: a word goes to the half whose source window CONTAINS its
+    //     [sourceStartMs, sourceEndMs] midpoint (words straddling the cut are
+    //     assigned by midpoint — they stay whole, no word is duplicated).
+    //   - deletedRanges: each range is CLAMPED to each half's source window;
+    //     a clamped range with zero span is dropped.
+    // Empty halves drop the field (lean JSON, byte-identical legacy).
+    // -------------------------------------------------------------------
+    let leftTranscript: ClipTranscript | undefined
+    let rightTranscript: ClipTranscript | undefined
+    let leftDeletedRanges: DeletedRange[] | undefined
+    let rightDeletedRanges: DeletedRange[] | undefined
+    if (orig.transcript && Array.isArray(orig.transcript.words)) {
+      const allWords = orig.transcript.words
+      const leftWords = allWords.filter(
+        (w) => (w.sourceStartMs + w.sourceEndMs) / 2 < splitSource
+      )
+      const rightWords = allWords.filter(
+        (w) => (w.sourceStartMs + w.sourceEndMs) / 2 >= splitSource
+      )
+      leftTranscript =
+        leftWords.length > 0
+          ? { ...orig.transcript, words: leftWords }
+          : undefined
+      rightTranscript =
+        rightWords.length > 0
+          ? { ...orig.transcript, words: rightWords }
+          : undefined
+    }
+    if (Array.isArray(orig.deletedRanges) && orig.deletedRanges.length > 0) {
+      const clampRanges = (lo: number, hi: number): DeletedRange[] =>
+        orig
+          .deletedRanges!.filter((r) => !!r && typeof r === 'object')
+          .map((r) => ({
+            sourceStartMs: Math.max(
+              lo,
+              Math.min(hi, Math.min(r.sourceStartMs, r.sourceEndMs))
+            ),
+            sourceEndMs: Math.max(
+              lo,
+              Math.min(hi, Math.max(r.sourceStartMs, r.sourceEndMs))
+            )
+          }))
+          .filter((r) => r.sourceEndMs - r.sourceStartMs > 0)
+      const leftRanges = clampRanges(orig.trimInMs, splitSource)
+      const rightRanges = clampRanges(splitSource, orig.trimOutMs)
+      leftDeletedRanges = leftRanges.length > 0 ? leftRanges : undefined
+      rightDeletedRanges = rightRanges.length > 0 ? rightRanges : undefined
+    }
     // Phase 3.6 — `cropRect` is a SOURCE-fraction rect, so the {...orig}
     // spread below carries it unchanged to both halves (every same-source
     // descendant samples the identical sub-region). No crop-specific handling.
@@ -1122,7 +1469,10 @@ export const useProjectStore = create<ProjectStore>()(
       transform: leftStaticTransform,
       transformKeyframes: leftKfs,
       speed: leftSpeed,
-      speedKeyframes: leftSpeedKfs
+      speedKeyframes: leftSpeedKfs,
+      freezeFrames: leftFreezes,
+      transcript: leftTranscript,
+      deletedRanges: leftDeletedRanges
     })
     const right: VideoAudioClip = recomputeEndMsForSpeed({
       ...orig,
@@ -1132,7 +1482,10 @@ export const useProjectStore = create<ProjectStore>()(
       transform: rightStaticTransform,
       transformKeyframes: rightKfs,
       speed: rightSpeed,
-      speedKeyframes: rightSpeedKfs
+      speedKeyframes: rightSpeedKfs,
+      freezeFrames: rightFreezes,
+      transcript: rightTranscript,
+      deletedRanges: rightDeletedRanges
     })
     const tracks = project.tracks.map((t, i) => {
       if (i !== trackIdx) return t
@@ -1258,6 +1611,39 @@ export const useProjectStore = create<ProjectStore>()(
     schedulePersist(next)
   },
 
+  /**
+   * Toggle reverse (역재생) on a media clip. Reverse does NOT change the
+   * clip's timeline duration, so endMs is NOT recomputed. Setting
+   * `reversed:true` is refused (no-op) when `!canReverseClip(clip)` —
+   * reverse is mutually exclusive with a speed curve / freeze frames /
+   * transcript deletions. When `false` the field is omitted (BC-clean JSON).
+   */
+  setClipReversed(clipId: string, reversed: boolean): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      // Reverse is a media-only concept; silently ignore captions.
+      if (!isMediaClip(c)) return t
+      // Mutual exclusivity: refuse to turn reverse ON when the clip has a
+      // speed curve / freeze frames / transcript deletions.
+      if (reversed && !canReverseClip(c)) return t
+      // Omit the field when false → BC-clean JSON, identical export/preview.
+      const nextReversed = reversed ? true : undefined
+      if ((c.reversed ?? undefined) === nextReversed) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, reversed: nextReversed }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
   // --------------------------------------------------------------------
   // Audio shaping (Phase 2.5). Media clips only — caption clips ignored.
   // --------------------------------------------------------------------
@@ -1359,6 +1745,32 @@ export const useProjectStore = create<ProjectStore>()(
       if ((c.noiseReduction ?? undefined) === nextVal) return t
       const clips = [...t.clips]
       clips[idx] = { ...c, noiseReduction: nextVal }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  setClipRetouch(clipId: string, strength: number): void {
+    const numeric = Number(strength)
+    if (!Number.isFinite(numeric)) return
+    const clamped = Math.max(MIN_RETOUCH, Math.min(MAX_RETOUCH, numeric))
+    // Store `undefined` when OFF (clamped <= 0) — keeps persisted JSON + undo
+    // snapshots lean, mirroring setClipNoiseReduction's collapse-to-undefined.
+    const nextVal = clamped <= 0 ? undefined : Math.round(clamped)
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      if ((c.retouch ?? undefined) === nextVal) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, retouch: nextVal }
       changed = true
       return { ...t, clips }
     })
@@ -2549,6 +2961,9 @@ export const useProjectStore = create<ProjectStore>()(
       if (idx === -1) return t
       const c = t.clips[idx]
       if (!isMediaClip(c)) return t
+      // Defense-in-depth: reverse is mutually exclusive with a speed curve.
+      // The UI also disables this, but never let both be set on one clip.
+      if (isClipReversed(c)) return t
       const srcDur = Math.max(0, c.trimOutMs - c.trimInMs)
       if (at > srcDur) return t
       const existing = Array.isArray(c.speedKeyframes)
@@ -2717,6 +3132,375 @@ export const useProjectStore = create<ProjectStore>()(
       return { ...t, clips }
     })
     if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // --------------------------------------------------------------------
+  // Freeze frames (Phase 3.16) — media clips only. Mirrors the speed-
+  // keyframe actions. A freeze's `sourceMs` is a SOURCE offset (ms from
+  // trimInMs); the frame there is HELD for `durationMs` of timeline output.
+  // Every mutation recomputes endMs via `recomputeEndMsForSpeed` (which now
+  // picks up freeze duration via `getClipTimelineDuration`). The list is set
+  // to `undefined` when empty (lean JSON + undo snapshots, same as
+  // blurRegions/speedKeyframes). The contract resolver `getClipFreezeFrames`
+  // re-clamps/sorts/dedupes — actions store raw entries.
+  // --------------------------------------------------------------------
+  addFreezeFrame(clipId, sourceMs, durationMs): void {
+    const src = Math.round(Number(sourceMs))
+    if (!Number.isFinite(src) || src < 0) return
+    if (durationMs !== undefined && !Number.isFinite(Number(durationMs))) {
+      return
+    }
+    const dur =
+      durationMs !== undefined
+        ? Math.max(MIN_FREEZE_MS, Math.min(MAX_FREEZE_MS, Number(durationMs)))
+        : DEFAULT_FREEZE_MS
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      // Defense-in-depth: reverse is mutually exclusive with freeze frames.
+      // The UI also disables this, but never let both be set on one clip.
+      if (isClipReversed(c)) return t
+      // Reject once the clip is at the per-clip cap (resolved count).
+      if (getClipFreezeFrames(c).length >= MAX_FREEZE_FRAMES_PER_CLIP) return t
+      const existing = Array.isArray(c.freezeFrames)
+        ? [...c.freezeFrames]
+        : []
+      const nextFreezes: FreezeFrame[] = [
+        ...existing,
+        { sourceMs: src, durationMs: dur }
+      ]
+      const clips = [...t.clips]
+      clips[idx] = recomputeEndMsForSpeed({
+        ...c,
+        freezeFrames: nextFreezes.length > 0 ? nextFreezes : undefined
+      })
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  updateFreezeFrame(clipId, freezeIndex, partial): void {
+    if (!partial || typeof partial !== 'object') return
+    if (
+      partial.sourceMs !== undefined &&
+      !Number.isFinite(Number(partial.sourceMs))
+    ) {
+      return
+    }
+    if (
+      partial.durationMs !== undefined &&
+      !Number.isFinite(Number(partial.durationMs))
+    ) {
+      return
+    }
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const existing = Array.isArray(c.freezeFrames)
+        ? [...c.freezeFrames]
+        : []
+      if (freezeIndex < 0 || freezeIndex >= existing.length) return t
+      const srcDur = Math.max(0, c.trimOutMs - c.trimInMs)
+      const cur = existing[freezeIndex]
+      const nextSource =
+        partial.sourceMs !== undefined
+          ? Math.max(0, Math.min(srcDur, Math.round(Number(partial.sourceMs))))
+          : cur.sourceMs
+      const nextDuration =
+        partial.durationMs !== undefined
+          ? Math.max(
+              MIN_FREEZE_MS,
+              Math.min(MAX_FREEZE_MS, Number(partial.durationMs))
+            )
+          : cur.durationMs
+      const updated = existing.map((f, i) =>
+        i === freezeIndex
+          ? { sourceMs: nextSource, durationMs: nextDuration }
+          : f
+      )
+      const clips = [...t.clips]
+      clips[idx] = recomputeEndMsForSpeed({
+        ...c,
+        freezeFrames: updated.length > 0 ? updated : undefined
+      })
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  removeFreezeFrame(clipId, freezeIndex): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const existing = Array.isArray(c.freezeFrames)
+        ? [...c.freezeFrames]
+        : []
+      if (freezeIndex < 0 || freezeIndex >= existing.length) return t
+      const remaining = existing.filter((_, i) => i !== freezeIndex)
+      const clips = [...t.clips]
+      clips[idx] = recomputeEndMsForSpeed({
+        ...c,
+        freezeFrames: remaining.length > 0 ? remaining : undefined
+      })
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  clearFreezeFrames(clipId): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      if (c.freezeFrames === undefined) return t
+      const clips = [...t.clips]
+      clips[idx] = recomputeEndMsForSpeed({
+        ...c,
+        freezeFrames: undefined
+      })
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // --------------------------------------------------------------------
+  // Text-based editing (Phase 3.17) — media clips only. A per-clip
+  // word-level transcript + a non-destructive list of removed SOURCE
+  // ranges. Deleting words appends ranges; the clip's timeline footprint
+  // shrinks (deletion-aware `getClipTimelineDuration`); later clips on the
+  // same track ripple left so no gap opens. Reversible — restoring words
+  // removes the ranges. Every mutation routes endMs through
+  // `recomputeEndMsForSpeed` and ripples within a SINGLE `set()` so undo
+  // captures one snapshot. The contract resolver `getClipDeletedRanges`
+  // re-clamps/sorts/merges — actions store raw entries.
+  // --------------------------------------------------------------------
+  setClipTranscript(clipId, transcript): void {
+    if (
+      !transcript ||
+      typeof transcript !== 'object' ||
+      !Array.isArray(transcript.words)
+    ) {
+      return
+    }
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const clips = [...t.clips]
+      // Sanitize words to finite source bounds; sort ascending by start.
+      const words: TranscriptWord[] = transcript.words
+        .filter(
+          (w): w is TranscriptWord =>
+            !!w &&
+            typeof w === 'object' &&
+            typeof w.id === 'string' &&
+            Number.isFinite(w.sourceStartMs) &&
+            Number.isFinite(w.sourceEndMs)
+        )
+        .map((w) => ({
+          id: w.id,
+          text: String(w.text ?? ''),
+          sourceStartMs: Math.min(w.sourceStartMs, w.sourceEndMs),
+          sourceEndMs: Math.max(w.sourceStartMs, w.sourceEndMs)
+        }))
+        .sort((a, b) => a.sourceStartMs - b.sourceStartMs)
+      clips[idx] = {
+        ...c,
+        transcript: {
+          words,
+          language: String(transcript.language ?? ''),
+          generatedAt: Number.isFinite(transcript.generatedAt)
+            ? transcript.generatedAt
+            : Date.now()
+        }
+      }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  deleteTranscriptWords(clipId, wordIds): void {
+    if (!Array.isArray(wordIds) || wordIds.length === 0) return
+    const idSet = new Set(wordIds.filter((id) => typeof id === 'string'))
+    if (idSet.size === 0) return
+    const project = get().project
+    let trackId: string | null = null
+    let changed = false
+    let tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c) || !hasClipTranscript(c)) return t
+      // Defense-in-depth: reverse is mutually exclusive with transcript
+      // deletions. The UI also disables this, but never set both on one clip.
+      if (isClipReversed(c)) return t
+      const words = c.transcript!.words
+      const newRanges = wordsToDeletedRanges(words, idSet)
+      if (newRanges.length === 0) return t
+      const existing = Array.isArray(c.deletedRanges) ? c.deletedRanges : []
+      let merged: DeletedRange[] = [...existing, ...newRanges]
+      // Guard: never let the clip's timeline footprint fall below MIN_CLIP_MS.
+      // If the merged deletions would, trim the LAST (newest) range so a sliver
+      // of the clip survives. Do NOT auto-remove the clip.
+      let probe: VideoAudioClip = { ...c, deletedRanges: merged }
+      if (getClipTimelineDuration(probe) < MIN_CLIP_MS) {
+        // Resolve the effective (sorted/merged/clamped) ranges, then shrink the
+        // range with the latest source end until the clip clears MIN_CLIP_MS.
+        let resolved = getClipDeletedRanges(probe)
+          .slice()
+          .sort((a, b) => a.sourceStartMs - b.sourceStartMs)
+        // Iteratively trim from the end of the last resolved range.
+        const STEP = Math.max(10, MIN_DELETED_RANGE_GAP_MS)
+        let guard = 0
+        while (
+          resolved.length > 0 &&
+          getClipTimelineDuration({ ...c, deletedRanges: resolved }) <
+            MIN_CLIP_MS &&
+          guard < 100000
+        ) {
+          const last = resolved[resolved.length - 1]
+          const shrunk = last.sourceEndMs - STEP
+          if (shrunk <= last.sourceStartMs) {
+            // This range is exhausted — drop it entirely and continue.
+            resolved = resolved.slice(0, -1)
+          } else {
+            resolved = [
+              ...resolved.slice(0, -1),
+              { sourceStartMs: last.sourceStartMs, sourceEndMs: shrunk }
+            ]
+          }
+          guard++
+        }
+        merged = resolved
+        probe = { ...c, deletedRanges: merged }
+      }
+      const finalRanges = merged.length > 0 ? merged : undefined
+      const clips = [...t.clips]
+      clips[idx] = recomputeEndMsForSpeed({ ...c, deletedRanges: finalRanges })
+      trackId = t.id
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    // Ripple later clips on the SAME track left, inline (single snapshot).
+    if (trackId) tracks = rippleTracks(tracks, trackId)
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  restoreTranscriptWords(clipId, wordIds): void {
+    if (!Array.isArray(wordIds) || wordIds.length === 0) return
+    const idSet = new Set(wordIds.filter((id) => typeof id === 'string'))
+    if (idSet.size === 0) return
+    const project = get().project
+    let trackId: string | null = null
+    let changed = false
+    let tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c) || !hasClipTranscript(c)) return t
+      const existing = Array.isArray(c.deletedRanges) ? c.deletedRanges : []
+      if (existing.length === 0) return t
+      // Cut intervals = the source ranges of the words being restored.
+      const cuts = wordsToDeletedRanges(c.transcript!.words, idSet)
+      if (cuts.length === 0) return t
+      const remaining = subtractRanges(existing, cuts)
+      const finalRanges = remaining.length > 0 ? remaining : undefined
+      const clips = [...t.clips]
+      clips[idx] = recomputeEndMsForSpeed({ ...c, deletedRanges: finalRanges })
+      trackId = t.id
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    if (trackId) tracks = rippleTracks(tracks, trackId)
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  removeFillerWords(clipId): string[] {
+    const project = get().project
+    let clip: VideoAudioClip | null = null
+    for (const t of project.tracks) {
+      const c = t.clips.find((cc) => cc.id === clipId)
+      if (c && isMediaClip(c)) {
+        clip = c
+        break
+      }
+    }
+    if (!clip || !hasClipTranscript(clip)) return []
+    // Only filler words VISIBLE in the clip's trim window are removed.
+    const visible = getVisibleTranscriptWords(clip)
+    const fillerIds = visible
+      .filter((w) => FILLER_LEXICON.has(normalizeWordText(w.text)))
+      .map((w) => w.id)
+    if (fillerIds.length === 0) return []
+    get().deleteTranscriptWords(clipId, fillerIds)
+    return fillerIds
+  },
+
+  clearTranscriptDeletions(clipId): void {
+    const project = get().project
+    let trackId: string | null = null
+    let changed = false
+    let tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      if (c.deletedRanges === undefined) return t
+      const clips = [...t.clips]
+      clips[idx] = recomputeEndMsForSpeed({ ...c, deletedRanges: undefined })
+      trackId = t.id
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    if (trackId) tracks = rippleTracks(tracks, trackId)
     const next = touch({ ...project, tracks })
     set({ project: next })
     schedulePersist(next)
@@ -3121,6 +3905,223 @@ export const useProjectStore = create<ProjectStore>()(
       return { ...t, clips }
     })
     if (!touched) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // --------------------------------------------------------------------
+  // Collage / split-screen layout (Phase 3.18) — renderer-only. Writes the
+  // existing `transform`/`cropRect` clip fields + a UI-only `layoutGroupId`;
+  // export never reads `layoutGroupId`.
+  // --------------------------------------------------------------------
+  applyLayout(presetId, clipIds, opts): void {
+    // --- Defensive input validation. ---
+    const preset = getLayoutPreset(presetId)
+    if (!preset) return
+    if (!Array.isArray(clipIds) || clipIds.length < 2) return
+    const project = get().project
+
+    // Locate each requested clip (id → { trackId, clip }). Skip ids that
+    // don't resolve or aren't media/overlay clips (transform/crop carriers).
+    type Located = {
+      id: string
+      clip: VideoAudioClip | OverlayClip
+      trackId: string
+    }
+    const located: Located[] = []
+    for (const id of clipIds) {
+      if (typeof id !== 'string' || !id) continue
+      if (located.some((l) => l.id === id)) continue // de-dup
+      let hit: Located | null = null
+      for (const t of project.tracks) {
+        const c = t.clips.find((cc) => cc.id === id)
+        if (c && (isMediaClip(c) || isOverlayClip(c))) {
+          hit = { id, clip: c, trackId: t.id }
+          break
+        }
+      }
+      if (hit) located.push(hit)
+    }
+    if (located.length < 2) return
+
+    // Use only as many clips as the preset has cells.
+    const memberCount = Math.min(located.length, preset.cells.length)
+    const members = located.slice(0, memberCount)
+
+    // --- Timing: shared window from the earliest start + shortest duration. ---
+    const alignTiming = opts?.alignTiming !== false
+    let commonStart = Infinity
+    let shortestDur = Infinity
+    for (const m of members) {
+      if (Number.isFinite(m.clip.startMs)) {
+        commonStart = Math.min(commonStart, m.clip.startMs)
+      }
+      const dur = m.clip.endMs - m.clip.startMs
+      if (Number.isFinite(dur) && dur > 0) {
+        shortestDur = Math.min(shortestDur, dur)
+      }
+    }
+    if (!Number.isFinite(commonStart)) commonStart = 0
+    if (!Number.isFinite(shortestDur) || shortestDur <= 0) {
+      shortestDur = MIN_CLIP_MS
+    }
+
+    // --- Track assignment: distinct video layers, last cell on top. ---
+    // Clip 0 keeps its current track (bottom layer). Clips 1..N-1 need a
+    // DISTINCT track each, stacked above clip 0's track. We create video
+    // tracks via addVideoTrack() (which sets project state) and re-read the
+    // project between calls, then assemble all clip moves into ONE final
+    // set() so the whole apply is a single undo step.
+    const bottomTrackId = members[0].trackId
+    // Target track for each member, by index. members[0] → its own track.
+    const targetTrackIds: (string | null)[] = new Array(memberCount).fill(null)
+    targetTrackIds[0] = bottomTrackId
+
+    // Existing video tracks ABOVE clip 0's track, ordered low→high, that we
+    // can reuse before creating new ones.
+    const reusable: string[] = []
+    {
+      const tracksNow = get().project.tracks
+      const bottomIdx = tracksNow.findIndex((t) => t.id === bottomTrackId)
+      for (let i = bottomIdx + 1; i < tracksNow.length; i++) {
+        if (tracksNow[i].kind === 'video') reusable.push(tracksNow[i].id)
+      }
+    }
+    const overlayTrackId =
+      get().project.tracks.find((t) => t.kind === 'overlay')?.id ?? null
+
+    let reuseCursor = 0
+    for (let i = 1; i < memberCount; i++) {
+      if (reuseCursor < reusable.length) {
+        targetTrackIds[i] = reusable[reuseCursor++]
+        continue
+      }
+      // Need a fresh video track stacked above. addVideoTrack inserts after
+      // the last video track (highest layer) — exactly what we want.
+      const created = get().addVideoTrack()
+      if (created) {
+        targetTrackIds[i] = created
+        continue
+      }
+      // MAX_VIDEO_TRACKS reached — fall back to the overlay track (still a
+      // distinct layer above video), else leave the clip on its own track.
+      targetTrackIds[i] = overlayTrackId ?? members[i].trackId
+    }
+
+    // --- Build the final project in ONE pass. ---
+    // Re-read: addVideoTrack() above mutated the project (added tracks).
+    const base = get().project
+    const groupId = newId()
+
+    // Compute the new clip object for each member (transform/crop/timing/group).
+    const updatedById = new Map<string, VideoAudioClip | OverlayClip>()
+    for (let i = 0; i < memberCount; i++) {
+      const m = members[i]
+      const cell = preset.cells[i]
+      // Resolve media natural size for the cover math.
+      let srcW = base.width
+      let srcH = base.height
+      if (isMediaClip(m.clip)) {
+        const asset = base.media[m.clip.mediaId]
+        if (asset && asset.width > 0 && asset.height > 0) {
+          srcW = asset.width
+          srcH = asset.height
+        }
+      }
+      const { transform, cropRect } = cellToClipPlacement(
+        cell,
+        base.width,
+        base.height,
+        srcW,
+        srcH
+      )
+      const clampedTransform = clampClipTransform(transform)
+      const clampedCrop = clampCropRect(cropRect)
+      const targetTrack = targetTrackIds[i] ?? m.trackId
+
+      if (isMediaClip(m.clip)) {
+        const next: VideoAudioClip = {
+          ...m.clip,
+          trackId: targetTrack,
+          transform: clampedTransform,
+          // cropRect is media-only.
+          cropRect: clampedCrop,
+          // A static cell placement conflicts with an animation.
+          transformKeyframes: undefined,
+          layoutGroupId: groupId
+        }
+        if (alignTiming) {
+          next.startMs = commonStart
+          next.endMs = commonStart + shortestDur
+        }
+        updatedById.set(m.id, next)
+      } else {
+        // Overlay clip — no cropRect field.
+        const next: OverlayClip = {
+          ...m.clip,
+          trackId: targetTrack,
+          transform: clampedTransform,
+          transformKeyframes: undefined,
+          layoutGroupId: groupId
+        }
+        if (alignTiming) {
+          next.startMs = commonStart
+          next.endMs = commonStart + shortestDur
+        }
+        updatedById.set(m.id, next)
+      }
+    }
+
+    // Rebuild tracks: drop every member from wherever it currently sits, then
+    // append each updated member to its target track.
+    const memberIds = new Set(members.map((m) => m.id))
+    const tracks = base.tracks.map((t) => {
+      // Remove any member that currently lives on this track.
+      let clips = t.clips.filter((c) => !memberIds.has(c.id))
+      // Append members whose target track is this one.
+      const incoming: Array<VideoAudioClip | OverlayClip> = []
+      for (const m of members) {
+        const updated = updatedById.get(m.id)
+        if (updated && updated.trackId === t.id) incoming.push(updated)
+      }
+      if (incoming.length > 0) clips = [...clips, ...incoming]
+      if (clips.length === t.clips.length && incoming.length === 0) return t
+      return { ...t, clips }
+    })
+
+    const next = touch({ ...base, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  clearLayout(layoutGroupId: string): void {
+    if (typeof layoutGroupId !== 'string' || !layoutGroupId) return
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      let touched = false
+      const clips = t.clips.map((c) => {
+        if (!isMediaClip(c) && !isOverlayClip(c)) return c
+        if (c.layoutGroupId !== layoutGroupId) return c
+        touched = true
+        changed = true
+        if (isMediaClip(c)) {
+          // Reset transform + crop to identity (reuse the reset semantics:
+          // identity = undefined), and drop the layout tag.
+          return {
+            ...c,
+            transform: undefined,
+            cropRect: undefined,
+            layoutGroupId: undefined
+          }
+        }
+        // Overlay clip — no cropRect.
+        return { ...c, transform: undefined, layoutGroupId: undefined }
+      })
+      return touched ? { ...t, clips } : t
+    })
+    if (!changed) return
     const next = touch({ ...project, tracks })
     set({ project: next })
     schedulePersist(next)

@@ -64,6 +64,8 @@ const api: ElectronApi = {
       ipcRenderer.invoke(IPC_CHANNELS.fs.pickFile, filter),
     pickFiles: (options?: PickFileOptions): Promise<string[]> =>
       ipcRenderer.invoke(IPC_CHANNELS.fs.pickFile + ':multi', options),
+    pickDirectory: (): Promise<string | null> =>
+      ipcRenderer.invoke(IPC_CHANNELS.fs.pickDirectory),
     saveFile: (defaultName?: string): Promise<string | null> =>
       ipcRenderer.invoke(IPC_CHANNELS.fs.saveFile, defaultName),
     readProject: (): Promise<Project | null> =>

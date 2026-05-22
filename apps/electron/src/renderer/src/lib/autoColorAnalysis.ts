@@ -20,6 +20,7 @@ import {
   analyzeImageData,
   averageFrameStats,
   statsToColorAdjust,
+  statsToColorMatch,
   type FrameStats
 } from '../../../shared/autoColor'
 import { toMediaUrl } from './mediaUrl'
@@ -36,17 +37,21 @@ export interface ComputeAutoColorOptions {
 }
 
 /**
- * Analyze `clip`'s media and return a tasteful `ColorAdjust` for the existing
- * 4 sliders. Samples `frameCount` frames evenly across the clip's TRIMMED
- * source range, averages their pixel statistics, and maps to slider values.
+ * Decode-and-average one clip — the shared core of auto color and color match.
+ *
+ * Creates a hidden transient `<video>`, waits until it is decodable, steps
+ * `frameCount` frames evenly across the clip's TRIMMED source range via
+ * `stepClipFrames`, runs each through `analyzeImageData`, and returns the
+ * averaged `FrameStats`. The hidden video is always torn down (pause / clear
+ * src / detach) before returning. Pure decode glue — produces no `ColorAdjust`.
  *
  * Throws an `Error` (Korean message) if no frame could be decoded.
  */
-export async function computeAutoColorAdjust(
+async function analyzeClipFrames(
   clip: VideoAudioClip,
   mediaPath: string,
   opts: ComputeAutoColorOptions = {}
-): Promise<ColorAdjust> {
+): Promise<FrameStats> {
   const signal = opts.signal
   const frameCount = Math.max(1, Math.floor(opts.frameCount ?? DEFAULT_FRAME_COUNT))
 
@@ -117,7 +122,7 @@ export async function computeAutoColorAdjust(
       throw new Error('프레임을 읽지 못했습니다')
     }
 
-    return statsToColorAdjust(averageFrameStats(collected))
+    return averageFrameStats(collected)
   } finally {
     // Always tear the hidden video down — pause, clear src, detach.
     try {
@@ -129,4 +134,53 @@ export async function computeAutoColorAdjust(
       /* defensive — element may already be detached */
     }
   }
+}
+
+/**
+ * Analyze `clip`'s media and return a tasteful `ColorAdjust` for the existing
+ * 4 sliders. Samples `frameCount` frames evenly across the clip's TRIMMED
+ * source range, averages their pixel statistics, and maps to slider values.
+ *
+ * Throws an `Error` (Korean message) if no frame could be decoded.
+ */
+export async function computeAutoColorAdjust(
+  clip: VideoAudioClip,
+  mediaPath: string,
+  opts: ComputeAutoColorOptions = {}
+): Promise<ColorAdjust> {
+  return statsToColorAdjust(await analyzeClipFrames(clip, mediaPath, opts))
+}
+
+/**
+ * Color match — grade `targetClip` toward a REFERENCE clip's look. Decodes and
+ * averages frame statistics from BOTH clips (sequentially — one hidden
+ * `<video>` at a time, target then reference), then maps the pair through
+ * `statsToColorMatch` to a `ColorAdjust` that makes the target resemble the
+ * reference.
+ *
+ * The same `AbortSignal` is threaded into both decode passes; the reference
+ * pass is skipped if the signal is already aborted by the time the target pass
+ * finishes.
+ *
+ * NOTE: this matches the reference clip's RAW decoded footage — any grade
+ * already applied to the reference clip in the editor (a CSS-only preview
+ * filter) is NOT reflected in its decoded pixels, so it does not influence the
+ * match.
+ *
+ * Throws an `Error` (Korean message) if no frame could be decoded from either
+ * clip.
+ */
+export async function computeColorMatchAdjust(
+  targetClip: VideoAudioClip,
+  targetPath: string,
+  refClip: VideoAudioClip,
+  refPath: string,
+  opts: ComputeAutoColorOptions = {}
+): Promise<ColorAdjust> {
+  const targetStats = await analyzeClipFrames(targetClip, targetPath, opts)
+  if (opts.signal?.aborted) {
+    throw new DOMException('aborted', 'AbortError')
+  }
+  const referenceStats = await analyzeClipFrames(refClip, refPath, opts)
+  return statsToColorMatch(targetStats, referenceStats)
 }

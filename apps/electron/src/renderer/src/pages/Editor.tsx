@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MediaLibrary } from '../components/MediaLibrary'
 import { OverlayLibrary } from '../components/OverlayLibrary'
+import { TranscriptPanel } from '../components/TranscriptPanel'
 import { PreviewCanvas } from '../components/PreviewCanvas'
 import { SocialPreviewSelector } from '../components/SocialPreviewOverlay'
 import { SilenceRemoveDialog } from '../components/SilenceRemoveDialog'
@@ -9,6 +10,7 @@ import { Transport } from '../components/Transport'
 import { CaptionEditor } from '../components/CaptionEditor'
 import { EffectsPanel } from '../components/EffectsPanel'
 import { ExportDialog } from '../components/ExportDialog'
+import { BatchExportDialog } from '../components/BatchExportDialog'
 import { PrefillDialog } from '../components/PrefillDialog'
 import { SttDialog } from '../components/SttDialog'
 import { AutoEditDialog } from '../components/AutoEditDialog'
@@ -276,11 +278,14 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     null
   )
   const [exportOpen, setExportOpen] = useState(false)
+  const [batchOpen, setBatchOpen] = useState(false)
   // Phase 7 — CapCut-style docked 효과 panel. Transient UI state only: this
   // toggle and the panel's inner tab are NOT part of the project schema/undo.
   const [effectsOpen, setEffectsOpen] = useState(false)
-  // Left-panel tab — 미디어 가져오기 vs 오버레이 요소 (Phase 3.8).
-  const [leftTab, setLeftTab] = useState<'media' | 'overlay'>('media')
+  // Left-panel tab — 미디어 / 오버레이 / 대본 (Phase 3.8 + 3.17).
+  const [leftTab, setLeftTab] = useState<'media' | 'overlay' | 'transcript'>(
+    'media'
+  )
   const [prefillOpen, setPrefillOpen] = useState(false)
   const [sttOpen, setSttOpen] = useState(false)
   const [autoEditOpen, setAutoEditOpen] = useState(false)
@@ -777,6 +782,14 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         >
           내보내기
         </button>
+        <button
+          style={styles.secondaryBtn}
+          onClick={() => setBatchOpen(true)}
+          data-testid="open-batch-export-dialog"
+          title="여러 프리셋으로 한 번에 내보내기"
+        >
+          일괄 내보내기
+        </button>
 
         {!hydrated && (
           <div style={styles.hint}>프로젝트 로딩 중…</div>
@@ -816,9 +829,27 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
             >
               오버레이
             </button>
+            <button
+              type="button"
+              style={{
+                ...styles.leftTabBtn,
+                ...(leftTab === 'transcript' ? styles.leftTabBtnActive : {})
+              }}
+              onClick={() => setLeftTab('transcript')}
+              data-testid="media-transcript-tab"
+              aria-pressed={leftTab === 'transcript'}
+            >
+              대본
+            </button>
           </div>
           <div style={styles.leftPanelBody}>
-            {leftTab === 'media' ? <MediaLibrary /> : <OverlayLibrary />}
+            {leftTab === 'media' ? (
+              <MediaLibrary />
+            ) : leftTab === 'overlay' ? (
+              <OverlayLibrary />
+            ) : (
+              <TranscriptPanel />
+            )}
           </div>
         </div>
         <div style={styles.right}>
@@ -930,6 +961,11 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
       {exportOpen && (
         <ExportDialog project={project} onClose={() => setExportOpen(false)} />
       )}
+      <BatchExportDialog
+        project={project}
+        open={batchOpen}
+        onClose={() => setBatchOpen(false)}
+      />
       <PrefillDialog
         open={prefillOpen}
         onClose={() => setPrefillOpen(false)}

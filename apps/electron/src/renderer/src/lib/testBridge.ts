@@ -25,12 +25,14 @@ import {
   analyzeImageData,
   averageFrameStats,
   statsToColorAdjust,
+  statsToColorMatch,
   neutralFrameStats,
   TARGET_LUMA,
   TARGET_SPREAD,
   TARGET_SAT,
   RB_DEADBAND,
-  MIN_AUTO_MAGNITUDE
+  MIN_AUTO_MAGNITUDE,
+  MIN_MATCH_MAGNITUDE
 } from '../../../shared/autoColor'
 import { AUTO_COLOR_MAX_MAGNITUDE } from '../../../shared/project'
 
@@ -47,6 +49,7 @@ export function installTestBridge(): void {
         splitClipAt: Store['splitClipAt']
         duplicateClip: Store['duplicateClip']
         setClipSpeed: Store['setClipSpeed']
+        setClipReversed: Store['setClipReversed']
         createNew: Store['createNew']
         setClipGainDb: Store['setClipGainDb']
         setClipFade: Store['setClipFade']
@@ -67,6 +70,17 @@ export function installTestBridge(): void {
         updateSpeedKeyframe: Store['updateSpeedKeyframe']
         removeSpeedKeyframe: Store['removeSpeedKeyframe']
         clearSpeedKeyframes: Store['clearSpeedKeyframes']
+        // Phase 3.16 — freeze-frame project-store actions.
+        addFreezeFrame: Store['addFreezeFrame']
+        updateFreezeFrame: Store['updateFreezeFrame']
+        removeFreezeFrame: Store['removeFreezeFrame']
+        clearFreezeFrames: Store['clearFreezeFrames']
+        // Phase 3.17 — text-based editing project-store actions.
+        setClipTranscript: Store['setClipTranscript']
+        deleteTranscriptWords: Store['deleteTranscriptWords']
+        restoreTranscriptWords: Store['restoreTranscriptWords']
+        removeFillerWords: Store['removeFillerWords']
+        clearTranscriptDeletions: Store['clearTranscriptDeletions']
         setCurvePoint: Store['setCurvePoint']
         addCurvePoint: Store['addCurvePoint']
         removeCurvePoint: Store['removeCurvePoint']
@@ -91,6 +105,9 @@ export function installTestBridge(): void {
         bindBlurRegionToTrack: Store['bindBlurRegionToTrack']
         bindOverlayToTrack: Store['bindOverlayToTrack']
         bindCaptionToTrack: Store['bindCaptionToTrack']
+        // Phase 3.18 — collage / split-screen layout.
+        applyLayout: Store['applyLayout']
+        clearLayout: Store['clearLayout']
         newId: () => string
       }
     }).__reelsStore = {
@@ -105,6 +122,8 @@ export function installTestBridge(): void {
       duplicateClip: (id) => useProjectStore.getState().duplicateClip(id),
       setClipSpeed: (id, speed) =>
         useProjectStore.getState().setClipSpeed(id, speed),
+      setClipReversed: (id, reversed) =>
+        useProjectStore.getState().setClipReversed(id, reversed),
       createNew: () => useProjectStore.getState().createNew(),
       setClipGainDb: (id, db) =>
         useProjectStore.getState().setClipGainDb(id, db),
@@ -146,6 +165,24 @@ export function installTestBridge(): void {
         useProjectStore.getState().removeSpeedKeyframe(id, kfIndex),
       clearSpeedKeyframes: (id) =>
         useProjectStore.getState().clearSpeedKeyframes(id),
+      addFreezeFrame: (id, sourceMs, durationMs) =>
+        useProjectStore.getState().addFreezeFrame(id, sourceMs, durationMs),
+      updateFreezeFrame: (id, freezeIndex, partial) =>
+        useProjectStore.getState().updateFreezeFrame(id, freezeIndex, partial),
+      removeFreezeFrame: (id, freezeIndex) =>
+        useProjectStore.getState().removeFreezeFrame(id, freezeIndex),
+      clearFreezeFrames: (id) =>
+        useProjectStore.getState().clearFreezeFrames(id),
+      setClipTranscript: (id, transcript) =>
+        useProjectStore.getState().setClipTranscript(id, transcript),
+      deleteTranscriptWords: (id, wordIds) =>
+        useProjectStore.getState().deleteTranscriptWords(id, wordIds),
+      restoreTranscriptWords: (id, wordIds) =>
+        useProjectStore.getState().restoreTranscriptWords(id, wordIds),
+      removeFillerWords: (id) =>
+        useProjectStore.getState().removeFillerWords(id),
+      clearTranscriptDeletions: (id) =>
+        useProjectStore.getState().clearTranscriptDeletions(id),
       setCurvePoint: (id, channel, pointIndex, p) =>
         useProjectStore.getState().setCurvePoint(id, channel, pointIndex, p),
       addCurvePoint: (id, channel, p) =>
@@ -185,6 +222,10 @@ export function installTestBridge(): void {
         useProjectStore.getState().bindOverlayToTrack(overlayId, trackId),
       bindCaptionToTrack: (captionId, trackId) =>
         useProjectStore.getState().bindCaptionToTrack(captionId, trackId),
+      applyLayout: (presetId, clipIds, opts) =>
+        useProjectStore.getState().applyLayout(presetId, clipIds, opts),
+      clearLayout: (layoutGroupId) =>
+        useProjectStore.getState().clearLayout(layoutGroupId),
       newId
     }
     ;(window as unknown as {
@@ -493,24 +534,28 @@ export function installTestBridge(): void {
         analyzeImageData: typeof analyzeImageData
         averageFrameStats: typeof averageFrameStats
         statsToColorAdjust: typeof statsToColorAdjust
+        statsToColorMatch: typeof statsToColorMatch
         neutralFrameStats: typeof neutralFrameStats
         TARGET_LUMA: number
         TARGET_SPREAD: number
         TARGET_SAT: number
         RB_DEADBAND: number
         MIN_AUTO_MAGNITUDE: number
+        MIN_MATCH_MAGNITUDE: number
         AUTO_COLOR_MAX_MAGNITUDE: number
       }
     }).__reelsAutoColor = {
       analyzeImageData,
       averageFrameStats,
       statsToColorAdjust,
+      statsToColorMatch,
       neutralFrameStats,
       TARGET_LUMA,
       TARGET_SPREAD,
       TARGET_SAT,
       RB_DEADBAND,
       MIN_AUTO_MAGNITUDE,
+      MIN_MATCH_MAGNITUDE,
       AUTO_COLOR_MAX_MAGNITUDE
     }
   }

@@ -8,19 +8,28 @@ import {
   getClipMotionTracks,
   getClipSourceText,
   getClipTransform,
+  getClipFreezeFrames,
+  getClipTimelineDuration,
   getSpeedAt,
+  hasFreezeFrames,
   hasSpeedCurve,
   hasTransformKeyframes,
   isCaptionClip,
+  isClipReversed,
+  canReverseClip,
   isIdentityTransform,
   isMediaClip,
   isOverlayClip,
+  REVERSE_SOFT_CAP_MS,
   MAX_AUDIO_TRACKS,
   MAX_VIDEO_TRACKS,
   MIN_CLIP_MS,
   MIN_KEYFRAME_GAP_MS,
   MIN_SPEED_KEYFRAME_GAP_MS,
+  MIN_FREEZE_GAP_MS,
+  DEFAULT_FREEZE_MS,
   sourceOffsetForTimelineOffset,
+  speedOnlyTimelineOffset,
   type Clip,
   type MediaAsset,
   type OverlayClip,
@@ -483,6 +492,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const splitClipAt = useProjectStore((s) => s.splitClipAt)
   const duplicateClip = useProjectStore((s) => s.duplicateClip)
   const setClipSpeed = useProjectStore((s) => s.setClipSpeed)
+  const setClipReversed = useProjectStore((s) => s.setClipReversed)
   const setClipTransitionIn = useProjectStore((s) => s.setClipTransitionIn)
   const setClipFilter = useProjectStore((s) => s.setClipFilter)
   const setClipTransform = useProjectStore((s) => s.setClipTransform)
@@ -519,6 +529,9 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const updateSpeedKeyframe = useProjectStore((s) => s.updateSpeedKeyframe)
   const removeSpeedKeyframe = useProjectStore((s) => s.removeSpeedKeyframe)
   const clearSpeedKeyframes = useProjectStore((s) => s.clearSpeedKeyframes)
+  const addFreezeFrame = useProjectStore((s) => s.addFreezeFrame)
+  const updateFreezeFrame = useProjectStore((s) => s.updateFreezeFrame)
+  const removeFreezeFrame = useProjectStore((s) => s.removeFreezeFrame)
   const addVideoTrack = useProjectStore((s) => s.addVideoTrack)
   const removeVideoTrack = useProjectStore((s) => s.removeVideoTrack)
   const ensureAudioTrack = useProjectStore((s) => s.ensureAudioTrack)
@@ -682,6 +695,31 @@ export function Timeline(props: TimelineProps): JSX.Element {
     let bestDist = MIN_SPEED_KEYFRAME_GAP_MS
     for (let i = 0; i < kfs.length; i++) {
       const d = Math.abs(kfs[i].atMs - sourceOffsetMs)
+      if (d < bestDist) {
+        bestDist = d
+        bestIdx = i
+      }
+    }
+    return bestIdx
+  }, [ctxClip, playheadMs])
+
+  // Phase 3.16 — index (into the RESOLVED freeze list `getClipFreezeFrames`)
+  // of the freeze whose source position is under the playhead. Parallel to
+  // `ctxSpeedKeyframeIndex`: map the playhead's TIMELINE offset through
+  // `sourceOffsetForTimelineOffset` (held constant during a freeze plateau),
+  // then find the nearest freeze within MIN_FREEZE_GAP_MS. -1 when not on one.
+  const ctxFreezeFrameIndex = useMemo<number>(() => {
+    if (!ctxClip || !isMediaClip(ctxClip)) return -1
+    const freezes = getClipFreezeFrames(ctxClip)
+    if (freezes.length === 0) return -1
+    const sourceOffsetMs = sourceOffsetForTimelineOffset(
+      ctxClip,
+      playheadMs - ctxClip.startMs
+    )
+    let bestIdx = -1
+    let bestDist = MIN_FREEZE_GAP_MS
+    for (let i = 0; i < freezes.length; i++) {
+      const d = Math.abs(freezes[i].sourceMs - sourceOffsetMs)
       if (d < bestDist) {
         bestDist = d
         bestIdx = i
@@ -1954,6 +1992,55 @@ export function Timeline(props: TimelineProps): JSX.Element {
                           ◐
                         </div>
                       )}
+                    {/* Freeze-frame bands (Phase 3.16) — one translucent
+                        ice-blue band per freeze, marking the held-still
+                        window on the clip. A freeze occupies a real timeline
+                        window: its timeline-start = speedOnlyTimelineOffset
+                        of the freeze's sourceMs PLUS the durations of all
+                        earlier freezes; its width = the freeze's durationMs.
+                        Both are scaled into clip pixels via the clip's full
+                        timeline duration. */}
+                    {isMediaClip(clip) &&
+                      hasFreezeFrames(clip) &&
+                      (() => {
+                        const totalDur = Math.max(
+                          1,
+                          getClipTimelineDuration(clip)
+                        )
+                        let earlier = 0
+                        return getClipFreezeFrames(clip).map((fz, fzIdx) => {
+                          const startTimelineMs =
+                            speedOnlyTimelineOffset(clip, fz.sourceMs) +
+                            earlier
+                          earlier += fz.durationMs
+                          const bandLeft = (startTimelineMs / totalDur) * w
+                          const bandWidth = (fz.durationMs / totalDur) * w
+                          return (
+                            <div
+                              key={`freeze-${fzIdx}`}
+                              data-testid="freeze-frame-band"
+                              data-clip-id={clip.id}
+                              data-freeze-index={fzIdx}
+                              style={{
+                                position: 'absolute',
+                                left: bandLeft,
+                                top: 0,
+                                width: bandWidth,
+                                height: '100%',
+                                background: 'rgba(125, 211, 252, 0.28)',
+                                borderLeft: '1px solid rgba(125, 211, 252, 0.9)',
+                                borderRight:
+                                  '1px solid rgba(125, 211, 252, 0.9)',
+                                pointerEvents: 'none',
+                                zIndex: 3
+                              }}
+                              title={`프리즈 프레임 ${fzIdx + 1} · ${(
+                                fz.durationMs / 1000
+                              ).toFixed(2)}s`}
+                            />
+                          )
+                        })
+                      })()}
                     {/* Speed-curve indicator (Phase 3.10) — amber badge in
                         the TOP-LEFT corner, just below the crop badge (top
                         22) so it never collides with the crop (top 4),
@@ -2013,6 +2100,60 @@ export function Timeline(props: TimelineProps): JSX.Element {
                           ▦
                         </div>
                       )}
+                    {/* Freeze-frame indicator (Phase 3.16) — ice-blue badge
+                        in the TOP-LEFT corner, just below the blur-region
+                        badge (top 58). Shown when the clip has one or more
+                        freeze frames. Follows the speed-curve / blur badge
+                        pattern. */}
+                    {isMediaClip(clip) && hasFreezeFrames(clip) && (
+                      <div
+                        data-testid="freeze-frame-indicator"
+                        data-clip-id={clip.id}
+                        style={{
+                          position: 'absolute',
+                          left: 4,
+                          top: 58,
+                          padding: '1px 5px',
+                          borderRadius: 3,
+                          background: 'rgba(125, 211, 252, 0.95)',
+                          color: '#0c1322',
+                          fontSize: 9,
+                          fontWeight: 700,
+                          pointerEvents: 'none',
+                          zIndex: 4
+                        }}
+                        title="프리즈 프레임 적용됨"
+                      >
+                        ❄
+                      </div>
+                    )}
+                    {/* Reverse indicator (역재생) — sky badge in the
+                        TOP-LEFT corner, just below the freeze-frame badge
+                        (top 76). Shown when the clip plays backwards.
+                        Follows the speed-curve / blur / freeze badge
+                        pattern. */}
+                    {isMediaClip(clip) && isClipReversed(clip) && (
+                      <div
+                        data-testid="reverse-indicator"
+                        data-clip-id={clip.id}
+                        style={{
+                          position: 'absolute',
+                          left: 4,
+                          top: 76,
+                          padding: '1px 5px',
+                          borderRadius: 3,
+                          background: 'rgba(56, 189, 248, 0.95)',
+                          color: '#0c1322',
+                          fontSize: 9,
+                          fontWeight: 700,
+                          pointerEvents: 'none',
+                          zIndex: 4
+                        }}
+                        title="역재생"
+                      >
+                        ◀◀
+                      </div>
+                    )}
                     {/* Keyframe marker row (Phase 3.5) — one diamond per
                         keyframe, positioned by clip-relative atMs. Click →
                         seek; horizontal drag → re-time; right/Alt-click →
@@ -2388,6 +2529,54 @@ export function Timeline(props: TimelineProps): JSX.Element {
                   )
                 : ctxClip.speed ?? 1
               : 1
+          }
+          reversed={isMediaClip(ctxClip) && isClipReversed(ctxClip)}
+          canReverse={isMediaClip(ctxClip) && canReverseClip(ctxClip)}
+          reverseWarnLong={
+            isMediaClip(ctxClip) &&
+            ctxClip.trimOutMs - ctxClip.trimInMs > REVERSE_SOFT_CAP_MS
+          }
+          onToggleReverse={(r: boolean): void => {
+            if (!isMediaClip(ctxClip)) return
+            setClipReversed(ctxClip.id, r)
+          }}
+          onAddFreezeFrame={(): void => {
+            // Phase 3.16 — insert a freeze at the playhead's SOURCE position.
+            // A freeze's sourceMs is a source offset → map the playhead's
+            // timeline offset through the freeze-aware inverse mapping
+            // (mirrors onAddSpeedKeyframe). No-op for non-media clips.
+            if (!isMediaClip(ctxClip)) return
+            const srcOff = sourceOffsetForTimelineOffset(
+              ctxClip,
+              playheadMs - ctxClip.startMs
+            )
+            addFreezeFrame(ctxClip.id, srcOff)
+          }}
+          onUpdateFreezeFrameAtPlayhead={(durationMs: number): void => {
+            if (!isMediaClip(ctxClip)) return
+            if (ctxFreezeFrameIndex >= 0) {
+              updateFreezeFrame(ctxClip.id, ctxFreezeFrameIndex, {
+                durationMs
+              })
+            }
+          }}
+          onRemoveFreezeFrameAtPlayhead={(): void => {
+            if (!isMediaClip(ctxClip)) return
+            if (ctxFreezeFrameIndex >= 0) {
+              removeFreezeFrame(ctxClip.id, ctxFreezeFrameIndex)
+            }
+          }}
+          freezeFrameCount={
+            isMediaClip(ctxClip) ? getClipFreezeFrames(ctxClip).length : 0
+          }
+          isOnFreezeFrame={
+            isMediaClip(ctxClip) && ctxFreezeFrameIndex >= 0
+          }
+          freezeDurationAtPlayhead={
+            isMediaClip(ctxClip) && ctxFreezeFrameIndex >= 0
+              ? getClipFreezeFrames(ctxClip)[ctxFreezeFrameIndex]
+                  ?.durationMs ?? DEFAULT_FREEZE_MS
+              : DEFAULT_FREEZE_MS
           }
           onOverlayStyleChange={
             isOverlayClip(ctxClip) && ctxClip.source.type === 'shape'

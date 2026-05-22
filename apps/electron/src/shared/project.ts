@@ -93,6 +93,63 @@ export interface SpeedKeyframe {
 }
 
 /**
+ * One freeze-frame insertion on a media clip (Phase 3.16).
+ * `sourceMs` is a SOURCE-consumption offset from `trimInMs` (0 .. trimOutMs-
+ * trimInMs) — source-relative, the same convention as `SpeedKeyframe.atMs`, so
+ * it is stable under split. The frame sampled AT `sourceMs` is HELD for
+ * `durationMs` of timeline output; the clip then continues from `sourceMs`. A
+ * freeze consumes ~0 source time and produces `durationMs` of timeline time.
+ */
+export interface FreezeFrame {
+  /** Source offset from trimInMs, in ms. 0 .. (trimOutMs - trimInMs). */
+  sourceMs: number
+  /** Held duration on the timeline, in ms. Clamped [MIN_FREEZE_MS, MAX_FREEZE_MS]. */
+  durationMs: number
+}
+
+// -----------------------------------------------------------------------------
+// Phase 3.17 — text-based editing. A per-clip transcript (word-level STT) plus
+// a non-destructive list of removed SOURCE ranges. Deleting transcript words
+// appends ranges; the clip's timeline footprint shrinks; export/preview skip
+// the deleted source. Reversible — restoring words removes the ranges.
+// -----------------------------------------------------------------------------
+
+/**
+ * One transcribed word bound to a media clip. Times are ABSOLUTE media source
+ * ms (not timeline) — stable under trim / speed / freeze. `id` is a stable id
+ * so selections + deletions survive re-render and undo.
+ */
+export interface TranscriptWord {
+  id: string
+  text: string
+  /** Absolute media source bounds, ms. */
+  sourceStartMs: number
+  sourceEndMs: number
+}
+
+/**
+ * A contiguous ABSOLUTE-source-ms range removed from a clip by transcript
+ * editing. Non-destructive + reversible. Absent / empty = byte-identical
+ * legacy behavior. Resolved defensively by `getClipDeletedRanges`.
+ */
+export interface DeletedRange {
+  sourceStartMs: number
+  sourceEndMs: number
+}
+
+/**
+ * Per-clip transcript — the immutable word-level STT output (`words` ascending
+ * by `sourceStartMs`). Absent = not transcribed yet.
+ */
+export interface ClipTranscript {
+  words: TranscriptWord[]
+  /** whisper's detected language. */
+  language: string
+  /** When the transcript was generated (epoch ms). */
+  generatedAt: number
+}
+
+/**
  * Phase 3.6 — static per-clip SOURCE crop. A rectangle of the clip's SOURCE
  * frame to KEEP; everything outside is discarded. Coordinates are FRACTIONS
  * of source width/height: x/y = top-left (0..1), w/h = size (0..1). Crop
@@ -244,6 +301,48 @@ export interface VideoAudioClip {
    */
   speedKeyframes?: SpeedKeyframe[]
   // -----------------------------------------------------------------
+  // Phase 3.16 — freeze frames (optional, BC-safe).
+  // -----------------------------------------------------------------
+  /**
+   * Freeze-frame insertions. Each entry holds the source frame at `sourceMs`
+   * for `durationMs` of timeline output; the clip's on-timeline footprint grows
+   * by Σ durationMs. Composes orthogonally with `speedKeyframes` (freezes add
+   * pure timeline holds on top of the speed-remapped duration). Absent / empty
+   * = no freezes (byte-identical legacy export + preview). Resolved defensively
+   * by `getClipFreezeFrames` ([] when absent). No migration.
+   */
+  freezeFrames?: FreezeFrame[]
+  // -----------------------------------------------------------------
+  // Phase 3.17 — text-based editing (optional, BC-safe).
+  // -----------------------------------------------------------------
+  /**
+   * Word-level transcript of this clip's source window (text-based editing).
+   * Absent = not transcribed. Words are absolute source-ms. No migration.
+   */
+  transcript?: ClipTranscript
+  /**
+   * Source ranges removed by transcript editing. Absent / empty = no deletions
+   * → byte-identical export + preview + timeline. Resolved defensively by
+   * `getClipDeletedRanges` ([] when absent). No migration.
+   */
+  deletedRanges?: DeletedRange[]
+  /**
+   * Phase 3.19 — when true the clip's trimmed source window plays BACKWARDS
+   * (역재생). Absent / false = forward (byte-identical export + preview).
+   * Reverse does NOT change the clip's timeline duration. Mutually exclusive
+   * with a speed curve / freeze frames / transcript deletions (enforced by the
+   * store + UI); freely combined with constant `speed` + trim. Resolved by
+   * `isClipReversed`. No migration.
+   */
+  reversed?: boolean
+  /**
+   * Phase 3.18 — id of the collage / split-screen layout group this clip
+   * belongs to. Pure UI metadata: lets the layout picker re-select / re-apply /
+   * clear a layout as a unit. Export + preview IGNORE it entirely (the visual
+   * is fully expressed by `transform` + `cropRect`). Absent = not in a layout.
+   */
+  layoutGroupId?: string
+  // -----------------------------------------------------------------
   // Phase 2.5 — audio shaping (optional, backwards-compatible).
   // -----------------------------------------------------------------
   /** Gain in decibels, clamped to [MIN_GAIN_DB, MAX_GAIN_DB]. Default 0. */
@@ -260,6 +359,14 @@ export interface VideoAudioClip {
    * resolved defensively by `getClipDenoise` (null when off).
    */
   noiseReduction?: number
+  /**
+   * Phase 3.21 — retouch / beauty (edge-preserving skin smoothing) strength,
+   * 0..100. 0 / absent = OFF (byte-identical legacy video graph). Export-only
+   * (ffmpeg `smartblur`, luma-only); resolved defensively by `getClipRetouch`
+   * (null when off). STATIC ONLY. Whole-frame smoothing, not face-targeted —
+   * keep tasteful.
+   */
+  retouch?: number
   // -----------------------------------------------------------------
   // Phase 2.6 — transitions + filter presets (optional, backwards-compatible).
   // -----------------------------------------------------------------
@@ -497,6 +604,8 @@ export interface OverlayClip {
    * static fallback.
    */
   motionTrackId?: string
+  /** Phase 3.18 — collage / split-screen layout group id (UI-only metadata). */
+  layoutGroupId?: string
   /**
    * Base element size BEFORE transform.scale, as a fraction of canvas
    * width/height. `transform.scale/x/y/rotation/opacity` apply on top.
@@ -647,6 +756,11 @@ export const MIN_NOISE_REDUCTION = 0
 export const MAX_NOISE_REDUCTION = 100
 /** Strength applied when the noise-reduction toggle is first switched ON. */
 export const DEFAULT_NOISE_REDUCTION = 50
+/** Retouch / beauty strength range (Phase 3.21). 0 = off. */
+export const MIN_RETOUCH = 0
+export const MAX_RETOUCH = 100
+/** Strength applied when the retouch toggle is first switched ON. */
+export const DEFAULT_RETOUCH = 40
 
 // ---------------------------------------------------------------------------
 // Transition / filter constants (Phase 2.6).
@@ -718,6 +832,37 @@ export const MIN_SPEED_KEYFRAME_GAP_MS = 50
 export const SPEED_RAMP_STEP_MS = 250
 /** Hard cap on constant-speed sub-segments a single curve clip expands to. */
 export const MAX_SPEED_SEGMENTS = 64
+
+// ---------------------------------------------------------------------------
+// Freeze-frame constants (Phase 3.16).
+// ---------------------------------------------------------------------------
+/** Hard cap on freeze frames per clip (UI + export segment-count guard). */
+export const MAX_FREEZE_FRAMES_PER_CLIP = 8
+/** Two freezes whose `sourceMs` are closer than this are deduped (last wins). */
+export const MIN_FREEZE_GAP_MS = 50
+/** Default held duration when a freeze is first inserted. */
+export const DEFAULT_FREEZE_MS = 1000
+/** Min / max held duration. */
+export const MIN_FREEZE_MS = 100
+export const MAX_FREEZE_MS = 10_000
+
+// ---------------------------------------------------------------------------
+// Text-based editing constants (Phase 3.17).
+// ---------------------------------------------------------------------------
+/** Hard cap on deleted ranges per clip (UI + export segment-count guard). */
+export const MAX_DELETED_RANGES_PER_CLIP = 64
+/** Deleted ranges closer than this (source ms) are merged into one. */
+export const MIN_DELETED_RANGE_GAP_MS = 30
+
+// ---------------------------------------------------------------------------
+// Reverse / 역재생 constants (Phase 3.19).
+// ---------------------------------------------------------------------------
+/**
+ * Soft warning threshold on a clip's trimmed source duration for reverse (ms).
+ * ffmpeg's `reverse`/`areverse` buffer the whole trimmed window into RAM;
+ * above this the UI warns but does not block.
+ */
+export const REVERSE_SOFT_CAP_MS = 60_000
 
 // ---------------------------------------------------------------------------
 // Crop constants (Phase 3.6).
@@ -984,6 +1129,19 @@ export function getClipDenoise(clip: VideoAudioClip): number | null {
     MAX_NOISE_REDUCTION,
     Math.max(MIN_NOISE_REDUCTION, n)
   )
+  return clamped <= 0 ? null : clamped
+}
+
+/**
+ * Resolve a clip's effective retouch / beauty strength (1..100), or null when
+ * off. Defensive (clip may arrive over IPC unvalidated): non-finite → 0,
+ * clamped to [MIN_RETOUCH, MAX_RETOUCH]; 0 → null so callers cheaply skip work.
+ */
+export function getClipRetouch(clip: VideoAudioClip): number | null {
+  const v = clip.retouch
+  if (v === undefined) return null
+  const n = Number.isFinite(v) ? v : 0
+  const clamped = Math.min(MAX_RETOUCH, Math.max(MIN_RETOUCH, n))
   return clamped <= 0 ? null : clamped
 }
 
@@ -1343,12 +1501,70 @@ function intervalOutDur(
   return (span * Math.log(v1 / v0)) / dv
 }
 
+// ---------------------------------------------------------------------------
+// Freeze-frame helpers (Phase 3.16) — pure, importable from any layer.
+// ---------------------------------------------------------------------------
+
+/** True iff the clip has >= 1 freeze frame. */
+export function hasFreezeFrames(clip: VideoAudioClip): boolean {
+  return Array.isArray(clip.freezeFrames) && clip.freezeFrames.length > 0
+}
+
+function clampFreezeDuration(v: number): number {
+  return Math.min(
+    MAX_FREEZE_MS,
+    Math.max(MIN_FREEZE_MS, Number.isFinite(v) ? v : DEFAULT_FREEZE_MS)
+  )
+}
+
 /**
- * Total timeline (output) duration of a clip — `(trimOutMs-trimInMs)/speed`
- * for a constant clip, the exact integral of 1/speed for a curve clip. The
- * store keeps `endMs = startMs + this`.
+ * Resolve a clip's effective freeze frames — sorted, clamped, deduped, or []
+ * when absent. Defensive: coerces `sourceMs` finite & into [0, srcDur], coerces
+ * `durationMs` into [MIN_FREEZE_MS, MAX_FREEZE_MS], sorts ascending by
+ * `sourceMs`, dedupes entries within MIN_FREEZE_GAP_MS (last wins), caps to
+ * MAX_FREEZE_FRAMES_PER_CLIP. (Pattern: getClipBlurRegions + resolved speed kf.)
  */
-export function getClipTimelineDuration(clip: VideoAudioClip): number {
+export function getClipFreezeFrames(clip: VideoAudioClip): FreezeFrame[] {
+  const raw = clip.freezeFrames
+  if (!Array.isArray(raw) || raw.length === 0) return []
+  const srcDur = Math.max(0, clip.trimOutMs - clip.trimInMs)
+  const sorted = raw
+    .filter((f): f is FreezeFrame => !!f && typeof f === 'object')
+    .map((f) => ({
+      sourceMs: Math.min(
+        srcDur,
+        Math.max(0, Number.isFinite(f.sourceMs) ? f.sourceMs : 0)
+      ),
+      durationMs: clampFreezeDuration(f.durationMs)
+    }))
+    .sort((a, b) => a.sourceMs - b.sourceMs)
+  const out: FreezeFrame[] = []
+  for (const f of sorted) {
+    const last = out[out.length - 1]
+    if (last && f.sourceMs - last.sourceMs < MIN_FREEZE_GAP_MS) {
+      out[out.length - 1] = f
+    } else {
+      out.push(f)
+    }
+    if (out.length >= MAX_FREEZE_FRAMES_PER_CLIP) break
+  }
+  return out
+}
+
+/** Total extra timeline ms a clip's freezes add. 0 when there are none. */
+export function totalFreezeDurationMs(clip: VideoAudioClip): number {
+  let t = 0
+  for (const f of getClipFreezeFrames(clip)) t += f.durationMs
+  return t
+}
+
+/**
+ * Timeline (output) duration of a clip from its SPEED remapping alone —
+ * `(trimOutMs-trimInMs)/speed` for a constant clip, the exact integral of
+ * 1/speed for a curve clip. Excludes freeze-frame holds; the export's
+ * speed-segment expansion works in this domain.
+ */
+export function speedOnlyTimelineDuration(clip: VideoAudioClip): number {
   let total = 0
   for (const iv of speedIntervals(clip)) {
     total += intervalOutDur(iv.s0, iv.s1, iv.v0, iv.v1)
@@ -1356,12 +1572,160 @@ export function getClipTimelineDuration(clip: VideoAudioClip): number {
   return total
 }
 
+// ---------------------------------------------------------------------------
+// Text-based-editing helpers (Phase 3.17) — pure, importable from any layer.
+// ---------------------------------------------------------------------------
+
+/** True iff the clip has a word-level transcript. */
+export function hasClipTranscript(clip: VideoAudioClip): boolean {
+  return (
+    !!clip.transcript &&
+    Array.isArray(clip.transcript.words) &&
+    clip.transcript.words.length > 0
+  )
+}
+
 /**
- * Inverse of the speed integral: the SOURCE offset (ms from trimInMs) consumed
- * after `timelineOffsetMs` of output has elapsed. Monotonic; clamped to the
- * clip's source window.
+ * Transcript words intersecting the clip's trim window — what the transcript
+ * UI shows. [] when there is no transcript.
  */
-export function sourceOffsetForTimelineOffset(
+export function getVisibleTranscriptWords(
+  clip: VideoAudioClip
+): TranscriptWord[] {
+  const t = clip.transcript
+  if (!t || !Array.isArray(t.words)) return []
+  return t.words.filter(
+    (w) =>
+      !!w &&
+      Number.isFinite(w.sourceStartMs) &&
+      Number.isFinite(w.sourceEndMs) &&
+      w.sourceEndMs > clip.trimInMs &&
+      w.sourceStartMs < clip.trimOutMs
+  )
+}
+
+/**
+ * Resolve a clip's effective deleted ranges — sanitized, clamped to the clip's
+ * source window, sorted, and merged (overlaps + near-adjacent within
+ * MIN_DELETED_RANGE_GAP_MS). [] when absent. Defensive: the project arrives
+ * over IPC unvalidated. Returned ranges are ABSOLUTE source ms.
+ */
+export function getClipDeletedRanges(clip: VideoAudioClip): DeletedRange[] {
+  const raw = clip.deletedRanges
+  if (!Array.isArray(raw) || raw.length === 0) return []
+  const lo = clip.trimInMs
+  const hi = clip.trimOutMs
+  const norm = raw
+    .filter((r): r is DeletedRange => !!r && typeof r === 'object')
+    .map((r) => {
+      const a = Math.min(hi, Math.max(lo, Number.isFinite(r.sourceStartMs) ? r.sourceStartMs : 0))
+      const b = Math.min(hi, Math.max(lo, Number.isFinite(r.sourceEndMs) ? r.sourceEndMs : 0))
+      return { sourceStartMs: Math.min(a, b), sourceEndMs: Math.max(a, b) }
+    })
+    .filter((r) => r.sourceEndMs - r.sourceStartMs > 0)
+    .sort((a, b) => a.sourceStartMs - b.sourceStartMs)
+  const out: DeletedRange[] = []
+  for (const r of norm) {
+    const last = out[out.length - 1]
+    if (last && r.sourceStartMs <= last.sourceEndMs + MIN_DELETED_RANGE_GAP_MS) {
+      if (r.sourceEndMs > last.sourceEndMs) last.sourceEndMs = r.sourceEndMs
+    } else if (out.length < MAX_DELETED_RANGES_PER_CLIP) {
+      out.push({ ...r })
+    }
+  }
+  return out
+}
+
+/** True iff the clip has effective transcript deletions. */
+export function hasTranscriptDeletions(clip: VideoAudioClip): boolean {
+  return getClipDeletedRanges(clip).length > 0
+}
+
+/** Deleted ranges as SOURCE OFFSETS from trimInMs (sorted, merged). */
+function deletedOffsetRanges(
+  clip: VideoAudioClip
+): Array<{ start: number; end: number }> {
+  return getClipDeletedRanges(clip).map((r) => ({
+    start: r.sourceStartMs - clip.trimInMs,
+    end: r.sourceEndMs - clip.trimInMs
+  }))
+}
+
+/**
+ * Forward map through SPEED + FREEZE (pre-deletion timeline): the timeline
+ * offset of a source offset, including any freeze hold at/before it.
+ */
+export function freezeAwareTimelineOffset(
+  clip: VideoAudioClip,
+  sourceMs: number
+): number {
+  let t = speedOnlyTimelineOffset(clip, sourceMs)
+  for (const f of getClipFreezeFrames(clip)) {
+    if (f.sourceMs <= sourceMs) t += f.durationMs
+  }
+  return t
+}
+
+/**
+ * Total timeline (output) duration of a clip — speed-remapped duration plus
+ * freeze holds, MINUS the timeline span of every transcript deletion. The
+ * store keeps `endMs = startMs + this`. With no freezes/deletions this is
+ * exactly `speedOnlyTimelineDuration` (byte-identical).
+ */
+export function getClipTimelineDuration(clip: VideoAudioClip): number {
+  const predeletion = speedOnlyTimelineDuration(clip) + totalFreezeDurationMs(clip)
+  const del = deletedOffsetRanges(clip)
+  if (del.length === 0) return predeletion
+  let cut = 0
+  for (const d of del) {
+    cut +=
+      freezeAwareTimelineOffset(clip, d.end) -
+      freezeAwareTimelineOffset(clip, d.start)
+  }
+  return Math.max(0, predeletion - cut)
+}
+
+/** Total source-time (ms) removed by a clip's transcript deletions. */
+export function totalDeletedSourceMs(clip: VideoAudioClip): number {
+  let t = 0
+  for (const r of getClipDeletedRanges(clip)) t += r.sourceEndMs - r.sourceStartMs
+  return t
+}
+
+/**
+ * Forward speed map: the timeline (output) offset reached after `sourceMs` of
+ * SOURCE has been consumed — partial integral of 1/speed. Freeze-agnostic.
+ */
+export function speedOnlyTimelineOffset(
+  clip: VideoAudioClip,
+  sourceMs: number
+): number {
+  if (sourceMs <= 0) return 0
+  let out = 0
+  for (const iv of speedIntervals(clip)) {
+    if (sourceMs >= iv.s1) {
+      out += intervalOutDur(iv.s0, iv.s1, iv.v0, iv.v1)
+    } else if (sourceMs > iv.s0) {
+      const span = iv.s1 - iv.s0
+      const vAt =
+        span > 0
+          ? iv.v0 + ((iv.v1 - iv.v0) * (sourceMs - iv.s0)) / span
+          : iv.v0
+      out += intervalOutDur(iv.s0, sourceMs, iv.v0, vAt)
+      break
+    } else {
+      break
+    }
+  }
+  return out
+}
+
+/**
+ * Inverse of the speed integral alone (freeze-agnostic): the SOURCE offset (ms
+ * from trimInMs) consumed after `timelineOffsetMs` of speed-remapped output has
+ * elapsed. Monotonic; clamped to the clip's source window.
+ */
+export function speedOnlySourceOffset(
   clip: VideoAudioClip,
   timelineOffsetMs: number
 ): number {
@@ -1387,6 +1751,96 @@ export function sourceOffsetForTimelineOffset(
 }
 
 /**
+ * The SOURCE offset (ms from trimInMs) shown at `timelineOffsetMs` of a clip's
+ * SPEED + FREEZE output (pre-deletion). Freeze-aware: each freeze inserts a
+ * flat plateau during which the source offset is HELD. With no freezes this is
+ * exactly `speedOnlySourceOffset`.
+ */
+export function freezeAwareSourceOffset(
+  clip: VideoAudioClip,
+  timelineOffsetMs: number
+): number {
+  const freezes = getClipFreezeFrames(clip)
+  if (freezes.length === 0) return speedOnlySourceOffset(clip, timelineOffsetMs)
+  if (timelineOffsetMs <= 0) return 0
+  let consumedTimeline = 0
+  for (const f of freezes) {
+    const freezeStart = speedOnlyTimelineOffset(clip, f.sourceMs) + consumedTimeline
+    if (timelineOffsetMs < freezeStart) {
+      return speedOnlySourceOffset(clip, timelineOffsetMs - consumedTimeline)
+    }
+    if (timelineOffsetMs < freezeStart + f.durationMs) {
+      return f.sourceMs
+    }
+    consumedTimeline += f.durationMs
+  }
+  return speedOnlySourceOffset(clip, timelineOffsetMs - consumedTimeline)
+}
+
+/**
+ * The SOURCE offset (ms from trimInMs) shown at `timelineOffsetMs` of the
+ * clip's FINAL output. Deletion-aware on top of speed + freeze: a transcript
+ * deletion compacts its source range out, so the timeline jumps past it. With
+ * no deletions this is exactly `freezeAwareSourceOffset` (byte-identical).
+ */
+export function sourceOffsetForTimelineOffset(
+  clip: VideoAudioClip,
+  timelineOffsetMs: number
+): number {
+  const del = deletedOffsetRanges(clip)
+  if (del.length === 0) return freezeAwareSourceOffset(clip, timelineOffsetMs)
+  if (timelineOffsetMs <= 0) return 0
+  let cutBefore = 0
+  for (const d of del) {
+    const cutStartFinal = freezeAwareTimelineOffset(clip, d.start) - cutBefore
+    if (timelineOffsetMs < cutStartFinal) break
+    cutBefore +=
+      freezeAwareTimelineOffset(clip, d.end) -
+      freezeAwareTimelineOffset(clip, d.start)
+  }
+  return freezeAwareSourceOffset(clip, timelineOffsetMs + cutBefore)
+}
+
+// ---------------------------------------------------------------------------
+// Reverse / 역재생 helpers (Phase 3.19) — pure, importable from any layer.
+// ---------------------------------------------------------------------------
+
+/** True iff the clip plays backwards. Defensive: non-boolean → false. */
+export function isClipReversed(clip: VideoAudioClip): boolean {
+  return clip.reversed === true
+}
+
+/**
+ * True iff reverse may be toggled ON for this clip — reverse is mutually
+ * exclusive with a speed curve, freeze frames, and transcript deletions (those
+ * make the source↔timeline mapping too tangled to mirror cleanly in v1).
+ */
+export function canReverseClip(clip: VideoAudioClip): boolean {
+  return (
+    !hasSpeedCurve(clip) &&
+    !hasFreezeFrames(clip) &&
+    !hasTranscriptDeletions(clip)
+  )
+}
+
+/**
+ * SOURCE offset (ms from trimInMs) shown at `timelineOffsetMs`, REVERSE-aware.
+ * For a forward clip this is exactly `sourceOffsetForTimelineOffset`. For a
+ * reversed clip the trimmed source window is mirrored. Since reverse is
+ * mutually exclusive with curve/freeze/deletions, the inner call always hits
+ * the linear path — routing through the resolver keeps one code path.
+ */
+export function reverseAwareSourceOffset(
+  clip: VideoAudioClip,
+  timelineOffsetMs: number
+): number {
+  const fwd = sourceOffsetForTimelineOffset(clip, timelineOffsetMs)
+  if (!isClipReversed(clip)) return fwd
+  const srcDur = Math.max(0, clip.trimOutMs - clip.trimInMs)
+  return Math.min(srcDur, Math.max(0, srcDur - fwd))
+}
+
+/**
  * Resolve a clip into constant-speed sub-segments for export. A constant clip
  * → one segment. A curve clip → N segments (capped at MAX_SPEED_SEGMENTS),
  * each ~SPEED_RAMP_STEP_MS of timeline output, each segment's speed = the
@@ -1401,7 +1855,9 @@ export function resolveSpeedSegments(
     const s = clampSpeedVal(clip.speed ?? 1)
     return [{ srcStartMs: 0, srcEndMs: srcDur, speed: s, outDurMs: srcDur / s }]
   }
-  const D = getClipTimelineDuration(clip)
+  // Speed-domain only — freeze holds are expanded separately by the export's
+  // segment collector, so this works in the pre-freeze timeline domain.
+  const D = speedOnlyTimelineDuration(clip)
   if (D <= 0 || srcDur <= 0) {
     const s = clampSpeedVal(clip.speed ?? 1)
     return [
@@ -1422,7 +1878,7 @@ export function resolveSpeedSegments(
   for (let i = 0; i < N; i++) {
     const outEnd = ((i + 1) * D) / N
     const srcEnd =
-      i === N - 1 ? srcDur : sourceOffsetForTimelineOffset(clip, outEnd)
+      i === N - 1 ? srcDur : speedOnlySourceOffset(clip, outEnd)
     const outDur = D / N
     const srcSpan = Math.max(0, srcEnd - prevSrc)
     const speed = clampSpeedVal(outDur > 0 ? srcSpan / outDur : 1)

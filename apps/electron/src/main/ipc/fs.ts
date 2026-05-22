@@ -86,6 +86,34 @@ export function registerFsHandlers(): void {
     }
   )
 
+  // Pick an existing directory (Phase 3.20 batch export). Returns the picked
+  // directory path, or null when the dialog is cancelled.
+  ipcMain.handle(IPC_CHANNELS.fs.pickDirectory, async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+
+    const opts = {
+      properties: ['openDirectory', 'createDirectory'] as Array<
+        'openDirectory' | 'createDirectory'
+      >,
+      defaultPath: lastDir ?? undefined
+    }
+
+    const result = win
+      ? await dialog.showOpenDialog(win, opts)
+      : await dialog.showOpenDialog(opts)
+
+    if (result.canceled || result.filePaths.length === 0) return null
+    const dir = result.filePaths[0]
+    // A directory pick must remember *itself*, not its parent — so set lastDir
+    // directly instead of routing through rememberDir (which does path.dirname).
+    lastDir = dir
+    // Allow-list the directory so batch export's auto-named child files
+    // (`<dir>/<name>.mp4`) pass the path-allow check inside runExport — the
+    // security model allow-lists directory prefixes (see isPathAllowed).
+    allowPath(dir)
+    return dir
+  })
+
   ipcMain.handle(
     IPC_CHANNELS.fs.saveFile,
     async (event, defaultName?: string) => {

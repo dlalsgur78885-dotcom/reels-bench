@@ -700,6 +700,10 @@ test.describe('@phase-3-35-progress-bar progress bar overlay contract', () => {
     const { mediaId, durationMs } = await addFixtureMedia()
     await addVideoClip(mediaId, durationMs)
 
+    // Phase 3.45+: progress-bar controls live inside the 옵션▾ popover.
+    await page.click('[data-testid="topbar-menu-options"]')
+    await page.locator('[data-testid="topbar-menu-options-popover"]').waitFor({ state: 'visible' })
+
     // The toggle button must be present.
     const toggleBtn = page.locator('[data-testid="toggle-progress-bar"]')
     await expect(toggleBtn).toBeVisible({ timeout: 5_000 })

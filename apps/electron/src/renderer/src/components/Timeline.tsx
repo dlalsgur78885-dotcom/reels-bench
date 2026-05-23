@@ -12,6 +12,7 @@ import {
   getClipTimelineDuration,
   getSpeedAt,
   getVoiceEnhance,
+  getVoiceChanger,
   getVolumeDbAt,
   hasFreezeFrames,
   hasSpeedCurve,
@@ -625,6 +626,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const resetClipColorAdjust = useProjectStore((s) => s.resetClipColorAdjust)
   const setClipNoiseReduction = useProjectStore((s) => s.setClipNoiseReduction)
   const setClipVoiceEnhance = useProjectStore((s) => s.setClipVoiceEnhance)
+  const setClipVoiceChanger = useProjectStore((s) => s.setClipVoiceChanger)
   const addBlurRegion = useProjectStore((s) => s.addBlurRegion)
   const updateBlurRegion = useProjectStore((s) => s.updateBlurRegion)
   const removeBlurRegion = useProjectStore((s) => s.removeBlurRegion)
@@ -2928,6 +2930,14 @@ export function Timeline(props: TimelineProps): JSX.Element {
                   // action; the preview audio graph is untouched.
                   setClipVoiceEnhance(ctxClip.id, patch)
                 }
+              : undefined
+          }
+          voiceChangerId={
+            isMediaClip(ctxClip) ? getVoiceChanger(ctxClip) ?? undefined : undefined
+          }
+          onVoiceChangerChange={
+            isMediaClip(ctxClip)
+              ? (id): void => setClipVoiceChanger(ctxClip.id, id)
               : undefined
           }
           blurRegions={

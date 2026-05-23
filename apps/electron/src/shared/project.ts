@@ -433,6 +433,15 @@ export interface VideoAudioClip {
    */
   voiceEnhance?: VoiceEnhance
   /**
+   * Phase 3.50 — voice-changer preset. Absent / 'none' = no change
+   * (byte-identical audio graph). Preset recipe is fully deterministic
+   * (`voiceChangerToFfmpeg`); presets that change pitch normalize the input
+   * sample rate first via `aresample=44100` so they sound consistent across
+   * source rates. Stacks AFTER voiceEnhance, BEFORE atempo (so the user's
+   * speed change is the last temporal modifier).
+   */
+  voiceChangerId?: VoiceChangerId
+  /**
    * Phase 3.21 — retouch / beauty (edge-preserving skin smoothing) strength,
    * 0..100. 0 / absent = OFF (byte-identical legacy video graph). Export-only
    * (ffmpeg `smartblur`, luma-only); resolved defensively by `getClipRetouch`
@@ -440,6 +449,13 @@ export interface VideoAudioClip {
    * keep tasteful.
    */
   retouch?: number
+  /**
+   * Phase 3.49 — video quality enhancer strength, 0..100. 0 / absent = OFF
+   * (byte-identical legacy video graph). Light denoise (hqdn3d) + adaptive
+   * sharpen (unsharp); good for low-light / soft-focus footage. Resolved
+   * defensively by `getClipEnhance` (null when off). STATIC ONLY.
+   */
+  enhance?: number
   /**
    * Phase 3.38 — per-clip video stabilization (손떨림 보정) strength, 0..100.
    * 0 / absent = OFF (byte-identical legacy video graph AND no `vidstabdetect`
@@ -459,6 +475,13 @@ export interface VideoAudioClip {
    * STATIC ONLY. No migration.
    */
   filmLook?: FilmLook
+  /**
+   * Phase 3.51 — visual effect preset (glitch / VHS / dream / dual-tone /
+   * sketch etc.). Absent / 'none' = no effect (byte-identical export).
+   * Stacks AFTER filmLook (effect overlays the tone+vignette+grain). Recipe
+   * is fully deterministic — see `visualEffectToFfmpeg`.
+   */
+  visualEffect?: VisualEffectId
   // -----------------------------------------------------------------
   // Phase 2.6 — transitions + filter presets (optional, backwards-compatible).
   // -----------------------------------------------------------------
@@ -1493,6 +1516,11 @@ export const MIN_RETOUCH = 0
 export const MAX_RETOUCH = 100
 /** Strength applied when the retouch toggle is first switched ON. */
 export const DEFAULT_RETOUCH = 40
+/** Video quality enhancer strength range (Phase 3.49). 0 = off. */
+export const MIN_ENHANCE = 0
+export const MAX_ENHANCE = 100
+/** Strength applied when the enhance toggle is first switched ON. */
+export const DEFAULT_ENHANCE = 50
 /** Stabilization strength range (Phase 3.38). 0 = off. */
 export const MIN_STABILIZE = 0
 export const MAX_STABILIZE = 100
@@ -1527,6 +1555,56 @@ export const NEUTRAL_VOICE_ENHANCE: VoiceEnhance = {
   eqLowCut: false,
   eqPresence: false
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3.51 — Visual effect presets. Per-clip, applied AFTER filmLook.
+// ---------------------------------------------------------------------------
+export type VisualEffectId =
+  | 'none'
+  | 'glitch'
+  | 'vhs'
+  | 'dream'
+  | 'dual-tone'
+  | 'negative'
+  | 'sketch'
+  | 'infrared'
+
+/** All visual-effect ids in UI order. */
+export const VISUAL_EFFECT_IDS: readonly VisualEffectId[] = [
+  'none',
+  'glitch',
+  'vhs',
+  'dream',
+  'dual-tone',
+  'negative',
+  'sketch',
+  'infrared'
+]
+
+// ---------------------------------------------------------------------------
+// Phase 3.50 — Voice changer presets. Stack on top of voiceEnhance.
+// ---------------------------------------------------------------------------
+export type VoiceChangerId =
+  | 'none'
+  | 'helium'
+  | 'chipmunk'
+  | 'deep'
+  | 'robot'
+  | 'echo'
+  | 'phone'
+  | 'monster'
+
+/** All voice-changer ids in UI order. */
+export const VOICE_CHANGER_IDS: readonly VoiceChangerId[] = [
+  'none',
+  'helium',
+  'chipmunk',
+  'deep',
+  'robot',
+  'echo',
+  'phone',
+  'monster'
+]
 
 /**
  * Defaults applied when the user FIRST flips the master 음성 보정 toggle ON.
@@ -1969,6 +2047,20 @@ export function getClipRetouch(clip: VideoAudioClip): number | null {
   return clamped <= 0 ? null : clamped
 }
 
+/**
+ * Resolve a clip's effective video-quality-enhancer strength (1..100), or
+ * null when off. Defensive: non-finite → 0, clamped to [MIN_ENHANCE,
+ * MAX_ENHANCE]; 0 → null. BYTE-IDENTICAL GATE: when this returns null,
+ * export emits the exact pre-Phase-3.49 video filter chain.
+ */
+export function getClipEnhance(clip: VideoAudioClip): number | null {
+  const v = clip.enhance
+  if (v === undefined) return null
+  const n = Number.isFinite(v) ? v : 0
+  const clamped = Math.min(MAX_ENHANCE, Math.max(MIN_ENHANCE, n))
+  return clamped <= 0 ? null : clamped
+}
+
 /** True when a voice-enhance payload has every sub-toggle off. */
 export function isNeutralVoiceEnhance(ve: VoiceEnhance): boolean {
   return (
@@ -1994,6 +2086,30 @@ export function getVoiceEnhance(clip: VideoAudioClip): VoiceEnhance | null {
     eqPresence: Boolean(v.eqPresence)
   }
   return isNeutralVoiceEnhance(merged) ? null : merged
+}
+
+/**
+ * Resolve a clip's effective visual-effect preset, or null when absent /
+ * 'none' / unknown. BYTE-IDENTICAL GATE: null → `visualEffectToFfmpeg`
+ * returns '' → caller pushes nothing → video graph byte-identical.
+ */
+export function getVisualEffect(
+  clip: VideoAudioClip
+): VisualEffectId | null {
+  const v = clip.visualEffect
+  if (!v || v === 'none' || !VISUAL_EFFECT_IDS.includes(v)) return null
+  return v
+}
+
+/**
+ * Resolve a clip's effective voice-changer preset, or null when absent /
+ * 'none' / unknown. BYTE-IDENTICAL GATE: null → `voiceChangerToFfmpeg`
+ * returns '' → caller pushes nothing → audio graph byte-identical.
+ */
+export function getVoiceChanger(clip: VideoAudioClip): VoiceChangerId | null {
+  const v = clip.voiceChangerId
+  if (!v || v === 'none' || !VOICE_CHANGER_IDS.includes(v)) return null
+  return v
 }
 
 /**

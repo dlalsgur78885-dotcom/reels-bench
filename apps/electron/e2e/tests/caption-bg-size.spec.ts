@@ -860,6 +860,10 @@ test.describe('@phase-3-42 caption background box size (backgroundHeightFrac / b
 
     await openEditor(launched)
 
+    // Phase 3.45+: add-caption-button lives inside the 자막▾ popover.
+    await page.click('[data-testid="topbar-menu-captions"]')
+    await page.locator('[data-testid="topbar-menu-captions-popover"]').waitFor({ state: 'visible' })
+
     // Add a caption via the UI button so CaptionEditor opens.
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
@@ -885,6 +889,10 @@ test.describe('@phase-3-42 caption background box size (backgroundHeightFrac / b
     const { page } = launched
 
     await openEditor(launched)
+
+    // Phase 3.45+: add-caption-button lives inside the 자막▾ popover.
+    await page.click('[data-testid="topbar-menu-captions"]')
+    await page.locator('[data-testid="topbar-menu-captions-popover"]').waitFor({ state: 'visible' })
 
     // Add a caption via the UI button so CaptionEditor opens.
     await page.locator('[data-testid="add-caption-button"]').click()

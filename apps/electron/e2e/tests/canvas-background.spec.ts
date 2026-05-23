@@ -593,6 +593,10 @@ test.describe('@phase-3-44-canvas-bg canvas backdrop fill contract', () => {
     await addVideoClip(mediaId, durationMs)
     await page.waitForTimeout(400)
 
+    // Phase 3.45+: canvas-bg-kind lives inside the 옵션▾ popover.
+    await page.click('[data-testid="topbar-menu-options"]')
+    await page.locator('[data-testid="topbar-menu-options-popover"]').waitFor({ state: 'visible' })
+
     const kindSelect = page.locator('[data-testid="canvas-bg-kind"]')
     await expect(kindSelect).toBeVisible({ timeout: 5_000 })
 
@@ -615,6 +619,10 @@ test.describe('@phase-3-44-canvas-bg canvas backdrop fill contract', () => {
     const { mediaId, durationMs } = await addFixtureMedia()
     await addVideoClip(mediaId, durationMs)
     await page.waitForTimeout(400)
+
+    // Phase 3.45+: canvas-bg-kind/color live inside the 옵션▾ popover.
+    await page.click('[data-testid="topbar-menu-options"]')
+    await page.locator('[data-testid="topbar-menu-options-popover"]').waitFor({ state: 'visible' })
 
     const kindSelect = page.locator('[data-testid="canvas-bg-kind"]')
     await expect(kindSelect).toBeVisible({ timeout: 5_000 })

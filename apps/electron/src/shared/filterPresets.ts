@@ -16,6 +16,8 @@ import type {
   FilmToneId,
   FilterPreset,
   HslBandKey,
+  VisualEffectId,
+  VoiceChangerId,
   VoiceEnhance
 } from './project'
 import {
@@ -415,6 +417,32 @@ export function sampleCurveTable(pts: CurvePoint[], steps: number): number[] {
  * (caller passes `getClipRetouch(clip)`). `luma_strength` is capped at 0.75 so
  * the result never goes fully plasticky.
  */
+/**
+ * Phase 3.49 — video quality enhancer ffmpeg chain. Light denoise (hqdn3d,
+ * luma-stronger) + adaptive sharpen (unsharp, luma-only). Returns '' for
+ * null/<=0 — caller pushes unconditionally and a no-enhance clip stays
+ * byte-identical. Core filters (no probe).
+ */
+export function enhanceToFfmpeg(
+  intensity: number | null | undefined
+): string {
+  if (intensity == null || !Number.isFinite(intensity) || intensity <= 0) {
+    return ''
+  }
+  const i = Math.min(100, Math.max(1, intensity))
+  const t = i / 100
+  // hqdn3d luma_spatial / chroma_spatial / luma_tmp / chroma_tmp.
+  // Scale luma 0..3 (heavier), chroma 0..1.5 (lighter).
+  const dnLuma = (t * 3).toFixed(2)
+  const dnChroma = (t * 1.5).toFixed(2)
+  // unsharp luma amount 0.4..1.4 (subtle to crisp, never plasticky).
+  const sharpAmount = (0.4 + t * 1.0).toFixed(2)
+  return (
+    `hqdn3d=${dnLuma}:${dnChroma}:${dnLuma}:${dnChroma},` +
+    `unsharp=lx=5:ly=5:la=${sharpAmount}:cx=5:cy=5:ca=0`
+  )
+}
+
 export function retouchToFfmpeg(
   intensity: number | null | undefined
 ): string {
@@ -694,4 +722,111 @@ export function voiceEnhanceToFfmpeg(
     parts.push('loudnorm=I=-16:TP=-1.5:LRA=11')
   }
   return parts.join(',')
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.50 — Voice changer presets. Pitch presets normalize the input
+// sample rate first via `aresample=44100` so the asetrate trick works
+// consistently regardless of the source's native rate. Single comma-joined
+// audio filter fragment. Returns '' for null / 'none' so the audio graph
+// stays BYTE-IDENTICAL for a clip with no voice changer set.
+// ---------------------------------------------------------------------------
+
+/** Human-readable Korean labels for each voice-changer preset id. */
+export const VOICE_CHANGER_LABELS: Record<VoiceChangerId, string> = {
+  none: '없음',
+  helium: '헬륨',
+  chipmunk: '치프멍크',
+  deep: '딥 보이스',
+  robot: '로봇',
+  echo: '에코',
+  phone: '전화',
+  monster: '몬스터'
+}
+
+export function voiceChangerToFfmpeg(
+  id: VoiceChangerId | null | undefined
+): string {
+  if (!id || id === 'none') return ''
+  switch (id) {
+    case 'helium':
+      // Pitch +~7 semitones, duration restored.
+      return 'aresample=44100,asetrate=66150,aresample=44100,atempo=0.6667'
+    case 'chipmunk':
+      // Pitch +12 semitones (one octave).
+      return 'aresample=44100,asetrate=88200,aresample=44100,atempo=0.5'
+    case 'deep':
+      // Pitch -~6 semitones.
+      return 'aresample=44100,asetrate=30870,aresample=44100,atempo=1.4286'
+    case 'robot':
+      // Chorus produces a metallic doubled-voice "robot" timbre.
+      return 'chorus=0.7:0.9:55:0.4:0.25:2'
+    case 'echo':
+      return 'aecho=0.8:0.88:60:0.4'
+    case 'phone':
+      // AM radio / phone band: 300-3400Hz BP + light compression.
+      return (
+        'highpass=300,lowpass=3400,' +
+        'acompressor=threshold=-20dB:ratio=4:attack=5:release=50'
+      )
+    case 'monster':
+      // Deep voice + tremolo wobble.
+      return (
+        'aresample=44100,asetrate=30870,aresample=44100,atempo=1.4286,' +
+        'tremolo=f=5:d=0.5'
+      )
+    default:
+      return ''
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.51 — Visual effect presets. Single-chain ffmpeg recipes that layer
+// on top of the per-clip colour grade + film look. Returns '' for null /
+// 'none' so the video graph stays BYTE-IDENTICAL for a clip with no effect.
+// ---------------------------------------------------------------------------
+
+/** Korean labels per visual-effect id (UI dropdown). */
+export const VISUAL_EFFECT_LABELS: Record<VisualEffectId, string> = {
+  none: '없음',
+  glitch: '글리치',
+  vhs: 'VHS',
+  dream: '드림',
+  'dual-tone': '듀얼 톤',
+  negative: '네거티브',
+  sketch: '스케치',
+  infrared: '인프라레드'
+}
+
+export function visualEffectToFfmpeg(
+  id: VisualEffectId | null | undefined
+): string {
+  if (!id || id === 'none') return ''
+  switch (id) {
+    case 'glitch':
+      return 'rgbashift=rh=4:gv=2:bh=-4:bv=-2'
+    case 'vhs':
+      return (
+        'rgbashift=rh=2:bh=-2,' +
+        'noise=alls=8:allf=t+u:all_seed=4711,' +
+        'unsharp=lx=5:ly=5:la=-0.3:cx=5:cy=5:ca=0'
+      )
+    case 'dream':
+      return 'gblur=sigma=1.5,eq=brightness=0.05:contrast=0.92:saturation=1.2'
+    case 'dual-tone':
+      return (
+        'colorchannelmixer=' +
+        '0.7:0:0.3:0:' +
+        '0.2:0:0.8:0:' +
+        '0:0.5:0.5:0'
+      )
+    case 'negative':
+      return 'negate'
+    case 'sketch':
+      return 'edgedetect=mode=colormix:high=0.2:low=0.08'
+    case 'infrared':
+      return 'hue=H=180,eq=saturation=1.3'
+    default:
+      return ''
+  }
 }

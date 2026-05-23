@@ -19,6 +19,7 @@ import { AutoEditDialog } from '../components/AutoEditDialog'
 import { Toast, type ToastVariant } from '../components/Toast'
 import type { PrefillResult } from '../lib/prefillFromReel'
 import type { AutoEditSummary } from '../lib/autoEdit'
+import { runBeatCut } from '../lib/beatCut'
 import { getTotalDurationMs, useProjectStore, useUndoRedo } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import {
@@ -688,6 +689,57 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     [playheadMs]
   )
 
+  // Phase 3.48 — BPM-based beat-sync auto-cut. Reads the global BPM from
+  // timelineUi and the first selected media clip; reports the result via toast.
+  const handleBeatCut = useCallback((step: 1 | 2 | 4 = 1): void => {
+    const result = runBeatCut({ step })
+    if (result.reason === 'no-bpm') {
+      setToast({
+        message: 'BPM을 먼저 입력하세요 (옵션 메뉴)',
+        variant: 'error',
+        id: Date.now()
+      })
+      return
+    }
+    if (result.reason === 'no-selection') {
+      setToast({
+        message: '비트로 자를 클립을 먼저 선택하세요',
+        variant: 'error',
+        id: Date.now()
+      })
+      return
+    }
+    if (result.reason === 'not-media-clip') {
+      setToast({
+        message: '미디어 클립만 비트로 자를 수 있어요',
+        variant: 'error',
+        id: Date.now()
+      })
+      return
+    }
+    if (result.reason === 'clip-locked') {
+      setToast({
+        message: '잠긴 클립은 자를 수 없어요',
+        variant: 'error',
+        id: Date.now()
+      })
+      return
+    }
+    if (result.reason === 'no-beats-in-range') {
+      setToast({
+        message: '클립 범위 안에 비트가 없습니다 — BPM을 확인하세요',
+        variant: 'info',
+        id: Date.now()
+      })
+      return
+    }
+    setToast({
+      message: `비트로 ${result.cuts}회 잘랐어요 (Ctrl+Z 로 되돌리기)`,
+      variant: 'success',
+      id: Date.now()
+    })
+  }, [])
+
   const handleImportSrt = useCallback(async (): Promise<void> => {
     setSrtError(null)
     try {
@@ -1076,6 +1128,35 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           >
             자동 편집
           </button>
+          {/* Phase 3.48 — BPM 기반 비트 싱크 자동 컷. step=1 모든 비트,
+              step=2 반박자(절반), step=4 다운비트(4박마다). */}
+          <div style={styles.menuGroupLabel}>비트로 자르기 (BPM 사용)</div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              style={{ ...styles.primaryBtn, flex: 1 }}
+              onClick={() => handleBeatCut(1)}
+              data-testid="beat-cut-every"
+              title="선택한 클립을 매 비트마다 자릅니다"
+            >
+              매 비트
+            </button>
+            <button
+              style={{ ...styles.secondaryBtn, flex: 1 }}
+              onClick={() => handleBeatCut(2)}
+              data-testid="beat-cut-half"
+              title="선택한 클립을 2박마다 자릅니다"
+            >
+              2박
+            </button>
+            <button
+              style={{ ...styles.secondaryBtn, flex: 1 }}
+              onClick={() => handleBeatCut(4)}
+              data-testid="beat-cut-down"
+              title="선택한 클립을 다운비트(4박)마다 자릅니다"
+            >
+              4박
+            </button>
+          </div>
           <button
             style={styles.secondaryBtn}
             onClick={() => setTemplatePickerOpen(true)}

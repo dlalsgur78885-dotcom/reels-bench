@@ -44,10 +44,13 @@ import {
   hslToFfmpeg,
   filterPresetToFfmpeg,
   retouchToFfmpeg,
+  enhanceToFfmpeg,
   transitionKindToXfade,
   stabilizeShakiness,
   stabilizeToFfmpeg,
-  voiceEnhanceToFfmpeg
+  voiceEnhanceToFfmpeg,
+  voiceChangerToFfmpeg,
+  visualEffectToFfmpeg
 } from '../../shared/filterPresets'
 import {
   DEFAULT_DUCKING_DB,
@@ -62,6 +65,7 @@ import {
   getClipBlurRegions,
   getClipDenoise,
   getClipRetouch,
+  getClipEnhance,
   blurRegionBlurRadiusPx,
   blurRegionMosaicBlockPx,
   getOverlayBaseSize,
@@ -127,6 +131,8 @@ import {
   getFilmLook,
   getClipStabilize,
   getVoiceEnhance,
+  getVoiceChanger,
+  getVisualEffect,
   getCanvasBackground,
   canvasBackgroundToFfmpegColor
 } from '../../shared/project'
@@ -2678,6 +2684,11 @@ function buildVideoSegmentChain(
     //      stays byte-identical to the pre-Phase-3.21 graph.
     const rtFreeze = retouchToFfmpeg(getClipRetouch(seg.clip))
     if (rtFreeze) freezeParts.push(rtFreeze)
+    // Phase 3.49 — VIDEO QUALITY ENHANCER (hqdn3d + unsharp). Stacks AFTER
+    // retouch, BEFORE filmLook (so the enhanced detail is what tone/grain
+    // composites on top of). BYTE-IDENTICAL GATE: null/0 → '' → skipped.
+    const enFreeze = enhanceToFfmpeg(getClipEnhance(seg.clip))
+    if (enFreeze) freezeParts.push(enFreeze)
     // FILM LOOK (Phase 3.37) — faded tone + vignette + grain. Stacks AFTER all
     // colour grading + retouch, BEFORE fps normalization: tone joins the grade,
     // vignette next, grain LAST so nothing blurs it away. vignette + noise are
@@ -2685,6 +2696,11 @@ function buildVideoSegmentChain(
     // BYTE-IDENTICAL GATE: getFilmLook returns null for an absent OR neutral look
     // → filmLookToFfmpeg returns [] → nothing pushed → `freezeParts` byte-identical.
     for (const f of filmLookToFfmpeg(getFilmLook(seg.clip))) freezeParts.push(f)
+    // Phase 3.51 — VISUAL EFFECT (glitch/VHS/dream/dual-tone/etc). Stacks
+    // AFTER filmLook (effect layered on top of tone+vignette+grain),
+    // BEFORE fps + crop. BYTE-IDENTICAL GATE: null/'none' → '' → skipped.
+    const vfxFreeze = visualEffectToFfmpeg(getVisualEffect(seg.clip))
+    if (vfxFreeze) freezeParts.push(vfxFreeze)
     freezeParts.push(`fps=${preset.fps}`)
     const cropRectFreeze = getClipCropRect(seg.clip)
     if (cropRectFreeze) {
@@ -2869,6 +2885,10 @@ function buildVideoSegmentChain(
   //      stays byte-identical to the pre-Phase-3.21 graph.
   const rt = retouchToFfmpeg(getClipRetouch(seg.clip))
   if (rt) parts.push(rt)
+  // Phase 3.49 — VIDEO QUALITY ENHANCER (hqdn3d + unsharp). Stacks AFTER
+  // retouch, BEFORE filmLook. BYTE-IDENTICAL GATE: null/0 → '' → skipped.
+  const en = enhanceToFfmpeg(getClipEnhance(seg.clip))
+  if (en) parts.push(en)
   // FILM LOOK (Phase 3.37) — faded tone + vignette + grain. Stacks AFTER all
   // colour grading + retouch, BEFORE fps normalization: tone joins the grade,
   // vignette next, grain LAST so nothing blurs it away. vignette + noise are
@@ -2876,6 +2896,10 @@ function buildVideoSegmentChain(
   // BYTE-IDENTICAL GATE: getFilmLook returns null for an absent OR neutral look
   // → filmLookToFfmpeg returns [] → nothing pushed → `parts` byte-identical.
   for (const f of filmLookToFfmpeg(getFilmLook(seg.clip))) parts.push(f)
+  // Phase 3.51 — VISUAL EFFECT (glitch/VHS/dream/etc). Stacks AFTER filmLook,
+  // BEFORE fps + crop. BYTE-IDENTICAL GATE: null/'none' → '' → skipped.
+  const vfx = visualEffectToFfmpeg(getVisualEffect(seg.clip))
+  if (vfx) parts.push(vfx)
   // 3. fps normalization (so xfade durations line up cleanly, and all layers
   //    share the same timebase before overlay).
   parts.push(`fps=${preset.fps}`)
@@ -3113,6 +3137,11 @@ function buildAudioSegmentChain(
     deEsserAvailable: options.deEsserAvailable
   })
   if (ve) parts.push(ve)
+  // Phase 3.50 — voice changer. Stacks AFTER voiceEnhance (so loudnorm sees
+  // the original pitch), BEFORE atempo (user's speed stays the last temporal
+  // modifier). BYTE-IDENTICAL GATE: null/'none' → '' → skipped.
+  const vc = voiceChangerToFfmpeg(getVoiceChanger(seg.clip))
+  if (vc) parts.push(vc)
   const tempo = atempoChain(speed)
   if (tempo) parts.push(tempo)
 

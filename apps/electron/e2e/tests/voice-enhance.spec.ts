@@ -316,6 +316,9 @@ test.describe('@phase-voice-enhance voice enhancement toggle + export filter', (
     await expect(page.locator('[data-testid="clip-context-menu"]')).toHaveCount(0)
 
     // Caption clip: menu-voice-enhance must NOT be present.
+    // Phase 3.45+: add-caption-button lives inside the 자막▾ popover.
+    await page.click('[data-testid="topbar-menu-captions"]')
+    await page.locator('[data-testid="topbar-menu-captions-popover"]').waitFor({ state: 'visible' })
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
     await page.locator('[data-testid="caption-editor-close"]').click()

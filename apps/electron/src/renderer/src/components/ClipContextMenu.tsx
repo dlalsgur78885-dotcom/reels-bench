@@ -10,6 +10,7 @@ import type {
   OverlayShadow,
   ShapeStyle,
   TransitionKind,
+  VoiceChangerId,
   VoiceEnhance
 } from '../../../shared/project'
 import {
@@ -56,6 +57,7 @@ import {
   DEFAULT_VOICE_ENHANCE,
   NEUTRAL_COLOR_ADJUST,
   NEUTRAL_VOICE_ENHANCE,
+  VOICE_CHANGER_IDS,
   isNeutralVoiceEnhance,
   TRANSITION_KINDS
 } from '../../../shared/project'
@@ -63,6 +65,7 @@ import {
   COLOR_ADJUST_LABELS,
   FILTER_PRESET_LABELS,
   TRANSITION_LABELS,
+  VOICE_CHANGER_LABELS,
   filterPresetToCss
 } from '../../../shared/filterPresets'
 import { BrandSwatchRow } from './BrandSwatchRow'
@@ -118,6 +121,11 @@ interface ClipContextMenuProps {
    * collapses to `voiceEnhance: undefined` in the store. Media clips only.
    */
   onVoiceEnhanceChange?: (patch: Partial<VoiceEnhance>) => void
+  // --- Phase 3.50 voice changer (media clips only) ---
+  /** The clip's current voice-changer preset (resolved by getVoiceChanger). */
+  voiceChangerId?: VoiceChangerId
+  /** Pick a new voice-changer preset (or 'none' to clear). Media clips only. */
+  onVoiceChangerChange?: (id: VoiceChangerId) => void
   // --- Phase 3.11 mosaic / blur regions (media clips only) ---
   /** The clip's current mosaic/blur regions (sanitized). Media clips only. */
   blurRegions?: BlurRegion[]
@@ -566,6 +574,8 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
     onNoiseReductionChange,
     voiceEnhance,
     onVoiceEnhanceChange,
+    voiceChangerId,
+    onVoiceChangerChange,
     blurRegions,
     onAddBlurRegion,
     onUpdateBlurRegion,
@@ -1216,6 +1226,45 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
               </div>
             </div>
           )}
+        </>
+      )}
+
+      {/* Phase 3.50 — voice changer preset dropdown. Media clips only. */}
+      {isMediaClip(clip) && onVoiceChangerChange && (
+        <>
+          <div
+            role="menuitem"
+            data-testid="menu-voice-changer"
+            style={{
+              ...styles.item,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8
+            }}
+          >
+            <span style={{ flex: 1 }}>🎙 보이스 체인저</span>
+            <select
+              data-testid="voice-changer-select"
+              value={voiceChangerId ?? 'none'}
+              onChange={(e) => {
+                onVoiceChangerChange(e.target.value as VoiceChangerId)
+              }}
+              style={{
+                background: '#1a1a1a',
+                color: '#f5f5f5',
+                border: '1px solid #2a2a2a',
+                borderRadius: 4,
+                padding: '4px 6px',
+                fontSize: 11
+              }}
+            >
+              {VOICE_CHANGER_IDS.map((id) => (
+                <option key={id} value={id}>
+                  {VOICE_CHANGER_LABELS[id]}
+                </option>
+              ))}
+            </select>
+          </div>
         </>
       )}
 

@@ -40,6 +40,8 @@ import {
   MAX_NOISE_REDUCTION,
   MIN_RETOUCH,
   MAX_RETOUCH,
+  MIN_ENHANCE,
+  MAX_ENHANCE,
   MIN_STABILIZE,
   MAX_STABILIZE,
   MIN_FILM_LOOK,
@@ -48,6 +50,8 @@ import {
   FILM_TONE_IDS,
   isNeutralFilmLook,
   NEUTRAL_VOICE_ENHANCE,
+  VISUAL_EFFECT_IDS,
+  VOICE_CHANGER_IDS,
   isNeutralVoiceEnhance,
   MIN_SPEED_KEYFRAME_GAP_MS,
   MIN_TRANSFORM_OFFSET,
@@ -89,6 +93,8 @@ import {
   type CurveChannelKey,
   type CurvePoint,
   type FilmLook,
+  type VisualEffectId,
+  type VoiceChangerId,
   type VoiceEnhance,
   type FilterPreset,
   type FreezeFrame,
@@ -818,6 +824,10 @@ export interface ProjectStore {
    * graph is untouched. No-op for non-media clips.
    */
   setClipVoiceEnhance(clipId: string, patch: Partial<VoiceEnhance>): void
+  /** Phase 3.50 — pick a voice-changer preset for a media clip (or 'none' to clear). */
+  setClipVoiceChanger(clipId: string, id: VoiceChangerId): void
+  /** Phase 3.51 — pick a visual-effect preset for a media clip (or 'none' to clear). */
+  setClipVisualEffect(clipId: string, id: VisualEffectId): void
   /**
    * Set a media clip's retouch / beauty strength (0..100). 0 (or any value
    * clamping to <= 0) stores `undefined` (OFF — lean snapshots). Export-only;
@@ -825,6 +835,8 @@ export interface ProjectStore {
    * clips and for non-finite inputs.
    */
   setClipRetouch(clipId: string, strength: number): void
+  /** Phase 3.49 — set the per-clip video quality enhancer strength (0..100). */
+  setClipEnhance(clipId: string, strength: number): void
   /**
    * Set a media clip's video-stabilization strength (0..100). 0 (or any value
    * clamping to <= 0) stores `undefined` (OFF — lean snapshots). Export-only;
@@ -2908,6 +2920,32 @@ export const useProjectStore = create<ProjectStore>()(
     schedulePersist(next)
   },
 
+  // Phase 3.49 — video quality enhancer. Mirrors setClipRetouch exactly:
+  // collapse to undefined when OFF for lean persisted JSON.
+  setClipEnhance(clipId: string, strength: number): void {
+    const numeric = Number(strength)
+    if (!Number.isFinite(numeric)) return
+    const clamped = Math.max(MIN_ENHANCE, Math.min(MAX_ENHANCE, numeric))
+    const nextVal = clamped <= 0 ? undefined : Math.round(clamped)
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      if ((c.enhance ?? undefined) === nextVal) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, enhance: nextVal }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
   setClipStabilize(clipId: string, strength: number): void {
     const numeric = Number(strength)
     if (!Number.isFinite(numeric)) return
@@ -3008,6 +3046,54 @@ export const useProjectStore = create<ProjectStore>()(
       const nextVal = isNeutralVoiceEnhance(merged) ? undefined : merged
       const clips = [...t.clips]
       clips[idx] = { ...c, voiceEnhance: nextVal }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // Phase 3.51 — visual-effect preset. 'none' (or unknown) collapses to
+  // `undefined` for lean persisted JSON (byte-identical to "never set").
+  setClipVisualEffect(clipId: string, id: VisualEffectId): void {
+    const safeId =
+      VISUAL_EFFECT_IDS.includes(id) && id !== 'none' ? id : undefined
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      if ((c.visualEffect ?? undefined) === safeId) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, visualEffect: safeId }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // Phase 3.50 — voice-changer preset. 'none' (or unknown) collapses to
+  // `undefined` for lean persisted JSON (byte-identical to "never set").
+  setClipVoiceChanger(clipId: string, id: VoiceChangerId): void {
+    const safeId =
+      VOICE_CHANGER_IDS.includes(id) && id !== 'none' ? id : undefined
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      if ((c.voiceChangerId ?? undefined) === safeId) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, voiceChangerId: safeId }
       changed = true
       return { ...t, clips }
     })

@@ -10,10 +10,13 @@ import type {
   HslBandKey,
   OverlayShadow,
   Project,
-  TransitionKind
+  TransitionKind,
+  VisualEffectId
 } from '../../../shared/project'
 import {
+  DEFAULT_ENHANCE,
   DEFAULT_OVERLAY_SHADOW,
+  VISUAL_EFFECT_IDS,
   DEFAULT_RETOUCH,
   DEFAULT_STABILIZE,
   DEFAULT_TRANSITION_MS,
@@ -24,6 +27,8 @@ import {
   NEUTRAL_FILM_LOOK,
   getClipColorAdjust,
   getClipCropRect,
+  getClipEnhance,
+  getVisualEffect,
   getClipHsl,
   getClipMotionTracks,
   getClipRetouch,
@@ -49,6 +54,8 @@ import {
   MIN_CROP_SIZE,
   MIN_HSL_ADJUST,
   MIN_KEYFRAME_GAP_MS,
+  MIN_ENHANCE,
+  MAX_ENHANCE,
   MIN_RETOUCH,
   MIN_STABILIZE,
   MAX_OVERLAY_SHADOW_BLUR,
@@ -68,6 +75,7 @@ import {
   FILM_LOOK_PRESETS,
   FILM_TONE_LABELS,
   FILTER_PRESET_LABELS,
+  VISUAL_EFFECT_LABELS,
   HSL_BAND_LABELS,
   HSL_BAND_SWATCHES,
   TRANSITION_LABELS,
@@ -456,6 +464,8 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   const setClipHslBand = useProjectStore((s) => s.setClipHslBand)
   const resetClipHsl = useProjectStore((s) => s.resetClipHsl)
   const setClipRetouch = useProjectStore((s) => s.setClipRetouch)
+  const setClipEnhance = useProjectStore((s) => s.setClipEnhance)
+  const setClipVisualEffect = useProjectStore((s) => s.setClipVisualEffect)
   const setClipStabilize = useProjectStore((s) => s.setClipStabilize)
   const setClipFilmLook = useProjectStore((s) => s.setClipFilmLook)
   const addTransformKeyframe = useProjectStore((s) => s.addTransformKeyframe)
@@ -623,6 +633,7 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   const hslBandAdjust: HslBandAdjust = hsl[hslBand]
   // Retouch / beauty — current strength (0 = off). Media clips only.
   const retouch = isMediaClip(clip) ? getClipRetouch(clip) ?? 0 : 0
+  const enhance = isMediaClip(clip) ? getClipEnhance(clip) ?? 0 : 0
   // Stabilize — current strength (0 = off). Media clips only.
   const stabilize = isMediaClip(clip) ? getClipStabilize(clip) ?? 0 : 0
   // Film look — resolved value (NEUTRAL when absent/neutral). Media clips only.
@@ -1520,6 +1531,99 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                   </div>
                   <p style={{ ...styles.hint, marginTop: 6 }}>
                     내보내기 시 적용 — 미리보기는 근사값입니다.
+                  </p>
+                </Section>
+              )}
+
+            {/* Phase 3.49 — 화질 향상 (hqdn3d + unsharp). VIDEO clips only.
+                Stacks AFTER retouch, BEFORE filmLook. */}
+            {isMediaClip(clip) &&
+              project.media[clip.mediaId]?.kind !== 'audio' && (
+                <Section
+                  id="enhance"
+                  title="화질 향상"
+                  testId="effects-section-enhance"
+                >
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      fontSize: 11,
+                      color: '#9aa0a6',
+                      marginBottom: 8
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={enhance > 0}
+                      data-testid="enhance-toggle"
+                      aria-label="화질 향상"
+                      onChange={(e) => {
+                        setClipEnhance(
+                          clip.id,
+                          e.target.checked ? DEFAULT_ENHANCE : 0
+                        )
+                      }}
+                    />
+                    <span>화질 향상</span>
+                  </label>
+                  <div style={{ opacity: enhance > 0 ? 1 : 0.5 }}>
+                    {sliderRow(
+                      '강도',
+                      enhance,
+                      MIN_ENHANCE,
+                      MAX_ENHANCE,
+                      1,
+                      (v) => setClipEnhance(clip.id, v),
+                      'effects-enhance',
+                      0,
+                      true,
+                      enhance <= 0
+                    )}
+                  </div>
+                  <p style={{ ...styles.hint, marginTop: 6 }}>
+                    내보내기 시 적용 — 노이즈 감소 + 선명도 향상.
+                  </p>
+                </Section>
+              )}
+
+            {/* Phase 3.51 — 비주얼 이펙트 (글리치/VHS/드림/듀얼톤 등).
+                Single dropdown, VIDEO clips only, stacks after filmLook. */}
+            {isMediaClip(clip) &&
+              project.media[clip.mediaId]?.kind !== 'audio' && (
+                <Section
+                  id="visual-effect"
+                  title="비주얼 이펙트"
+                  testId="effects-section-visual-effect"
+                >
+                  <select
+                    data-testid="visual-effect-select"
+                    value={getVisualEffect(clip) ?? 'none'}
+                    onChange={(e) =>
+                      setClipVisualEffect(
+                        clip.id,
+                        e.target.value as VisualEffectId
+                      )
+                    }
+                    style={{
+                      width: '100%',
+                      background: '#1a1a1a',
+                      color: '#f5f5f5',
+                      border: '1px solid #2a2a2a',
+                      borderRadius: 4,
+                      padding: '6px 8px',
+                      fontSize: 12
+                    }}
+                  >
+                    {VISUAL_EFFECT_IDS.map((id) => (
+                      <option key={id} value={id}>
+                        {VISUAL_EFFECT_LABELS[id]}
+                      </option>
+                    ))}
+                  </select>
+                  <p style={{ ...styles.hint, marginTop: 6 }}>
+                    내보내기 시 적용 — 미리보기는 색 변경 일부만 반영합니다.
                   </p>
                 </Section>
               )}

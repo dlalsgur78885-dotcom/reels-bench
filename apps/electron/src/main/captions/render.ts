@@ -43,7 +43,8 @@ import {
   KARAOKE_DIM_OPACITY,
   KARAOKE_POP_SCALE,
   getCaptionTextStroke,
-  getCaptionTextShadow
+  getCaptionTextShadow,
+  getCaptionBackgroundSize
 } from '../../shared/project'
 
 // ---------------------------------------------------------------------------
@@ -459,6 +460,12 @@ interface RenderContext {
    * output (no filter def, no wrapping <g>).
    */
   shadow: CaptionTextShadow | null
+  /**
+   * Phase 3.42 — resolved background box size fractions. Both fields are 0
+   * when absent/inactive → all math reduces to pre-3.42 expressions exactly
+   * (byte-identical gate).
+   */
+  bgSize: { heightFrac: number; widthFrac: number }
 }
 
 /** Per-preset SVG builders. Each returns the full <svg> document. */
@@ -622,28 +629,43 @@ ${wrapWithUserShadow(textEl, shadow)}
 // builders pass their final text color and ignore this.
 function withSolidBg(ctx: RenderContext, _textColor: string, bgColor: string): string {
   if (ctx.style.background !== 'solid' || bgColor === 'rgba(0,0,0,0)') return ''
-  const { canvasWidth, baselineY, fontSize, textWidthPx } = ctx
+  const { canvasWidth, canvasHeight, baselineY, fontSize, textWidthPx, bgSize } = ctx
   // padding 0.25em 0.6em ⇒ horizontal pad 0.6em, vertical 0.25em
   const padX = fontSize * 0.6
   const padY = fontSize * 0.25
-  const w = textWidthPx + padX * 2
-  const h = fontSize * 1.25 + padY * 2 // 1.25em line-height
+  // Phase 3.42: extra expansion from user-defined fracs. Both are 0 when unset
+  // → extraW=extraH=0 → math below is byte-identical to pre-3.42.
+  const extraW = bgSize.widthFrac * canvasWidth
+  const extraH = bgSize.heightFrac * canvasHeight
+  let w = textWidthPx + padX * 2 + extraW
+  let h = fontSize * 1.25 + padY * 2 + extraH // 1.25em line-height
+  // Clamp to canvas bounds.
+  w = Math.min(w, canvasWidth)
+  h = Math.min(h, canvasHeight)
   const x = canvasWidth / 2 - w / 2
-  // baseline sits ~0.8em from the top of the line box; rect top = baseline - 0.8em - padY
-  const y = baselineY - fontSize * 0.85 - padY
+  // baseline sits ~0.85em from the top of the line box; rect expands symmetrically.
+  const y = baselineY - fontSize * 0.85 - padY - extraH / 2
   return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="6" ry="6" fill="${bgColor}"/>`
 }
 
 function withPillBg(ctx: RenderContext, bgColor: string): string {
   if (ctx.style.background !== 'pill') return ''
-  const { canvasWidth, baselineY, fontSize, textWidthPx } = ctx
+  const { canvasWidth, canvasHeight, baselineY, fontSize, textWidthPx, bgSize } = ctx
   const padX = fontSize * 0.9
   const padY = fontSize * 0.2
-  const w = textWidthPx + padX * 2
-  const h = fontSize * 1.25 + padY * 2
+  // Phase 3.42: extra expansion from user-defined fracs. Both are 0 when unset
+  // → extraW=extraH=0 → math below is byte-identical to pre-3.42.
+  const extraW = bgSize.widthFrac * canvasWidth
+  const extraH = bgSize.heightFrac * canvasHeight
+  let w = textWidthPx + padX * 2 + extraW
+  let h = fontSize * 1.25 + padY * 2 + extraH
+  // Clamp to canvas bounds.
+  w = Math.min(w, canvasWidth)
+  h = Math.min(h, canvasHeight)
   const x = canvasWidth / 2 - w / 2
-  const y = baselineY - fontSize * 0.85 - padY
-  const r = h / 2
+  // Symmetric vertical expansion — text stays centered.
+  const y = baselineY - fontSize * 0.85 - padY - extraH / 2
+  const r = h / 2 // pill rx scales naturally with the expanded h
   return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="${r}" ry="${r}" fill="${bgColor}"/>`
 }
 
@@ -797,6 +819,11 @@ export function buildCaptionSvg(
   const stroke = getCaptionTextStroke(style)
   const shadow = getCaptionTextShadow(style)
 
+  // Phase 3.42 — resolve background box size fractions once. Returns {0,0}
+  // when both fields are absent or background is 'none'/'highlight' → builders
+  // compute extraW=extraH=0 → byte-identical to pre-3.42 output.
+  const bgSize = getCaptionBackgroundSize(style)
+
   const ctx: RenderContext = {
     fontSize,
     textWidthPx,
@@ -810,7 +837,8 @@ export function buildCaptionSvg(
     style,
     spans,
     stroke,
-    shadow
+    shadow,
+    bgSize
   }
 
   const builder = BUILDERS[style.preset] ?? BUILDERS['bottom-center']

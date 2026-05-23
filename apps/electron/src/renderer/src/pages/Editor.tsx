@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MediaLibrary } from '../components/MediaLibrary'
 import { OverlayLibrary } from '../components/OverlayLibrary'
 import { TranscriptPanel } from '../components/TranscriptPanel'
-import { PreviewCanvas } from '../components/PreviewCanvas'
+import { PreviewCanvas, PreviewGuidesControl } from '../components/PreviewCanvas'
 import { SocialPreviewSelector } from '../components/SocialPreviewOverlay'
 import { SilenceRemoveDialog } from '../components/SilenceRemoveDialog'
 import { Timeline } from '../components/Timeline'
@@ -21,12 +21,16 @@ import type { AutoEditSummary } from '../lib/autoEdit'
 import { getTotalDurationMs, useProjectStore, useUndoRedo } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import {
+  DEFAULT_CANVAS_BACKGROUND_COLOR,
+  getCanvasBackground,
   isCaptionClip,
+  isClipLocked,
   isMediaClip,
   isOverlayClip,
   MIN_PROGRESS_BAR_HEIGHT_FRAC,
   MAX_PROGRESS_BAR_HEIGHT_FRAC,
   type AspectRatio,
+  type CanvasBackgroundKind,
   type Clip,
   type ProgressBarPosition,
   type VideoAudioClip
@@ -252,6 +256,8 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   const clearCoverMs = useProjectStore((s) => s.clearCoverMs)
   const setProgressBar = useProjectStore((s) => s.setProgressBar)
   const toggleProgressBar = useProjectStore((s) => s.toggleProgressBar)
+  const setCanvasBackground = useProjectStore((s) => s.setCanvasBackground)
+  const canvasBg = getCanvasBackground(project)
   const removeClip = useProjectStore((s) => s.removeClip)
   const { undo, redo, canUndo, canRedo, pastCount, futureCount } = useUndoRedo()
 
@@ -638,6 +644,16 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
 
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault()
+        // Phase 3.41 — locked clips reject keyboard delete.
+        let selClip: Clip | null = null
+        for (const t of store.project.tracks) {
+          const found = t.clips.find((c) => c.id === firstSelected)
+          if (found) {
+            selClip = found
+            break
+          }
+        }
+        if (selClip && isClipLocked(selClip)) return
         store.removeClip(firstSelected)
         useTimelineUi.getState().clearSelection()
         setSelectedClipId((cur) => (cur === firstSelected ? null : cur))
@@ -984,6 +1000,68 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
             />
           </>
         )}
+        {/* Phase 3.44 — 캔버스 배경 (블러/단색). 'blur' 선택 시
+            setCanvasBackground(null) 로 필드를 absent 로 collapse 하여 legacy
+            DOM/export 와 byte-identical 을 유지한다. */}
+        <select
+          style={styles.select}
+          value={canvasBg.kind}
+          onChange={(e) => {
+            const kind = e.target.value as CanvasBackgroundKind
+            if (kind === 'color') {
+              setCanvasBackground({
+                kind: 'color',
+                color:
+                  canvasBg.kind === 'color' && canvasBg.color
+                    ? canvasBg.color
+                    : DEFAULT_CANVAS_BACKGROUND_COLOR
+              })
+            } else if (kind === 'blur') {
+              setCanvasBackground(null)
+            } else {
+              setCanvasBackground({ kind })
+            }
+          }}
+          aria-label="캔버스 배경"
+          data-testid="canvas-bg-kind"
+          title="캔버스 가장자리 배경 — 블러(기본) / 검정 / 흰색 / 컬러"
+        >
+          <option value="blur">흐림(블러)</option>
+          <option value="black">검정</option>
+          <option value="white">흰색</option>
+          <option value="color">컬러</option>
+        </select>
+        {canvasBg.kind === 'color' && (
+          <input
+            type="color"
+            value={canvasBg.color ?? DEFAULT_CANVAS_BACKGROUND_COLOR}
+            onChange={(e) =>
+              setCanvasBackground({ kind: 'color', color: e.target.value })
+            }
+            aria-label="캔버스 배경 색상"
+            data-testid="canvas-bg-color"
+            style={{
+              width: 32,
+              height: 28,
+              padding: 0,
+              border: '1px solid #2a2a2a',
+              borderRadius: 6,
+              background: '#0d0d0d',
+              cursor: 'pointer'
+            }}
+          />
+        )}
+        <button
+          type="button"
+          style={styles.secondaryBtn}
+          onClick={() =>
+            setCanvasBackground(canvasBg.kind === 'blur' ? null : canvasBg)
+          }
+          data-testid="canvas-bg-apply-all"
+          title="현재 캔버스 배경을 프로젝트 전체에 적용"
+        >
+          전체 적용
+        </button>
         <button
           style={styles.primaryBtn}
           onClick={() => setExportOpen(true)}
@@ -1076,6 +1154,20 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
               }}
             >
               <SocialPreviewSelector />
+            </div>
+            {/* Phase 3.43 — preview-only horizontal guideline rules control.
+                Sibling positioned to the LEFT of the selector so both stay
+                visible in the same row. Pure preview chrome — guides never
+                affect the export filter graph. */}
+            <div
+              style={{
+                position: 'absolute',
+                top: 8,
+                right: 168,
+                zIndex: 5
+              }}
+            >
+              <PreviewGuidesControl />
             </div>
             <div
               style={{

@@ -15,6 +15,7 @@ import type {
 import {
   DEFAULT_OVERLAY_SHADOW,
   DEFAULT_RETOUCH,
+  DEFAULT_STABILIZE,
   DEFAULT_TRANSITION_MS,
   FILTER_PRESETS,
   FILM_TONE_IDS,
@@ -26,12 +27,14 @@ import {
   getClipHsl,
   getClipMotionTracks,
   getClipRetouch,
+  getClipStabilize,
   getFilmLook,
   getOverlayShadow,
   getTransformAt,
   hasTransformKeyframes,
   HSL_BAND_KEYS,
   IDENTITY_CROP,
+  isClipLocked,
   isMediaClip,
   isOverlayClip,
   MAX_CLIP_SPEED,
@@ -47,9 +50,11 @@ import {
   MIN_HSL_ADJUST,
   MIN_KEYFRAME_GAP_MS,
   MIN_RETOUCH,
+  MIN_STABILIZE,
   MAX_OVERLAY_SHADOW_BLUR,
   MAX_OVERLAY_SHADOW_OFFSET,
   MAX_RETOUCH,
+  MAX_STABILIZE,
   MIN_TRANSFORM_OFFSET,
   MIN_TRANSFORM_ROTATION,
   MIN_TRANSFORM_SCALE,
@@ -379,6 +384,7 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   const setClipHslBand = useProjectStore((s) => s.setClipHslBand)
   const resetClipHsl = useProjectStore((s) => s.resetClipHsl)
   const setClipRetouch = useProjectStore((s) => s.setClipRetouch)
+  const setClipStabilize = useProjectStore((s) => s.setClipStabilize)
   const setClipFilmLook = useProjectStore((s) => s.setClipFilmLook)
   const addTransformKeyframe = useProjectStore((s) => s.addTransformKeyframe)
   // Phase 3.13 — overlay → motion-track binding.
@@ -392,6 +398,8 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   )
   // Phase 3.31 — auto-zoom / punch-in presets.
   const applyZoomPreset = useProjectStore((s) => s.applyZoomPreset)
+  // Phase 3.41 — per-clip lock toggle (drives the locked banner unlock button).
+  const setClipLocked = useProjectStore((s) => s.setClipLocked)
 
   const [tab, setTab] = useState<EffectTab>('transform')
   // HSL band selection — transient UI state (not in the project schema).
@@ -482,6 +490,29 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
     )
   }
 
+  // Phase 3.41 — locked clip short-circuit. Renders a minimal banner with an
+  // unlock button (the only allowed mutation) and hides every effect control.
+  if (clip && isClipLocked(clip)) {
+    return (
+      <div style={styles.panel} data-testid="effects-panel">
+        <div style={styles.header}>
+          <div style={styles.title}>효과</div>
+          <button style={styles.closeBtn} onClick={onClose} aria-label="닫기" data-testid="effects-panel-close">✕</button>
+        </div>
+        <div style={styles.empty} data-testid="effects-panel-locked-banner">
+          <div style={{ fontSize: 13, marginBottom: 12 }}>🔒 잠금됨 — 편집하려면 잠금을 해제하세요.</div>
+          <button
+            data-testid="effects-panel-unlock-btn"
+            onClick={() => setClipLocked(clip.id, false)}
+            style={{ background: '#fbbf24', color: '#0a0a0a', border: 'none',
+                     padding: '6px 14px', borderRadius: 4, cursor: 'pointer',
+                     fontSize: 12, fontWeight: 600 }}
+          >잠금 해제</button>
+        </div>
+      </div>
+    )
+  }
+
   if (!clip || (!isMediaClip(clip) && !isOverlayClip(clip))) {
     return (
       <div style={styles.panel} data-testid="effects-panel">
@@ -520,6 +551,8 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   const hslBandAdjust: HslBandAdjust = hsl[hslBand]
   // Retouch / beauty — current strength (0 = off). Media clips only.
   const retouch = isMediaClip(clip) ? getClipRetouch(clip) ?? 0 : 0
+  // Stabilize — current strength (0 = off). Media clips only.
+  const stabilize = isMediaClip(clip) ? getClipStabilize(clip) ?? 0 : 0
   // Film look — resolved value (NEUTRAL when absent/neutral). Media clips only.
   const film = isMediaClip(clip)
     ? getFilmLook(clip) ?? NEUTRAL_FILM_LOOK
@@ -1483,6 +1516,61 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                   <p style={{ ...styles.hint, marginTop: 6 }}>
                     그레인은 내보내기 시 적용됩니다 — 미리보기는 톤·비네트만
                     표시합니다.
+                  </p>
+                </div>
+              )}
+
+            {/* 손떨림 보정 — per-clip video stabilization. VIDEO clips only
+                (hidden for audio-kind media). Export-only — no honest CSS
+                preview; the hint says so. */}
+            {isMediaClip(clip) &&
+              project.media[clip.mediaId]?.kind !== 'audio' && (
+                <div data-testid="effects-section-stabilize">
+                  <hr style={styles.divider} />
+                  <p style={styles.sectionLabel}>손떨림 보정</p>
+                  <div style={{ height: 6 }} />
+                  {/* On/off toggle — ON applies DEFAULT_STABILIZE. */}
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      fontSize: 11,
+                      color: '#9aa0a6',
+                      marginBottom: 8
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={stabilize > 0}
+                      data-testid="stabilize-toggle"
+                      aria-label="손떨림 보정"
+                      onChange={(e) => {
+                        setClipStabilize(
+                          clip.id,
+                          e.target.checked ? DEFAULT_STABILIZE : 0
+                        )
+                      }}
+                    />
+                    <span>손떨림 보정</span>
+                  </label>
+                  <div style={{ opacity: stabilize > 0 ? 1 : 0.5 }}>
+                    {sliderRow(
+                      '강도',
+                      stabilize,
+                      MIN_STABILIZE,
+                      MAX_STABILIZE,
+                      1,
+                      (v) => setClipStabilize(clip.id, v),
+                      'effects-stabilize',
+                      0,
+                      true,
+                      stabilize <= 0
+                    )}
+                  </div>
+                  <p style={{ ...styles.hint, marginTop: 6 }}>
+                    내보내기 시 적용 — 미리보기는 표시되지 않습니다. (분석 1패스
+                    후 강도 조정은 즉시 반영됩니다.)
                   </p>
                 </div>
               )}

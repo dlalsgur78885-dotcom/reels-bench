@@ -555,9 +555,17 @@ export function ExportDialog({ project, onClose }: ExportDialogProps): JSX.Eleme
               style={{ fontSize: 11, color: '#9aa0a6', marginTop: 6 }}
               data-testid="export-progress-status"
             >
-              인코딩 중:{' '}
-              {useHardwareAccel && hwAvailable ? preferredEncoder : 'libx264'} ·
-              진행률 {progress.percent.toFixed(1)}%
+              {progress.message === 'stabilize-detect' ? (
+                <>손떨림 분석 중…</>
+              ) : (
+                <>
+                  인코딩 중:{' '}
+                  {useHardwareAccel && hwAvailable
+                    ? preferredEncoder
+                    : 'libx264'}
+                </>
+              )}{' '}
+              · 진행률 {progress.percent.toFixed(1)}%
               {progress.fps !== undefined ? ` · ${progress.fps.toFixed(1)} fps` : ''}
               {progress.speed !== undefined ? ` · ${progress.speed}x` : ''}
               {progress.done ? ' · 완료' : ''}

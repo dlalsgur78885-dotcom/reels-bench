@@ -134,7 +134,14 @@ const api: ElectronApi = {
       path: string,
       content: string
     ): Promise<SubtitleExportResult> =>
-      ipcRenderer.invoke(IPC_CHANNELS.captions.exportSubtitle, path, content)
+      ipcRenderer.invoke(IPC_CHANNELS.captions.exportSubtitle, path, content),
+    /** E2E-only: invoke main-process buildCaptionSvg. Returns SVG string. */
+    buildSvg: (
+      caption: unknown,
+      canvasWidth: number,
+      canvasHeight: number
+    ): Promise<string> =>
+      ipcRenderer.invoke(IPC_CHANNELS.captions.buildSvg, caption, canvasWidth, canvasHeight)
   },
   exporter: {
     run: (project, options: ExportRunOptions): Promise<ExportRunResult> =>

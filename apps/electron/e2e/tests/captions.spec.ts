@@ -42,8 +42,8 @@ test.describe('@phase-2-captions caption track + overlay + editor', () => {
           .electron.captions
       ).sort()
     )
-    // Phase 3.34 added exportSubtitle to the captions bridge.
-    expect(keys).toEqual(['exportSubtitle', 'importSrt', 'parseSrtString'])
+    // Phase 3.34 added exportSubtitle; Phase 3.42 added buildSvg (E2E bridge).
+    expect(keys).toEqual(['buildSvg', 'exportSubtitle', 'importSrt', 'parseSrtString'])
   })
 
   test('press C at playhead 1000ms creates a 1000–3000ms caption clip', async () => {

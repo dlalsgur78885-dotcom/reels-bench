@@ -10,20 +10,26 @@ import {
   getActiveWordIndex,
   getCaptionAnimWindows,
   getCaptionAnimation,
+  getCaptionBackgroundSize,
   getCaptionKaraoke,
   getCaptionTextShadow,
   getCaptionTextStroke,
   getAdjustmentLayers,
+  getCanvasBackground,
   getClipBlurRegions,
   getClipColorAdjust,
   getClipCropRect,
   getClipCurves,
   getClipRetouch,
+  getClipStabilize,
   getFilmLook,
   getOverlayBaseSize,
   getOverlayShadow,
+  getPreviewGuides,
   getProgressBar,
   getProjectTotalMs,
+  MAX_PREVIEW_GUIDES,
+  DEFAULT_PREVIEW_GUIDE_FRAC,
   PROGRESS_BAR_TRACK_OPACITY,
   resolveClipCurves,
   resolveColorAdjust,
@@ -57,6 +63,7 @@ import {
   filterPresetToCss,
   sampleCurveTable
 } from '../../../shared/filterPresets'
+import { useProjectStore } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import { useTrackingStore } from '../store/tracking'
 import { toMediaUrl } from '../lib/mediaUrl'
@@ -359,19 +366,32 @@ function presetExtras(style: CaptionStyle): React.CSSProperties {
   }
 }
 
-function backgroundFor(style: CaptionStyle): React.CSSProperties {
+function backgroundFor(
+  style: CaptionStyle,
+  fittedWidth: number,
+  fittedHeight: number
+): React.CSSProperties {
+  const { heightFrac, widthFrac } = getCaptionBackgroundSize(style)
+  const extraPadX = (widthFrac * fittedWidth) / 2
+  const extraPadY = (heightFrac * fittedHeight) / 2
   switch (style.background) {
     case 'solid':
       return {
         background:
           style.preset === 'youtube-yellow' ? '#000' : 'rgba(0,0,0,0.78)',
-        padding: '0.25em 0.6em',
+        padding:
+          extraPadX === 0 && extraPadY === 0
+            ? '0.25em 0.6em'
+            : `calc(0.25em + ${extraPadY}px) calc(0.6em + ${extraPadX}px)`,
         borderRadius: 6
       }
     case 'pill':
       return {
         background: 'rgba(0,0,0,0.7)',
-        padding: '0.2em 0.9em',
+        padding:
+          extraPadX === 0 && extraPadY === 0
+            ? '0.2em 0.9em'
+            : `calc(0.2em + ${extraPadY}px) calc(0.9em + ${extraPadX}px)`,
         borderRadius: 999
       }
     case 'highlight':
@@ -628,11 +648,12 @@ function captionAnimCss(
 
 function CaptionOverlay(props: {
   caption: CaptionClip
+  fittedWidth: number
   fittedHeight: number
   playheadMs: number
   project: Project
 }): JSX.Element {
-  const { caption, fittedHeight, playheadMs, project } = props
+  const { caption, fittedWidth, fittedHeight, playheadMs, project } = props
   const { style } = caption
   const REF_HEIGHT = 1920
   const scaledFontSize =
@@ -700,7 +721,7 @@ function CaptionOverlay(props: {
         wordBreak: 'keep-all',
         ...presetCss,
         ...textDecoration,
-        ...backgroundFor(style)
+        ...backgroundFor(style, fittedWidth, fittedHeight)
       }
     : {
         position: 'absolute',
@@ -720,7 +741,7 @@ function CaptionOverlay(props: {
         ...alignToHorizontalAnchor(style.align),
         ...presetCss,
         ...textDecoration,
-        ...backgroundFor(style)
+        ...backgroundFor(style, fittedWidth, fittedHeight)
       }
   // INVARIANT: an un-animated, unbound caption writes NEITHER `opacity` nor a
   // modified `transform` beyond alignToHorizontalAnchor's — rendered DOM is
@@ -1166,6 +1187,21 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
     return { cfg, pct }
   }, [project, playheadMs])
 
+  // Phase 3.43 — preview-only horizontal guideline rules. Resolved via
+  // `getPreviewGuides` (sanitized: sorted/clamped/deduped). Empty array →
+  // the whole overlay block is gated out → byte-identical DOM (no
+  // `preview-guides-layer` element emitted). Pure preview decoration; never
+  // read by export.ts.
+  const previewGuides = useMemo(() => getPreviewGuides(project), [project])
+
+  // Phase 3.44 — canvas backdrop fill. Resolved defensively via
+  // `getCanvasBackground` (absent / invalid → `{ kind: 'blur' }`, today's
+  // legacy default → byte-identical preview DOM gate). Switches the backdrop
+  // element below: 'blur' → keep the existing <video data-testid=
+  // "preview-video-bg"> (byte-identical), other kinds → render a <div> with
+  // the same testid + a solid background color.
+  const canvasBg = useMemo(() => getCanvasBackground(project), [project])
+
   const activeCaptions = useMemo(
     () => captionsAtTime(project, playheadMs),
     [project, playheadMs]
@@ -1381,7 +1417,11 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
       }
 
       // ----- BLURRED BACKGROUND — follows the BOTTOM-most layer -----
-      {
+      // Phase 3.44 — only run when the canvas backdrop IS the blur backdrop.
+      // For solid kinds ('black' / 'white' / 'color') the backdrop element is
+      // a <div>, not a <video>, so `bgVideoEl.current` is null AND we have
+      // nothing to load → skip the entire block.
+      if (canvasBg.kind === 'blur') {
         const bg = bgVideoEl.current
         if (bg) {
           if (bottomLayer) {
@@ -1712,26 +1752,53 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
             + dimmed brightness so the aspect-mismatched gutters get the
             iconic "vertical TikTok" look instead of black bars. z-index: 0.
             Phase 3.6 — the blurred bg intentionally does NOT reflect a clip's
-            cropRect (it samples the full frame); the export DOES crop the bg. */}
-        <video
-          ref={bgVideoEl}
-          data-testid="preview-video-bg"
-          aria-hidden="true"
-          playsInline
-          muted={true}
-          style={{
-            position: 'absolute',
-            inset: 0,
-            width: '100%',
-            height: '100%',
-            objectFit: 'cover',
-            filter: 'blur(40px) brightness(0.55)',
-            transform: 'scale(1.15)', // hide the blur ring at edges
-            zIndex: 0,
-            pointerEvents: 'none',
-            background: '#000'
-          }}
-        />
+            cropRect (it samples the full frame); the export DOES crop the bg.
+            Phase 3.44 — switched on `canvasBg.kind`. 'blur' keeps the legacy
+            <video> element verbatim (byte-identical DOM gate); the solid
+            kinds ('black' / 'white' / 'color') render a <div> with the SAME
+            data-testid, absolute positioning and z-index so the layer stack
+            still composites correctly. */}
+        {canvasBg.kind === 'blur' ? (
+          <video
+            ref={bgVideoEl}
+            data-testid="preview-video-bg"
+            aria-hidden="true"
+            playsInline
+            muted={true}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              filter: 'blur(40px) brightness(0.55)',
+              transform: 'scale(1.15)', // hide the blur ring at edges
+              zIndex: 0,
+              pointerEvents: 'none',
+              background: '#000'
+            }}
+          />
+        ) : (
+          <div
+            data-testid="preview-video-bg"
+            data-canvas-bg-kind={canvasBg.kind}
+            aria-hidden="true"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: '100%',
+              height: '100%',
+              zIndex: 0,
+              pointerEvents: 'none',
+              background:
+                canvasBg.kind === 'black'
+                  ? '#000000'
+                  : canvasBg.kind === 'white'
+                    ? '#ffffff'
+                    : canvasBg.color ?? '#000000'
+            }}
+          />
+        )}
         {/* Video layer stack — one <video> per video TRACK. object-fit:
             contain preserves the source aspect ratio inside the letterbox.
             zIndex = 1 + layerIndex so later tracks composite on top; the
@@ -1858,6 +1925,9 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                 clip && getClipColorAdjust(clip) ? 'true' : 'false'
               }
               data-film-look={filmLook ? 'true' : 'false'}
+              data-stabilize={
+                clip && getClipStabilize(clip) ? 'true' : 'false'
+              }
               playsInline
               muted={false}
               style={
@@ -2252,6 +2322,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
             <CaptionOverlay
               key={c.id}
               caption={c}
+              fittedWidth={fitted.width}
               fittedHeight={fitted.height}
               playheadMs={playheadMs}
               project={project}
@@ -2357,6 +2428,64 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           </div>
         )}
 
+        {/* Phase 3.43 — preview-only horizontal guideline rules. Rendered ONLY
+            when the sanitized list is non-empty; for legacy / cleared projects
+            this whole block is absent → byte-identical DOM (the preview gate).
+            Pure preview decoration: never read by export.ts. Composites one
+            above the progress bar so the lines are visible over the bar fill. */}
+        {previewGuides.length > 0 && (
+          <div
+            data-testid="preview-guides-layer"
+            data-guide-count={previewGuides.length}
+            aria-hidden="true"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              pointerEvents: 'none',
+              zIndex: socialZIndex + 4
+            }}
+          >
+            {previewGuides.map((yFrac, idx) => (
+              <div
+                key={`guide-${idx}-${yFrac.toFixed(4)}`}
+                data-testid="preview-guide-line"
+                data-guide-index={idx}
+                data-guide-y-frac={yFrac.toFixed(4)}
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  right: 0,
+                  top: `${yFrac * 100}%`,
+                  height: 0,
+                  borderTop: '1px dashed #f59e0b',
+                  pointerEvents: 'none'
+                }}
+              >
+                <span
+                  data-testid="preview-guide-label"
+                  style={{
+                    position: 'absolute',
+                    top: -8,
+                    right: 4,
+                    padding: '0 4px',
+                    background: 'rgba(13,13,13,0.78)',
+                    border: '1px solid rgba(245,158,11,0.5)',
+                    borderRadius: 3,
+                    color: '#f59e0b',
+                    fontSize: 9,
+                    lineHeight: '14px',
+                    fontFamily: 'monospace',
+                    pointerEvents: 'none',
+                    userSelect: 'none'
+                  }}
+                >
+                  {Math.round(yFrac * 100)}%
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
         <style>{`
           @keyframes reels-pulse {
             0%, 100% { transform: scale(1); }
@@ -2364,6 +2493,212 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           }
         `}</style>
       </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.43 — preview-only horizontal guideline rules: corner control.
+//
+// A small button + popover that lives in the preview-area top-right corner
+// (mounted by Editor.tsx alongside `SocialPreviewSelector`). Pure preview
+// chrome — every mutation routes through the project store's preview-guide
+// actions (`setPreviewGuides` / `addPreviewGuide` / `removePreviewGuide` /
+// `updatePreviewGuide`). The store collapses an empty list to absent so the
+// overlay layer stays byte-identical to legacy projects.
+// ---------------------------------------------------------------------------
+export function PreviewGuidesControl(): JSX.Element {
+  const project = useProjectStore((s) => s.project)
+  const addPreviewGuide = useProjectStore((s) => s.addPreviewGuide)
+  const removePreviewGuide = useProjectStore((s) => s.removePreviewGuide)
+  const updatePreviewGuide = useProjectStore((s) => s.updatePreviewGuide)
+  const setPreviewGuides = useProjectStore((s) => s.setPreviewGuides)
+  const guides = useMemo(() => getPreviewGuides(project), [project])
+  const [open, setOpen] = useState(false)
+
+  const atCap = guides.length >= MAX_PREVIEW_GUIDES
+
+  return (
+    <div
+      data-testid="preview-guides-control"
+      style={{
+        display: 'inline-flex',
+        flexDirection: 'column',
+        alignItems: 'flex-end',
+        gap: 4,
+        position: 'relative'
+      }}
+    >
+      <button
+        type="button"
+        data-testid="toggle-preview-guides"
+        title="미리보기 위에 가로 가이드라인을 추가합니다 (내보내기에는 영향 없음)"
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          background: 'rgba(13, 13, 13, 0.82)',
+          border: '1px solid #2a2a2a',
+          borderRadius: 6,
+          padding: '4px 8px',
+          color: '#cbd5e1',
+          fontSize: 11,
+          cursor: 'pointer',
+          whiteSpace: 'nowrap'
+        }}
+      >
+        <span aria-hidden="true" style={{ opacity: 0.85 }}>
+          ⎯
+        </span>
+        <span>가이드라인 ({guides.length})</span>
+      </button>
+      {open && (
+        <div
+          data-testid="preview-guides-popover"
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 4px)',
+            right: 0,
+            minWidth: 240,
+            maxWidth: 320,
+            background: 'rgba(13, 13, 13, 0.94)',
+            border: '1px solid #2a2a2a',
+            borderRadius: 6,
+            padding: 8,
+            color: '#cbd5e1',
+            fontSize: 11,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+            boxShadow: '0 4px 14px rgba(0,0,0,0.55)'
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 8
+            }}
+          >
+            <button
+              type="button"
+              data-testid="add-preview-guide"
+              disabled={atCap}
+              onClick={() => {
+                if (atCap) return
+                addPreviewGuide(DEFAULT_PREVIEW_GUIDE_FRAC)
+              }}
+              style={{
+                background: atCap ? '#1f2937' : '#2563eb',
+                color: atCap ? '#6b7280' : '#f5f5f5',
+                border: '1px solid #374151',
+                borderRadius: 4,
+                padding: '3px 8px',
+                fontSize: 11,
+                cursor: atCap ? 'not-allowed' : 'pointer'
+              }}
+            >
+              + 추가
+            </button>
+            {guides.length >= 2 && (
+              <button
+                type="button"
+                data-testid="clear-preview-guides"
+                onClick={() => setPreviewGuides([])}
+                style={{
+                  background: 'transparent',
+                  color: '#94a3b8',
+                  border: '1px solid #374151',
+                  borderRadius: 4,
+                  padding: '3px 8px',
+                  fontSize: 11,
+                  cursor: 'pointer'
+                }}
+              >
+                모두 지우기
+              </button>
+            )}
+          </div>
+          {guides.length === 0 ? (
+            <div
+              data-testid="preview-guides-empty"
+              style={{ color: '#6b7280', padding: '4px 2px' }}
+            >
+              가이드라인이 없습니다. &quot;+ 추가&quot;를 누르세요.
+            </div>
+          ) : (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+                maxHeight: 240,
+                overflowY: 'auto'
+              }}
+            >
+              {guides.map((yFrac, idx) => (
+                <div
+                  key={`row-${idx}`}
+                  data-testid="preview-guide-row"
+                  data-guide-index={idx}
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '44px 1fr auto',
+                    alignItems: 'center',
+                    gap: 6
+                  }}
+                >
+                  <span
+                    data-testid="preview-guide-row-label"
+                    style={{
+                      fontFamily: 'monospace',
+                      color: '#f59e0b',
+                      fontSize: 11,
+                      textAlign: 'right'
+                    }}
+                  >
+                    {Math.round(yFrac * 100)}%
+                  </span>
+                  <input
+                    type="range"
+                    data-testid="preview-guide-slider"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={yFrac}
+                    onChange={(e) => {
+                      const next = parseFloat(e.target.value)
+                      if (Number.isFinite(next)) {
+                        updatePreviewGuide(idx, next)
+                      }
+                    }}
+                    style={{ width: '100%' }}
+                  />
+                  <button
+                    type="button"
+                    data-testid="remove-preview-guide"
+                    onClick={() => removePreviewGuide(idx)}
+                    title="삭제"
+                    style={{
+                      background: 'transparent',
+                      color: '#ef4444',
+                      border: '1px solid #374151',
+                      borderRadius: 4,
+                      padding: '1px 6px',
+                      fontSize: 11,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

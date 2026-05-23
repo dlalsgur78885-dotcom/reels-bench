@@ -3,6 +3,7 @@ import { readFile, rename, writeFile } from 'node:fs/promises'
 import { IPC_CHANNELS } from '../../shared/ipc'
 import type { ParsedCaptionCue, SubtitleExportResult } from '../../shared/ipc'
 import { assertPathAllowed } from '../ffmpeg/security'
+import { buildCaptionSvg } from '../captions/render'
 
 // ---------------------------------------------------------------------------
 // SRT / VTT parser — pure, side-effect free. Returns cue list, caller maps
@@ -218,4 +219,25 @@ export function registerCaptionHandlers(): void {
     }
     return parseSrtOrVtt(raw)
   })
+
+  // E2E-only: call buildCaptionSvg from the main process so tests can assert
+  // SVG structure (rect sizes, rx values) without real Sharp / PNG rendering.
+  // Registered only when REELS_E2E=1 so it is never exposed in production.
+  if (process.env.REELS_E2E === '1') {
+    ipcMain.handle(
+      IPC_CHANNELS.captions.buildSvg,
+      (
+        _event,
+        caption: unknown,
+        canvasWidth: unknown,
+        canvasHeight: unknown
+      ) => {
+        return buildCaptionSvg(
+          caption as Parameters<typeof buildCaptionSvg>[0],
+          Number(canvasWidth),
+          Number(canvasHeight)
+        )
+      }
+    )
+  }
 }

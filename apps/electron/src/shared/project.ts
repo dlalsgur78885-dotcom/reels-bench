@@ -25,6 +25,35 @@ export interface MediaAsset {
 
 export type TrackKind = 'video' | 'audio' | 'caption' | 'overlay'
 
+/**
+ * The clip-kind discriminator values that appear on Clip variants
+ * (VideoAudioClip='media', CaptionClip='caption', OverlayClip='overlay').
+ * Used by `canPlaceClipOnTrack` for the clip-kind ↔ track-kind matrix.
+ */
+export type ClipKind = 'media' | 'caption' | 'overlay'
+
+/**
+ * Phase 3.40 — clip-kind ↔ track-kind compatibility predicate. Used by
+ * `addClip` and the new `moveClipToTrack` cross-track drag action. Centralizes
+ * the matrix:
+ *   - 'media'   → 'video' OR 'audio'  (audio-only routing lives on audio tracks)
+ *   - 'caption' → 'caption'
+ *   - 'overlay' → 'overlay'
+ *
+ * BYTE-IDENTICAL GATE: pure UI/store predicate — no export path or
+ * filter-graph builder consumes it. A project where no clip has changed
+ * track produces an unchanged graph.
+ */
+export function canPlaceClipOnTrack(
+  clipKind: ClipKind,
+  trackKind: TrackKind
+): boolean {
+  if (trackKind === 'caption') return clipKind === 'caption'
+  if (trackKind === 'overlay') return clipKind === 'overlay'
+  // 'video' or 'audio' track → media clips only.
+  return clipKind === 'media'
+}
+
 // ---------------------------------------------------------------------------
 // Clips: discriminated union between media-backed clips and caption clips.
 // ---------------------------------------------------------------------------
@@ -361,6 +390,13 @@ export interface VideoAudioClip {
    * IGNORES it. Absent = not grouped. No migration.
    */
   groupId?: string
+  /**
+   * Phase 3.41 — when true this clip is LOCKED: drags, trim, split, delete,
+   * and effects-panel edits are blocked at the UI + store level. Absent /
+   * false = unlocked. PURE editing guard — export IGNORES it. Resolved by
+   * `isClipLocked`. No migration.
+   */
+  locked?: boolean
   // -----------------------------------------------------------------
   // Phase 2.5 — audio shaping (optional, backwards-compatible).
   // -----------------------------------------------------------------
@@ -387,6 +423,16 @@ export interface VideoAudioClip {
    */
   noiseReduction?: number
   /**
+   * Phase 3.39 — voice enhancement bundle (loudnorm / compressor / de-esser /
+   * EQ). Absent / all-toggles-false = OFF (byte-identical pre-3.39 audio
+   * graph AND argv). Export-only — preview audio is untouched (panel hint
+   * says so). Resolved defensively by `getVoiceEnhance` (null when neutral).
+   * Applies to any clip with audio — video clips with embedded audio AND
+   * standalone audio clips. No coupling to ducking (orthogonal: VE is
+   * per-clip pre-mix; ducking is a post-mix sidechain).
+   */
+  voiceEnhance?: VoiceEnhance
+  /**
    * Phase 3.21 — retouch / beauty (edge-preserving skin smoothing) strength,
    * 0..100. 0 / absent = OFF (byte-identical legacy video graph). Export-only
    * (ffmpeg `smartblur`, luma-only); resolved defensively by `getClipRetouch`
@@ -394,6 +440,17 @@ export interface VideoAudioClip {
    * keep tasteful.
    */
   retouch?: number
+  /**
+   * Phase 3.38 — per-clip video stabilization (손떨림 보정) strength, 0..100.
+   * 0 / absent = OFF (byte-identical legacy video graph AND no `vidstabdetect`
+   * 1st-pass spawned). Export-only: prefers ffmpeg vidstab two-pass when the
+   * bundled ffmpeg-static exposes libvidstab, falls back to single-pass
+   * `deshake`, silently no-ops if neither is available. Resolved defensively
+   * by `getClipStabilize` (null when off). NOT previewed — stabilization is
+   * a per-frame warp from a motion-data file with no honest CSS analogue.
+   * STATIC ONLY.
+   */
+  stabilize?: number
   /**
    * Phase 3.37 — film-look finishing filter (vignette / grain / faded tone).
    * Absent / all-neutral = no-op (byte-identical legacy export + preview).
@@ -546,6 +603,20 @@ export interface CaptionStyle {
    * legacy caption.
    */
   textShadow?: CaptionTextShadow
+  /**
+   * Phase 3.42 — extra HEIGHT padding around the caption text for the
+   * background box, as a fraction of CANVAS HEIGHT. 0 / absent = box tightly
+   * fits text (byte-identical legacy). Applies to 'solid' / 'pill'
+   * backgrounds; 'none' / 'highlight' (per-span) ignore it. Clamped to
+   * [0, MAX_CAPTION_BG_FRAC] by `getCaptionBackgroundSize`.
+   */
+  backgroundHeightFrac?: number
+  /**
+   * Phase 3.42 — extra WIDTH padding around the caption text for the
+   * background box, as a fraction of CANVAS WIDTH. Same gating as
+   * `backgroundHeightFrac`.
+   */
+  backgroundWidthFrac?: number
 }
 
 /** Per-word optional emphasis. */
@@ -635,6 +706,11 @@ export const NO_CAPTION_KARAOKE: CaptionKaraoke = {
   highlightBox: false
 }
 
+// --- Caption background box size (Phase 3.42) ------------------------------
+/** Caption background-box extra padding bounds (fraction of canvas axis). */
+export const MIN_CAPTION_BG_FRAC = 0
+export const MAX_CAPTION_BG_FRAC = 0.5
+
 // --- Caption text decoration constants (Phase 3.23) ------------------------
 /** Caption text outline width bounds (px, canvas-relative ref frame). */
 export const MAX_CAPTION_STROKE_WIDTH = 24
@@ -700,6 +776,8 @@ export interface CaptionClip {
   karaoke?: CaptionKaraoke
   /** Phase 3.33 — link-group id (move/delete/select together; export ignores). */
   groupId?: string
+  /** Phase 3.41 — when true the clip is uneditable (UI + store guards). Export ignores. */
+  locked?: boolean
 }
 
 // -----------------------------------------------------------------------------
@@ -800,6 +878,8 @@ export interface OverlayClip {
   layoutGroupId?: string
   /** Phase 3.33 — link-group id (move/delete/select together; export ignores). */
   groupId?: string
+  /** Phase 3.41 — when true the clip is uneditable (UI + store guards). Export ignores. */
+  locked?: boolean
   /**
    * Base element size BEFORE transform.scale, as a fraction of canvas
    * width/height. `transform.scale/x/y/rotation/opacity` apply on top.
@@ -995,6 +1075,30 @@ export interface Project {
    * identical legacy export. Resolved defensively by `getProgressBar`.
    */
   progressBar?: ProgressBarConfig
+  /**
+   * Phase 3.43 — preview-only horizontal guideline rules (yFractions ∈ [0,1]).
+   * Absent / empty list = no guides → byte-identical preview DOM (no overlay
+   * block emitted) AND byte-identical export (export.ts NEVER reads this
+   * field — pure preview decoration). Persisted via the project JSON
+   * serializer so the user's compositional safe-zones survive reloads.
+   * Resolved defensively by `getPreviewGuides`.
+   */
+  previewGuides?: { yFractions: number[] }
+  /**
+   * Phase 3.44 — project-wide canvas backdrop fill that occupies the gutters
+   * around a scaled-down or aspect-mismatched clip.
+   *
+   *   Absent / `{ kind: 'blur' }` ⇒ BYTE-IDENTICAL legacy export: the
+   *     existing per-clip blurred-bg subchain in `buildVideoSegmentChain`
+   *     (`split=2 → boxblur=20:1, eq=brightness=-0.2`) is emitted verbatim.
+   *   `{ kind: 'black' }` ⇒ solid black canvas (`color=c=black`).
+   *   `{ kind: 'white' }` ⇒ solid white.
+   *   `{ kind: 'color', color }` ⇒ user-picked solid color.
+   *
+   * Resolved defensively by `getCanvasBackground`. Export + preview MUST
+   * route through it — never read `project.canvasBackground` raw.
+   */
+  canvasBackground?: CanvasBackground
 }
 
 export const ASPECT_RATIO_DIMENSIONS: Record<
@@ -1109,6 +1213,20 @@ export function getGroupMembers(project: Project, groupId: string): Clip[] {
 }
 
 // ---------------------------------------------------------------------------
+// Per-clip lock helper (Phase 3.41) — pure, importable from any layer.
+// ---------------------------------------------------------------------------
+
+/**
+ * True when `clip.locked === true`. Pure boolean read — works for every Clip
+ * variant (the field is on each interface, mirroring the `groupId?` pattern)
+ * so no isXxxClip narrowing is required at the call site. Export-path code
+ * MUST NOT read this — lock is a pure editing guard with no graph effect.
+ */
+export function isClipLocked(clip: Clip): boolean {
+  return clip.locked === true
+}
+
+// ---------------------------------------------------------------------------
 // Progress-bar helpers (Phase 3.35) — pure, importable from any layer.
 // ---------------------------------------------------------------------------
 
@@ -1166,6 +1284,110 @@ export function progressBarToFfmpeg(
     `drawbox=x=0:y=${y}:w='iw*min(t\\,${total})/${total}':h=ih*${hf}` +
     `:color=${hex}@1.0:t=fill`
   return `${track},${fill}`
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.44 — canvas backdrop fill. Project-wide. Selects what fills the
+// canvas gutters around a scaled-down / aspect-mismatched clip.
+// ---------------------------------------------------------------------------
+
+export type CanvasBackgroundKind = 'black' | 'white' | 'color' | 'blur'
+
+export interface CanvasBackground {
+  kind: CanvasBackgroundKind
+  /** `#rrggbb`. Required only when `kind === 'color'`. */
+  color?: string
+}
+
+/** Default color when the user first picks the 컬러 option. */
+export const DEFAULT_CANVAS_BACKGROUND_COLOR = '#ff00ff'
+
+/**
+ * Defensive resolver. Returns a discriminated payload that ALWAYS has a usable
+ * `kind`. Absent ⇒ `{ kind: 'blur' }` — semantically: "today's legacy
+ * per-clip blurred backdrop", which is the export's byte-identical baseline.
+ * The renderer + export MUST both route through this — never read
+ * `project.canvasBackground` raw. Invalid color hex falls back to BLUR (not
+ * black — preserves byte-identical guarantee). `kind === 'color'` with
+ * `color === '#000000'` collapses to `{ kind: 'black' }` (identical pixels).
+ */
+export function getCanvasBackground(project: Project): CanvasBackground {
+  const raw = project.canvasBackground
+  if (!raw || typeof raw !== 'object') return { kind: 'blur' }
+  switch (raw.kind) {
+    case 'black':
+      return { kind: 'black' }
+    case 'white':
+      return { kind: 'white' }
+    case 'blur':
+      return { kind: 'blur' }
+    case 'color': {
+      if (
+        typeof raw.color === 'string' &&
+        /^#[0-9a-fA-F]{6}$/.test(raw.color)
+      ) {
+        if (raw.color.toLowerCase() === '#000000') return { kind: 'black' }
+        return { kind: 'color', color: raw.color }
+      }
+      return { kind: 'blur' }
+    }
+    default:
+      return { kind: 'blur' }
+  }
+}
+
+/**
+ * ffmpeg `c=` argument for the SOLID backdrop modes — `'black'` / `'white'` /
+ * `'color'`. Throws conceptually (returns 'black' fallback) for `'blur'`; the
+ * caller MUST branch on `kind === 'blur'` and emit the legacy split-blur chain
+ * instead, NOT call this helper.
+ */
+export function canvasBackgroundToFfmpegColor(bg: CanvasBackground): string {
+  if (bg.kind === 'white') return 'white'
+  if (bg.kind === 'color' && bg.color) {
+    return '0x' + bg.color.replace(/^#/, '').toLowerCase()
+  }
+  return 'black'
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.43 — preview-only horizontal guidelines (project-level decoration).
+// ---------------------------------------------------------------------------
+
+/** Hard cap on how many guides one project can hold. */
+export const MAX_PREVIEW_GUIDES = 10
+/** Inclusive bounds for a guide's y-fraction. */
+export const MIN_PREVIEW_GUIDE_FRAC = 0
+export const MAX_PREVIEW_GUIDE_FRAC = 1
+/** Default y-fraction when "+ 추가" is clicked with no other context (center). */
+export const DEFAULT_PREVIEW_GUIDE_FRAC = 0.5
+
+/**
+ * Resolve a project's effective preview-guide y-fractions: sorted ascending,
+ * clamped to [MIN_PREVIEW_GUIDE_FRAC, MAX_PREVIEW_GUIDE_FRAC], non-finite
+ * entries dropped, capped at MAX_PREVIEW_GUIDES. Returns [] when the field
+ * is absent / malformed / empty — the byte-identical preview gate.
+ *
+ * NEVER called from export.ts (preview-only). Defensive: the project arrives
+ * over IPC unvalidated AND from a persisted JSON file the user could hand-edit.
+ */
+export function getPreviewGuides(project: Project): number[] {
+  const raw = project.previewGuides
+  if (!raw || typeof raw !== 'object') return []
+  const arr = raw.yFractions
+  if (!Array.isArray(arr) || arr.length === 0) return []
+  const cleaned: number[] = []
+  for (const v of arr) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) continue
+    const clamped = Math.max(
+      MIN_PREVIEW_GUIDE_FRAC,
+      Math.min(MAX_PREVIEW_GUIDE_FRAC, v)
+    )
+    cleaned.push(clamped)
+    if (cleaned.length >= MAX_PREVIEW_GUIDES) break
+  }
+  cleaned.sort((a, b) => a - b)
+  return cleaned
 }
 
 // ---------------------------------------------------------------------------
@@ -1271,6 +1493,52 @@ export const MIN_RETOUCH = 0
 export const MAX_RETOUCH = 100
 /** Strength applied when the retouch toggle is first switched ON. */
 export const DEFAULT_RETOUCH = 40
+/** Stabilization strength range (Phase 3.38). 0 = off. */
+export const MIN_STABILIZE = 0
+export const MAX_STABILIZE = 100
+/** Strength applied when the stabilize toggle is first switched ON. */
+export const DEFAULT_STABILIZE = 50
+
+// ---------------------------------------------------------------------------
+// Phase 3.39 — voice enhancement (loudnorm / compress / de-ess / EQ).
+// EXPORT-ONLY. Per-clip, boolean sub-toggles. Absent / all-false = no-op
+// (byte-identical pre-3.39 audio graph + argv). Applies to ANY VideoAudioClip
+// with an audio stream — video clips with embedded audio AND standalone audio
+// clips. Resolved defensively by `getVoiceEnhance` (null when neutral/absent).
+// ---------------------------------------------------------------------------
+export interface VoiceEnhance {
+  /** EBU R128 loudness normalization to -16 LUFS / -1.5 dBTP / LRA 11. */
+  loudnorm: boolean
+  /** Dynamic-range compression (acompressor, ~4:1 narration preset). */
+  compress: boolean
+  /** De-essing (sibilance suppression, ~6-8 kHz). */
+  deEss: boolean
+  /** 80 Hz high-pass to remove rumble. */
+  eqLowCut: boolean
+  /** 3 kHz presence shelf (+2 dB). */
+  eqPresence: boolean
+}
+
+/** All-off voice-enhance — equivalent to the field being absent. */
+export const NEUTRAL_VOICE_ENHANCE: VoiceEnhance = {
+  loudnorm: false,
+  compress: false,
+  deEss: false,
+  eqLowCut: false,
+  eqPresence: false
+}
+
+/**
+ * Defaults applied when the user FIRST flips the master 음성 보정 toggle ON.
+ * Loudnorm-only — highest impact, least surgical, safe on any narration.
+ */
+export const DEFAULT_VOICE_ENHANCE: VoiceEnhance = {
+  loudnorm: true,
+  compress: false,
+  deEss: false,
+  eqLowCut: false,
+  eqPresence: false
+}
 
 // ---------------------------------------------------------------------------
 // Phase 3.37 — film look (vignette / grain / faded tone) finishing filter.
@@ -1701,6 +1969,49 @@ export function getClipRetouch(clip: VideoAudioClip): number | null {
   return clamped <= 0 ? null : clamped
 }
 
+/** True when a voice-enhance payload has every sub-toggle off. */
+export function isNeutralVoiceEnhance(ve: VoiceEnhance): boolean {
+  return (
+    !ve.loudnorm && !ve.compress && !ve.deEss && !ve.eqLowCut && !ve.eqPresence
+  )
+}
+
+/**
+ * Resolve a clip's effective voice-enhancement payload, or null when off /
+ * neutral / absent. Defensive against IPC: missing or non-object → null;
+ * partial object → coerced to booleans then re-checked. Returning null lets
+ * `voiceEnhanceToFfmpeg` return '' → byte-identical pre-Phase-3.39 audio
+ * graph (the non-negotiable harness invariant).
+ */
+export function getVoiceEnhance(clip: VideoAudioClip): VoiceEnhance | null {
+  const v = clip.voiceEnhance
+  if (!v || typeof v !== 'object') return null
+  const merged: VoiceEnhance = {
+    loudnorm: Boolean(v.loudnorm),
+    compress: Boolean(v.compress),
+    deEss: Boolean(v.deEss),
+    eqLowCut: Boolean(v.eqLowCut),
+    eqPresence: Boolean(v.eqPresence)
+  }
+  return isNeutralVoiceEnhance(merged) ? null : merged
+}
+
+/**
+ * Resolve a clip's effective stabilization strength (1..100), or null when
+ * off. Defensive (clip may arrive over IPC unvalidated): non-finite → 0,
+ * clamped to [MIN_STABILIZE, MAX_STABILIZE]; 0 → null so callers cheaply
+ * skip BOTH the 1st-pass `vidstabdetect` step AND the 2nd-pass filter
+ * emission. BYTE-IDENTICAL GATE: when this returns null, export emits the
+ * exact pre-Phase-3.38 graph and runs NO vidstabdetect pre-pass.
+ */
+export function getClipStabilize(clip: VideoAudioClip): number | null {
+  const v = clip.stabilize
+  if (v === undefined) return null
+  const n = Number.isFinite(v) ? v : 0
+  const clamped = Math.min(MAX_STABILIZE, Math.max(MIN_STABILIZE, n))
+  return clamped <= 0 ? null : clamped
+}
+
 /** True when a film look does nothing (absent-equivalent). */
 export function isNeutralFilmLook(f: FilmLook): boolean {
   return f.vignette <= 0 && f.grain <= 0 && f.toneId === 'none'
@@ -2074,6 +2385,33 @@ export function getCaptionTextStroke(
   return {
     color: HEX6_RE.test(s.color) ? s.color : DEFAULT_CAPTION_STROKE_COLOR,
     width
+  }
+}
+
+/**
+ * Phase 3.42 — resolved caption background-box extra padding, as fractions of
+ * canvas height/width. Returns `{0,0}` when:
+ *   - both fields absent / NaN / <= 0, OR
+ *   - `style.background === 'none'` (no rect to grow), OR
+ *   - `style.background === 'highlight'` (per-span stroke trick, no rect).
+ *
+ * `{0,0}` is THE BYTE-IDENTICAL GATE: callers MUST run the original tight-fit
+ * code path (no extra rect math, no extra CSS padding) when both are zero.
+ * Defensive: non-finite → 0, clamped to [0, MAX_CAPTION_BG_FRAC].
+ */
+export function getCaptionBackgroundSize(
+  style: CaptionStyle
+): { heightFrac: number; widthFrac: number } {
+  if (style.background === 'none' || style.background === 'highlight') {
+    return { heightFrac: 0, widthFrac: 0 }
+  }
+  const clamp = (v: number | undefined): number => {
+    if (v === undefined || !Number.isFinite(v)) return 0
+    return Math.min(MAX_CAPTION_BG_FRAC, Math.max(MIN_CAPTION_BG_FRAC, v))
+  }
+  return {
+    heightFrac: clamp(style.backgroundHeightFrac),
+    widthFrac: clamp(style.backgroundWidthFrac)
   }
 }
 

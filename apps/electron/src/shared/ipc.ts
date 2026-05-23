@@ -36,7 +36,9 @@ export const IPC_CHANNELS = {
   captions: {
     importSrt: 'captions:importSrt',
     parseSrtString: 'captions:parseSrtString',
-    exportSubtitle: 'captions:exportSubtitle'
+    exportSubtitle: 'captions:exportSubtitle',
+    /** E2E-only: call buildCaptionSvg in main process. Registered only when REELS_E2E=1. */
+    buildSvg: 'captions:buildSvg'
   },
   audio: {
     detectSilence: 'audio:detectSilence',
@@ -615,6 +617,16 @@ export interface ElectronApi {
      * renderer obtains `path` from `fs.saveFile`, which allow-lists it).
      */
     exportSubtitle(path: string, content: string): Promise<SubtitleExportResult>
+    /**
+     * Phase 3.42 E2E-only — render a caption to SVG via the main-process
+     * `buildCaptionSvg`. Registered only when `REELS_E2E=1`; in production
+     * builds the handler is absent and the IPC will throw.
+     */
+    buildSvg(
+      caption: unknown,
+      canvasWidth: number,
+      canvasHeight: number
+    ): Promise<string>
   }
   exporter: {
     /** Run a full export. Resolves when the underlying ffmpeg job exits. */

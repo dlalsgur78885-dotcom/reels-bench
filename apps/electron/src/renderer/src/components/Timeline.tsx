@@ -11,12 +11,15 @@ import {
   getClipFreezeFrames,
   getClipTimelineDuration,
   getSpeedAt,
+  getVoiceEnhance,
   getVolumeDbAt,
   hasFreezeFrames,
   hasSpeedCurve,
   hasVolumeEnvelope,
   hasTransformKeyframes,
+  canPlaceClipOnTrack,
   isCaptionClip,
+  isClipLocked,
   isClipReversed,
   canReverseClip,
   isIdentityTransform,
@@ -37,6 +40,7 @@ import {
   speedOnlyTimelineOffset,
   type AdjustmentLayer,
   type Clip,
+  type ClipKind,
   type MediaAsset,
   type OverlayClip,
   type Project,
@@ -504,6 +508,23 @@ function snapMs(
   return Math.max(0, best)
 }
 
+// Phase 3.40 — hit-test which timeline track row the cursor's clientY is
+// currently inside. Used by the cross-track clip-drag handler. We walk
+// direct children of `body` so nested rows (e.g. clip pickers) don't fool
+// the test. Returns null when the cursor is outside every lane row.
+function hitTestTrackAtY(body: HTMLDivElement | null, clientY: number) {
+  if (!body) return null
+  const rows = body.querySelectorAll<HTMLDivElement>('[data-track-id]')
+  for (const row of rows) {
+    if (row.parentElement !== body) continue
+    const r = row.getBoundingClientRect()
+    if (clientY >= r.top && clientY <= r.bottom) {
+      return { trackId: row.dataset.trackId ?? '', rect: r }
+    }
+  }
+  return null
+}
+
 // Walk the lane and find the next free start position >= desired, clamping
 // each iteration to the next collision's endMs. Returns desired if no clip
 // overlaps. Used by drop handler and (indirectly) the body-drag clamp.
@@ -603,6 +624,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const setClipColorAdjust = useProjectStore((s) => s.setClipColorAdjust)
   const resetClipColorAdjust = useProjectStore((s) => s.resetClipColorAdjust)
   const setClipNoiseReduction = useProjectStore((s) => s.setClipNoiseReduction)
+  const setClipVoiceEnhance = useProjectStore((s) => s.setClipVoiceEnhance)
   const addBlurRegion = useProjectStore((s) => s.addBlurRegion)
   const updateBlurRegion = useProjectStore((s) => s.updateBlurRegion)
   const removeBlurRegion = useProjectStore((s) => s.removeBlurRegion)
@@ -679,10 +701,14 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const clearMarkers = useTimelineUi((s) => s.clearMarkers)
 
   const removeClip = useProjectStore((s) => s.removeClip)
+  // Phase 3.41 — per-clip lock toggle.
+  const setClipLocked = useProjectStore((s) => s.setClipLocked)
   // Phase 3.33 — clip grouping / linking.
   const groupClips = useProjectStore((s) => s.groupClips)
   const ungroupClips = useProjectStore((s) => s.ungroupClips)
   const moveClipGroup = useProjectStore((s) => s.moveClipGroup)
+  // Phase 3.40 — cross-track clip drag.
+  const moveClipToTrack = useProjectStore((s) => s.moveClipToTrack)
   const { undo, redo, canUndo, canRedo } = useUndoRedo()
 
   // Phase 3.32 — adjustment layers (range color-grades over the composite).
@@ -710,6 +736,13 @@ export function Timeline(props: TimelineProps): JSX.Element {
     y: number
   } | null>(null)
   const [dropTargetTrackId, setDropTargetTrackId] = useState<string | null>(null)
+  // Phase 3.40 — cross-track drag: the lane the cursor is currently HOVERING
+  // while moving an existing timeline clip (distinct from `dropTargetTrackId`,
+  // which is for MediaLibrary HTML5 drops). A ref shadows the state so the
+  // `mouseup` handler captured at mousedown time can read the freshest value
+  // without depending on a stale closure.
+  const [crossTrackDropTargetId, setCrossTrackDropTargetId] = useState<string | null>(null)
+  const crossTrackDropTargetIdRef = useRef<string | null>(null)
 
   // Compute total length (max endMs across all clips, min 10s for ruler).
   // Adjustment layers extend the ruler too so a layer past the last clip
@@ -945,6 +978,13 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const onMenuAction = (key: string): void => {
     if (!ctxClip) return
     const clip = ctxClip
+    // Phase 3.41 — lock toggle is always allowed (user must be able to unlock).
+    if (key === 'toggle-lock') {
+      setClipLocked(clip.id, !isClipLocked(clip))
+      return
+    }
+    // When locked, every other menu action is blocked.
+    if (isClipLocked(clip)) return
     if (key === 'edit-caption' && isCaptionClip(clip)) {
       onEditCaption(clip.id)
     } else if (key === 'change-style' && isCaptionClip(clip)) {
@@ -1118,6 +1158,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
     side: 'left' | 'right'
   ): void => {
     if (e.button !== 0) return
+    // Phase 3.41 — locked clips reject trim drags.
+    if (isClipLocked(clip)) return
     e.preventDefault()
     e.stopPropagation()
     handleSelect(clip.id)
@@ -1264,6 +1306,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
     track: Track
   ): void => {
     if (e.button !== 0) return
+    // Phase 3.41 — locked clips reject drag (same-track + cross-track).
+    if (isClipLocked(clip)) return
     // Don't stopPropagation immediately — we still want a click-without-drag
     // to register as a selection click.
     const startMouseX = e.clientX
@@ -1310,10 +1354,71 @@ export function Timeline(props: TimelineProps): JSX.Element {
         // Overlay clips reposition by body-drag too (no trim handles).
         updateOverlay(clip.id, { startMs: newStart, endMs: newEnd })
       }
+
+      // Phase 3.40 — cross-track drop indicator. Hit-test the row under the
+      // cursor's Y; if it's a DIFFERENT, compatible track, paint it as a
+      // candidate drop target. Commit happens in onUp.
+      const hit = hitTestTrackAtY(bodyRef.current, ev.clientY)
+      let candidateId: string | null = null
+      if (hit && hit.trackId && hit.trackId !== track.id) {
+        const live = useProjectStore.getState().project
+        const tgt = live.tracks.find((t) => t.id === hit.trackId)
+        if (tgt && canPlaceClipOnTrack(clip.kind as ClipKind, tgt.kind)) {
+          candidateId = hit.trackId
+        }
+      }
+      crossTrackDropTargetIdRef.current = candidateId
+      setCrossTrackDropTargetId(candidateId)
     }
     const onUp = (): void => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+
+      // Phase 3.40 — commit the cross-track move (if any). We re-resolve the
+      // clip from the LIVE project because its startMs may have shifted during
+      // the drag (the per-move commit above updates the store), and clamp the
+      // dropped startMs against the target lane's existing clips. The
+      // ref-vs-state pair keeps both sides in sync.
+      const finalTargetId = crossTrackDropTargetIdRef.current
+      crossTrackDropTargetIdRef.current = null
+      setCrossTrackDropTargetId(null)
+      if (finalTargetId && finalTargetId !== track.id) {
+        const live = useProjectStore.getState().project
+        const tgt = live.tracks.find((t) => t.id === finalTargetId)
+        if (tgt && canPlaceClipOnTrack(clip.kind as ClipKind, tgt.kind)) {
+          let liveClip: Clip | null = null
+          for (const t of live.tracks) {
+            const c = t.clips.find((cc) => cc.id === clip.id)
+            if (c) {
+              liveClip = c
+              break
+            }
+          }
+          if (liveClip) {
+            const dur = liveClip.endMs - liveClip.startMs
+            const safeStart = clampNoOverlap(tgt, liveClip.startMs, dur, liveClip.id)
+            if (safeStart !== liveClip.startMs) {
+              if (isMediaClip(liveClip)) {
+                updateMediaClipTrim(liveClip.id, {
+                  startMs: safeStart,
+                  endMs: safeStart + dur
+                })
+              } else if (isCaptionClip(liveClip)) {
+                updateCaption(liveClip.id, {
+                  startMs: safeStart,
+                  endMs: safeStart + dur
+                })
+              } else if (isOverlayClip(liveClip)) {
+                updateOverlay(liveClip.id, {
+                  startMs: safeStart,
+                  endMs: safeStart + dur
+                })
+              }
+            }
+            moveClipToTrack(liveClip.id, finalTargetId)
+          }
+        }
+      }
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
@@ -1400,6 +1505,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const handleSplitAtPlayhead = useCallback((): string | null => {
     const clip = findSelectedClip()
     if (!clip || !isMediaClip(clip)) return null
+    // Phase 3.41 — locked clips reject splits.
+    if (isClipLocked(clip)) return null
     return splitClipAt(clip.id, playheadMs) ?? null
   }, [findSelectedClip, splitClipAt, playheadMs])
 
@@ -1407,6 +1514,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const handleDeleteSelected = useCallback((): void => {
     const clip = findSelectedClip()
     if (!clip) return
+    // Phase 3.41 — locked clips reject deletion.
+    if (isClipLocked(clip)) return
     onDeleteClip(clip.id)
     handleSelect(null)
   }, [findSelectedClip, onDeleteClip, handleSelect])
@@ -1422,6 +1531,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
     (side: 'before' | 'after'): void => {
       const clip = findSelectedClip()
       if (!clip || !isMediaClip(clip)) return
+      // Phase 3.41 — locked clips reject split-delete.
+      if (isClipLocked(clip)) return
       const origId = clip.id
       const newRightId = splitClipAt(origId, playheadMs)
       if (!newRightId) return
@@ -1509,6 +1620,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
     (e: React.MouseEvent<HTMLDivElement>, clip: Clip): void => {
       if (toolMode !== 'split') return
       if (!isMediaClip(clip)) return
+      // Phase 3.41 — locked clips reject splits.
+      if (isClipLocked(clip)) return
       // Walk up from the clicked clip-body to the track lane (the element
       // carrying a data-track-drop attribute) so the click X maps to an
       // absolute timeline position regardless of the body's own offset.
@@ -1528,8 +1641,11 @@ export function Timeline(props: TimelineProps): JSX.Element {
 
   const selectedClipForToolbar = findSelectedClip()
   const canSplit =
-    selectedClipForToolbar !== null && isMediaClip(selectedClipForToolbar)
-  const canDelete = selectedClipForToolbar !== null
+    selectedClipForToolbar !== null &&
+    isMediaClip(selectedClipForToolbar) &&
+    !isClipLocked(selectedClipForToolbar)
+  const canDelete =
+    selectedClipForToolbar !== null && !isClipLocked(selectedClipForToolbar)
 
   return (
     <div style={styles.wrap} data-testid="timeline">
@@ -2047,7 +2163,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
             <div
               style={{
                 ...styles.trackLane,
-                ...(dropTargetTrackId === track.id
+                ...(dropTargetTrackId === track.id ||
+                crossTrackDropTargetId === track.id
                   ? styles.trackLaneDropActive
                   : {}),
                 width: laneWidth
@@ -2065,6 +2182,9 @@ export function Timeline(props: TimelineProps): JSX.Element {
               onDrop={(e) => handleLaneDrop(e, track)}
               data-testid={`track-lane-${track.kind}`}
               data-track-drop={track.kind}
+              data-cross-track-drop-target={
+                crossTrackDropTargetId === track.id ? 'true' : 'false'
+              }
             >
               {track.clips.map((clip) => {
                 const left = clipLeft(clip, pps)
@@ -2167,15 +2287,24 @@ export function Timeline(props: TimelineProps): JSX.Element {
                         ...styles.clipBody,
                         left: isMediaClip(clip) ? HANDLE_PX : 0,
                         right: isMediaClip(clip) ? HANDLE_PX : 0,
-                        cursor: toolMode === 'split' ? 'col-resize' : 'grab',
+                        cursor: isClipLocked(clip)
+                          ? 'not-allowed'
+                          : toolMode === 'split'
+                            ? 'col-resize'
+                            : 'grab',
                         // Phase 3.33 — grouped clips get a distinct outline.
                         ...(clip.groupId
                           ? { outline: '2px solid #a855f7', outlineOffset: -2 }
+                          : {}),
+                        // Phase 3.41 — locked clips de-saturate + dim.
+                        ...(isClipLocked(clip)
+                          ? { opacity: 0.7, filter: 'saturate(0.7)' }
                           : {})
                       }}
                       data-testid="clip-body"
                       data-clip-id={clip.id}
                       data-group-id={clip.groupId}
+                      data-locked={isClipLocked(clip) ? 'true' : 'false'}
                       onMouseDown={(e) => {
                         // Split tool — clicking a clip splits it; never drags.
                         if (toolMode === 'split') {
@@ -2224,6 +2353,16 @@ export function Timeline(props: TimelineProps): JSX.Element {
                           }}
                         >
                           🔗
+                        </span>
+                      )}
+                      {/* Phase 3.41 — lock badge marks a locked clip. */}
+                      {isClipLocked(clip) && (
+                        <span
+                          data-testid="clip-lock-badge"
+                          title="잠금된 클립"
+                          style={{ marginLeft: 4, fontSize: 10, color: '#fbbf24' }}
+                        >
+                          🔒
                         </span>
                       )}
                     </div>
@@ -2774,6 +2913,20 @@ export function Timeline(props: TimelineProps): JSX.Element {
                   // Noise reduction is EXPORT-ONLY — straight to the store
                   // action; the preview audio graph is untouched.
                   setClipNoiseReduction(ctxClip.id, s)
+                }
+              : undefined
+          }
+          voiceEnhance={
+            isMediaClip(ctxClip)
+              ? getVoiceEnhance(ctxClip) ?? undefined
+              : undefined
+          }
+          onVoiceEnhanceChange={
+            isMediaClip(ctxClip)
+              ? (patch): void => {
+                  // Voice enhance is EXPORT-ONLY — straight to the store
+                  // action; the preview audio graph is untouched.
+                  setClipVoiceEnhance(ctxClip.id, patch)
                 }
               : undefined
           }

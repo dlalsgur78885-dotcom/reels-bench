@@ -9,7 +9,8 @@ import type {
   MotionTrack,
   OverlayShadow,
   ShapeStyle,
-  TransitionKind
+  TransitionKind,
+  VoiceEnhance
 } from '../../../shared/project'
 import {
   BLUR_EFFECT_KINDS,
@@ -23,6 +24,7 @@ import {
   getTransformAt,
   IDENTITY_CROP,
   isCaptionClip,
+  isClipLocked,
   isMediaClip,
   isOverlayClip,
   MAX_BLUR_REGIONS_PER_CLIP,
@@ -51,7 +53,10 @@ import {
   MIN_GAIN_DB,
   MAX_GAIN_DB,
   DEFAULT_NOISE_REDUCTION,
+  DEFAULT_VOICE_ENHANCE,
   NEUTRAL_COLOR_ADJUST,
+  NEUTRAL_VOICE_ENHANCE,
+  isNeutralVoiceEnhance,
   TRANSITION_KINDS
 } from '../../../shared/project'
 import {
@@ -102,6 +107,17 @@ interface ClipContextMenuProps {
   noiseReduction?: number
   /** Set the clip's noise-reduction strength (0..100, 0 = off). Media clips only. */
   onNoiseReductionChange?: (strength: number) => void
+  // --- Phase 3.39 voice enhancement (media clips only) ---
+  /**
+   * The clip's current voice-enhance payload (or undefined when off / neutral).
+   * Media clips only — five boolean sub-toggles. EXPORT-ONLY.
+   */
+  voiceEnhance?: VoiceEnhance
+  /**
+   * Merge a partial voice-enhance patch onto the clip. A neutral result
+   * collapses to `voiceEnhance: undefined` in the store. Media clips only.
+   */
+  onVoiceEnhanceChange?: (patch: Partial<VoiceEnhance>) => void
   // --- Phase 3.11 mosaic / blur regions (media clips only) ---
   /** The clip's current mosaic/blur regions (sanitized). Media clips only. */
   blurRegions?: BlurRegion[]
@@ -427,6 +443,28 @@ function groupRows(groupable: boolean, grouped: boolean): MenuRow[] {
   ]
 }
 
+/**
+ * Phase 3.41 — when a clip is locked, every "other" row is disabled (the lock
+ * toggle row itself stays enabled so the user can always unlock). Helper takes
+ * the locked-flag + the original row list and returns a guarded copy.
+ */
+function applyLockGuard(rows: MenuRow[], locked: boolean): MenuRow[] {
+  if (!locked) return rows
+  return rows.map((r) => ({ ...r, enabled: false }))
+}
+
+/**
+ * Phase 3.41 — lock toggle row prepended to every clip kind. `locked` decides
+ * the label / icon; the row itself is always enabled so the user can unlock.
+ */
+function lockRow(locked: boolean): MenuRow {
+  return {
+    key: 'toggle-lock',
+    label: locked ? '🔓 잠금 해제' : '🔒 잠금',
+    enabled: true
+  }
+}
+
 /** Build the row list for a media clip. */
 function mediaRows(
   clip: Clip,
@@ -439,40 +477,61 @@ function mediaRows(
   const split = isMediaClip(clip) && playheadMs !== undefined
     ? playheadMs > clip.startMs + 100 && playheadMs < clip.endMs - 100
     : false
+  const locked = isClipLocked(clip)
   return [
-    {
-      key: 'split',
-      label: '여기서 자르기',
-      shortcut: 'S',
-      enabled: split
-    },
-    { key: 'duplicate', label: '복제', shortcut: 'Ctrl+D' },
-    // 오디오 분리 — split this video clip's audio onto its own audio track.
-    // Enabled only for a video-track media clip that isn't already muted.
-    { key: 'detach-audio', label: '오디오 분리', enabled: audioDetachable },
-    // Phase 2.5 — opens the silence-remove dialog (handled by parent).
-    { key: 'remove-silence', label: '무음 자동 제거…' },
-    ...groupRows(groupable, grouped),
-    { key: 'delete', label: '삭제', shortcut: 'Delete', destructive: true }
+    lockRow(locked),
+    ...applyLockGuard(
+      [
+        {
+          key: 'split',
+          label: '여기서 자르기',
+          shortcut: 'S',
+          enabled: split
+        },
+        { key: 'duplicate', label: '복제', shortcut: 'Ctrl+D' },
+        // 오디오 분리 — split this video clip's audio onto its own audio track.
+        // Enabled only for a video-track media clip that isn't already muted.
+        { key: 'detach-audio', label: '오디오 분리', enabled: audioDetachable },
+        // Phase 2.5 — opens the silence-remove dialog (handled by parent).
+        { key: 'remove-silence', label: '무음 자동 제거…' },
+        ...groupRows(groupable, grouped),
+        { key: 'delete', label: '삭제', shortcut: 'Delete', destructive: true }
+      ],
+      locked
+    )
   ]
 }
 
-function captionRows(groupable: boolean, grouped: boolean): MenuRow[] {
+function captionRows(clip: Clip, groupable: boolean, grouped: boolean): MenuRow[] {
+  const locked = isClipLocked(clip)
   return [
-    { key: 'edit-caption', label: '자막 편집' },
-    { key: 'duplicate', label: '복제', shortcut: 'Ctrl+D' },
-    { key: 'change-style', label: '스타일 변경' },
-    ...groupRows(groupable, grouped),
-    { key: 'delete', label: '삭제', shortcut: 'Delete', destructive: true }
+    lockRow(locked),
+    ...applyLockGuard(
+      [
+        { key: 'edit-caption', label: '자막 편집' },
+        { key: 'duplicate', label: '복제', shortcut: 'Ctrl+D' },
+        { key: 'change-style', label: '스타일 변경' },
+        ...groupRows(groupable, grouped),
+        { key: 'delete', label: '삭제', shortcut: 'Delete', destructive: true }
+      ],
+      locked
+    )
   ]
 }
 
 /** Build the row list for an overlay clip (Phase 3.8). */
-function overlayRows(groupable: boolean, grouped: boolean): MenuRow[] {
+function overlayRows(clip: Clip, groupable: boolean, grouped: boolean): MenuRow[] {
+  const locked = isClipLocked(clip)
   return [
-    { key: 'duplicate', label: '복제', shortcut: 'Ctrl+D' },
-    ...groupRows(groupable, grouped),
-    { key: 'delete', label: '삭제', shortcut: 'Delete', destructive: true }
+    lockRow(locked),
+    ...applyLockGuard(
+      [
+        { key: 'duplicate', label: '복제', shortcut: 'Ctrl+D' },
+        ...groupRows(groupable, grouped),
+        { key: 'delete', label: '삭제', shortcut: 'Delete', destructive: true }
+      ],
+      locked
+    )
   ]
 }
 
@@ -505,6 +564,8 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
     onColorAdjustReset,
     noiseReduction: noiseReductionProp,
     onNoiseReductionChange,
+    voiceEnhance,
+    onVoiceEnhanceChange,
     blurRegions,
     onAddBlurRegion,
     onUpdateBlurRegion,
@@ -567,6 +628,7 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
   const [showCrop, setShowCrop] = useState(false)
   const [showColorAdjust, setShowColorAdjust] = useState(false)
   const [showDenoise, setShowDenoise] = useState(false)
+  const [showVoiceEnhance, setShowVoiceEnhance] = useState(false)
   const [showBlur, setShowBlur] = useState(false)
   const [showMotionTrack, setShowMotionTrack] = useState(false)
   const [showShapeStyle, setShowShapeStyle] = useState(false)
@@ -578,9 +640,9 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
   // Always recompute on each render so playhead/clip changes drive the gate.
   // 3-way switch on clip.kind: caption / overlay / media.
   const rows = isCaptionClip(clip)
-    ? captionRows(groupable === true, grouped === true)
+    ? captionRows(clip, groupable === true, grouped === true)
     : isOverlayClip(clip)
-      ? overlayRows(groupable === true, grouped === true)
+      ? overlayRows(clip, groupable === true, grouped === true)
       : mediaRows(
           clip,
           playheadMs,
@@ -629,6 +691,18 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
     ? clip.noiseReduction ?? noiseReductionProp ?? 0
     : 0
   const denoiseOn = noiseReduction > 0
+  // Phase 3.39 — voice enhance: master is ON when payload exists AND at least
+  // one sub-toggle is true. Count of enabled sub-toggles drives the header chip.
+  const voiceEnhanceOn = Boolean(
+    voiceEnhance && !isNeutralVoiceEnhance(voiceEnhance)
+  )
+  const voiceEnhanceCount = voiceEnhance
+    ? (voiceEnhance.loudnorm ? 1 : 0) +
+      (voiceEnhance.compress ? 1 : 0) +
+      (voiceEnhance.deEss ? 1 : 0) +
+      (voiceEnhance.eqLowCut ? 1 : 0) +
+      (voiceEnhance.eqPresence ? 1 : 0)
+    : 0
   // Phase 3.8 — current shape style for a shape overlay (fallback otherwise).
   const shapeStyle: ShapeStyle =
     isOverlayClip(clip) && clip.source.type === 'shape'
@@ -958,6 +1032,187 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
               {/* Export-only hint — preview is intentionally not denoised. */}
               <div style={{ ...styles.shortcut, marginTop: 6 }}>
                 내보내기 시 적용 — 미리듣기에는 반영되지 않습니다
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Voice-enhance sub-menu (Phase 3.39) — media clips only. Five boolean
+          sub-toggles (loudnorm / compress / de-ess / EQ low-cut / EQ presence).
+          EXPORT-ONLY: the preview audio graph is untouched. Mirrors the
+          노이즈 제거 sub-menu shape (header chip + collapsible panel). */}
+      {isMediaClip(clip) && onVoiceEnhanceChange && (
+        <>
+          <div style={styles.separator} />
+          <div
+            role="menuitem"
+            data-testid="menu-voice-enhance"
+            style={styles.item}
+            onMouseEnter={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = '#2a2a2a'
+            }}
+            onMouseLeave={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = 'transparent'
+            }}
+            onClick={() => setShowVoiceEnhance((v) => !v)}
+          >
+            <span>음성 보정{showVoiceEnhance ? '' : '…'}</span>
+            <span style={styles.shortcut}>
+              {voiceEnhanceOn ? `켜짐 (${voiceEnhanceCount})` : '꺼짐'}
+            </span>
+          </div>
+          {showVoiceEnhance && (
+            <div
+              style={styles.speedPanel}
+              data-testid="menu-voice-enhance-panel"
+            >
+              {/* Master toggle — ON dispatches DEFAULT_VOICE_ENHANCE
+                  (loudnorm-only); OFF dispatches NEUTRAL (store collapses
+                  to undefined). Modeled on the denoise master toggle. */}
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  marginBottom: 8,
+                  cursor: 'pointer',
+                  fontSize: 11,
+                  color: '#9aa0a6'
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={voiceEnhanceOn}
+                  data-testid="voice-enhance-toggle"
+                  aria-label="음성 보정"
+                  onChange={(e) => {
+                    onVoiceEnhanceChange(
+                      e.target.checked
+                        ? DEFAULT_VOICE_ENHANCE
+                        : NEUTRAL_VOICE_ENHANCE
+                    )
+                  }}
+                />
+                <span>음성 보정 사용</span>
+              </label>
+              {/* Sub-toggles — disabled while master is OFF. Each row dispatches
+                  a single-field patch so the store's 5-field equality check
+                  short-circuits no-ops. */}
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  marginBottom: 4,
+                  cursor: voiceEnhanceOn ? 'pointer' : 'not-allowed',
+                  fontSize: 11,
+                  color: voiceEnhanceOn ? '#cbd5e1' : '#475569'
+                }}
+              >
+                <input
+                  type="checkbox"
+                  data-testid="vc-loudnorm"
+                  checked={Boolean(voiceEnhance?.loudnorm)}
+                  disabled={!voiceEnhanceOn}
+                  onChange={(e) => {
+                    onVoiceEnhanceChange({ loudnorm: e.target.checked })
+                  }}
+                />
+                <span>라우드니스 정규화 (-16 LUFS)</span>
+              </label>
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  marginBottom: 4,
+                  cursor: voiceEnhanceOn ? 'pointer' : 'not-allowed',
+                  fontSize: 11,
+                  color: voiceEnhanceOn ? '#cbd5e1' : '#475569'
+                }}
+              >
+                <input
+                  type="checkbox"
+                  data-testid="vc-compress"
+                  checked={Boolean(voiceEnhance?.compress)}
+                  disabled={!voiceEnhanceOn}
+                  onChange={(e) => {
+                    onVoiceEnhanceChange({ compress: e.target.checked })
+                  }}
+                />
+                <span>컴프레서</span>
+              </label>
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  marginBottom: 4,
+                  cursor: voiceEnhanceOn ? 'pointer' : 'not-allowed',
+                  fontSize: 11,
+                  color: voiceEnhanceOn ? '#cbd5e1' : '#475569'
+                }}
+              >
+                <input
+                  type="checkbox"
+                  data-testid="vc-deess"
+                  checked={Boolean(voiceEnhance?.deEss)}
+                  disabled={!voiceEnhanceOn}
+                  onChange={(e) => {
+                    onVoiceEnhanceChange({ deEss: e.target.checked })
+                  }}
+                />
+                <span>디에서</span>
+              </label>
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  marginBottom: 4,
+                  cursor: voiceEnhanceOn ? 'pointer' : 'not-allowed',
+                  fontSize: 11,
+                  color: voiceEnhanceOn ? '#cbd5e1' : '#475569'
+                }}
+              >
+                <input
+                  type="checkbox"
+                  data-testid="vc-eqlowcut"
+                  checked={Boolean(voiceEnhance?.eqLowCut)}
+                  disabled={!voiceEnhanceOn}
+                  onChange={(e) => {
+                    onVoiceEnhanceChange({ eqLowCut: e.target.checked })
+                  }}
+                />
+                <span>저주파 컷 (80 Hz)</span>
+              </label>
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  marginBottom: 4,
+                  cursor: voiceEnhanceOn ? 'pointer' : 'not-allowed',
+                  fontSize: 11,
+                  color: voiceEnhanceOn ? '#cbd5e1' : '#475569'
+                }}
+              >
+                <input
+                  type="checkbox"
+                  data-testid="vc-eqpresence"
+                  checked={Boolean(voiceEnhance?.eqPresence)}
+                  disabled={!voiceEnhanceOn}
+                  onChange={(e) => {
+                    onVoiceEnhanceChange({ eqPresence: e.target.checked })
+                  }}
+                />
+                <span>보이스 EQ 프레즌스 (3 kHz +2 dB)</span>
+              </label>
+              {/* Export-only hint — preview audio graph is intentionally
+                  untouched (mirrors the denoise hint). */}
+              <div style={{ ...styles.shortcut, marginTop: 6 }}>
+                내보내기 시 적용 — 미리듣기에는 반영되지 않습니다.
               </div>
             </div>
           )}

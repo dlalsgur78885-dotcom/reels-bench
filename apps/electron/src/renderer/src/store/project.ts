@@ -40,11 +40,15 @@ import {
   MAX_NOISE_REDUCTION,
   MIN_RETOUCH,
   MAX_RETOUCH,
+  MIN_STABILIZE,
+  MAX_STABILIZE,
   MIN_FILM_LOOK,
   MAX_FILM_LOOK,
   NEUTRAL_FILM_LOOK,
   FILM_TONE_IDS,
   isNeutralFilmLook,
+  NEUTRAL_VOICE_ENHANCE,
+  isNeutralVoiceEnhance,
   MIN_SPEED_KEYFRAME_GAP_MS,
   MIN_TRANSFORM_OFFSET,
   MIN_TRANSFORM_ROTATION,
@@ -63,6 +67,13 @@ import {
   DEFAULT_PROGRESS_BAR_HEIGHT_FRAC,
   MIN_PROGRESS_BAR_HEIGHT_FRAC,
   MAX_PROGRESS_BAR_HEIGHT_FRAC,
+  MAX_PREVIEW_GUIDES,
+  MIN_PREVIEW_GUIDE_FRAC,
+  MAX_PREVIEW_GUIDE_FRAC,
+  DEFAULT_PREVIEW_GUIDE_FRAC,
+  DEFAULT_CANVAS_BACKGROUND_COLOR,
+  getPreviewGuides,
+  type CanvasBackground,
   type ProgressBarConfig,
   type AdjustmentLayer,
   type AspectRatio,
@@ -78,6 +89,7 @@ import {
   type CurveChannelKey,
   type CurvePoint,
   type FilmLook,
+  type VoiceEnhance,
   type FilterPreset,
   type FreezeFrame,
   type HslBandAdjust,
@@ -94,7 +106,9 @@ import {
   type TransitionKind,
   type VideoAudioClip,
   type VolumeKeyframe,
+  type ClipKind,
   aspectRatioConversion,
+  canPlaceClipOnTrack,
   resolveCoverMs,
   clampBlurRegion,
   getClipDuration,
@@ -114,6 +128,7 @@ import {
   resolvedVolumeKeyframes,
   getVolumeDbAt,
   isCaptionClip,
+  isClipLocked,
   isClipReversed,
   canReverseClip,
   isIdentityCrop,
@@ -578,6 +593,38 @@ export interface ProjectStore {
   /** Phase 3.35 — flip the progress-bar `enabled` flag (config object survives). */
   toggleProgressBar(): void
 
+  // --- Canvas backdrop fill (Phase 3.44) — see shared/project.ts ---
+  /**
+   * Replace the project's canvas-background payload. `null` or
+   * `{ kind: 'blur' }` COLLAPSES the field to absent so the persisted JSON
+   * stays byte-identical to a project that never set the field (the legacy
+   * default — today's preview blur backdrop). A `color` payload validates
+   * the `#rrggbb` hex; `#000000` collapses to `{ kind: 'black' }` (identical
+   * pixels) and an invalid hex collapses to absent (= blur). All other kinds
+   * are stored verbatim. One zundo step per call.
+   */
+  setCanvasBackground(bg: CanvasBackground | null): void
+
+  // --- Preview-only horizontal guidelines (Phase 3.43) — see shared/project.ts ---
+  /**
+   * Replace the project's preview-guide list with a sanitized copy of
+   * `yFractions`. Drops NaN/non-finite entries, clamps every value to
+   * [MIN_PREVIEW_GUIDE_FRAC, MAX_PREVIEW_GUIDE_FRAC], caps at
+   * MAX_PREVIEW_GUIDES, sorts ascending. When the cleaned array is empty,
+   * the `previewGuides` field is COLLAPSED to absent so the persisted JSON
+   * stays byte-identical to a project that never had a guide.
+   */
+  setPreviewGuides(yFractions: number[]): void
+  /**
+   * Append a new guide at `yFrac` (or DEFAULT_PREVIEW_GUIDE_FRAC when omitted).
+   * No-op when the current list is already at MAX_PREVIEW_GUIDES.
+   */
+  addPreviewGuide(yFrac?: number): void
+  /** Drop the guide at `index` (no-op when out of range). */
+  removePreviewGuide(index: number): void
+  /** Replace the guide at `index` with `yFrac` (no-op when out of range). */
+  updatePreviewGuide(index: number, yFrac: number): void
+
   // --- Adjustment layers (Phase 3.32) — range color-grades over the composite ---
   /**
    * Append a new adjustment layer spanning [startMs, endMs]. The window is
@@ -671,6 +718,17 @@ export interface ProjectStore {
    */
   moveClipGroup(clipId: string, desiredStartMs: number): void
   /**
+   * Phase 3.40 — move a single clip onto a different track. Validates
+   * compatibility via `canPlaceClipOnTrack`; no-op if source==target,
+   * target missing, or kinds incompatible. Preserves every other field on
+   * the clip (startMs/endMs/groupId/transform/etc.).
+   *
+   * GROUP BEHAVIOR: only the named clip changes track. Other group members
+   * keep their trackId — the group `groupId` is preserved as a time-link
+   * (still drives `moveClipGroup`).
+   */
+  moveClipToTrack(clipId: string, newTrackId: string): void
+  /**
    * Partial update for a media clip's trim/timeline fields. Caption clips
    * are handled by `updateCaption` instead. Light invariants:
    *   - startMs >= 0
@@ -738,6 +796,14 @@ export interface ProjectStore {
   /** Set per-clip mute. */
   setClipMuted(clipId: string, muted: boolean): void
   /**
+   * Phase 3.41 — per-clip lock (🔒). Pure editing guard with NO export-graph
+   * effect (the export path never reads `clip.locked`). Walks
+   * `project.tracks[].clips[]` to find the target; sets `locked: true` when
+   * enabling and `locked: undefined` when disabling (lean JSON). No-op when
+   * `Boolean(cur.locked) === Boolean(locked)`. Single zundo step.
+   */
+  setClipLocked(clipId: string, locked: boolean): void
+  /**
    * Set a media clip's noise-reduction strength (0..100). 0 (or any value
    * clamping to <= 0) stores `undefined` (OFF — lean snapshots). Export-only;
    * the preview audio graph is untouched. No-op for non-media clips and for
@@ -745,12 +811,27 @@ export interface ProjectStore {
    */
   setClipNoiseReduction(clipId: string, strength: number): void
   /**
+   * Merge a partial voice-enhance patch onto a media clip. Each sub-toggle is
+   * coerced to boolean. A fully-neutral result (all sub-toggles false) stores
+   * `voiceEnhance: undefined` (OFF — lean snapshots), mirroring
+   * `setClipFilmLook`'s collapse-to-undefined. EXPORT-ONLY: the preview audio
+   * graph is untouched. No-op for non-media clips.
+   */
+  setClipVoiceEnhance(clipId: string, patch: Partial<VoiceEnhance>): void
+  /**
    * Set a media clip's retouch / beauty strength (0..100). 0 (or any value
    * clamping to <= 0) stores `undefined` (OFF — lean snapshots). Export-only;
    * the preview only approximates with a tiny CSS blur. No-op for non-media
    * clips and for non-finite inputs.
    */
   setClipRetouch(clipId: string, strength: number): void
+  /**
+   * Set a media clip's video-stabilization strength (0..100). 0 (or any value
+   * clamping to <= 0) stores `undefined` (OFF — lean snapshots). Export-only;
+   * the preview shows no stabilization (no honest CSS approximation exists).
+   * No-op for non-media clips and for non-finite inputs.
+   */
+  setClipStabilize(clipId: string, strength: number): void
   /**
    * Merge a partial film-look (vignette / grain / tone) onto a media clip.
    * Values are clamped to [MIN_FILM_LOOK, MAX_FILM_LOOK]; an unknown toneId
@@ -1445,6 +1526,145 @@ export const useProjectStore = create<ProjectStore>()(
   },
 
   // --------------------------------------------------------------------
+  // Phase 3.44 — canvas backdrop fill.
+  //
+  // `null` or `{ kind: 'blur' }` COLLAPSES the field to absent — keeps the
+  // persisted JSON byte-identical to "never set", which is the legacy
+  // default (today's preview blur backdrop). A `color` payload validates
+  // the `#rrggbb` hex; `#000000` collapses to `{ kind: 'black' }` (identical
+  // pixels). An invalid hex falls back to absent (= blur), mirroring the
+  // defensive guarantee in `getCanvasBackground`. All other kinds are
+  // stored verbatim. Routes through touch()+set()+schedulePersist() so
+  // each call = exactly one zundo step.
+  // --------------------------------------------------------------------
+  setCanvasBackground(bg: CanvasBackground | null): void {
+    const project = get().project
+    let nextField: CanvasBackground | null = null
+    if (bg && typeof bg === 'object') {
+      switch (bg.kind) {
+        case 'blur':
+          nextField = null
+          break
+        case 'black':
+          nextField = { kind: 'black' }
+          break
+        case 'white':
+          nextField = { kind: 'white' }
+          break
+        case 'color': {
+          if (
+            typeof bg.color === 'string' &&
+            /^#[0-9a-fA-F]{6}$/.test(bg.color)
+          ) {
+            if (bg.color.toLowerCase() === '#000000') {
+              nextField = { kind: 'black' }
+            } else {
+              nextField = { kind: 'color', color: bg.color }
+            }
+          } else {
+            // Invalid hex → collapse to absent (= blur) per the
+            // byte-identical-fallback guarantee.
+            nextField = null
+          }
+          break
+        }
+        default:
+          nextField = null
+      }
+    }
+    let next: Project
+    if (nextField === null) {
+      // Collapse to absent — byte-identical to "never set".
+      const { canvasBackground: _drop, ...rest } = project
+      void _drop
+      next = touch(rest as Project)
+    } else {
+      next = touch({ ...project, canvasBackground: nextField })
+    }
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // --------------------------------------------------------------------
+  // Phase 3.43 — preview-only horizontal guidelines.
+  //
+  // Mirrors the progress-bar action shape: every mutation routes through
+  // `setPreviewGuides`, which sanitizes the input (drop NaN/non-finite,
+  // clamp [0,1], cap at MAX_PREVIEW_GUIDES, sort ascending) and COLLAPSES
+  // the field to absent when the cleaned list is empty — keeping the
+  // persisted JSON byte-identical to "never set" → byte-identical preview
+  // DOM gate (no `preview-guides-layer` element emitted).
+  //
+  // Each public action = exactly one zundo step via touch()+set()+persist.
+  // --------------------------------------------------------------------
+  setPreviewGuides(yFractions: number[]): void {
+    const project = get().project
+    const cleaned: number[] = []
+    if (Array.isArray(yFractions)) {
+      for (const v of yFractions) {
+        if (typeof v !== 'number' || !Number.isFinite(v)) continue
+        const clamped = Math.max(
+          MIN_PREVIEW_GUIDE_FRAC,
+          Math.min(MAX_PREVIEW_GUIDE_FRAC, v)
+        )
+        cleaned.push(clamped)
+        if (cleaned.length >= MAX_PREVIEW_GUIDES) break
+      }
+      cleaned.sort((a, b) => a - b)
+    }
+    let next: Project
+    if (cleaned.length === 0) {
+      // Collapse to absent — byte-identical to a project that never set the
+      // field. This is the preview DOM gate (no overlay element emitted).
+      const { previewGuides: _drop, ...rest } = project
+      void _drop
+      next = touch(rest as Project)
+    } else {
+      next = touch({ ...project, previewGuides: { yFractions: cleaned } })
+    }
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  addPreviewGuide(yFrac?: number): void {
+    const current = getPreviewGuides(get().project)
+    if (current.length >= MAX_PREVIEW_GUIDES) return
+    const value =
+      typeof yFrac === 'number' && Number.isFinite(yFrac)
+        ? yFrac
+        : DEFAULT_PREVIEW_GUIDE_FRAC
+    get().setPreviewGuides([...current, value])
+  },
+
+  removePreviewGuide(index: number): void {
+    const current = getPreviewGuides(get().project)
+    if (
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= current.length
+    ) {
+      return
+    }
+    const next = current.filter((_, i) => i !== index)
+    get().setPreviewGuides(next)
+  },
+
+  updatePreviewGuide(index: number, yFrac: number): void {
+    const current = getPreviewGuides(get().project)
+    if (
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= current.length
+    ) {
+      return
+    }
+    if (typeof yFrac !== 'number' || !Number.isFinite(yFrac)) return
+    const next = current.slice()
+    next[index] = yFrac
+    get().setPreviewGuides(next)
+  },
+
+  // --------------------------------------------------------------------
   // Adjustment layers (Phase 3.32) — range color-grades over the composite.
   //
   // Every mutation operates on `project.adjustmentLayers ?? []`, then
@@ -1686,18 +1906,10 @@ export const useProjectStore = create<ProjectStore>()(
     const trackIdx = project.tracks.findIndex((t) => t.id === clip.trackId)
     if (trackIdx === -1) return
     // Enforce a track-kind ↔ clip-kind match matrix (belt-and-suspenders
-    // against UI bugs):
-    //   - video/audio track  ↔ media clip
-    //   - caption track      ↔ caption clip
-    //   - overlay track      ↔ overlay clip
+    // against UI bugs). Phase 3.40 — delegate to the shared predicate so the
+    // matrix has a single source of truth shared with `moveClipToTrack`.
     const track = project.tracks[trackIdx]
-    const accepts =
-      track.kind === 'caption'
-        ? clip.kind === 'caption'
-        : track.kind === 'overlay'
-          ? clip.kind === 'overlay'
-          : clip.kind === 'media'
-    if (!accepts) return
+    if (!canPlaceClipOnTrack(clip.kind as ClipKind, track.kind)) return
 
     const tracks = [...project.tracks]
     tracks[trackIdx] = {
@@ -1723,6 +1935,16 @@ export const useProjectStore = create<ProjectStore>()(
       }
     }
     if (!target) return
+    // Phase 3.41 — lock guard. If the target itself is locked → block. If
+    // it's grouped, ANY locked member anchors the whole group (matches
+    // moveClipGroup semantics).
+    if (isClipLocked(target)) return
+    if (target.groupId) {
+      const members = getGroupMembers(project, target.groupId)
+      for (const m of members) {
+        if (isClipLocked(m)) return
+      }
+    }
     const doomed = new Set<string>(
       target.groupId
         ? getGroupMembers(project, target.groupId).map((c) => c.id)
@@ -1856,6 +2078,11 @@ export const useProjectStore = create<ProjectStore>()(
     const members = anchor.groupId
       ? getGroupMembers(project, anchor.groupId)
       : [anchor]
+    // Phase 3.41 — if ANY member of the move set is locked, anchor the
+    // whole group (whole-group atomic move semantics).
+    for (const m of members) {
+      if (isClipLocked(m)) return
+    }
     const memberIds = new Set<string>(members.map((c) => c.id))
     let delta = Math.round(desiredStartMs) - anchor.startMs
     // Pre-clamp delta so the earliest member can't slide below 0 — the whole
@@ -1879,6 +2106,52 @@ export const useProjectStore = create<ProjectStore>()(
     schedulePersist(next)
   },
 
+  // Phase 3.40 — drag a single clip onto a different track. Only the named
+  // clip moves; group members stay on their original tracks (groupId is
+  // preserved so they remain a time-link).
+  moveClipToTrack(clipId: string, newTrackId: string): void {
+    const project = get().project
+    let srcTrackIdx = -1
+    let clipIdx = -1
+    for (let i = 0; i < project.tracks.length; i++) {
+      const found = project.tracks[i].clips.findIndex((c) => c.id === clipId)
+      if (found !== -1) {
+        srcTrackIdx = i
+        clipIdx = found
+        break
+      }
+    }
+    if (srcTrackIdx === -1 || clipIdx === -1) return
+    const srcTrack = project.tracks[srcTrackIdx]
+    // Same-track no-op.
+    if (srcTrack.id === newTrackId) return
+    const tgtTrackIdx = project.tracks.findIndex((t) => t.id === newTrackId)
+    if (tgtTrackIdx === -1) return
+    const tgtTrack = project.tracks[tgtTrackIdx]
+    const clip = srcTrack.clips[clipIdx]
+    // Phase 3.41 — locked clips can't be re-laned.
+    if (isClipLocked(clip)) return
+    if (!canPlaceClipOnTrack(clip.kind as ClipKind, tgtTrack.kind)) return
+    // Build the new tracks array: drop the clip from the source lane, append
+    // it to the target lane with `trackId` rewritten. Pass-through on every
+    // other field (startMs/endMs/groupId/transform/etc.).
+    const movedClip = { ...clip, trackId: newTrackId } as Clip
+    const tracks = project.tracks.map((t, i) => {
+      if (i === srcTrackIdx) {
+        const clips = [...t.clips]
+        clips.splice(clipIdx, 1)
+        return { ...t, clips }
+      }
+      if (i === tgtTrackIdx) {
+        return { ...t, clips: [...t.clips, movedClip] }
+      }
+      return t
+    })
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
   updateMediaClipTrim(clipId, partial): void {
     const project = get().project
     let changed = false
@@ -1887,6 +2160,8 @@ export const useProjectStore = create<ProjectStore>()(
       if (idx === -1) return t
       const cur = t.clips[idx]
       if (!isMediaClip(cur)) return t
+      // Phase 3.41 — locked clips reject trim edits.
+      if (isClipLocked(cur)) return t
       const merged: VideoAudioClip = { ...cur, ...partial }
       if (merged.startMs < 0) merged.startMs = 0
       if (merged.endMs <= merged.startMs) merged.endMs = merged.startMs + 1
@@ -1919,6 +2194,8 @@ export const useProjectStore = create<ProjectStore>()(
     const orig = project.tracks[trackIdx].clips[clipIdx]
     // Split is only supported for media clips in Phase 2.3.
     if (!isMediaClip(orig)) return null
+    // Phase 3.41 — locked clips reject splits.
+    if (isClipLocked(orig)) return null
     // Must be strictly inside the clip, with at least MIN_CLIP_MS on each side.
     if (atMs <= orig.startMs + MIN_CLIP_MS) return null
     if (atMs >= orig.endMs - MIN_CLIP_MS) return null
@@ -2553,6 +2830,29 @@ export const useProjectStore = create<ProjectStore>()(
     schedulePersist(next)
   },
 
+  // Phase 3.41 — per-clip lock toggle. Pure editing-guard metadata; the
+  // export pipeline NEVER reads `clip.locked`, so toggling this field MUST
+  // leave `buildPlan().filterGraph` byte-identical. Single zundo step.
+  setClipLocked(clipId: string, locked: boolean): void {
+    const project = get().project
+    let changed = false
+    const nextLocked = locked ? true : undefined
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const cur = t.clips[idx]
+      if (Boolean(cur.locked) === Boolean(locked)) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...cur, locked: nextLocked } as Clip
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
   setClipNoiseReduction(clipId: string, strength: number): void {
     const numeric = Number(strength)
     if (!Number.isFinite(numeric)) return
@@ -2608,6 +2908,32 @@ export const useProjectStore = create<ProjectStore>()(
     schedulePersist(next)
   },
 
+  setClipStabilize(clipId: string, strength: number): void {
+    const numeric = Number(strength)
+    if (!Number.isFinite(numeric)) return
+    const clamped = Math.max(MIN_STABILIZE, Math.min(MAX_STABILIZE, numeric))
+    // Store `undefined` when OFF (clamped <= 0) — keeps persisted JSON + undo
+    // snapshots lean, mirroring setClipRetouch's collapse-to-undefined.
+    const nextVal = clamped <= 0 ? undefined : Math.round(clamped)
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      if ((c.stabilize ?? undefined) === nextVal) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, stabilize: nextVal }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
   setClipFilmLook(clipId: string, patch: Partial<FilmLook>): void {
     const project = get().project
     let changed = false
@@ -2629,6 +2955,59 @@ export const useProjectStore = create<ProjectStore>()(
       const nextVal = isNeutralFilmLook(merged) ? undefined : merged
       const clips = [...t.clips]
       clips[idx] = { ...c, filmLook: nextVal }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  setClipVoiceEnhance(clipId: string, patch: Partial<VoiceEnhance>): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      // Merge over NEUTRAL so missing sub-toggles default to OFF, then coerce
+      // every field to boolean explicitly (defensive against truthy non-bool
+      // values landing here from IPC / tests).
+      const raw: VoiceEnhance = {
+        ...NEUTRAL_VOICE_ENHANCE,
+        ...c.voiceEnhance,
+        ...patch
+      }
+      const merged: VoiceEnhance = {
+        loudnorm: Boolean(raw.loudnorm),
+        compress: Boolean(raw.compress),
+        deEss: Boolean(raw.deEss),
+        eqLowCut: Boolean(raw.eqLowCut),
+        eqPresence: Boolean(raw.eqPresence)
+      }
+      // 5-field equality check — skip the update when nothing changed.
+      const prev = c.voiceEnhance
+      const prevLoudnorm = Boolean(prev?.loudnorm)
+      const prevCompress = Boolean(prev?.compress)
+      const prevDeEss = Boolean(prev?.deEss)
+      const prevEqLowCut = Boolean(prev?.eqLowCut)
+      const prevEqPresence = Boolean(prev?.eqPresence)
+      if (
+        prevLoudnorm === merged.loudnorm &&
+        prevCompress === merged.compress &&
+        prevDeEss === merged.deEss &&
+        prevEqLowCut === merged.eqLowCut &&
+        prevEqPresence === merged.eqPresence
+      ) {
+        return t
+      }
+      // Collapse to `undefined` when OFF — keeps persisted JSON + undo
+      // snapshots lean, mirroring setClipFilmLook's collapse-to-undefined.
+      const nextVal = isNeutralVoiceEnhance(merged) ? undefined : merged
+      const clips = [...t.clips]
+      clips[idx] = { ...c, voiceEnhance: nextVal }
       changed = true
       return { ...t, clips }
     })
@@ -4906,6 +5285,8 @@ export const useProjectStore = create<ProjectStore>()(
       const clips = t.clips.map((c) => {
         if (!isCaptionClip(c)) return c
         if (c.id !== captionId) return c
+        // Phase 3.41 — locked captions reject edits.
+        if (isClipLocked(c)) return c
         touched = true
         const merged: CaptionClip = {
           ...c,
@@ -5017,6 +5398,8 @@ export const useProjectStore = create<ProjectStore>()(
       const clips = t.clips.map((c) => {
         if (!isOverlayClip(c)) return c
         if (c.id !== overlayId) return c
+        // Phase 3.41 — locked overlays reject edits.
+        if (isClipLocked(c)) return c
         touched = true
         const merged: OverlayClip = {
           ...c,

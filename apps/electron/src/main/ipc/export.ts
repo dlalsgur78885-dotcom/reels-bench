@@ -21,8 +21,9 @@
  * run for post-mortem diagnostics.
  */
 import { app, ipcMain, shell } from 'electron'
+import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
@@ -43,7 +44,10 @@ import {
   hslToFfmpeg,
   filterPresetToFfmpeg,
   retouchToFfmpeg,
-  transitionKindToXfade
+  transitionKindToXfade,
+  stabilizeShakiness,
+  stabilizeToFfmpeg,
+  voiceEnhanceToFfmpeg
 } from '../../shared/filterPresets'
 import {
   DEFAULT_DUCKING_DB,
@@ -92,6 +96,7 @@ import {
   findMotionTrack,
   getCaptionTextStroke,
   getCaptionTextShadow,
+  getCaptionBackgroundSize,
   TRACK_EXPORT_STEP_MS,
   MAX_TRACK_EXPORT_KEYFRAMES,
   type AdjustmentLayer,
@@ -119,7 +124,11 @@ import {
   progressBarToFfmpeg,
   type ProgressBarConfig,
   getOverlayShadow,
-  getFilmLook
+  getFilmLook,
+  getClipStabilize,
+  getVoiceEnhance,
+  getCanvasBackground,
+  canvasBackgroundToFfmpegColor
 } from '../../shared/project'
 import { resolveFfmpegPath } from '../ffmpeg/binary'
 import { allowPath, assertPathAllowed } from '../ffmpeg/security'
@@ -420,6 +429,51 @@ function probeAfftdnAvailable(ffmpegPath: string): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 3.39 — deesser availability probe. Mirrors probeAfftdnAvailable
+// exactly: spawn `ffmpeg -hide_banner -filters`, match `/\bdeesser\b/` in
+// stdout, cache result, 3s timeout → false.
+// Core filters (loudnorm, acompressor, equalizer, highpass) are always present
+// in ffmpeg 6.x essentials — no probe needed for them.
+// ---------------------------------------------------------------------------
+let deesserAvailableCache: boolean | null = null
+
+function probeDeesserAvailable(ffmpegPath: string): Promise<boolean> {
+  if (deesserAvailableCache !== null) return Promise.resolve(deesserAvailableCache)
+  return new Promise<boolean>((resolve) => {
+    const proc = spawn(ffmpegPath, ['-hide_banner', '-filters'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true
+    })
+    let stdout = ''
+    proc.stdout.setEncoding('utf8')
+    proc.stdout.on('data', (chunk: string) => {
+      stdout += chunk
+      if (stdout.length > 256 * 1024) stdout = stdout.slice(-256 * 1024)
+    })
+    proc.on('error', () => {
+      deesserAvailableCache = false
+      resolve(false)
+    })
+    proc.on('close', () => {
+      const has = /\bdeesser\b/.test(stdout)
+      deesserAvailableCache = has
+      resolve(has)
+    })
+    setTimeout(() => {
+      try {
+        proc.kill('SIGKILL')
+      } catch {
+        /* ignore */
+      }
+      if (deesserAvailableCache === null) {
+        deesserAvailableCache = false
+        resolve(false)
+      }
+    }, 3_000)
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Phase 3.12 — huesaturation availability probe. Mirrors probeAfftdnAvailable
 // exactly: spawn `ffmpeg -hide_banner -filters`, match `/\bhuesaturation\b/`
 // in stdout, cache result, 3s timeout → false.
@@ -461,6 +515,289 @@ function probeHueSaturationAvailable(ffmpegPath: string): Promise<boolean> {
       }
     }, 3_000)
   })
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.38 — vidstab / deshake availability probes.
+// Mirror the probeHueSaturationAvailable pattern exactly.
+// ---------------------------------------------------------------------------
+let vidstabAvailableCache: boolean | null = null
+
+function probeVidstabAvailable(ffmpegPath: string): Promise<boolean> {
+  if (vidstabAvailableCache !== null) return Promise.resolve(vidstabAvailableCache)
+  return new Promise<boolean>((resolve) => {
+    const proc = spawn(ffmpegPath, ['-hide_banner', '-filters'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true
+    })
+    let stdout = ''
+    proc.stdout.on('data', (chunk: string) => {
+      stdout += chunk
+      if (stdout.length > 256 * 1024) stdout = stdout.slice(-256 * 1024)
+    })
+    proc.on('error', () => {
+      vidstabAvailableCache = false
+      resolve(false)
+    })
+    proc.on('close', () => {
+      const has = /\bvidstabtransform\b/.test(stdout)
+      vidstabAvailableCache = has
+      resolve(has)
+    })
+    setTimeout(() => {
+      try { proc.kill('SIGKILL') } catch { /* ignore */ }
+      if (vidstabAvailableCache === null) {
+        vidstabAvailableCache = false
+        resolve(false)
+      }
+    }, 3_000)
+  })
+}
+
+let deshakeAvailableCache: boolean | null = null
+
+function probeDeshakeAvailable(ffmpegPath: string): Promise<boolean> {
+  if (deshakeAvailableCache !== null) return Promise.resolve(deshakeAvailableCache)
+  return new Promise<boolean>((resolve) => {
+    const proc = spawn(ffmpegPath, ['-hide_banner', '-filters'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true
+    })
+    let stdout = ''
+    proc.stdout.on('data', (chunk: string) => {
+      stdout += chunk
+      if (stdout.length > 256 * 1024) stdout = stdout.slice(-256 * 1024)
+    })
+    proc.on('error', () => {
+      deshakeAvailableCache = false
+      resolve(false)
+    })
+    proc.on('close', () => {
+      const has = /\bdeshake\b/.test(stdout)
+      deshakeAvailableCache = has
+      resolve(has)
+    })
+    setTimeout(() => {
+      try { proc.kill('SIGKILL') } catch { /* ignore */ }
+      if (deshakeAvailableCache === null) {
+        deshakeAvailableCache = false
+        resolve(false)
+      }
+    }, 3_000)
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.38 — stabilize job collection + 1st-pass helpers.
+// ---------------------------------------------------------------------------
+
+interface StabilizeJob {
+  clipId: string
+  mediaPath: string
+  /** ms — trim start in source time */
+  trimInMs: number
+  /** ms — speed-adjusted decode window (source time to decode for the pass) */
+  durationMs: number
+  reversed: boolean
+  /**
+   * vidstabdetect shakiness (1..10).  Fixed at 5 so the 1st-pass cache key is
+   * independent of the user-facing strength slider — the slider only changes
+   * the 2nd-pass smoothing/zoom, which does NOT require re-running detect.
+   */
+  shakiness: number
+}
+
+/**
+ * Walk the project and collect one StabilizeJob per media clip that has
+ * getClipStabilize > 0. Skips overlay/caption clips, clips whose media
+ * asset is missing, and image-kind clips (static frames need no stabilize).
+ */
+function collectStabilizeJobs(project: Project): StabilizeJob[] {
+  const jobs: StabilizeJob[] = []
+  for (const track of project.tracks) {
+    if (track.kind !== 'video') continue
+    for (const clip of track.clips) {
+      if (!isMediaClip(clip)) continue
+      const stab = getClipStabilize(clip)
+      if (stab === null) continue
+      const asset = project.media[clip.mediaId]
+      if (!asset || !asset.path || asset.kind === 'image') continue
+      if (!existsSync(asset.path)) continue
+      // Source time duration the 1st pass must decode: speed * timeline duration.
+      const speed = clip.speed ?? 1
+      const timelineDurMs = getClipTimelineDuration(clip)
+      const srcDurMs = Math.max(1, Math.round(timelineDurMs * speed))
+      jobs.push({
+        clipId: clip.id,
+        mediaPath: asset.path,
+        trimInMs: clip.trimInMs,
+        durationMs: srcDurMs,
+        reversed: isClipReversed(clip),
+        // Fixed at 5 — strength slider only affects the 2nd-pass transform
+        // (smoothing + zoom), not the detect pass.  Keeping shakiness constant
+        // ensures the .trf cache hit regardless of strength changes.
+        shakiness: 5
+      })
+    }
+  }
+  return jobs
+}
+
+/** Emit a ffmpeg:progress event with message='stabilize-detect'. */
+function emitStabilizeProgress(
+  jobId: string,
+  jobIndex: number,
+  total: number,
+  clipPct: number
+): void {
+  if (total === 0) return
+  const percent = ((jobIndex + clipPct / 100) / total) * 100
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { webContents } = require('electron') as typeof import('electron')
+    for (const wc of webContents.getAllWebContents()) {
+      if (wc.isDestroyed()) continue
+      wc.send(IPC_CHANNELS.ffmpeg.progress, {
+        jobId,
+        percent,
+        done: false,
+        message: 'stabilize-detect'
+      })
+    }
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Spawn a vidstabdetect 1st pass for one clip.
+ *
+ * Cache key (SHA-1, first 16 hex chars):
+ *   mediaPath + sourceMtimeMs + trimInMs + durationMs + reversed + shakiness
+ *
+ * Short-circuits immediately when the `.trf` file already exists and is
+ * non-empty. On success returns the absolute trf path.
+ */
+async function runVidstabDetectPass(
+  ffmpegPath: string,
+  job: StabilizeJob,
+  onProgress: (pct: number) => void
+): Promise<string> {
+  // Build cache key — strength (smoothing/zoom) is NOT in the key so the
+  // user can move the strength slider and reuse the same .trf for the 2nd pass.
+  let sourceMtimeMs = 0
+  try { sourceMtimeMs = statSync(job.mediaPath).mtimeMs } catch { /* 0 if stat fails */ }
+  const keyRaw = [
+    job.mediaPath,
+    sourceMtimeMs,
+    job.trimInMs,
+    job.durationMs,
+    job.reversed ? '1' : '0',
+    job.shakiness
+  ].join('|')
+  const keyHash = createHash('sha1').update(keyRaw).digest('hex').slice(0, 16)
+
+  const cacheDir = path.join(app.getPath('userData'), 'stabilize-cache')
+  await mkdir(cacheDir, { recursive: true })
+  const trfPath = path.join(cacheDir, `${keyHash}.trf`)
+
+  // Short-circuit if already computed.
+  if (existsSync(trfPath) && statSync(trfPath).size > 0) {
+    onProgress(100)
+    return trfPath
+  }
+
+  const trimInSec = (job.trimInMs / 1000).toFixed(4)
+  const durSec = (job.durationMs / 1000).toFixed(4)
+
+  // Forward-slash + colon-escape for vidstabdetect result= option.
+  // On Windows the drive-letter colon (C:) must be escaped as \: within the
+  // FFmpeg filter option value.  Wrapping the entire path in single quotes
+  // prevents FFmpeg from treating the : after the drive letter as an option
+  // separator — both the \: escape and the surrounding quotes are required.
+  const safeTrf = "'" + trfPath.replace(/\\/g, '/').replace(/:/g, '\\:') + "'"
+
+  const vf = [
+    ...(job.reversed ? ['reverse'] : []),
+    `vidstabdetect=result=${safeTrf}:shakiness=${job.shakiness}:accuracy=15:mincontrast=0.25`
+  ].join(',')
+
+  const args = [
+    '-hide_banner',
+    '-progress', 'pipe:2',
+    '-ss', trimInSec,
+    '-t', durSec,
+    '-i', job.mediaPath,
+    '-vf', vf,
+    '-an',
+    '-f', 'null',
+    '-'
+  ]
+
+  await new Promise<void>((resolve, reject) => {
+    const proc = spawn(ffmpegPath, args, {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true
+    })
+
+    let stderrBuf = ''
+    let totalDurationMs: number | null = null
+    let lastEmit = 0
+    const EMIT_INTERVAL = 250
+
+    proc.stderr?.setEncoding('utf8')
+    proc.stderr?.on('data', (chunk: string) => {
+      stderrBuf += chunk
+      // Parse total duration once.
+      if (totalDurationMs == null) {
+        const dm = /Duration:\s+(\d+):(\d+):([\d.]+)/.exec(stderrBuf)
+        if (dm) {
+          totalDurationMs = Math.round(
+            (Number(dm[1]) * 3600 + Number(dm[2]) * 60 + Number(dm[3])) * 1000
+          )
+        }
+      }
+      // Parse progress lines.
+      let idx: number
+      while ((idx = stderrBuf.indexOf('\n')) >= 0) {
+        const line = stderrBuf.slice(0, idx).trim()
+        stderrBuf = stderrBuf.slice(idx + 1)
+        if (!line) continue
+        const eq = line.indexOf('=')
+        if (eq < 0) continue
+        const key = line.slice(0, eq).trim()
+        const value = line.slice(eq + 1).trim()
+        if (key === 'out_time_ms' && totalDurationMs) {
+          const outMs = Number(value) / 1000
+          const now = Date.now()
+          if (now - lastEmit >= EMIT_INTERVAL) {
+            lastEmit = now
+            const pct = Math.min(99, Math.max(0, (outMs / totalDurationMs) * 100))
+            onProgress(pct)
+          }
+        }
+      }
+    })
+
+    proc.on('error', (err) => reject(err))
+    proc.on('close', (code) => {
+      if (code === 0) {
+        onProgress(100)
+        resolve()
+      } else {
+        reject(new Error(`vidstabdetect exited with code ${code}`))
+      }
+    })
+
+    // Per-job timeout: 10 minutes.
+    const timer = setTimeout(() => {
+      try { proc.kill('SIGKILL') } catch { /* ignore */ }
+      reject(new Error('vidstabdetect timed out'))
+    }, 10 * 60 * 1000)
+    proc.on('close', () => clearTimeout(timer))
+  })
+
+  return trfPath
 }
 
 // ---------------------------------------------------------------------------
@@ -2280,7 +2617,12 @@ function buildVideoSegmentChain(
   preset: MainPreset,
   captionPngMap?: CaptionPngMap,
   isBaseLayer = true,
-  options: { hueSatAvailable?: boolean } = {},
+  options: {
+    hueSatAvailable?: boolean
+    vidstabAvailable?: boolean
+    deshakeAvailable?: boolean
+    stabilizeTrfMap?: ReadonlyMap<string, string>
+  } = {},
   project?: Project
 ): {
   /** Filter chain label (output pad name). */
@@ -2289,6 +2631,14 @@ function buildVideoSegmentChain(
   fragment: string
 } {
   const out = `v${seg.inputIdx}`
+
+  // Phase 3.44 — resolve canvas background once for both FREEZE and NORMAL paths.
+  // When `project` is absent (freeze-path shim supplies a minimal stub) or
+  // `canvasBackground` is absent/invalid, getCanvasBackground returns { kind: 'blur' }
+  // which routes to the BYTE-IDENTICAL legacy blur sub-chain below.
+  const bg = getCanvasBackground(
+    project ?? { tracks: [], media: {}, id: '', name: '', aspectRatio: '9:16', width: preset.width, height: preset.height, fps: preset.fps, createdAt: 0, updatedAt: 0 }
+  )
 
   // -----------------------------------------------------------------------
   // Phase 3.16 — FREEZE SEGMENT path.
@@ -2356,12 +2706,23 @@ function buildVideoSegmentChain(
     if (isBaseLayer) {
       const labelBg = `bg${seg.inputIdx}`
       const labelMain = `main${seg.inputIdx}`
-      freezeFragment =
-        `[${seg.inputIdx}:v]${freezePreChain}[${labelIn}];` +
-        `[${labelIn}]split=2[${labelMain}src][${labelBg}src];` +
-        `[${labelBg}src]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=20:1,eq=brightness=-0.2[${labelBg}];` +
-        `[${labelMain}src]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0[${labelMain}];` +
-        `[${labelBg}][${labelMain}]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1`
+      if (bg.kind === 'blur') {
+        // BYTE-IDENTICAL legacy blur sub-chain (Phase 3.44 gate).
+        freezeFragment =
+          `[${seg.inputIdx}:v]${freezePreChain}[${labelIn}];` +
+          `[${labelIn}]split=2[${labelMain}src][${labelBg}src];` +
+          `[${labelBg}src]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=20:1,eq=brightness=-0.2[${labelBg}];` +
+          `[${labelMain}src]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0[${labelMain}];` +
+          `[${labelBg}][${labelMain}]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1`
+      } else {
+        // Solid-color backdrop — drop split+boxblur; use a color= source.
+        const cArg = canvasBackgroundToFfmpegColor(bg)
+        freezeFragment =
+          `[${seg.inputIdx}:v]${freezePreChain}[${labelIn}];` +
+          `color=c=${cArg}:s=${W}x${H}:d=${freezeDurSec.toFixed(4)}:r=${preset.fps}[${labelBg}];` +
+          `[${labelIn}]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0[${labelMain}];` +
+          `[${labelBg}][${labelMain}]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1`
+      }
     } else {
       freezeFragment =
         `[${seg.inputIdx}:v]${freezePreChain}[${labelIn}];` +
@@ -2394,7 +2755,12 @@ function buildVideoSegmentChain(
           `enable='between(t,${localStart.toFixed(3)},${localEnd.toFixed(3)})'`
         ]
         if (freezeShadowArgs.length > 0) drawArgs.push(...freezeShadowArgs)
-        if (hasBox) drawArgs.push(`box=1`, `boxcolor=black@0.55`, `boxborderw=10`)
+        if (hasBox) {
+          const bgSize = getCaptionBackgroundSize(cap.style)
+          const extraPx = Math.round(Math.max(bgSize.heightFrac * H, bgSize.widthFrac * W) / 2)
+          const boxborderw = 10 + extraPx
+          drawArgs.push(`box=1`, `boxcolor=black@0.55`, `boxborderw=${boxborderw}`)
+        }
         drawtexts.push(`drawtext=${drawArgs.join(':')}`)
       }
       if (drawtexts.length > 0) {
@@ -2442,6 +2808,28 @@ function buildVideoSegmentChain(
     if (mediaKind !== 'image') {
       parts.push('reverse')
       parts.push('setpts=PTS-STARTPTS')
+    }
+  }
+  // Phase 3.38 — VIDEO STABILIZATION. Inserted AFTER trim+reverse (natural
+  // rate) and BEFORE the speed setpts so motion is analysed at native playback
+  // rate, then time-warped. FREEZE SEGMENTS never reach this path.
+  // BYTE-IDENTICAL GATE: getClipStabilize returns null for an absent / 0
+  // stabilize value → nothing pushed → `parts` byte-identical to pre-3.38.
+  {
+    const stab = getClipStabilize(seg.clip)
+    if (stab !== null) {
+      if (options.vidstabAvailable && options.stabilizeTrfMap) {
+        const trf = options.stabilizeTrfMap.get(seg.clip.id)
+        if (trf) {
+          const f = stabilizeToFfmpeg(stab, 'vidstab', trf)
+          if (f) parts.push(f)
+        }
+      } else if (options.deshakeAvailable) {
+        const f = stabilizeToFfmpeg(stab, 'deshake')
+        if (f) parts.push(f)
+      }
+      // Neither available → silent no-op (byte-identical gate still holds
+      // because getClipStabilize===null callers never reach this block).
     }
   }
   if (Math.abs(speed - 1) > 1e-3) {
@@ -2517,18 +2905,29 @@ function buildVideoSegmentChain(
   let fragment: string
 
   if (isBaseLayer) {
-    // 4-BASE. Aspect-correct scale + blurred-background pad. Two-stage subgraph:
-    //   main (object-fit: contain) and bg (cover + blur) merged via overlay.
-    //   Opaque black canvas — same as original single-track path.
+    // 4-BASE. Aspect-correct scale + canvas-backdrop pad. Two-stage subgraph:
+    //   main (object-fit: contain) and bg (backdrop) merged via overlay.
+    //   Phase 3.44: bg.kind selects blur (legacy) or solid-color backdrop.
     const labelBg = `bg${seg.inputIdx}`
     const labelMain = `main${seg.inputIdx}`
 
-    fragment =
-      `[${seg.inputIdx}:v]${preChain}[${labelIn}];` +
-      `[${labelIn}]split=2[${labelMain}src][${labelBg}src];` +
-      `[${labelBg}src]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=20:1,eq=brightness=-0.2[${labelBg}];` +
-      `[${labelMain}src]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0[${labelMain}];` +
-      `[${labelBg}][${labelMain}]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1`
+    if (bg.kind === 'blur') {
+      // BYTE-IDENTICAL legacy blur sub-chain (Phase 3.44 gate).
+      fragment =
+        `[${seg.inputIdx}:v]${preChain}[${labelIn}];` +
+        `[${labelIn}]split=2[${labelMain}src][${labelBg}src];` +
+        `[${labelBg}src]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=20:1,eq=brightness=-0.2[${labelBg}];` +
+        `[${labelMain}src]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0[${labelMain}];` +
+        `[${labelBg}][${labelMain}]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1`
+    } else {
+      // Solid-color backdrop — drop split+boxblur; use a color= source.
+      const cArg = canvasBackgroundToFfmpegColor(bg)
+      fragment =
+        `[${seg.inputIdx}:v]${preChain}[${labelIn}];` +
+        `color=c=${cArg}:s=${W}x${H}:d=${segDurSec.toFixed(4)}:r=${preset.fps}[${labelBg}];` +
+        `[${labelIn}]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0[${labelMain}];` +
+        `[${labelBg}][${labelMain}]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1`
+    }
   } else {
     // 4-UPPER. Transparent-pad canvas frame: scale to contain, then pad with
     // transparent gutters to fill canvas dimensions. Lower layers show through
@@ -2586,7 +2985,10 @@ function buildVideoSegmentChain(
       ]
       if (segShadowArgs.length > 0) drawArgs.push(...segShadowArgs)
       if (hasBox) {
-        drawArgs.push(`box=1`, `boxcolor=black@0.55`, `boxborderw=10`)
+        const bgSize = getCaptionBackgroundSize(cap.style)
+        const extraPx = Math.round(Math.max(bgSize.heightFrac * H, bgSize.widthFrac * W) / 2)
+        const boxborderw = 10 + extraPx
+        drawArgs.push(`box=1`, `boxcolor=black@0.55`, `boxborderw=${boxborderw}`)
       }
       drawtexts.push(`drawtext=${drawArgs.join(':')}`)
     }
@@ -2628,7 +3030,7 @@ function buildVideoSegmentChain(
 /** Build the per-clip audio filter chain (returns the output label). */
 function buildAudioSegmentChain(
   seg: AudioSegment,
-  options: { inputHasAudio?: (inputIdx: number) => boolean; denoiseAvailable?: boolean } = {}
+  options: { inputHasAudio?: (inputIdx: number) => boolean; denoiseAvailable?: boolean; deEsserAvailable?: boolean } = {}
 ): { out: string; fragment: string } | null {
   // -----------------------------------------------------------------------
   // Phase 3.16 — FREEZE SILENCE path.
@@ -2699,6 +3101,18 @@ function buildAudioSegmentChain(
     const dn = denoiseChain(seg.clip)
     if (dn) parts.push(dn)
   }
+  // Phase 3.39 — voice enhancement. After denoise (clean signal in), BEFORE
+  // atempo + volume + fades (loudnorm normalizes the LAST processed signal;
+  // user volume/fades stack OVER the normalized clip). Capability-gated only
+  // for deesser; other filters are core ffmpeg.
+  //
+  // BYTE-IDENTICAL GATE: getVoiceEnhance returns null for an absent OR neutral
+  // payload → voiceEnhanceToFfmpeg returns '' → nothing pushed → `parts`
+  // byte-identical to the pre-Phase-3.39 graph.
+  const ve = voiceEnhanceToFfmpeg(getVoiceEnhance(seg.clip), {
+    deEsserAvailable: options.deEsserAvailable
+  })
+  if (ve) parts.push(ve)
   const tempo = atempoChain(speed)
   if (tempo) parts.push(tempo)
 
@@ -2760,14 +3174,21 @@ function stitchVideoTrack(
   xfadeAvailable: boolean,
   captionPngMap?: CaptionPngMap,
   hueSatAvailable = true,
-  project?: Project
+  project?: Project,
+  vidstabAvailable = false,
+  deshakeAvailable = false,
+  stabilizeTrfMap?: ReadonlyMap<string, string>
 ): { fragments: string[]; trackLabel: string } {
   const isBase = layerIndex === 0
   const fragments: string[] = []
   const segOutputs: string[] = []
 
   for (const seg of segments) {
-    const { out, fragment } = buildVideoSegmentChain(seg, preset, captionPngMap, isBase, { hueSatAvailable }, project)
+    const { out, fragment } = buildVideoSegmentChain(
+      seg, preset, captionPngMap, isBase,
+      { hueSatAvailable, vidstabAvailable, deshakeAvailable, stabilizeTrfMap },
+      project
+    )
     fragments.push(fragment)
     segOutputs.push(out)
   }
@@ -2881,7 +3302,10 @@ function stitchVideo(
   xfadeAvailable = true,
   captionPngMap?: CaptionPngMap,
   hueSatAvailable = true,
-  project?: Project
+  project?: Project,
+  vidstabAvailable = false,
+  deshakeAvailable = false,
+  stabilizeTrfMap?: ReadonlyMap<string, string>
 ): { graph: string; finalLabel: string } {
   const allFragments: string[] = []
 
@@ -2906,7 +3330,10 @@ function stitchVideo(
       xfadeAvailable,
       captionPngMap,
       hueSatAvailable,
-      project
+      project,
+      vidstabAvailable,
+      deshakeAvailable,
+      stabilizeTrfMap
     )
     for (const f of fragments) allFragments.push(f)
     trackLabels.push(trackLabel)
@@ -3510,7 +3937,7 @@ function stitchProgressBar(
 function stitchAudio(
   segments: AudioSegment[],
   project: Project,
-  options: { inputHasAudio?: (inputIdx: number) => boolean; denoiseAvailable?: boolean } = {}
+  options: { inputHasAudio?: (inputIdx: number) => boolean; denoiseAvailable?: boolean; deEsserAvailable?: boolean } = {}
 ): { graph: string; finalLabel: string | null } {
   if (segments.length === 0) return { graph: '', finalLabel: null }
 
@@ -3525,7 +3952,8 @@ function stitchAudio(
     if (isMuted) continue
     const built = buildAudioSegmentChain(seg, {
       inputHasAudio: options.inputHasAudio,
-      denoiseAvailable: options.denoiseAvailable
+      denoiseAvailable: options.denoiseAvailable,
+      deEsserAvailable: options.deEsserAvailable
     })
     if (!built) continue
     fragments.push(built.fragment)
@@ -3667,6 +4095,14 @@ function buildExportPlan(
      */
     denoiseAvailable?: boolean
     /**
+     * Phase 3.39 — whether the bundled ffmpeg supports the `deesser` filter.
+     * When false, voiceEnhanceToFfmpeg uses the firequalizer fallback for
+     * de-essing. Core filters (loudnorm, acompressor, equalizer, highpass)
+     * are always present and need no probe. Defaults to true when omitted so
+     * the plan-only IPC and unit tests see the deesser path without probing.
+     */
+    deEsserAvailable?: boolean
+    /**
      * Phase 3.12 — whether the bundled ffmpeg supports the `huesaturation`
      * filter. When false, per-clip HSL secondary grading is silently skipped
      * (video graph is byte-identical to pre-Phase-3.12 for those clips).
@@ -3675,6 +4111,23 @@ function buildExportPlan(
      * without probing.
      */
     hueSatAvailable?: boolean
+    /**
+     * Phase 3.38 — whether vidstabtransform is available. When true,
+     * stabilize-enabled clips use the 2nd-pass vidstabtransform filter with
+     * pre-computed .trf data from stabilizeTrfMap. Defaults to false so the
+     * plan-only IPC emits deshake= instead (honest: plan can't run 1st pass).
+     */
+    vidstabAvailable?: boolean
+    /**
+     * Phase 3.38 — whether deshake is available (single-pass fallback).
+     * Defaults to true so the plan-only IPC emits deshake= for stabilize clips.
+     */
+    deshakeAvailable?: boolean
+    /**
+     * Phase 3.38 — map from clipId → absolute .trf path produced by the
+     * vidstabdetect 1st pass. Required when vidstabAvailable is true.
+     */
+    stabilizeTrfMap?: ReadonlyMap<string, string>
   } = {}
 ): ExportPlan {
   const preset = PRESETS[presetKey]
@@ -3687,6 +4140,9 @@ function buildExportPlan(
 
   const xfadeAvailable = options.xfadeAvailable ?? true
   const hueSatAvailable = options.hueSatAvailable ?? true
+  const vidstabAvailable = options.vidstabAvailable ?? false
+  const deshakeAvailable = options.deshakeAvailable ?? true
+  const stabilizeTrfMap = options.stabilizeTrfMap
   const captionPngs = options.captionPngs
   const overlayPngs = options.overlayPngs
   const { graph: videoGraph, finalLabel: stitchedVideoLabel } = stitchVideo(
@@ -3695,7 +4151,10 @@ function buildExportPlan(
     xfadeAvailable,
     captionPngs,
     hueSatAvailable,
-    project
+    project,
+    vidstabAvailable,
+    deshakeAvailable,
+    stabilizeTrfMap
   )
 
   // Phase 3.8: composite overlay PNGs BELOW captions (spec §3.3 pipeline order:
@@ -3741,7 +4200,7 @@ function buildExportPlan(
   const { graph: audioGraph, finalLabel: audioLabel } = stitchAudio(
     audioSegments,
     project,
-    { inputHasAudio, denoiseAvailable: options.denoiseAvailable }
+    { inputHasAudio, denoiseAvailable: options.denoiseAvailable, deEsserAvailable: options.deEsserAvailable }
   )
 
   // Combine. If no audio, still emit a silent stream for compliance with
@@ -3978,7 +4437,12 @@ async function runCompositeExport(
 
   const xfadeAvailable = await probeXfadeAvailable(ffmpegPath)
   const denoiseAvailable = await probeAfftdnAvailable(ffmpegPath)
+  const deEsserAvailable = await probeDeesserAvailable(ffmpegPath)
   const hueSatAvailable = await probeHueSaturationAvailable(ffmpegPath)
+  // Phase 3.38 — probe vidstab / deshake availability.
+  // deshakeAvailable is only evaluated when vidstab is absent (fallback only).
+  const vidstabAvailable = await probeVidstabAvailable(ffmpegPath)
+  const deshakeAvailable = vidstabAvailable ? false : await probeDeshakeAvailable(ffmpegPath)
 
   // Probe each unique input path for audio presence. We do this in the
   // runtime path (not in buildPlan) because the plan-only IPC just needs
@@ -3997,6 +4461,31 @@ async function runCompositeExport(
       // the audio chain than to fail the entire export.
     }
   }
+
+  // Phase 3.38 — vidstabdetect 1st-pass loop.
+  // Runs BEFORE caption/overlay pre-render so that the .trf files are ready
+  // when buildExportPlan assembles the filter graph.
+  // BYTE-IDENTICAL GATE: collectStabilizeJobs returns [] for a project with
+  // no stabilize-enabled clips → the loop body never executes → no IPC events
+  // → no spawns → filter graph is bit-identical to pre-Phase-3.38.
+  const stabilizeTrfMap = new Map<string, string>()  // clipId → trfPath
+  if (vidstabAvailable) {
+    const stabJobs = collectStabilizeJobs(project)
+    for (let j = 0; j < stabJobs.length; j++) {
+      emitStabilizeProgress(options.jobId, j, stabJobs.length, 0)
+      try {
+        const trf = await runVidstabDetectPass(ffmpegPath, stabJobs[j], (pct) =>
+          emitStabilizeProgress(options.jobId, j, stabJobs.length, pct)
+        )
+        stabilizeTrfMap.set(stabJobs[j].clipId, trf)
+      } catch (err) {
+        console.warn('[export] vidstabdetect failed for clip', stabJobs[j].clipId, err)
+      }
+    }
+    if (stabJobs.length > 0) emitStabilizeProgress(options.jobId, stabJobs.length, stabJobs.length, 100)
+  }
+  // Allow all .trf paths so assertPathAllowed in buildExportPlan passes.
+  for (const trf of stabilizeTrfMap.values()) allowPath(trf)
 
   // Pre-render caption PNGs. Each PNG is canvas-sized and includes the
   // caption baked into its final visual position. Failures degrade
@@ -4291,7 +4780,11 @@ async function runCompositeExport(
     plan = buildExportPlan(project, options.presetKey, safeOutput, {
       xfadeAvailable,
       denoiseAvailable,
+      deEsserAvailable,
       hueSatAvailable,
+      vidstabAvailable,
+      deshakeAvailable,
+      stabilizeTrfMap: stabilizeTrfMap.size > 0 ? stabilizeTrfMap : undefined,
       inputsWithAudio,
       codec: chosenCodec,
       overlayPngs: overlayPngs.size > 0 ? overlayPngs : undefined,
@@ -4736,9 +5229,19 @@ export function registerExportHandlers(): void {
         const ffmpegPath = resolveFfmpegPath()
         const xfadeAvailable = await probeXfadeAvailable(ffmpegPath)
         const hueSatAvailablePlan = await probeHueSaturationAvailable(ffmpegPath)
+        const deEsserAvailablePlan = await probeDeesserAvailable(ffmpegPath)
+        // Phase 3.38 — buildPlan cannot run a vidstabdetect 1st pass, so
+        // vidstabAvailable=false, deshakeAvailable=true. This makes any
+        // stabilize-enabled clip emit the deshake= fragment in the plan
+        // preview (honest: it's the single-pass alternative). Real encode
+        // uses runCompositeExport which overrides both based on live probes.
         const plan = buildExportPlan(project, presetKey, outputPath, {
           xfadeAvailable,
-          hueSatAvailable: hueSatAvailablePlan
+          hueSatAvailable: hueSatAvailablePlan,
+          deEsserAvailable: deEsserAvailablePlan,
+          vidstabAvailable: false,
+          deshakeAvailable: true,
+          stabilizeTrfMap: new Map()
         })
         return {
           ok: true,
@@ -4795,5 +5298,7 @@ export const __test = {
   stitchOverlays,
   buildTransformSubchain,
   mapPresetForCodec,
-  presetFlagForCodec
+  presetFlagForCodec,
+  voiceEnhanceToFfmpeg,
+  getVoiceEnhance
 }

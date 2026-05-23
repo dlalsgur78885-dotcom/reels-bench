@@ -15,13 +15,15 @@ import type {
   FilmLook,
   FilmToneId,
   FilterPreset,
-  HslBandKey
+  HslBandKey,
+  VoiceEnhance
 } from './project'
 import {
   CURVE_CHANNEL_KEYS,
   HSL_BAND_KEYS,
   isIdentityCurveChannel,
   isNeutralHslBand,
+  isNeutralVoiceEnhance,
   resolveClipCurves,
   resolveClipHsl,
   resolveColorAdjust
@@ -428,6 +430,76 @@ export function retouchToFfmpeg(
 }
 
 // ---------------------------------------------------------------------------
+// Stabilization (Phase 3.38) — per-clip video stabilization.
+// Two backends, probe-gated in export.ts:
+//   - vidstabtransform (libvidstab) — gold standard, requires a `.trf`
+//     motion-data file written by a prior `vidstabdetect` 1st pass.
+//   - deshake — single-pass core ffmpeg filter; fallback when vidstab is
+//     unavailable in the bundled ffmpeg-static.
+// `stabilizeToFfmpeg` returns only the 2nd-pass / single-pass filter string.
+// 1st-pass orchestration (`.trf` cache + spawn) lives in export.ts because
+// it needs userData paths, file mtime, and child_process spawn().
+// ---------------------------------------------------------------------------
+
+/**
+ * Map a 0..100 strength to vidstabdetect's `shakiness` parameter (1..10).
+ * Exported so export.ts uses the same mapping for the 1st pass that the
+ * filter-string assembly uses for the 2nd pass cache key.
+ */
+export function stabilizeShakiness(intensity: number): number {
+  const i = Math.min(100, Math.max(1, intensity))
+  return Math.max(1, Math.min(10, Math.round(1 + ((i - 1) * 9) / 99)))
+}
+
+/**
+ * 2nd-pass (or single-pass deshake) ffmpeg filter string. No leading/trailing
+ * comma — caller chains it. Returns '' for null / non-finite / <= 0 so the
+ * caller can unconditionally push the result and keep a stabilize-off clip's
+ * video graph BYTE-IDENTICAL to the pre-Phase-3.38 graph.
+ *
+ * `vidstab` mode: `vidstabtransform=input=<trf>:smoothing=…:zoom=…:optzoom=1:
+ *   interpol=bilinear:crop=keep,unsharp=…`. Unsharp follows vidstabtransform
+ *   because vidstab recommends a slight sharpen to offset interpolation
+ *   softness from the warp+zoom. `trfPath` is forward-slashed and `:`-escaped
+ *   so a Windows drive prefix (`C:/…` → `C\:/…`) is safe in the colon-
+ *   delimited filter syntax. If `trfPath` is missing, returns '' (silent
+ *   no-op — caller should have ensured the 1st pass produced it).
+ *
+ * `deshake` mode: `deshake=rx=<r>:ry=<r>:edge=mirror` where `r` is 6..32
+ *   mapped from 0..100. Single-pass, no `.trf`.
+ */
+export function stabilizeToFfmpeg(
+  intensity: number | null | undefined,
+  mode: 'vidstab' | 'deshake',
+  trfPath?: string
+): string {
+  if (intensity == null || !Number.isFinite(intensity) || intensity <= 0) {
+    return ''
+  }
+  const i = Math.min(100, Math.max(1, intensity))
+  const t = i / 100
+  if (mode === 'vidstab') {
+    if (!trfPath) return ''
+    // smoothing: lowpass window in frames; 1..100 → 5..30.
+    const smoothing = Math.round(5 + 25 * t)
+    // zoom: percent zoom-in to hide stabilization borders; 0..100 → 0..8%.
+    const zoom = (t * 8).toFixed(2)
+    // On Windows the drive-letter colon must be \:-escaped inside the FFmpeg
+    // filter option value, AND the whole path must be single-quoted so FFmpeg
+    // does not treat the colon after the drive letter as an option separator.
+    const safe = "'" + trfPath.replace(/\\/g, '/').replace(/:/g, '\\:') + "'"
+    return (
+      `vidstabtransform=input=${safe}:smoothing=${smoothing}:zoom=${zoom}` +
+      `:optzoom=1:interpol=bilinear:crop=keep,` +
+      `unsharp=5:5:0.8:3:3:0.4`
+    )
+  }
+  // deshake fallback. rx/ry: search-radius px (0..64); 1..100 → 6..32.
+  const r = Math.max(4, Math.min(32, Math.round(6 + 26 * t)))
+  return `deshake=rx=${r}:ry=${r}:edge=mirror`
+}
+
+// ---------------------------------------------------------------------------
 // Film look (Phase 3.37) — vignette / grain / faded tone finishing filter.
 // ---------------------------------------------------------------------------
 
@@ -571,4 +643,55 @@ export function adjustmentLayerToFfmpeg(
     .split(',')
     .map((f) => f + enable)
     .join(',')
+}
+
+// ---------------------------------------------------------------------------
+// Voice enhancement (Phase 3.39) — per-clip narration polish: highpass
+// rumble-cut, presence EQ, de-essing, compression, and EBU R128 loudness
+// normalization. Pure string-building — no spawn / no userData / no probe.
+// `deEsserAvailable=false` swaps in a `firequalizer` notch as fallback.
+// ---------------------------------------------------------------------------
+
+/**
+ * Single comma-joined audio filter fragment for voice enhancement. No
+ * leading/trailing comma — caller chains it. Returns '' when `ve` is null,
+ * undefined, or all sub-toggles are false — so the caller can unconditionally
+ * push the result and a voice-enhance-OFF clip's audio graph stays
+ * BYTE-IDENTICAL to the pre-Phase-3.39 graph.
+ *
+ * Internal order (loudnorm is ALWAYS last so it normalizes the fully
+ * processed signal):
+ *   highpass=f=80 → equalizer (presence) → deesser → acompressor → loudnorm
+ */
+export function voiceEnhanceToFfmpeg(
+  ve: VoiceEnhance | null | undefined,
+  capabilities?: { deEsserAvailable?: boolean }
+): string {
+  if (!ve) return ''
+  if (isNeutralVoiceEnhance(ve)) return ''
+  const parts: string[] = []
+  if (ve.eqLowCut) parts.push('highpass=f=80')
+  if (ve.eqPresence) parts.push('equalizer=f=3000:t=h:width=2:g=2')
+  if (ve.deEss) {
+    if (capabilities?.deEsserAvailable === false) {
+      // Fallback: a gentle ~7 kHz notch via firequalizer (always available).
+      parts.push(
+        "firequalizer=gain_entry='entry(0,0);entry(6000,0);entry(7000,-3);entry(8000,0);entry(20000,0)'"
+      )
+    } else {
+      // ffmpeg defaults: i=0 m=0.5 f=0.5 s=o — broadcast-safe narration setting.
+      parts.push('deesser=i=0:m=0.5:f=0.5:s=o')
+    }
+  }
+  if (ve.compress) {
+    // 4:1 @ -18 dB threshold, fast attack, medium release + 2 dB makeup.
+    parts.push(
+      'acompressor=threshold=-18dB:ratio=4:attack=5:release=80:makeup=2'
+    )
+  }
+  if (ve.loudnorm) {
+    // Single-pass loudnorm. -16 LUFS / -1.5 dBTP / LRA 11 (Insta/YT standard).
+    parts.push('loudnorm=I=-16:TP=-1.5:LRA=11')
+  }
+  return parts.join(',')
 }

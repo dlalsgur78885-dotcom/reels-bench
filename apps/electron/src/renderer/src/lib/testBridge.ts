@@ -62,6 +62,8 @@ export function installTestBridge(): void {
         setClipGainDb: Store['setClipGainDb']
         setClipFade: Store['setClipFade']
         setClipMuted: Store['setClipMuted']
+        // Phase 3.41 — per-clip lock.
+        setClipLocked: Store['setClipLocked']
         setTrackMuted: Store['setTrackMuted']
         setTrackSolo: Store['setTrackSolo']
         removeSilencesFromClip: Store['removeSilencesFromClip']
@@ -104,6 +106,8 @@ export function installTestBridge(): void {
         resetClipHsl: Store['resetClipHsl']
         // Phase 3.37 — film look (vignette / grain / faded tone).
         setClipFilmLook: Store['setClipFilmLook']
+        // Phase 3.39 — voice enhancement (loudnorm / compress / de-ess / EQ).
+        setClipVoiceEnhance: Store['setClipVoiceEnhance']
         // Phase 3.15 — auto color correction.
         applyAutoColorAdjust: Store['applyAutoColorAdjust']
         addVideoTrack: Store['addVideoTrack']
@@ -133,6 +137,13 @@ export function installTestBridge(): void {
         // Phase 3.35 — progress bar overlay.
         setProgressBar: Store['setProgressBar']
         toggleProgressBar: Store['toggleProgressBar']
+        // Phase 3.44 — canvas backdrop fill.
+        setCanvasBackground: Store['setCanvasBackground']
+        // Phase 3.43 — preview-only horizontal guidelines.
+        setPreviewGuides: Store['setPreviewGuides']
+        addPreviewGuide: Store['addPreviewGuide']
+        removePreviewGuide: Store['removePreviewGuide']
+        updatePreviewGuide: Store['updatePreviewGuide']
         // Phase 3.32 — adjustment-layer project-store actions.
         addAdjustmentLayer: Store['addAdjustmentLayer']
         removeAdjustmentLayer: Store['removeAdjustmentLayer']
@@ -147,6 +158,8 @@ export function installTestBridge(): void {
         groupClips: Store['groupClips']
         ungroupClips: Store['ungroupClips']
         moveClipGroup: Store['moveClipGroup']
+        // Phase 3.40 — cross-track clip drag.
+        moveClipToTrack: Store['moveClipToTrack']
         // Phase 3.33 — selectClip (routes through timelineUi so group-expand fires).
         selectClip: (clipId: string | null) => void
         newId: () => string
@@ -173,6 +186,9 @@ export function installTestBridge(): void {
         useProjectStore.getState().setClipFade(id, fin, fout),
       setClipMuted: (id, muted) =>
         useProjectStore.getState().setClipMuted(id, muted),
+      // Phase 3.41 — per-clip lock.
+      setClipLocked: (id, locked) =>
+        useProjectStore.getState().setClipLocked(id, locked),
       setTrackMuted: (tid, muted) =>
         useProjectStore.getState().setTrackMuted(tid, muted),
       setTrackSolo: (tid, solo) =>
@@ -247,6 +263,8 @@ export function installTestBridge(): void {
       resetClipHsl: (id) => useProjectStore.getState().resetClipHsl(id),
       setClipFilmLook: (id, patch) =>
         useProjectStore.getState().setClipFilmLook(id, patch),
+      setClipVoiceEnhance: (id, patch) =>
+        useProjectStore.getState().setClipVoiceEnhance(id, patch),
       applyAutoColorAdjust: (id, adjust) =>
         useProjectStore.getState().applyAutoColorAdjust(id, adjust),
       addVideoTrack: () => useProjectStore.getState().addVideoTrack(),
@@ -288,6 +306,16 @@ export function installTestBridge(): void {
         useProjectStore.getState().setProgressBar(patch),
       toggleProgressBar: () =>
         useProjectStore.getState().toggleProgressBar(),
+      setCanvasBackground: (bg) =>
+        useProjectStore.getState().setCanvasBackground(bg),
+      setPreviewGuides: (yFractions) =>
+        useProjectStore.getState().setPreviewGuides(yFractions),
+      addPreviewGuide: (yFrac) =>
+        useProjectStore.getState().addPreviewGuide(yFrac),
+      removePreviewGuide: (index) =>
+        useProjectStore.getState().removePreviewGuide(index),
+      updatePreviewGuide: (index, yFrac) =>
+        useProjectStore.getState().updatePreviewGuide(index, yFrac),
       addAdjustmentLayer: (startMs, endMs) =>
         useProjectStore.getState().addAdjustmentLayer(startMs, endMs),
       removeAdjustmentLayer: (id) =>
@@ -314,6 +342,9 @@ export function installTestBridge(): void {
         useProjectStore.getState().ungroupClips(groupIdOrClipId),
       moveClipGroup: (clipId, desiredStartMs) =>
         useProjectStore.getState().moveClipGroup(clipId, desiredStartMs),
+      // Phase 3.40 — cross-track clip drag.
+      moveClipToTrack: (id, newTrackId) =>
+        useProjectStore.getState().moveClipToTrack(id, newTrackId),
       // selectClip routes through timelineUi so the group-expand logic fires.
       selectClip: (clipId) => useTimelineUi.getState().selectClip(clipId),
       newId

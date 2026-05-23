@@ -8,6 +8,7 @@ import {
   DEFAULT_CAPTION_STROKE_WIDTH,
   KARAOKE_STYLES,
   MAX_CAPTION_ANIM_MS,
+  MAX_CAPTION_BG_FRAC,
   MAX_CAPTION_SHADOW_BLUR,
   MAX_CAPTION_SHADOW_OFFSET,
   MAX_CAPTION_STROKE_WIDTH,
@@ -581,6 +582,46 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
             ))}
           </div>
         </div>
+
+        {caption.style.background !== 'none' && caption.style.background !== 'highlight' && (
+          <div style={styles.group}>
+            <div style={styles.label}>자막 배경 크기</div>
+
+            <div style={{ ...styles.label, marginTop: 8 }}>
+              자막 배경 높이: {Math.round((caption.style.backgroundHeightFrac ?? 0) * 100)}%
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={MAX_CAPTION_BG_FRAC}
+              step={0.01}
+              value={caption.style.backgroundHeightFrac ?? 0}
+              onChange={(e) =>
+                updateCaption(captionId, {
+                  style: { ...caption.style, backgroundHeightFrac: Number(e.target.value) }
+                })
+              }
+              data-testid="caption-bg-height-frac"
+            />
+
+            <div style={{ ...styles.label, marginTop: 8 }}>
+              자막 배경 너비: {Math.round((caption.style.backgroundWidthFrac ?? 0) * 100)}%
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={MAX_CAPTION_BG_FRAC}
+              step={0.01}
+              value={caption.style.backgroundWidthFrac ?? 0}
+              onChange={(e) =>
+                updateCaption(captionId, {
+                  style: { ...caption.style, backgroundWidthFrac: Number(e.target.value) }
+                })
+              }
+              data-testid="caption-bg-width-frac"
+            />
+          </div>
+        )}
 
         {/* Text effects (Phase 3.23) — outline / drop-shadow / glow */}
         <div style={styles.group}>

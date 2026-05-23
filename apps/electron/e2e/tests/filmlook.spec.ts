@@ -312,6 +312,16 @@ test.describe('@phase-3-37-filmlook film look (vignette / grain / tone)', () => 
     await expect(page.locator('[data-testid="effects-section-filmlook"]')).toBeVisible({
       timeout: 5_000
     })
+    // Phase 3.47 — sections are accordion; filmlook is collapsed by default.
+    // Click the section header to mount its body before assertions.
+    const filmlookToggle = page.locator('[data-testid="section-toggle-filmlook"]')
+    if ((await filmlookToggle.count()) > 0) {
+      const expanded = await filmlookToggle.getAttribute('aria-expanded')
+      if (expanded !== 'true') {
+        await filmlookToggle.click()
+        await page.waitForTimeout(120)
+      }
+    }
   }
 
   async function buildPlan(outputPath: string): Promise<{

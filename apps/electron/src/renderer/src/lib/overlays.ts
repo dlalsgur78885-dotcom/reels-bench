@@ -106,9 +106,15 @@ export function makeStickerOverlay(stickerId: string, startMs: number): OverlayC
 }
 
 /** Short human label for an overlay source — used by Timeline clip blocks. */
-export function overlaySourceLabel(source: OverlaySource): string {
+export function overlaySourceLabel(source: OverlaySource | undefined): string {
+  // Defensive: a stale/test-injected OverlayClip may lack `source`. Never
+  // crash the Timeline render — show a neutral fallback instead.
+  if (!source || typeof (source as { type?: unknown }).type !== 'string') {
+    return '⚠ 잘못된 오버레이'
+  }
   if (source.type === 'image') return '🖼 이미지'
-  if (source.type === 'sticker') return `✨ 스티커`
+  if (source.type === 'sticker') return '✨ 스티커'
+  if (source.type !== 'shape' || !source.style) return '🟦 도형'
   switch (source.style.shape) {
     case 'rectangle':
       return '🟦 사각형'

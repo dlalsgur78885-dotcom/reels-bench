@@ -354,6 +354,78 @@ function findClip(project: Project, id: string): Clip | null {
   return null
 }
 
+/**
+ * Phase 3.47 — collapsible accordion section. Renders an always-visible
+ * header (chevron + title + optional right-side controls). The wrapper div
+ * keeps the original `data-testid="effects-section-*"` so e2e selectors keep
+ * working. The body is mounted only when open.
+ */
+function Section(props: {
+  id: string
+  title: string
+  defaultOpen?: boolean
+  testId?: string
+  children: React.ReactNode
+  /** Optional sub-header right-side controls (e.g. a quick toggle); rendered
+   *  in the header row to the right of the chevron, so it stays accessible
+   *  even when collapsed. */
+  headerRight?: React.ReactNode
+}): JSX.Element {
+  const [open, setOpen] = useState(props.defaultOpen ?? false)
+  return (
+    <div
+      data-testid={props.testId}
+      data-section-id={props.id}
+      data-section-open={open ? 'true' : 'false'}
+      style={{
+        borderBottom: '1px solid #1f2937',
+        paddingBottom: open ? 12 : 0
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        data-testid={`section-toggle-${props.id}`}
+        aria-expanded={open}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          width: '100%',
+          gap: 8,
+          background: 'transparent',
+          border: 'none',
+          color: '#cbd5e1',
+          fontSize: 13,
+          fontWeight: 700,
+          padding: '10px 4px',
+          cursor: 'pointer',
+          textAlign: 'left'
+        }}
+      >
+        <span
+          aria-hidden="true"
+          style={{
+            display: 'inline-block',
+            transform: open ? 'rotate(90deg)' : 'rotate(0deg)',
+            transition: 'transform 120ms',
+            fontSize: 10,
+            color: '#94a3b8'
+          }}
+        >
+          ▸
+        </span>
+        <span style={{ flex: 1 }}>{props.title}</span>
+        {props.headerRight}
+      </button>
+      {open && (
+        <div data-testid={`section-body-${props.id}`} style={{ paddingLeft: 4 }}>
+          {props.children}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   const { project, clipId, playheadMs, onClose } = props
 
@@ -804,76 +876,83 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
       <div style={styles.body}>
         {/* ---------------- 변형 (transform) ---------------- */}
         {activeTab === 'transform' && (
-          <div data-testid="effects-section-transform">
-            <p style={styles.sectionLabel}>크기 · 회전 · 위치</p>
-            <div style={{ height: 6 }} />
-            {sliderRow(
-              '크기',
-              transform.scale,
-              MIN_TRANSFORM_SCALE,
-              MAX_TRANSFORM_SCALE,
-              0.05,
-              (v) => handleTransform({ scale: v }),
-              'effects-transform-scale'
-            )}
-            {sliderRow(
-              '회전',
-              transform.rotation,
-              MIN_TRANSFORM_ROTATION,
-              MAX_TRANSFORM_ROTATION,
-              1,
-              (v) => handleTransform({ rotation: v }),
-              'effects-transform-rotation',
-              0
-            )}
-            {sliderRow(
-              '불투명',
-              transform.opacity,
-              0,
-              1,
-              0.05,
-              (v) => handleTransform({ opacity: v }),
-              'effects-transform-opacity'
-            )}
-            {sliderRow(
-              'X 위치',
-              transform.x,
-              MIN_TRANSFORM_OFFSET,
-              MAX_TRANSFORM_OFFSET,
-              0.01,
-              (v) => handleTransform({ x: v }),
-              'effects-transform-x'
-            )}
-            {sliderRow(
-              'Y 위치',
-              transform.y,
-              MIN_TRANSFORM_OFFSET,
-              MAX_TRANSFORM_OFFSET,
-              0.01,
-              (v) => handleTransform({ y: v }),
-              'effects-transform-y'
-            )}
-            <div style={{ height: 8 }} />
-            <button
-              type="button"
-              style={styles.resetBtn}
-              onClick={() => resetClipTransform(clip.id)}
-              data-testid="effects-transform-reset"
+          <>
+            <Section
+              id="transform"
+              title="크기 · 회전 · 위치"
+              testId="effects-section-transform"
+              defaultOpen
             >
-              변형 초기화
-            </button>
-            {hasTransformKeyframes(clip) && (
-              <p style={{ ...styles.hint, marginTop: 8 }}>
-                키프레임 애니메이션 적용 중 — 슬라이더 조정은 재생헤드 위치의
-                키프레임에 반영돼요. (애니메이션 탭 참고)
-              </p>
-            )}
+              {sliderRow(
+                '크기',
+                transform.scale,
+                MIN_TRANSFORM_SCALE,
+                MAX_TRANSFORM_SCALE,
+                0.05,
+                (v) => handleTransform({ scale: v }),
+                'effects-transform-scale'
+              )}
+              {sliderRow(
+                '회전',
+                transform.rotation,
+                MIN_TRANSFORM_ROTATION,
+                MAX_TRANSFORM_ROTATION,
+                1,
+                (v) => handleTransform({ rotation: v }),
+                'effects-transform-rotation',
+                0
+              )}
+              {sliderRow(
+                '불투명',
+                transform.opacity,
+                0,
+                1,
+                0.05,
+                (v) => handleTransform({ opacity: v }),
+                'effects-transform-opacity'
+              )}
+              {sliderRow(
+                'X 위치',
+                transform.x,
+                MIN_TRANSFORM_OFFSET,
+                MAX_TRANSFORM_OFFSET,
+                0.01,
+                (v) => handleTransform({ x: v }),
+                'effects-transform-x'
+              )}
+              {sliderRow(
+                'Y 위치',
+                transform.y,
+                MIN_TRANSFORM_OFFSET,
+                MAX_TRANSFORM_OFFSET,
+                0.01,
+                (v) => handleTransform({ y: v }),
+                'effects-transform-y'
+              )}
+              <div style={{ height: 8 }} />
+              <button
+                type="button"
+                style={styles.resetBtn}
+                onClick={() => resetClipTransform(clip.id)}
+                data-testid="effects-transform-reset"
+              >
+                변형 초기화
+              </button>
+              {hasTransformKeyframes(clip) && (
+                <p style={{ ...styles.hint, marginTop: 8 }}>
+                  키프레임 애니메이션 적용 중 — 슬라이더 조정은 재생헤드 위치의
+                  키프레임에 반영돼요. (애니메이션 탭 참고)
+                </p>
+              )}
+            </Section>
             {/* Phase 3.13 — bind an overlay clip to a motion track. The
                 bindable tracks live on the project's media clips. */}
             {isOverlay && (
-              <div style={{ marginTop: 12 }} data-testid="effects-section-motion-track">
-                <p style={styles.sectionLabel}>모션 트랙에 고정</p>
-                <div style={{ height: 6 }} />
+              <Section
+                id="motion-track"
+                title="모션 트랙에 고정"
+                testId="effects-section-motion-track"
+              >
                 <select
                   data-testid={`motion-track-bind-select-${clip.id}`}
                   value={isOverlayClip(clip) ? clip.motionTrackId ?? '' : ''}
@@ -905,7 +984,7 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                       </option>
                     ))}
                 </select>
-              </div>
+              </Section>
             )}
             {/* Phase 3.36 — overlay drop shadow (image / sticker / shape).
                 Mirrors the ClipContextMenu 그림자 control; persists via
@@ -920,9 +999,10 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                   updateOverlay(clip.id, { shadow: next ?? undefined })
                 }
                 return (
-                  <div
-                    style={{ marginTop: 12 }}
-                    data-testid="effects-section-overlay-shadow"
+                  <Section
+                    id="overlay-shadow"
+                    title="그림자"
+                    testId="effects-section-overlay-shadow"
                   >
                     <label
                       style={{
@@ -943,7 +1023,7 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                           )
                         }
                       />
-                      <span style={styles.sectionLabel}>그림자</span>
+                      <span style={styles.sectionLabel}>그림자 사용</span>
                     </label>
                     {shadow !== null && (
                       <div
@@ -1007,17 +1087,20 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                         )}
                       </div>
                     )}
-                  </div>
+                  </Section>
                 )
               })()}
-          </div>
+          </>
         )}
 
         {/* ---------------- 속도 (speed) ---------------- */}
         {activeTab === 'speed' && isMedia && (
-          <div data-testid="effects-section-speed">
-            <p style={styles.sectionLabel}>재생 속도</p>
-            <div style={{ height: 6 }} />
+          <Section
+            id="speed"
+            title="재생 속도"
+            testId="effects-section-speed"
+            defaultOpen
+          >
             <div style={styles.presetRow}>
               {SPEED_PRESETS.map((p) => {
                 const active = Math.abs(speed - p) < 0.001
@@ -1047,7 +1130,7 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
               (v) => setClipSpeed(clip.id, v),
               'effects-speed'
             )}
-          </div>
+          </Section>
         )}
 
         {/* ---------------- 애니메이션 (keyframes) ---------------- */}
@@ -1055,9 +1138,12 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
           <div data-testid="effects-section-animation">
             {/* Phase 3.31 — auto-zoom / punch-in presets. One click writes the
                 clip's transform-keyframe track (replacing any prior one). */}
-            <div data-testid="effects-section-zoom-presets">
-              <p style={styles.sectionLabel}>오토 줌 프리셋</p>
-              <div style={{ height: 6 }} />
+            <Section
+              id="zoom-presets"
+              title="오토 줌 프리셋"
+              testId="effects-section-zoom-presets"
+              defaultOpen
+            >
               <div style={styles.presetRow}>
                 {ZOOM_PRESETS.map((preset) => (
                   <button
@@ -1077,48 +1163,47 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                   프리셋을 적용하면 기존 키프레임이 대체돼요.
                 </p>
               )}
-            </div>
-            <hr style={styles.divider} />
-            <p style={styles.sectionLabel}>변형 키프레임</p>
-            <div style={{ height: 6 }} />
-            <div style={styles.row}>
-              <button
-                type="button"
-                style={styles.keyframeBtn}
-                onClick={() =>
-                  addTransformKeyframe(clip.id, playheadMs - clip.startMs)
-                }
-                data-testid="effects-add-keyframe"
-              >
-                {isOnKeyframe ? '키프레임 갱신' : '현재 위치에 키프레임 추가'}
-              </button>
-              <button
-                type="button"
-                style={{
-                  ...styles.keyframeBtn,
-                  ...(isOnKeyframe ? {} : styles.keyframeBtnDisabled)
-                }}
-                disabled={!isOnKeyframe}
-                onClick={() => {
-                  if (keyframeIndex >= 0) {
-                    removeTransformKeyframe(clip.id, keyframeIndex)
+            </Section>
+            <Section id="transform-keyframes" title="변형 키프레임">
+              <div style={styles.row}>
+                <button
+                  type="button"
+                  style={styles.keyframeBtn}
+                  onClick={() =>
+                    addTransformKeyframe(clip.id, playheadMs - clip.startMs)
                   }
-                }}
-                data-testid="effects-remove-keyframe"
-              >
-                키프레임 삭제
-              </button>
-              <span
-                style={styles.keyframeBadge}
-                data-testid="effects-keyframe-count"
-              >
-                {keyframeCount}
-              </span>
-            </div>
-            <p style={{ ...styles.hint, marginTop: 8 }}>
-              재생헤드를 옮긴 뒤 변형 탭의 슬라이더를 조정하면 그 지점에
-              키프레임이 생겨 자연스럽게 보간돼요.
-            </p>
+                  data-testid="effects-add-keyframe"
+                >
+                  {isOnKeyframe ? '키프레임 갱신' : '현재 위치에 키프레임 추가'}
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    ...styles.keyframeBtn,
+                    ...(isOnKeyframe ? {} : styles.keyframeBtnDisabled)
+                  }}
+                  disabled={!isOnKeyframe}
+                  onClick={() => {
+                    if (keyframeIndex >= 0) {
+                      removeTransformKeyframe(clip.id, keyframeIndex)
+                    }
+                  }}
+                  data-testid="effects-remove-keyframe"
+                >
+                  키프레임 삭제
+                </button>
+                <span
+                  style={styles.keyframeBadge}
+                  data-testid="effects-keyframe-count"
+                >
+                  {keyframeCount}
+                </span>
+              </div>
+              <p style={{ ...styles.hint, marginTop: 8 }}>
+                재생헤드를 옮긴 뒤 변형 탭의 슬라이더를 조정하면 그 지점에
+                키프레임이 생겨 자연스럽게 보간돼요.
+              </p>
+            </Section>
           </div>
         )}
 
@@ -1126,269 +1211,274 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
         {activeTab === 'adjust' && isMedia && (
           <div data-testid="effects-section-adjust">
             {/* Filter preset */}
-            <p style={styles.sectionLabel}>필터</p>
-            <div style={{ height: 6 }} />
-            <div style={styles.filterGrid}>
-              {FILTER_PRESETS.map((p) => {
-                const active = filterPreset === p
-                const css = filterPresetToCss(p, filterIntensity) || 'none'
-                return (
-                  <button
-                    key={p}
-                    type="button"
-                    onClick={() => setClipFilter(clip.id, p, filterIntensity)}
-                    data-testid={`effects-filter-preset-${p}`}
-                    style={{
-                      ...styles.filterCell,
-                      border: active
-                        ? '2px solid #10b981'
-                        : '1px solid #374151'
-                    }}
-                  >
-                    <div
-                      aria-hidden
-                      style={{
-                        ...styles.filterSwatch,
-                        filter: css === 'none' ? '' : css
-                      }}
-                    />
-                    <div>{FILTER_PRESET_LABELS[p] ?? p}</div>
-                  </button>
-                )
-              })}
-            </div>
-            <div style={{ height: 8 }} />
-            <div style={styles.row}>
-              <span style={styles.ctrlLabel}>강도</span>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                step={5}
-                value={Math.round(filterIntensity * 100)}
-                onChange={(e) =>
-                  setClipFilter(
-                    clip.id,
-                    filterPreset,
-                    Math.max(0, Math.min(1, parseInt(e.target.value, 10) / 100))
-                  )
-                }
-                style={styles.slider}
-                data-testid="effects-filter-intensity-slider"
-                aria-label="필터 강도"
-                disabled={filterPreset === 'none'}
-              />
-              <span style={{ ...styles.hint, width: 36 }}>
-                {Math.round(filterIntensity * 100)}%
-              </span>
-            </div>
-
-            <hr style={styles.divider} />
-
-            {/* Color adjust */}
-            <p style={styles.sectionLabel}>색 보정</p>
-            <div style={{ height: 6 }} />
-            {/* Auto color correction (Phase 3.15) — one-tap analyze + fill. */}
-            <button
-              type="button"
-              style={{
-                ...styles.resetBtn,
-                ...(autoColorStatus === 'analyzing'
-                  ? styles.keyframeBtnDisabled
-                  : null)
-              }}
-              onClick={() => {
-                void handleAutoColor()
-              }}
-              disabled={autoColorStatus === 'analyzing'}
-              data-testid="effects-coloradjust-auto"
+            <Section
+              id="filter"
+              title="필터"
+              testId="effects-section-filter"
+              defaultOpen
             >
-              {autoColorStatus === 'analyzing' ? '분석 중…' : '자동 보정'}
-            </button>
-            {autoColorStatus === 'error' && (
-              <p
-                style={{ ...styles.hint, marginTop: 4 }}
-                data-testid="effects-coloradjust-auto-error"
-              >
-                자동 보정에 실패했어요.
-              </p>
-            )}
-            {/* Color match — pick a reference clip and grade toward it. */}
-            <div style={{ height: 6 }} />
-            <select
-              data-testid="effects-coloradjust-match-ref"
-              value={colorMatchRefId}
-              onChange={(e) => setColorMatchRefId(e.target.value)}
-              disabled={colorMatchStatus === 'analyzing'}
-              style={{
-                width: '100%',
-                background: '#0a0a0a',
-                color: '#f5f5f5',
-                border: '1px solid #2a2a2a',
-                borderRadius: 4,
-                padding: '4px 6px',
-                fontSize: 12
-              }}
-              aria-label="참조 클립"
-            >
-              <option value="">참조 클립 선택…</option>
-              {project.tracks
-                .flatMap((t) => t.clips)
-                .filter(
-                  (c) =>
-                    isMediaClip(c) &&
-                    c.id !== clip.id &&
-                    project.media[c.mediaId]?.kind !== 'audio'
-                )
-                .map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {isMediaClip(c)
-                      ? project.media[c.mediaId]?.fileName ?? c.id
-                      : c.id}
-                  </option>
-                ))}
-            </select>
-            <div style={{ height: 6 }} />
-            <button
-              type="button"
-              style={{
-                ...styles.resetBtn,
-                ...(colorMatchStatus === 'analyzing'
-                  ? styles.keyframeBtnDisabled
-                  : null)
-              }}
-              onClick={() => {
-                void handleColorMatch()
-              }}
-              disabled={colorMatchStatus === 'analyzing' || colorMatchRefId === ''}
-              data-testid="effects-coloradjust-match"
-            >
-              {colorMatchStatus === 'analyzing' ? '매칭 중…' : '컬러 매치'}
-            </button>
-            {colorMatchStatus === 'error' && (
-              <p
-                style={{ ...styles.hint, marginTop: 4 }}
-                data-testid="effects-coloradjust-match-error"
-              >
-                컬러 매치에 실패했어요.
-              </p>
-            )}
-            <div style={{ height: 8 }} />
-            {(
-              ['brightness', 'contrast', 'saturation', 'temperature'] as const
-            ).map((k) =>
-              sliderRow(
-                COLOR_ADJUST_LABELS[k],
-                colorAdjust[k],
-                MIN_COLOR_ADJUST,
-                MAX_COLOR_ADJUST,
-                1,
-                (v) => setClipColorAdjust(clip.id, { [k]: v }),
-                `effects-coloradjust-${k}`,
-                0,
-                true
-              )
-            )}
-            <div style={{ height: 8 }} />
-            <button
-              type="button"
-              style={styles.resetBtn}
-              onClick={() => resetClipColorAdjust(clip.id)}
-              data-testid="effects-coloradjust-reset"
-            >
-              색 보정 초기화
-            </button>
-
-            <hr style={styles.divider} />
-
-            {/* Tone curves (Phase 3.12) */}
-            <p style={styles.sectionLabel}>곡선</p>
-            <div style={{ height: 6 }} />
-            <div data-testid="effects-section-curves">
-              <CurveEditor clipId={clip.id} />
-            </div>
-
-            <hr style={styles.divider} />
-
-            {/* HSL secondary grading (Phase 3.12) */}
-            <p style={styles.sectionLabel}>HSL</p>
-            <div style={{ height: 6 }} />
-            <div data-testid="hsl-panel">
-              {/* Band selector — 6 color swatches, one active. */}
-              <div style={styles.presetRow}>
-                {HSL_BAND_KEYS.map((b) => {
-                  const active = hslBand === b
+              <div style={styles.filterGrid}>
+                {FILTER_PRESETS.map((p) => {
+                  const active = filterPreset === p
+                  const css = filterPresetToCss(p, filterIntensity) || 'none'
                   return (
                     <button
-                      key={b}
+                      key={p}
                       type="button"
-                      data-testid={`hsl-band-${b}`}
-                      aria-pressed={active}
-                      onClick={() => setHslBand(b)}
-                      title={HSL_BAND_LABELS[b]}
+                      onClick={() => setClipFilter(clip.id, p, filterIntensity)}
+                      data-testid={`effects-filter-preset-${p}`}
                       style={{
-                        width: 30,
-                        height: 30,
-                        borderRadius: 6,
-                        background: HSL_BAND_SWATCHES[b],
+                        ...styles.filterCell,
                         border: active
-                          ? '2px solid #f5f5f5'
-                          : '1px solid #374151',
-                        cursor: 'pointer',
-                        padding: 0
+                          ? '2px solid #10b981'
+                          : '1px solid #374151'
                       }}
-                    />
+                    >
+                      <div
+                        aria-hidden
+                        style={{
+                          ...styles.filterSwatch,
+                          filter: css === 'none' ? '' : css
+                        }}
+                      />
+                      <div>{FILTER_PRESET_LABELS[p] ?? p}</div>
+                    </button>
                   )
                 })}
               </div>
               <div style={{ height: 8 }} />
-              {(['hue', 'saturation', 'luminance'] as const).map((field) => {
-                const label =
-                  field === 'hue'
-                    ? '색상'
-                    : field === 'saturation'
-                      ? '채도'
-                      : '광도'
-                return (
-                  <div key={field} data-testid={`hsl-slider-${field}`}>
-                    {sliderRow(
-                      label,
-                      hslBandAdjust[field],
-                      MIN_HSL_ADJUST,
-                      MAX_HSL_ADJUST,
-                      1,
-                      (v) => setClipHslBand(clip.id, hslBand, { [field]: v }),
-                      `hsl-slider-${field}`,
-                      0,
-                      true
-                    )}
-                  </div>
+              <div style={styles.row}>
+                <span style={styles.ctrlLabel}>강도</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={Math.round(filterIntensity * 100)}
+                  onChange={(e) =>
+                    setClipFilter(
+                      clip.id,
+                      filterPreset,
+                      Math.max(0, Math.min(1, parseInt(e.target.value, 10) / 100))
+                    )
+                  }
+                  style={styles.slider}
+                  data-testid="effects-filter-intensity-slider"
+                  aria-label="필터 강도"
+                  disabled={filterPreset === 'none'}
+                />
+                <span style={{ ...styles.hint, width: 36 }}>
+                  {Math.round(filterIntensity * 100)}%
+                </span>
+              </div>
+            </Section>
+
+            {/* Color adjust */}
+            <Section
+              id="color-adjust"
+              title="색 보정"
+              testId="effects-section-color-adjust"
+              defaultOpen
+            >
+              {/* Auto color correction (Phase 3.15) — one-tap analyze + fill. */}
+              <button
+                type="button"
+                style={{
+                  ...styles.resetBtn,
+                  ...(autoColorStatus === 'analyzing'
+                    ? styles.keyframeBtnDisabled
+                    : null)
+                }}
+                onClick={() => {
+                  void handleAutoColor()
+                }}
+                disabled={autoColorStatus === 'analyzing'}
+                data-testid="effects-coloradjust-auto"
+              >
+                {autoColorStatus === 'analyzing' ? '분석 중…' : '자동 보정'}
+              </button>
+              {autoColorStatus === 'error' && (
+                <p
+                  style={{ ...styles.hint, marginTop: 4 }}
+                  data-testid="effects-coloradjust-auto-error"
+                >
+                  자동 보정에 실패했어요.
+                </p>
+              )}
+              {/* Color match — pick a reference clip and grade toward it. */}
+              <div style={{ height: 6 }} />
+              <select
+                data-testid="effects-coloradjust-match-ref"
+                value={colorMatchRefId}
+                onChange={(e) => setColorMatchRefId(e.target.value)}
+                disabled={colorMatchStatus === 'analyzing'}
+                style={{
+                  width: '100%',
+                  background: '#0a0a0a',
+                  color: '#f5f5f5',
+                  border: '1px solid #2a2a2a',
+                  borderRadius: 4,
+                  padding: '4px 6px',
+                  fontSize: 12
+                }}
+                aria-label="참조 클립"
+              >
+                <option value="">참조 클립 선택…</option>
+                {project.tracks
+                  .flatMap((t) => t.clips)
+                  .filter(
+                    (c) =>
+                      isMediaClip(c) &&
+                      c.id !== clip.id &&
+                      project.media[c.mediaId]?.kind !== 'audio'
+                  )
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {isMediaClip(c)
+                        ? project.media[c.mediaId]?.fileName ?? c.id
+                        : c.id}
+                    </option>
+                  ))}
+              </select>
+              <div style={{ height: 6 }} />
+              <button
+                type="button"
+                style={{
+                  ...styles.resetBtn,
+                  ...(colorMatchStatus === 'analyzing'
+                    ? styles.keyframeBtnDisabled
+                    : null)
+                }}
+                onClick={() => {
+                  void handleColorMatch()
+                }}
+                disabled={
+                  colorMatchStatus === 'analyzing' || colorMatchRefId === ''
+                }
+                data-testid="effects-coloradjust-match"
+              >
+                {colorMatchStatus === 'analyzing' ? '매칭 중…' : '컬러 매치'}
+              </button>
+              {colorMatchStatus === 'error' && (
+                <p
+                  style={{ ...styles.hint, marginTop: 4 }}
+                  data-testid="effects-coloradjust-match-error"
+                >
+                  컬러 매치에 실패했어요.
+                </p>
+              )}
+              <div style={{ height: 8 }} />
+              {(
+                ['brightness', 'contrast', 'saturation', 'temperature'] as const
+              ).map((k) =>
+                sliderRow(
+                  COLOR_ADJUST_LABELS[k],
+                  colorAdjust[k],
+                  MIN_COLOR_ADJUST,
+                  MAX_COLOR_ADJUST,
+                  1,
+                  (v) => setClipColorAdjust(clip.id, { [k]: v }),
+                  `effects-coloradjust-${k}`,
+                  0,
+                  true
                 )
-              })}
-              <p style={{ ...styles.hint, marginTop: 6 }}>
-                미리보기는 근사값입니다 — 정확한 색은 내보내기 결과를
-                확인하세요.
-              </p>
+              )}
               <div style={{ height: 8 }} />
               <button
                 type="button"
                 style={styles.resetBtn}
-                onClick={() => resetClipHsl(clip.id)}
-                data-testid="hsl-reset"
+                onClick={() => resetClipColorAdjust(clip.id)}
+                data-testid="effects-coloradjust-reset"
               >
-                HSL 초기화
+                색 보정 초기화
               </button>
-            </div>
+            </Section>
+
+            {/* Tone curves (Phase 3.12) */}
+            <Section id="curves" title="곡선" testId="effects-section-curves">
+              <CurveEditor clipId={clip.id} />
+            </Section>
+
+            {/* HSL secondary grading (Phase 3.12) */}
+            <Section id="hsl" title="HSL" testId="effects-section-hsl">
+              <div data-testid="hsl-panel">
+                {/* Band selector — 6 color swatches, one active. */}
+                <div style={styles.presetRow}>
+                  {HSL_BAND_KEYS.map((b) => {
+                    const active = hslBand === b
+                    return (
+                      <button
+                        key={b}
+                        type="button"
+                        data-testid={`hsl-band-${b}`}
+                        aria-pressed={active}
+                        onClick={() => setHslBand(b)}
+                        title={HSL_BAND_LABELS[b]}
+                        style={{
+                          width: 30,
+                          height: 30,
+                          borderRadius: 6,
+                          background: HSL_BAND_SWATCHES[b],
+                          border: active
+                            ? '2px solid #f5f5f5'
+                            : '1px solid #374151',
+                          cursor: 'pointer',
+                          padding: 0
+                        }}
+                      />
+                    )
+                  })}
+                </div>
+                <div style={{ height: 8 }} />
+                {(['hue', 'saturation', 'luminance'] as const).map((field) => {
+                  const label =
+                    field === 'hue'
+                      ? '색상'
+                      : field === 'saturation'
+                        ? '채도'
+                        : '광도'
+                  return (
+                    <div key={field} data-testid={`hsl-slider-${field}`}>
+                      {sliderRow(
+                        label,
+                        hslBandAdjust[field],
+                        MIN_HSL_ADJUST,
+                        MAX_HSL_ADJUST,
+                        1,
+                        (v) => setClipHslBand(clip.id, hslBand, { [field]: v }),
+                        `hsl-slider-${field}`,
+                        0,
+                        true
+                      )}
+                    </div>
+                  )
+                })}
+                <p style={{ ...styles.hint, marginTop: 6 }}>
+                  미리보기는 근사값입니다 — 정확한 색은 내보내기 결과를
+                  확인하세요.
+                </p>
+                <div style={{ height: 8 }} />
+                <button
+                  type="button"
+                  style={styles.resetBtn}
+                  onClick={() => resetClipHsl(clip.id)}
+                  data-testid="hsl-reset"
+                >
+                  HSL 초기화
+                </button>
+              </div>
+            </Section>
 
             {/* 리터치 / 뷰티 — edge-preserving skin smoothing. VIDEO clips
                 only (hidden for audio-kind media). EXPORT-accurate; the
                 preview only approximates with a tiny CSS blur. */}
             {isMediaClip(clip) &&
               project.media[clip.mediaId]?.kind !== 'audio' && (
-                <div data-testid="effects-section-retouch">
-                  <hr style={styles.divider} />
-                  <p style={styles.sectionLabel}>리터치 / 뷰티</p>
-                  <div style={{ height: 6 }} />
+                <Section
+                  id="retouch"
+                  title="리터치 / 뷰티"
+                  testId="effects-section-retouch"
+                >
                   {/* On/off toggle — ON applies DEFAULT_RETOUCH. */}
                   <label
                     style={{
@@ -1431,7 +1521,7 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                   <p style={{ ...styles.hint, marginTop: 6 }}>
                     내보내기 시 적용 — 미리보기는 근사값입니다.
                   </p>
-                </div>
+                </Section>
               )}
 
             {/* 필름 룩 — vignette / grain / faded tone finishing filter.
@@ -1440,10 +1530,11 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 export-only. */}
             {isMediaClip(clip) &&
               project.media[clip.mediaId]?.kind !== 'audio' && (
-                <div data-testid="effects-section-filmlook">
-                  <hr style={styles.divider} />
-                  <p style={styles.sectionLabel}>필름 룩</p>
-                  <div style={{ height: 6 }} />
+                <Section
+                  id="filmlook"
+                  title="필름 룩"
+                  testId="effects-section-filmlook"
+                >
                   {/* One-click presets */}
                   <div style={styles.presetRow}>
                     {FILM_LOOK_PRESETS.map((p) => (
@@ -1517,7 +1608,7 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                     그레인은 내보내기 시 적용됩니다 — 미리보기는 톤·비네트만
                     표시합니다.
                   </p>
-                </div>
+                </Section>
               )}
 
             {/* 손떨림 보정 — per-clip video stabilization. VIDEO clips only
@@ -1525,10 +1616,11 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 preview; the hint says so. */}
             {isMediaClip(clip) &&
               project.media[clip.mediaId]?.kind !== 'audio' && (
-                <div data-testid="effects-section-stabilize">
-                  <hr style={styles.divider} />
-                  <p style={styles.sectionLabel}>손떨림 보정</p>
-                  <div style={{ height: 6 }} />
+                <Section
+                  id="stabilize"
+                  title="손떨림 보정"
+                  testId="effects-section-stabilize"
+                >
                   {/* On/off toggle — ON applies DEFAULT_STABILIZE. */}
                   <label
                     style={{
@@ -1572,107 +1664,111 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                     내보내기 시 적용 — 미리보기는 표시되지 않습니다. (분석 1패스
                     후 강도 조정은 즉시 반영됩니다.)
                   </p>
-                </div>
+                </Section>
               )}
 
-            <hr style={styles.divider} />
-
             {/* Crop */}
-            <p style={styles.sectionLabel}>크롭</p>
-            <div style={{ height: 6 }} />
-            <div style={styles.presetRow}>
-              {CROP_PRESETS.map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  style={styles.preset}
-                  data-testid={`effects-crop-preset-${p.id}`}
-                  onClick={() => {
-                    if (p.aspect === null) return
-                    setClipCrop(
-                      clip.id,
-                      centeredCropForAspect(p.aspect, srcAspect)
-                    )
-                  }}
-                >
-                  {p.id === 'free' ? '자유' : p.id}
-                </button>
-              ))}
-            </div>
-            <div style={{ height: 8 }} />
-            {sliderRow(
-              'X',
-              cropRect.x,
-              0,
-              1,
-              0.01,
-              (v) => setClipCrop(clip.id, { x: v }),
-              'effects-crop-x'
-            )}
-            {sliderRow(
-              'Y',
-              cropRect.y,
-              0,
-              1,
-              0.01,
-              (v) => setClipCrop(clip.id, { y: v }),
-              'effects-crop-y'
-            )}
-            {sliderRow(
-              '너비',
-              cropRect.w,
-              MIN_CROP_SIZE,
-              1,
-              0.01,
-              (v) => setClipCrop(clip.id, { w: v }),
-              'effects-crop-w'
-            )}
-            {sliderRow(
-              '높이',
-              cropRect.h,
-              MIN_CROP_SIZE,
-              1,
-              0.01,
-              (v) => setClipCrop(clip.id, { h: v }),
-              'effects-crop-h'
-            )}
-            <div style={{ height: 8 }} />
-            <button
-              type="button"
-              style={styles.resetBtn}
-              onClick={() => resetClipCrop(clip.id)}
-              data-testid="effects-crop-reset"
-            >
-              크롭 초기화
-            </button>
+            <Section id="crop" title="크롭" testId="effects-section-crop">
+              <div style={styles.presetRow}>
+                {CROP_PRESETS.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    style={styles.preset}
+                    data-testid={`effects-crop-preset-${p.id}`}
+                    onClick={() => {
+                      if (p.aspect === null) return
+                      setClipCrop(
+                        clip.id,
+                        centeredCropForAspect(p.aspect, srcAspect)
+                      )
+                    }}
+                  >
+                    {p.id === 'free' ? '자유' : p.id}
+                  </button>
+                ))}
+              </div>
+              <div style={{ height: 8 }} />
+              {sliderRow(
+                'X',
+                cropRect.x,
+                0,
+                1,
+                0.01,
+                (v) => setClipCrop(clip.id, { x: v }),
+                'effects-crop-x'
+              )}
+              {sliderRow(
+                'Y',
+                cropRect.y,
+                0,
+                1,
+                0.01,
+                (v) => setClipCrop(clip.id, { y: v }),
+                'effects-crop-y'
+              )}
+              {sliderRow(
+                '너비',
+                cropRect.w,
+                MIN_CROP_SIZE,
+                1,
+                0.01,
+                (v) => setClipCrop(clip.id, { w: v }),
+                'effects-crop-w'
+              )}
+              {sliderRow(
+                '높이',
+                cropRect.h,
+                MIN_CROP_SIZE,
+                1,
+                0.01,
+                (v) => setClipCrop(clip.id, { h: v }),
+                'effects-crop-h'
+              )}
+              <div style={{ height: 8 }} />
+              <button
+                type="button"
+                style={styles.resetBtn}
+                onClick={() => resetClipCrop(clip.id)}
+                data-testid="effects-crop-reset"
+              >
+                크롭 초기화
+              </button>
+            </Section>
 
             {/* Out-of-scope effects — surfaced as disabled placeholders so the
                 panel mirrors CapCut's category list without faking features
                 that need ML/CV models. */}
-            <hr style={styles.divider} />
-            <p style={styles.sectionLabel}>고급 (준비 중)</p>
-            <div style={{ height: 6 }} />
-            <div style={styles.oosBox} data-testid="effects-oos-placeholders">
-              {[
-                '배경 제거',
-                '마스크',
-                '손떨림 보정',
-                'AI 스타일',
-                '품질 보정'
-              ].map((name) => (
-                <div key={name} style={styles.oosItem}>
-                  • {name} — 추후 지원 예정
-                </div>
-              ))}
-            </div>
+            <Section
+              id="advanced"
+              title="고급 (준비 중)"
+              testId="effects-section-advanced"
+            >
+              <div style={styles.oosBox} data-testid="effects-oos-placeholders">
+                {[
+                  '배경 제거',
+                  '마스크',
+                  '손떨림 보정',
+                  'AI 스타일',
+                  '품질 보정'
+                ].map((name) => (
+                  <div key={name} style={styles.oosItem}>
+                    • {name} — 추후 지원 예정
+                  </div>
+                ))}
+              </div>
+            </Section>
           </div>
         )}
 
         {/* ---------------- 전환 (transition) ---------------- */}
         {activeTab === 'transition' && isMedia && (
-          <div data-testid="effects-section-transition">
-            <p style={styles.sectionLabel}>시작 전환 효과</p>
-            <div style={{ height: 6 }} />
+          <Section
+            id="transition"
+            title="시작 전환 효과"
+            testId="effects-section-transition"
+            defaultOpen
+          >
             <div style={styles.presetRow}>
               {TRANSITION_KINDS.map((k) => {
                 const active = transitionKind === k
@@ -1730,14 +1826,19 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 disabled={transitionKind === 'none'}
               />
             </div>
-          </div>
+          </Section>
         )}
 
         {/* ---------------- 레이아웃 (collage / split-screen) ---------------- */}
         {activeTab === 'layout' && (
-          <div data-testid="effects-section-layout">
+          <Section
+            id="layout"
+            title="레이아웃"
+            testId="effects-section-layout"
+            defaultOpen
+          >
             <LayoutPanel />
-          </div>
+          </Section>
         )}
 
         {/* Overlay clips: no media-only tabs — show a hint when one is picked

@@ -45,6 +45,16 @@ export function createMainWindow(): BrowserWindow {
 
   win.once('ready-to-show', () => win.show())
 
+  // TEMP DIAG: pipe renderer console messages to the main-process stderr so
+  // the bg log captures them. Also auto-open devtools in dev. Revert when fix is in.
+  win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    // eslint-disable-next-line no-console
+    console.log(`[renderer:${level}] ${sourceId}:${line} — ${message}`)
+  })
+  if (process.env.ELECTRON_RENDERER_URL) {
+    win.webContents.once('did-finish-load', () => win.webContents.openDevTools({ mode: 'detach' }))
+  }
+
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (isAllowedExternal(url)) {
       void shell.openExternal(url)

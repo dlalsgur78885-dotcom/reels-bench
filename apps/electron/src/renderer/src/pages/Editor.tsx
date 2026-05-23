@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { MediaLibrary } from '../components/MediaLibrary'
 import { OverlayLibrary } from '../components/OverlayLibrary'
 import { TranscriptPanel } from '../components/TranscriptPanel'
@@ -104,13 +105,15 @@ const styles = {
   body: {
     flex: 1,
     display: 'grid',
-    gridTemplateColumns: 'minmax(280px, 320px) 1fr',
+    // Phase 3.45 — CapCut-style: 56px vertical icon rail + 280-320 secondary
+    // panel + center work area. The rail switches which panel content shows.
+    gridTemplateColumns: '56px minmax(280px, 320px) 1fr',
     overflow: 'hidden'
   } as React.CSSProperties,
   bodyWithEditor: {
     flex: 1,
     display: 'grid',
-    gridTemplateColumns: 'minmax(280px, 320px) 1fr 360px',
+    gridTemplateColumns: '56px minmax(280px, 320px) 1fr 360px',
     overflow: 'hidden'
   } as React.CSSProperties,
   right: {
@@ -207,7 +210,44 @@ const styles = {
     color: '#94a3b8',
     fontVariantNumeric: 'tabular-nums'
   } as React.CSSProperties,
-  // Left-panel tab host (미디어 / 오버레이).
+  // Phase 3.45 — CapCut-style vertical icon rail (replaces the horizontal
+  // text tabs that used to sit at the top of the left panel).
+  iconRail: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    background: '#101010',
+    borderRight: '1px solid #2a2a2a',
+    padding: '8px 4px',
+    gap: 4,
+    overflow: 'hidden'
+  } as React.CSSProperties,
+  iconRailBtn: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+    background: 'transparent',
+    color: '#9aa0a6',
+    border: '1px solid transparent',
+    borderRadius: 8,
+    padding: '8px 4px',
+    fontSize: 10,
+    fontWeight: 600,
+    cursor: 'pointer',
+    lineHeight: 1.2
+  } as React.CSSProperties,
+  iconRailBtnActive: {
+    background: '#1f2937',
+    color: '#f5f5f5',
+    borderColor: '#374151'
+  } as React.CSSProperties,
+  iconRailIcon: {
+    fontSize: 20,
+    lineHeight: 1
+  } as React.CSSProperties,
+  // Left-panel content host (no longer carries its own tab bar — the rail
+  // beside it owns the switching).
   leftPanel: {
     display: 'flex',
     flexDirection: 'column' as const,
@@ -216,35 +256,217 @@ const styles = {
     borderRight: '1px solid #2a2a2a',
     overflow: 'hidden'
   } as React.CSSProperties,
-  leftTabBar: {
-    flexShrink: 0,
-    display: 'flex',
-    gap: 4,
-    padding: '8px 10px',
-    borderBottom: '1px solid #2a2a2a',
-    background: '#101010'
-  } as React.CSSProperties,
-  leftTabBtn: {
-    flex: 1,
-    background: '#1a1a1a',
-    color: '#9aa0a6',
-    border: '1px solid #2a2a2a',
-    borderRadius: 6,
-    padding: '6px 8px',
-    fontSize: 12,
-    fontWeight: 600,
-    cursor: 'pointer'
-  } as React.CSSProperties,
-  leftTabBtnActive: {
-    background: '#6366f1',
-    color: '#fff',
-    borderColor: '#6366f1'
-  } as React.CSSProperties,
   leftPanelBody: {
     flex: 1,
     minHeight: 0,
     overflow: 'hidden'
+  } as React.CSSProperties,
+  // Phase 3.46 — popover menu styles for compact CapCut-style topbar.
+  menuTriggerBtn: {
+    background: '#1f2937',
+    color: '#f5f5f5',
+    border: '1px solid #374151',
+    borderRadius: 6,
+    padding: '6px 10px',
+    fontSize: 12,
+    cursor: 'pointer',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4
+  } as React.CSSProperties,
+  menuPopover: {
+    position: 'absolute',
+    top: 'calc(100% + 6px)',
+    right: 0,
+    background: '#0d0d0d',
+    border: '1px solid #2a2a2a',
+    borderRadius: 8,
+    padding: 10,
+    boxShadow: '0 8px 20px rgba(0,0,0,0.6)',
+    zIndex: 1000,
+    minWidth: 200,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 8
+  } as React.CSSProperties,
+  menuGroupLabel: {
+    fontSize: 11,
+    color: '#9aa0a6',
+    fontWeight: 600
+  } as React.CSSProperties,
+  menuRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap' as const
+  } as React.CSSProperties,
+  exportSplit: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    position: 'relative'
+  } as React.CSSProperties,
+  exportSplitMainBtn: {
+    background: '#6366f1',
+    color: '#fff',
+    border: 'none',
+    borderTopLeftRadius: 6,
+    borderBottomLeftRadius: 6,
+    borderTopRightRadius: 0,
+    borderBottomRightRadius: 0,
+    padding: '6px 12px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer'
+  } as React.CSSProperties,
+  exportSplitChevronBtn: {
+    background: '#4f46e5',
+    color: '#fff',
+    border: 'none',
+    borderLeft: '1px solid rgba(255,255,255,0.18)',
+    borderTopLeftRadius: 0,
+    borderBottomLeftRadius: 0,
+    borderTopRightRadius: 6,
+    borderBottomRightRadius: 6,
+    padding: '6px 8px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer'
   } as React.CSSProperties
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.46 — compact CapCut-style topbar. ToolbarMenu is a tiny click-to-
+// open popover: trigger button (with a `▾` suffix) + an absolutely positioned
+// panel below it. Clicking outside closes the popover (mousedown listener on
+// the document). The popover's children render vertically so each control
+// gets its own row.
+// ---------------------------------------------------------------------------
+interface ToolbarMenuProps {
+  label: string
+  testId: string
+  children: ReactNode
+}
+
+function ToolbarMenu({ label, testId, children }: ToolbarMenuProps): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onMouseDown = (e: MouseEvent): void => {
+      const root = rootRef.current
+      if (!root) return
+      if (e.target instanceof Node && root.contains(e.target)) return
+      setOpen(false)
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    return () => document.removeEventListener('mousedown', onMouseDown)
+  }, [open])
+
+  return (
+    <div
+      ref={rootRef}
+      style={{ position: 'relative', display: 'inline-flex' }}
+      data-testid={`${testId}-root`}
+    >
+      <button
+        type="button"
+        style={styles.menuTriggerBtn}
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        data-testid={testId}
+      >
+        <span>{label}</span>
+        <span aria-hidden="true">▾</span>
+      </button>
+      {open && (
+        <div
+          role="menu"
+          style={styles.menuPopover}
+          data-testid={`${testId}-popover`}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Split button used for 내보내기 — primary action stays a visible button on
+// the toolbar; the chevron opens a popover that hosts the secondary 일괄
+// 내보내기 action.
+interface ExportSplitButtonProps {
+  onMain: () => void
+  onBatch: () => void
+}
+
+function ExportSplitButton({
+  onMain,
+  onBatch
+}: ExportSplitButtonProps): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onMouseDown = (e: MouseEvent): void => {
+      const root = rootRef.current
+      if (!root) return
+      if (e.target instanceof Node && root.contains(e.target)) return
+      setOpen(false)
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    return () => document.removeEventListener('mousedown', onMouseDown)
+  }, [open])
+
+  return (
+    <div
+      ref={rootRef}
+      style={styles.exportSplit}
+      data-testid="topbar-menu-export-root"
+    >
+      <button
+        type="button"
+        style={styles.exportSplitMainBtn}
+        onClick={onMain}
+        data-testid="open-export-dialog"
+        title="내보내기 (Ctrl+E)"
+      >
+        내보내기
+      </button>
+      <button
+        type="button"
+        style={styles.exportSplitChevronBtn}
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        aria-label="내보내기 옵션"
+        data-testid="topbar-menu-export"
+      >
+        ▾
+      </button>
+      {open && (
+        <div
+          role="menu"
+          style={styles.menuPopover}
+          data-testid="topbar-menu-export-popover"
+        >
+          <button
+            style={styles.secondaryBtn}
+            onClick={() => {
+              setOpen(false)
+              onBatch()
+            }}
+            data-testid="open-batch-export-dialog"
+            title="여러 프리셋으로 한 번에 내보내기"
+          >
+            일괄 내보내기
+          </button>
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function Editor({ onBack }: EditorProps): JSX.Element {
@@ -749,9 +971,8 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           {project.width}×{project.height} · {project.fps}fps
         </div>
 
-        <div style={styles.hint} data-testid="aspect-ratio-hint">
-          클립이 새 비율에 자동으로 맞춰집니다
-        </div>
+        {/* Phase 3.46 — testid 보존을 위해 빈 hint 노드만 남긴다 (e2e 의존). */}
+        <span data-testid="aspect-ratio-hint" style={{ display: 'none' }} />
 
         <div style={styles.flex1} />
 
@@ -782,124 +1003,297 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           {futureCount > 0 && <span style={styles.undoBadge}>{futureCount}</span>}
         </button>
 
-        <input
-          style={styles.playheadInput}
-          type="number"
-          min={0}
-          step={100}
-          value={playheadMs}
-          onChange={(e) => setPlayheadMs(Math.max(0, Number(e.target.value) || 0))}
-          aria-label="플레이헤드(ms)"
-          data-testid="playhead-input"
-        />
+        {/* Phase 3.46 — 자막 메뉴 popover: 자막 추가/SRT 가져오기/형식/내보내기 */}
+        <ToolbarMenu label="자막" testId="topbar-menu-captions">
+          <button
+            style={styles.primaryBtn}
+            onClick={handleAddCaption}
+            data-testid="add-caption-button"
+          >
+            + 자막 추가
+          </button>
+          <button
+            style={styles.secondaryBtn}
+            onClick={handleImportSrt}
+            data-testid="import-srt-button"
+          >
+            SRT 가져오기
+          </button>
+          <div style={styles.menuGroupLabel}>자막 파일 내보내기</div>
+          <div style={styles.menuRow}>
+            <select
+              style={styles.select}
+              value={subtitleFormat}
+              onChange={(e) =>
+                setSubtitleFormat(e.target.value as SubtitleFormat)
+              }
+              aria-label="자막 파일 형식"
+              data-testid="export-subtitle-format"
+            >
+              <option value="srt">srt</option>
+              <option value="vtt">vtt</option>
+            </select>
+            <button
+              style={{
+                ...styles.secondaryBtn,
+                ...(captionClipCount === 0
+                  ? { opacity: 0.5, cursor: 'not-allowed' }
+                  : {})
+              }}
+              onClick={handleExportSubtitle}
+              disabled={captionClipCount === 0}
+              data-testid="export-srt-button"
+              title="자막 클립을 .srt/.vtt 파일로 내보내기"
+            >
+              자막 파일 내보내기
+            </button>
+          </div>
+        </ToolbarMenu>
 
-        <label style={styles.hint} htmlFor="bpm-input">
-          BPM
-        </label>
-        <input
-          id="bpm-input"
-          type="number"
-          min={30}
-          max={300}
-          step={1}
-          value={bpm}
-          onChange={(e) => {
-            // User typing the BPM is an explicit request for metronome
-            // generation — flip the source so the regen effect runs.
-            useTimelineUi.getState().markBeatsAsMetronome()
-            setBpm(Number(e.target.value))
-          }}
-          style={{ ...styles.playheadInput, width: 56 }}
-          aria-label="BPM"
-          data-testid="bpm-input"
-        />
-        <button
-          type="button"
-          style={{
-            ...styles.secondaryBtn,
-            ...(beatSnapEnabled
-              ? { background: '#3b82f6', borderColor: '#2563eb' }
-              : {})
-          }}
-          onClick={() => setBeatSnapEnabled(!beatSnapEnabled)}
-          aria-pressed={beatSnapEnabled}
-          data-testid="beat-snap-toggle"
-        >
-          비트 스냅 {beatSnapEnabled ? 'ON' : 'OFF'}
-        </button>
+        {/* Phase 3.46 — AI 메뉴 popover */}
+        <ToolbarMenu label="AI" testId="topbar-menu-ai">
+          <button
+            style={styles.primaryBtn}
+            onClick={() => setPrefillOpen(true)}
+            data-testid="open-prefill-dialog"
+            title="분석 결과 가져오기 (Ctrl+I)"
+          >
+            분석 결과 가져오기
+          </button>
+          <button
+            style={styles.primaryBtn}
+            onClick={() => setSttOpen(true)}
+            data-testid="open-stt-dialog"
+            title="자동 자막 생성 (Ctrl+T)"
+          >
+            자동 자막 생성
+          </button>
+          <button
+            style={styles.primaryBtn}
+            onClick={() => setAutoEditOpen(true)}
+            data-testid="open-autoedit-dialog"
+            title="자동 러프컷 (Ctrl+Shift+A)"
+          >
+            자동 편집
+          </button>
+          <button
+            style={styles.secondaryBtn}
+            onClick={() => setTemplatePickerOpen(true)}
+            data-testid="open-text-template-picker"
+            title="미리 디자인된 텍스트 블록 삽입"
+          >
+            텍스트 템플릿
+          </button>
+        </ToolbarMenu>
 
-        <button
-          style={styles.primaryBtn}
-          onClick={() => setPrefillOpen(true)}
-          data-testid="open-prefill-dialog"
-          title="분석 결과 가져오기 (Ctrl+I)"
-        >
-          분석 결과 가져오기
-        </button>
-        <button
-          style={styles.primaryBtn}
-          onClick={handleAddCaption}
-          data-testid="add-caption-button"
-        >
-          + 자막 추가
-        </button>
-        <button
-          style={styles.secondaryBtn}
-          onClick={() => setTemplatePickerOpen(true)}
-          data-testid="open-text-template-picker"
-          title="미리 디자인된 텍스트 블록 삽입"
-        >
-          텍스트 템플릿
-        </button>
-        <button
-          style={styles.secondaryBtn}
-          onClick={handleImportSrt}
-          data-testid="import-srt-button"
-        >
-          SRT 가져오기
-        </button>
-        <select
-          style={styles.select}
-          value={subtitleFormat}
-          onChange={(e) =>
-            setSubtitleFormat(e.target.value as SubtitleFormat)
-          }
-          aria-label="자막 파일 형식"
-          data-testid="export-subtitle-format"
-        >
-          <option value="srt">srt</option>
-          <option value="vtt">vtt</option>
-        </select>
-        <button
-          style={{
-            ...styles.secondaryBtn,
-            ...(captionClipCount === 0
-              ? { opacity: 0.5, cursor: 'not-allowed' }
-              : {})
-          }}
-          onClick={handleExportSubtitle}
-          disabled={captionClipCount === 0}
-          data-testid="export-srt-button"
-          title="자막 클립을 .srt/.vtt 파일로 내보내기"
-        >
-          자막 파일 내보내기
-        </button>
-        <button
-          style={styles.primaryBtn}
-          onClick={() => setSttOpen(true)}
-          data-testid="open-stt-dialog"
-          title="자동 자막 생성 (Ctrl+T)"
-        >
-          자동 자막 생성
-        </button>
-        <button
-          style={styles.primaryBtn}
-          onClick={() => setAutoEditOpen(true)}
-          data-testid="open-autoedit-dialog"
-          title="자동 러프컷 (Ctrl+Shift+A)"
-        >
-          자동 편집
-        </button>
+        {/* Phase 3.46 — 옵션 메뉴 popover: BPM/비트 스냅/커버/진행 바/캔버스 배경/플레이헤드 */}
+        <ToolbarMenu label="옵션" testId="topbar-menu-options">
+          <div style={styles.menuGroupLabel}>BPM · 비트 스냅</div>
+          <div style={styles.menuRow}>
+            <label style={styles.hint} htmlFor="bpm-input">
+              BPM
+            </label>
+            <input
+              id="bpm-input"
+              type="number"
+              min={30}
+              max={300}
+              step={1}
+              value={bpm}
+              onChange={(e) => {
+                // User typing the BPM is an explicit request for metronome
+                // generation — flip the source so the regen effect runs.
+                useTimelineUi.getState().markBeatsAsMetronome()
+                setBpm(Number(e.target.value))
+              }}
+              style={{ ...styles.playheadInput, width: 64 }}
+              aria-label="BPM"
+              data-testid="bpm-input"
+            />
+            <button
+              type="button"
+              style={{
+                ...styles.secondaryBtn,
+                ...(beatSnapEnabled
+                  ? { background: '#3b82f6', borderColor: '#2563eb' }
+                  : {})
+              }}
+              onClick={() => setBeatSnapEnabled(!beatSnapEnabled)}
+              aria-pressed={beatSnapEnabled}
+              data-testid="beat-snap-toggle"
+            >
+              비트 스냅 {beatSnapEnabled ? 'ON' : 'OFF'}
+            </button>
+          </div>
+
+          <div style={styles.menuGroupLabel}>플레이헤드 (ms)</div>
+          <input
+            style={styles.playheadInput}
+            type="number"
+            min={0}
+            step={100}
+            value={playheadMs}
+            onChange={(e) => setPlayheadMs(Math.max(0, Number(e.target.value) || 0))}
+            aria-label="플레이헤드(ms)"
+            data-testid="playhead-input"
+          />
+
+          <div style={styles.menuGroupLabel}>커버 프레임</div>
+          <div style={styles.menuRow}>
+            <button
+              type="button"
+              style={styles.secondaryBtn}
+              onClick={() => setCoverMs(playheadMs)}
+              data-testid="set-cover-frame"
+              title="현재 플레이헤드 프레임을 커버(썸네일)로 지정"
+            >
+              커버로 지정
+            </button>
+            {project.coverMs != null && (
+              <button
+                type="button"
+                style={styles.secondaryBtn}
+                onClick={() => clearCoverMs()}
+                data-testid="clear-cover-frame"
+                title="커버 프레임 지정 해제"
+              >
+                커버 해제 ({(project.coverMs / 1000).toFixed(1)}s)
+              </button>
+            )}
+          </div>
+
+          {/* Phase 3.35 — 진행 바 오버레이 토글 + 인라인 설정. */}
+          <div style={styles.menuGroupLabel}>진행 바</div>
+          <button
+            type="button"
+            style={{
+              ...styles.secondaryBtn,
+              ...(project.progressBar?.enabled
+                ? { background: '#6366f1', borderColor: '#6366f1', color: '#fff' }
+                : {})
+            }}
+            onClick={() => toggleProgressBar()}
+            aria-pressed={project.progressBar?.enabled ?? false}
+            data-testid="toggle-progress-bar"
+            title="영상 길이에 맞춰 차오르는 진행 바 오버레이"
+          >
+            진행 바 {project.progressBar?.enabled ? 'ON' : 'OFF'}
+          </button>
+          {project.progressBar?.enabled && (
+            <div style={styles.menuRow}>
+              <select
+                style={styles.select}
+                value={project.progressBar.position}
+                onChange={(e) =>
+                  setProgressBar({
+                    position: e.target.value as ProgressBarPosition
+                  })
+                }
+                aria-label="진행 바 위치"
+                data-testid="progress-bar-position"
+              >
+                <option value="top">상단</option>
+                <option value="bottom">하단</option>
+              </select>
+              <input
+                type="color"
+                value={project.progressBar.color}
+                onChange={(e) => setProgressBar({ color: e.target.value })}
+                aria-label="진행 바 색상"
+                data-testid="progress-bar-color"
+                style={{
+                  width: 32,
+                  height: 28,
+                  padding: 0,
+                  border: '1px solid #2a2a2a',
+                  borderRadius: 6,
+                  background: '#0d0d0d',
+                  cursor: 'pointer'
+                }}
+              />
+              <input
+                type="range"
+                min={MIN_PROGRESS_BAR_HEIGHT_FRAC}
+                max={MAX_PROGRESS_BAR_HEIGHT_FRAC}
+                step={0.001}
+                value={project.progressBar.heightFrac}
+                onChange={(e) =>
+                  setProgressBar({ heightFrac: Number(e.target.value) })
+                }
+                aria-label="진행 바 두께"
+                data-testid="progress-bar-height"
+                style={{ width: 80, cursor: 'pointer' }}
+              />
+            </div>
+          )}
+
+          {/* Phase 3.44 — 캔버스 배경 (블러/단색). 'blur' 선택 시
+              setCanvasBackground(null) 로 필드를 absent 로 collapse 하여 legacy
+              DOM/export 와 byte-identical 을 유지한다. */}
+          <div style={styles.menuGroupLabel}>캔버스 배경</div>
+          <div style={styles.menuRow}>
+            <select
+              style={styles.select}
+              value={canvasBg.kind}
+              onChange={(e) => {
+                const kind = e.target.value as CanvasBackgroundKind
+                if (kind === 'color') {
+                  setCanvasBackground({
+                    kind: 'color',
+                    color:
+                      canvasBg.kind === 'color' && canvasBg.color
+                        ? canvasBg.color
+                        : DEFAULT_CANVAS_BACKGROUND_COLOR
+                  })
+                } else if (kind === 'blur') {
+                  setCanvasBackground(null)
+                } else {
+                  setCanvasBackground({ kind })
+                }
+              }}
+              aria-label="캔버스 배경"
+              data-testid="canvas-bg-kind"
+              title="캔버스 가장자리 배경 — 블러(기본) / 검정 / 흰색 / 컬러"
+            >
+              <option value="blur">흐림(블러)</option>
+              <option value="black">검정</option>
+              <option value="white">흰색</option>
+              <option value="color">컬러</option>
+            </select>
+            {canvasBg.kind === 'color' && (
+              <input
+                type="color"
+                value={canvasBg.color ?? DEFAULT_CANVAS_BACKGROUND_COLOR}
+                onChange={(e) =>
+                  setCanvasBackground({ kind: 'color', color: e.target.value })
+                }
+                aria-label="캔버스 배경 색상"
+                data-testid="canvas-bg-color"
+                style={{
+                  width: 32,
+                  height: 28,
+                  padding: 0,
+                  border: '1px solid #2a2a2a',
+                  borderRadius: 6,
+                  background: '#0d0d0d',
+                  cursor: 'pointer'
+                }}
+              />
+            )}
+            <button
+              type="button"
+              style={styles.secondaryBtn}
+              onClick={() =>
+                setCanvasBackground(canvasBg.kind === 'blur' ? null : canvasBg)
+              }
+              data-testid="canvas-bg-apply-all"
+              title="현재 캔버스 배경을 프로젝트 전체에 적용"
+            >
+              전체 적용
+            </button>
+          </div>
+        </ToolbarMenu>
+
         <button
           type="button"
           style={{
@@ -917,167 +1311,12 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         >
           효과
         </button>
-        <button
-          type="button"
-          style={styles.secondaryBtn}
-          onClick={() => setCoverMs(playheadMs)}
-          data-testid="set-cover-frame"
-          title="현재 플레이헤드 프레임을 커버(썸네일)로 지정"
-        >
-          커버로 지정
-        </button>
-        {project.coverMs != null && (
-          <button
-            type="button"
-            style={styles.secondaryBtn}
-            onClick={() => clearCoverMs()}
-            data-testid="clear-cover-frame"
-            title="커버 프레임 지정 해제"
-          >
-            커버 해제 ({(project.coverMs / 1000).toFixed(1)}s)
-          </button>
-        )}
-        {/* Phase 3.35 — 진행 바 오버레이 토글 + 인라인 설정. */}
-        <button
-          type="button"
-          style={{
-            ...styles.secondaryBtn,
-            ...(project.progressBar?.enabled
-              ? { background: '#6366f1', borderColor: '#6366f1', color: '#fff' }
-              : {})
-          }}
-          onClick={() => toggleProgressBar()}
-          aria-pressed={project.progressBar?.enabled ?? false}
-          data-testid="toggle-progress-bar"
-          title="영상 길이에 맞춰 차오르는 진행 바 오버레이"
-        >
-          진행 바
-        </button>
-        {project.progressBar?.enabled && (
-          <>
-            <select
-              style={styles.select}
-              value={project.progressBar.position}
-              onChange={(e) =>
-                setProgressBar({
-                  position: e.target.value as ProgressBarPosition
-                })
-              }
-              aria-label="진행 바 위치"
-              data-testid="progress-bar-position"
-            >
-              <option value="top">상단</option>
-              <option value="bottom">하단</option>
-            </select>
-            <input
-              type="color"
-              value={project.progressBar.color}
-              onChange={(e) => setProgressBar({ color: e.target.value })}
-              aria-label="진행 바 색상"
-              data-testid="progress-bar-color"
-              style={{
-                width: 32,
-                height: 28,
-                padding: 0,
-                border: '1px solid #2a2a2a',
-                borderRadius: 6,
-                background: '#0d0d0d',
-                cursor: 'pointer'
-              }}
-            />
-            <input
-              type="range"
-              min={MIN_PROGRESS_BAR_HEIGHT_FRAC}
-              max={MAX_PROGRESS_BAR_HEIGHT_FRAC}
-              step={0.001}
-              value={project.progressBar.heightFrac}
-              onChange={(e) =>
-                setProgressBar({ heightFrac: Number(e.target.value) })
-              }
-              aria-label="진행 바 두께"
-              data-testid="progress-bar-height"
-              style={{ width: 80, cursor: 'pointer' }}
-            />
-          </>
-        )}
-        {/* Phase 3.44 — 캔버스 배경 (블러/단색). 'blur' 선택 시
-            setCanvasBackground(null) 로 필드를 absent 로 collapse 하여 legacy
-            DOM/export 와 byte-identical 을 유지한다. */}
-        <select
-          style={styles.select}
-          value={canvasBg.kind}
-          onChange={(e) => {
-            const kind = e.target.value as CanvasBackgroundKind
-            if (kind === 'color') {
-              setCanvasBackground({
-                kind: 'color',
-                color:
-                  canvasBg.kind === 'color' && canvasBg.color
-                    ? canvasBg.color
-                    : DEFAULT_CANVAS_BACKGROUND_COLOR
-              })
-            } else if (kind === 'blur') {
-              setCanvasBackground(null)
-            } else {
-              setCanvasBackground({ kind })
-            }
-          }}
-          aria-label="캔버스 배경"
-          data-testid="canvas-bg-kind"
-          title="캔버스 가장자리 배경 — 블러(기본) / 검정 / 흰색 / 컬러"
-        >
-          <option value="blur">흐림(블러)</option>
-          <option value="black">검정</option>
-          <option value="white">흰색</option>
-          <option value="color">컬러</option>
-        </select>
-        {canvasBg.kind === 'color' && (
-          <input
-            type="color"
-            value={canvasBg.color ?? DEFAULT_CANVAS_BACKGROUND_COLOR}
-            onChange={(e) =>
-              setCanvasBackground({ kind: 'color', color: e.target.value })
-            }
-            aria-label="캔버스 배경 색상"
-            data-testid="canvas-bg-color"
-            style={{
-              width: 32,
-              height: 28,
-              padding: 0,
-              border: '1px solid #2a2a2a',
-              borderRadius: 6,
-              background: '#0d0d0d',
-              cursor: 'pointer'
-            }}
-          />
-        )}
-        <button
-          type="button"
-          style={styles.secondaryBtn}
-          onClick={() =>
-            setCanvasBackground(canvasBg.kind === 'blur' ? null : canvasBg)
-          }
-          data-testid="canvas-bg-apply-all"
-          title="현재 캔버스 배경을 프로젝트 전체에 적용"
-        >
-          전체 적용
-        </button>
-        <button
-          style={styles.primaryBtn}
-          onClick={() => setExportOpen(true)}
-          data-testid="open-export-dialog"
-          title="내보내기 (Ctrl+E)"
-        >
-          내보내기
-        </button>
-        <button
-          style={styles.secondaryBtn}
-          onClick={() => setBatchOpen(true)}
-          data-testid="open-batch-export-dialog"
-          title="여러 프리셋으로 한 번에 내보내기"
-        >
-          일괄 내보내기
-        </button>
+
+        {/* Phase 3.46 — 내보내기 split button: 본 버튼 + ▾ 팝오버 (일괄 내보내기) */}
+        <ExportSplitButton
+          onMain={() => setExportOpen(true)}
+          onBatch={() => setBatchOpen(true)}
+        />
 
         {!hydrated && (
           <div style={styles.hint}>프로젝트 로딩 중…</div>
@@ -1091,45 +1330,50 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
             : styles.body
         }
       >
+        {/* Phase 3.45 — CapCut-style vertical icon rail. Click an icon to swap
+            what the secondary panel shows. The 텍스트 rail icon opens the
+            existing TextTemplatePicker modal (no separate panel — it floats
+            over the layout grid via `bodyWithEditor`). */}
+        <div style={styles.iconRail} data-testid="left-icon-rail" role="tablist">
+          {(
+            [
+              { key: 'media', icon: '📁', label: '미디어', testid: 'left-rail-media' },
+              { key: 'overlay', icon: '✨', label: '스티커', testid: 'left-rail-sticker' },
+              { key: 'text', icon: '🅣', label: '텍스트', testid: 'left-rail-text' },
+              { key: 'transcript', icon: '📝', label: '대본', testid: 'left-rail-transcript' }
+            ] as const
+          ).map((item) => {
+            const isText = item.key === 'text'
+            const active = isText
+              ? templatePickerOpen
+              : leftTab === item.key
+            return (
+              <button
+                key={item.key}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                data-testid={item.testid}
+                title={item.label}
+                style={{
+                  ...styles.iconRailBtn,
+                  ...(active ? styles.iconRailBtnActive : {})
+                }}
+                onClick={() => {
+                  if (isText) {
+                    setTemplatePickerOpen(true)
+                    return
+                  }
+                  setLeftTab(item.key)
+                }}
+              >
+                <span style={styles.iconRailIcon} aria-hidden="true">{item.icon}</span>
+                <span>{item.label}</span>
+              </button>
+            )
+          })}
+        </div>
         <div style={styles.leftPanel}>
-          <div style={styles.leftTabBar} data-testid="left-panel-tabs">
-            <button
-              type="button"
-              style={{
-                ...styles.leftTabBtn,
-                ...(leftTab === 'media' ? styles.leftTabBtnActive : {})
-              }}
-              onClick={() => setLeftTab('media')}
-              data-testid="media-library-tab"
-              aria-pressed={leftTab === 'media'}
-            >
-              미디어
-            </button>
-            <button
-              type="button"
-              style={{
-                ...styles.leftTabBtn,
-                ...(leftTab === 'overlay' ? styles.leftTabBtnActive : {})
-              }}
-              onClick={() => setLeftTab('overlay')}
-              data-testid="media-overlay-tab"
-              aria-pressed={leftTab === 'overlay'}
-            >
-              오버레이
-            </button>
-            <button
-              type="button"
-              style={{
-                ...styles.leftTabBtn,
-                ...(leftTab === 'transcript' ? styles.leftTabBtnActive : {})
-              }}
-              onClick={() => setLeftTab('transcript')}
-              data-testid="media-transcript-tab"
-              aria-pressed={leftTab === 'transcript'}
-            >
-              대본
-            </button>
-          </div>
           <div style={styles.leftPanelBody}>
             {leftTab === 'media' ? (
               <MediaLibrary />

@@ -271,6 +271,16 @@ test.describe('@phase-retouch retouch/beauty toggle + export filter', () => {
       }
     }
     await expect(page.locator('[data-testid="effects-section-retouch"]')).toBeVisible({ timeout: 5_000 })
+    // Phase 3.47 — sections are accordion; retouch is collapsed by default.
+    // Click the section header to expand the body so retouch-toggle/slider mount.
+    const retouchToggle = page.locator('[data-testid="section-toggle-retouch"]')
+    if ((await retouchToggle.count()) > 0) {
+      const expanded = await retouchToggle.getAttribute('aria-expanded')
+      if (expanded !== 'true') {
+        await retouchToggle.click()
+        await page.waitForTimeout(120)
+      }
+    }
   }
 
   /** Sleep >= undo throttle window (220ms). */

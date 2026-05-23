@@ -345,6 +345,16 @@ test.describe('@phase-stabilize video stabilization (손떨림 보정)', () => {
     await expect(page.locator('[data-testid="effects-section-stabilize"]')).toBeVisible({
       timeout: 5_000
     })
+    // Phase 3.47 — sections are accordion; stabilize is collapsed by default.
+    // Click the section header to mount its body before assertions.
+    const stabilizeToggle = page.locator('[data-testid="section-toggle-stabilize"]')
+    if ((await stabilizeToggle.count()) > 0) {
+      const expanded = await stabilizeToggle.getAttribute('aria-expanded')
+      if (expanded !== 'true') {
+        await stabilizeToggle.click()
+        await page.waitForTimeout(120)
+      }
+    }
   }
 
   async function buildPlan(outputPath: string): Promise<{

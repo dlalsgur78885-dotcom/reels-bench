@@ -896,6 +896,12 @@ function OverlayElement(props: {
   }) rotate(${t.rotation}deg)`
   const { w, h } = getOverlayBaseSize(clip)
   const src = clip.source
+  // Defensive: a malformed clip (e.g. persisted from a stale test run) may
+  // lack `source` entirely. Bail rather than crash the whole React tree —
+  // an absent overlay is a no-op visual.
+  if (!src || typeof (src as { type?: unknown }).type !== 'string') {
+    return <></>
+  }
   // Phase 3.36 — drop shadow. Null ⇒ NO `filter` key written at all so the
   // overlay DOM stays byte-identical to the pre-feature path. Offsets/blur are
   // canvas px in the 1920-height ref frame (same as caption shadow), so they

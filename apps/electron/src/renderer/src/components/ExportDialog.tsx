@@ -10,6 +10,7 @@ import type { Project } from '../../../shared/project'
 import {
   EXPORT_PRESETS,
   EXPORT_PRESET_KEYS,
+  GIF_EXPORT,
   estimateFileSizeBytes,
   formatBytes,
   formatDurationMs
@@ -195,6 +196,12 @@ const styles = {
     fontSize: 10,
     color: '#9aa0a6',
     marginTop: 4
+  } as React.CSSProperties,
+  aspectMismatchHint: {
+    fontSize: 11,
+    color: '#9aa0a6',
+    marginTop: -6,
+    marginBottom: 12
   } as React.CSSProperties
 }
 
@@ -229,7 +236,10 @@ function isHardwareEncoder(codec: AllowedCodec | string): boolean {
   )
 }
 
-function defaultOutputName(projectName: string): string {
+function defaultOutputName(
+  projectName: string,
+  presetKey: ExportPresetKey
+): string {
   const slug = (projectName || 'export')
     .replace(/[^\w\-]+/g, '_')
     .slice(0, 64)
@@ -238,7 +248,8 @@ function defaultOutputName(projectName: string): string {
     .replace(/[-:]/g, '')
     .replace(/\.\d+Z$/, '')
     .replace('T', '-')
-  return `${slug}-${ts}.mp4`
+  const ext = presetKey === 'gif' ? 'gif' : 'mp4'
+  return `${slug}-${ts}.${ext}`
 }
 
 export function ExportDialog({ project, onClose }: ExportDialogProps): JSX.Element {
@@ -255,6 +266,22 @@ export function ExportDialog({ project, onClose }: ExportDialogProps): JSX.Eleme
 
   const totalDurationMs = useMemo(() => getTotalDurationMs(project), [project])
   const sizeBytes = estimateFileSizeBytes(presetKey, totalDurationMs)
+
+  // Advisory only: the export preset and the project's aspect ratio are
+  // independent. When the selected preset's width/height ratio differs from
+  // the project's, the export letterboxes — we surface a non-blocking note.
+  const aspectMismatch = useMemo(() => {
+    const preset = EXPORT_PRESETS[presetKey]
+    if (!preset || preset.height <= 0 || project.height <= 0) return false
+    const presetAspect = preset.width / preset.height
+    const projectAspect = project.width / project.height
+    return Math.abs(presetAspect - projectAspect) > 0.01
+  }, [presetKey, project.width, project.height])
+
+  // GIF is capped at GIF_EXPORT.durationCapMs by the main process; warn the
+  // user that anything past the cap will be trimmed.
+  const gifDurationOverCap =
+    presetKey === 'gif' && totalDurationMs > GIF_EXPORT.durationCapMs
 
   const hwAvailable =
     capabilities !== null && isHardwareEncoder(capabilities.preferred)
@@ -308,7 +335,7 @@ export function ExportDialog({ project, onClose }: ExportDialogProps): JSX.Eleme
 
   const handlePickPath = async (): Promise<void> => {
     if (!window.electron?.fs?.saveFile) return
-    const defaultName = defaultOutputName(project.name)
+    const defaultName = defaultOutputName(project.name, presetKey)
     const picked = await window.electron.fs.saveFile(defaultName)
     if (picked) setOutputPath(picked)
   }
@@ -360,6 +387,12 @@ export function ExportDialog({ project, onClose }: ExportDialogProps): JSX.Eleme
   const handleOpenFile = async (): Promise<void> => {
     if (!result?.outputPath || !window.electron?.exporter?.openFile) return
     await window.electron.exporter.openFile(result.outputPath)
+  }
+
+  // Phase 3.27 — reveal the exported cover JPG (separate main-side pass).
+  const handleOpenCover = async (): Promise<void> => {
+    if (!result?.coverPath || !window.electron?.exporter?.revealFile) return
+    await window.electron.exporter.revealFile(result.coverPath)
   }
 
   // ESC closes when not running.
@@ -482,8 +515,36 @@ export function ExportDialog({ project, onClose }: ExportDialogProps): JSX.Eleme
 
         <div style={styles.meta} data-testid="export-meta">
           예상 길이 {formatDurationMs(totalDurationMs)} · 예상 용량{' '}
-          {formatBytes(sizeBytes)}
+          {presetKey === 'gif' ? '크기 가변' : formatBytes(sizeBytes)}
         </div>
+
+        {/* Phase 3.27 — cover / thumbnail frame readout. */}
+        <div style={styles.meta} data-testid="export-cover-readout">
+          커버 프레임:{' '}
+          {project.coverMs != null
+            ? formatDurationMs(project.coverMs)
+            : '지정 안 함 (첫 프레임)'}
+        </div>
+
+        {aspectMismatch && (
+          <div
+            style={styles.aspectMismatchHint}
+            data-testid="export-aspect-mismatch-hint"
+          >
+            프로젝트 비율과 내보내기 프리셋 비율이 다릅니다 — 레터박스로
+            처리됩니다.
+          </div>
+        )}
+
+        {gifDurationOverCap && (
+          <div
+            style={styles.aspectMismatchHint}
+            data-testid="export-gif-duration-warning"
+          >
+            GIF는 {Math.round(GIF_EXPORT.durationCapMs / 1000)}초까지만
+            내보냅니다 — 이후 구간은 잘립니다.
+          </div>
+        )}
 
         {progress && (
           <div data-testid="export-progress">
@@ -549,6 +610,16 @@ export function ExportDialog({ project, onClose }: ExportDialogProps): JSX.Eleme
               >
                 파일 열기
               </button>
+              {result.coverPath && (
+                <button
+                  type="button"
+                  style={styles.secondaryBtn}
+                  onClick={handleOpenCover}
+                  data-testid="export-open-cover"
+                >
+                  커버 이미지 열기
+                </button>
+              )}
             </div>
           </div>
         )}

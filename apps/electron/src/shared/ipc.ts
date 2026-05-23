@@ -35,7 +35,8 @@ export const IPC_CHANNELS = {
   },
   captions: {
     importSrt: 'captions:importSrt',
-    parseSrtString: 'captions:parseSrtString'
+    parseSrtString: 'captions:parseSrtString',
+    exportSubtitle: 'captions:exportSubtitle'
   },
   audio: {
     detectSilence: 'audio:detectSilence',
@@ -69,8 +70,21 @@ export const IPC_CHANNELS = {
     write: 'brandKit:write',
     importLogo: 'brandKit:importLogo',
     removeLogo: 'brandKit:removeLogo'
+  },
+  overlay: {
+    saveSticker: 'overlay:saveSticker'
   }
 } as const
+
+/**
+ * Phase 3.25 — result of persisting a renderer-rasterized emoji/sticker PNG to
+ * `userData/sticker-assets/`. The renderer supplies PNG bytes + a stable
+ * `assetId` (the library id); main composes `sticker-assets/<assetId>.png`,
+ * dedupes (reuses an existing file), allowlists it, returns the absolute path.
+ */
+export type SaveStickerResult =
+  | { ok: true; path: string; reused: boolean }
+  | { ok: false; error: string }
 
 // ---------------------------------------------------------------------------
 // Brand Kit — app-level, persisted to userData/brand-kit.json (not project data).
@@ -163,6 +177,11 @@ export interface ParsedCaptionCue {
   /** Plain text, lines collapsed to single spaces. */
   text: string
 }
+
+/** Result of `captions.exportSubtitle` (Phase 3.34). */
+export type SubtitleExportResult =
+  | { ok: true; path: string; bytesWritten: number }
+  | { ok: false; error: string }
 
 // --- ffmpeg allow-lists -----------------------------------------------------
 // Renderer is NEVER trusted to supply raw ffmpeg args. It may only choose
@@ -289,6 +308,14 @@ export type ExportPresetKey =
   | 'youtube-shorts'
   | 'instagram-feed'
   | 'high-quality'
+  /**
+   * Phase 3.28 — animated GIF. Implemented as a 2-pass add-on: pass 0 is the
+   * unmodified mp4 composite export to a temp file; pass 1 converts it to a
+   * `.gif` via palettegen/paletteuse. `buildExportPlan` is NEVER called with
+   * `'gif'` — the GIF branch intercepts in `runExport` — so the 5 mp4 presets'
+   * export graph stays byte-identical.
+   */
+  | 'gif'
 
 export interface ExportRunOptions {
   /** Stable id for progress correlation. */
@@ -322,6 +349,12 @@ export interface ExportRunResult {
    * Set even on failure (best-effort) so the UI can show what was attempted.
    */
   usedEncoder?: AllowedCodec
+  /**
+   * Phase 3.27 — absolute path to the standalone cover image written next to
+   * the mp4 (`<name>_cover.jpg`). Best-effort: omitted if the cover extract
+   * failed — the main mp4 export still succeeds regardless.
+   */
+  coverPath?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -577,6 +610,11 @@ export interface ElectronApi {
     importSrt(filePath: string): Promise<ParsedCaptionCue[]>
     /** Parses an in-memory SRT/VTT payload (used for tests + paste flow). */
     parseSrtString(raw: string): Promise<ParsedCaptionCue[]>
+    /**
+     * Phase 3.34 — write a subtitle document to an allow-listed path (the
+     * renderer obtains `path` from `fs.saveFile`, which allow-lists it).
+     */
+    exportSubtitle(path: string, content: string): Promise<SubtitleExportResult>
   }
   exporter: {
     /** Run a full export. Resolves when the underlying ffmpeg job exits. */
@@ -670,6 +708,18 @@ export interface ElectronApi {
     ): Promise<BrandKitImportLogoResult>
     /** Remove a logo variant; returns the updated kit. */
     removeLogo(variant: BrandLogoVariant): Promise<BrandKit>
+  }
+  overlay: {
+    /**
+     * Persist a renderer-rasterized emoji/sticker PNG (Phase 3.25). `assetId`
+     * is the stable library id (`/^[a-z0-9-]{1,64}$/`) — dedupe key + filename
+     * stem. Returns an absolute path inside userData/sticker-assets/,
+     * allow-listed for media:// preview + export.
+     */
+    saveSticker(
+      assetId: string,
+      pngBytes: ArrayBuffer | Uint8Array
+    ): Promise<SaveStickerResult>
   }
 }
 

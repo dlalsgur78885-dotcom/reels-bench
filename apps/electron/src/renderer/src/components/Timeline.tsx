@@ -11,8 +11,10 @@ import {
   getClipFreezeFrames,
   getClipTimelineDuration,
   getSpeedAt,
+  getVolumeDbAt,
   hasFreezeFrames,
   hasSpeedCurve,
+  hasVolumeEnvelope,
   hasTransformKeyframes,
   isCaptionClip,
   isClipReversed,
@@ -26,10 +28,14 @@ import {
   MIN_CLIP_MS,
   MIN_KEYFRAME_GAP_MS,
   MIN_SPEED_KEYFRAME_GAP_MS,
+  MIN_VOLUME_KEYFRAME_GAP_MS,
   MIN_FREEZE_GAP_MS,
   DEFAULT_FREEZE_MS,
+  DEFAULT_ADJUSTMENT_LAYER_MS,
+  isNeutralAdjustmentLayer,
   sourceOffsetForTimelineOffset,
   speedOnlyTimelineOffset,
+  type AdjustmentLayer,
   type Clip,
   type MediaAsset,
   type OverlayClip,
@@ -185,6 +191,24 @@ const styles = {
     overflow: 'hidden',
     cursor: 'pointer'
   } as React.CSSProperties,
+  // Phase 3.27 — cover / thumbnail frame marker. A small star badge, styled
+  // distinctly from beat ticks (thin lines) and marker pins (amber flags).
+  rulerCoverMarker: {
+    position: 'absolute' as const,
+    top: 1,
+    transform: 'translateX(-50%)',
+    width: 16,
+    height: 16,
+    lineHeight: '16px',
+    textAlign: 'center' as const,
+    fontSize: 11,
+    color: '#0a0a0a',
+    background: '#fbbf24',
+    borderRadius: '50%',
+    boxShadow: '0 0 0 1px #92400e',
+    zIndex: 6,
+    pointerEvents: 'none' as const
+  } as React.CSSProperties,
   rulerTick: {
     position: 'absolute' as const,
     top: 0,
@@ -333,6 +357,82 @@ const styles = {
     background: '#ef4444',
     pointerEvents: 'none' as const,
     zIndex: 5
+  } as React.CSSProperties,
+  // Phase 3.32 — adjustment-layer lane (a dedicated row below the ruler).
+  // Tinted purple/violet band so it reads as a grade layer, not a clip track.
+  adjustmentLaneRow: {
+    display: 'flex',
+    alignItems: 'stretch' as const,
+    height: 34,
+    borderBottom: '1px solid #1a1a1a',
+    background: 'rgba(126, 34, 206, 0.06)'
+  } as React.CSSProperties,
+  adjustmentLaneHeader: {
+    flexShrink: 0,
+    width: 120,
+    padding: '4px 8px',
+    background: '#141414',
+    borderRight: '1px solid #2a2a2a',
+    fontSize: 11,
+    color: '#c4b5fd',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 2,
+    justifyContent: 'center'
+  } as React.CSSProperties,
+  adjustmentLaneTitle: {
+    fontSize: 11,
+    color: '#c4b5fd',
+    fontWeight: 600,
+    whiteSpace: 'nowrap' as const
+  } as React.CSSProperties,
+  adjustmentAddBtn: {
+    background: '#5b21b6',
+    color: '#ede9fe',
+    border: '1px solid #8b5cf6',
+    borderRadius: 4,
+    padding: '2px 6px',
+    fontSize: 10,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap' as const
+  } as React.CSSProperties,
+  adjustmentLane: {
+    flex: 1,
+    position: 'relative' as const,
+    background:
+      'repeating-linear-gradient(45deg, rgba(139,92,246,0.05) 0 6px, transparent 6px 12px)'
+  } as React.CSSProperties,
+  adjustmentBlock: {
+    position: 'absolute' as const,
+    top: 5,
+    bottom: 5,
+    background: 'linear-gradient(180deg, #7c3aed, #5b21b6)',
+    border: '1px solid #a78bfa',
+    borderRadius: 4,
+    color: '#ede9fe',
+    fontSize: 10,
+    overflow: 'hidden' as const,
+    boxSizing: 'border-box' as const,
+    cursor: 'grab',
+    display: 'flex',
+    alignItems: 'center',
+    minWidth: 8
+  } as React.CSSProperties,
+  adjustmentBlockSelected: {
+    outline: '2px solid #f0abfc',
+    outlineOffset: -2
+  } as React.CSSProperties,
+  adjustmentBlockNeutral: {
+    background: 'linear-gradient(180deg, #4c1d95, #3b0764)',
+    borderStyle: 'dashed' as const
+  } as React.CSSProperties,
+  adjustmentBlockLabel: {
+    padding: '0 6px',
+    overflow: 'hidden' as const,
+    textOverflow: 'ellipsis' as const,
+    whiteSpace: 'nowrap' as const,
+    pointerEvents: 'none' as const,
+    flex: 1
   } as React.CSSProperties,
   // Phase 3.5 — keyframe marker row pinned to the bottom of a clip block.
   keyframeMarkerRow: {
@@ -491,6 +591,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const updateMediaClipTrim = useProjectStore((s) => s.updateMediaClipTrim)
   const splitClipAt = useProjectStore((s) => s.splitClipAt)
   const duplicateClip = useProjectStore((s) => s.duplicateClip)
+  const detachAudio = useProjectStore((s) => s.detachAudio)
   const setClipSpeed = useProjectStore((s) => s.setClipSpeed)
   const setClipReversed = useProjectStore((s) => s.setClipReversed)
   const setClipTransitionIn = useProjectStore((s) => s.setClipTransitionIn)
@@ -529,6 +630,10 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const updateSpeedKeyframe = useProjectStore((s) => s.updateSpeedKeyframe)
   const removeSpeedKeyframe = useProjectStore((s) => s.removeSpeedKeyframe)
   const clearSpeedKeyframes = useProjectStore((s) => s.clearSpeedKeyframes)
+  const addVolumeKeyframe = useProjectStore((s) => s.addVolumeKeyframe)
+  const updateVolumeKeyframe = useProjectStore((s) => s.updateVolumeKeyframe)
+  const removeVolumeKeyframe = useProjectStore((s) => s.removeVolumeKeyframe)
+  const clearVolumeKeyframes = useProjectStore((s) => s.clearVolumeKeyframes)
   const addFreezeFrame = useProjectStore((s) => s.addFreezeFrame)
   const updateFreezeFrame = useProjectStore((s) => s.updateFreezeFrame)
   const removeFreezeFrame = useProjectStore((s) => s.removeFreezeFrame)
@@ -550,6 +655,11 @@ export function Timeline(props: TimelineProps): JSX.Element {
   // Mirror selection into the timelineUi store so keyboard shortcuts (Editor)
   // and tests can introspect via __TIMELINE_UI_FOR_TEST__.
   const selectClipInUi = useTimelineUi((s) => s.selectClip)
+  // Phase 3.33 — Ctrl/Cmd+click multi-select: add/remove one clip id without
+  // collapsing the rest of the selection.
+  const toggleClipSelectedInUi = useTimelineUi((s) => s.toggleClipSelected)
+  // Phase 3.33 — current multi-selection (drives the 그룹 묶기 enablement).
+  const selectedClipIds = useTimelineUi((s) => s.selectedClipIds)
   const pps = useTimelineUi((s) => s.pps)
   const setPps = useTimelineUi((s) => s.setPps)
   const beats = useTimelineUi((s) => s.beats)
@@ -569,7 +679,21 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const clearMarkers = useTimelineUi((s) => s.clearMarkers)
 
   const removeClip = useProjectStore((s) => s.removeClip)
+  // Phase 3.33 — clip grouping / linking.
+  const groupClips = useProjectStore((s) => s.groupClips)
+  const ungroupClips = useProjectStore((s) => s.ungroupClips)
+  const moveClipGroup = useProjectStore((s) => s.moveClipGroup)
   const { undo, redo, canUndo, canRedo } = useUndoRedo()
+
+  // Phase 3.32 — adjustment layers (range color-grades over the composite).
+  const addAdjustmentLayer = useProjectStore((s) => s.addAdjustmentLayer)
+  const updateAdjustmentLayer = useProjectStore((s) => s.updateAdjustmentLayer)
+  const selectedAdjustmentLayerId = useTimelineUi(
+    (s) => s.selectedAdjustmentLayerId
+  )
+  const setSelectedAdjustmentLayerId = useTimelineUi(
+    (s) => s.setSelectedAdjustmentLayerId
+  )
 
   // Voice-recording session handle (Phase 5). Non-null while recording.
   const recorderRef = useRef<VoiceRecorder | null>(null)
@@ -588,8 +712,14 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const [dropTargetTrackId, setDropTargetTrackId] = useState<string | null>(null)
 
   // Compute total length (max endMs across all clips, min 10s for ruler).
+  // Adjustment layers extend the ruler too so a layer past the last clip
+  // stays draggable.
   const allClips = project.tracks.flatMap((t) => t.clips)
-  const maxEnd = allClips.reduce((acc, c) => Math.max(acc, c.endMs), 10_000)
+  const adjustmentLayers = project.adjustmentLayers ?? []
+  const maxEnd = Math.max(
+    allClips.reduce((acc, c) => Math.max(acc, c.endMs), 10_000),
+    adjustmentLayers.reduce((acc, l) => Math.max(acc, l.endMs), 0)
+  )
   const totalSeconds = Math.ceil(maxEnd / 1000) + 5
   const laneWidth = totalSeconds * pps
 
@@ -607,6 +737,27 @@ export function Timeline(props: TimelineProps): JSX.Element {
       selectClipInUi(clipId)
     },
     [onSelectClip, selectClipInUi]
+  )
+
+  // Phase 3.33 — Ctrl/Cmd+click multi-select. Toggles the clicked clip in/out
+  // of `selectedClipIds` without disturbing the rest, so the user can build a
+  // ≥2-clip selection that enables the context menu's "그룹 묶기" row. The
+  // `onSelectClip` prop (single "active" clip) follows the toggled clip when
+  // it stays selected, so panels still have a sensible focused clip.
+  const handleToggleSelect = useCallback(
+    (clipId: string): void => {
+      const wasSelected = useTimelineUi.getState().selectedClipIds.has(clipId)
+      toggleClipSelectedInUi(clipId)
+      // After the toggle: if the clip is now selected make it the active clip;
+      // if it was just removed, fall back to any other still-selected clip.
+      if (!wasSelected) {
+        onSelectClip(clipId)
+      } else {
+        const remaining = useTimelineUi.getState().selectedClipIds
+        onSelectClip(remaining.size > 0 ? (remaining.values().next().value ?? null) : null)
+      }
+    },
+    [onSelectClip, toggleClipSelectedInUi]
   )
 
   const handleLaneClick = (e: React.MouseEvent<HTMLDivElement>): void => {
@@ -643,7 +794,16 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const handleContext = (e: React.MouseEvent, clip: Clip): void => {
     e.preventDefault()
     e.stopPropagation()
-    handleSelect(clip.id)
+    // Phase 3.33 — preserve a valid multi-selection: when right-clicking a clip
+    // that is ALREADY part of a ≥2-clip selection, keep the selection intact so
+    // the context menu's "그룹 묶기" row stays enabled. Only the normal
+    // "right-click selects, then opens menu" path runs when the clicked clip is
+    // not already in the current selection.
+    const sel = useTimelineUi.getState().selectedClipIds
+    const keepMultiSelection = sel.size >= 2 && sel.has(clip.id)
+    if (!keepMultiSelection) {
+      handleSelect(clip.id)
+    }
     setCtx({ clipId: clip.id, x: e.clientX, y: e.clientY })
   }
 
@@ -655,6 +815,38 @@ export function Timeline(props: TimelineProps): JSX.Element {
     }
     return null
   }, [ctx, project])
+
+  // "오디오 분리" gate — enabled only when the context-menu target is a
+  // media clip on a 'video' track whose audio hasn't already been detached
+  // (i.e. isMuted !== true). Mirrors detachAudio's own bail conditions.
+  const audioDetachable = useMemo<boolean>(() => {
+    if (!ctx || !ctxClip || !isMediaClip(ctxClip)) return false
+    if (ctxClip.isMuted === true) return false
+    const track = project.tracks.find((t) =>
+      t.clips.some((c) => c.id === ctxClip.id)
+    )
+    return track?.kind === 'video'
+  }, [ctx, ctxClip, project])
+
+  // Phase 3.33 — "그룹 묶기" enablement: ≥2 clips selected AND they don't
+  // already all share one (non-empty) group.
+  const groupable = useMemo<boolean>(() => {
+    if (selectedClipIds.size < 2) return false
+    const groupIds = new Set<string | undefined>()
+    for (const t of project.tracks) {
+      for (const c of t.clips) {
+        if (selectedClipIds.has(c.id)) groupIds.add(c.groupId)
+      }
+    }
+    // Already all one group → nothing to do (a single non-empty groupId).
+    if (groupIds.size === 1 && !groupIds.has(undefined)) return false
+    return true
+  }, [selectedClipIds, project])
+
+  // Phase 3.33 — "그룹 해제" enablement: the ctx clip belongs to a link group.
+  const grouped = useMemo<boolean>(() => {
+    return Boolean(ctxClip?.groupId)
+  }, [ctxClip])
 
   // Index of the keyframe under the playhead (within MIN_KEYFRAME_GAP_MS of
   // the clip-relative playhead offset), or -1 when not on a keyframe. Drives
@@ -728,6 +920,28 @@ export function Timeline(props: TimelineProps): JSX.Element {
     return bestIdx
   }, [ctxClip, playheadMs])
 
+  // Phase 3.30 — index of the volume keyframe under the playhead. Volume
+  // keyframe atMs are clip-relative TIMELINE offsets (NOT source offsets — no
+  // `sourceOffsetForTimelineOffset`), so this mirrors `ctxKeyframeIndex` (the
+  // transform one): use the raw clip-relative playhead offset, then find the
+  // nearest keyframe within MIN_VOLUME_KEYFRAME_GAP_MS. -1 when not on one.
+  const ctxVolumeKeyframeIndex = useMemo<number>(() => {
+    if (!ctxClip || !isMediaClip(ctxClip)) return -1
+    const kfs = ctxClip.volumeKeyframes
+    if (!kfs || kfs.length === 0) return -1
+    const localMs = playheadMs - ctxClip.startMs
+    let bestIdx = -1
+    let bestDist = MIN_VOLUME_KEYFRAME_GAP_MS
+    for (let i = 0; i < kfs.length; i++) {
+      const d = Math.abs(kfs[i].atMs - localMs)
+      if (d < bestDist) {
+        bestDist = d
+        bestIdx = i
+      }
+    }
+    return bestIdx
+  }, [ctxClip, playheadMs])
+
   const onMenuAction = (key: string): void => {
     if (!ctxClip) return
     const clip = ctxClip
@@ -740,10 +954,19 @@ export function Timeline(props: TimelineProps): JSX.Element {
     } else if (key === 'duplicate') {
       const newId = duplicateClip(clip.id)
       if (newId) handleSelect(newId)
+    } else if (key === 'detach-audio' && isMediaClip(clip)) {
+      const newId = detachAudio(clip.id)
+      if (newId) handleSelect(newId)
     } else if (key === 'split' && isMediaClip(clip)) {
       splitClipAt(clip.id, playheadMs)
     } else if (key === 'remove-silence' && isMediaClip(clip)) {
       props.onOpenSilenceDialog?.(clip.id)
+    } else if (key === 'group') {
+      // Phase 3.33 — group every currently-selected clip.
+      groupClips([...selectedClipIds])
+    } else if (key === 'ungroup') {
+      // Phase 3.33 — dissolve the link group the ctx clip belongs to.
+      ungroupClips(clip.id)
     }
   }
 
@@ -1072,7 +1295,12 @@ export function Timeline(props: TimelineProps): JSX.Element {
 
       const newStart = desired
       const newEnd = newStart + duration
-      if (isMediaClip(clip)) {
+      if (clip.groupId) {
+        // Phase 3.33 — grouped clip: move the WHOLE link group together. The
+        // snap/clamp math above stays anchored on the dragged clip; the store
+        // shifts every member by the resulting delta.
+        moveClipGroup(clip.id, newStart)
+      } else if (isMediaClip(clip)) {
         // Reuse updateMediaClipTrim for media clips so we get the same
         // invariant clamping logic.
         updateMediaClipTrim(clip.id, { startMs: newStart, endMs: newEnd })
@@ -1090,6 +1318,69 @@ export function Timeline(props: TimelineProps): JSX.Element {
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
   }
+
+  // -------------------------------------------------------------------------
+  // Phase 3.32 — adjustment-layer drag (body move + left/right edge trim).
+  // Reuses the same px↔ms math as the clip drag handlers above. A click
+  // without a drag selects the layer; a drag past CLICK_VS_DRAG_PX moves /
+  // trims it via `updateAdjustmentLayer` (the store re-clamps the window).
+  // -------------------------------------------------------------------------
+  const onAdjustmentLayerMouseDown = (
+    e: React.MouseEvent<HTMLDivElement>,
+    layer: AdjustmentLayer,
+    mode: 'move' | 'left' | 'right'
+  ): void => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    setSelectedAdjustmentLayerId(layer.id)
+    setCtx(null)
+    const startMouseX = e.clientX
+    const origStart = layer.startMs
+    const origEnd = layer.endMs
+    let dragging = false
+
+    const onMove = (ev: MouseEvent): void => {
+      const dx = ev.clientX - startMouseX
+      if (!dragging) {
+        if (Math.abs(dx) < CLICK_VS_DRAG_PX) return
+        dragging = true
+      }
+      const deltaMs = (dx / pps) * 1000
+      if (mode === 'move') {
+        const duration = origEnd - origStart
+        const newStart = Math.max(0, Math.round(origStart + deltaMs))
+        updateAdjustmentLayer(layer.id, {
+          startMs: newStart,
+          endMs: newStart + duration
+        })
+      } else if (mode === 'left') {
+        let newStart = Math.round(origStart + deltaMs)
+        if (newStart > origEnd - MIN_CLIP_MS) newStart = origEnd - MIN_CLIP_MS
+        if (newStart < 0) newStart = 0
+        updateAdjustmentLayer(layer.id, { startMs: newStart })
+      } else {
+        let newEnd = Math.round(origEnd + deltaMs)
+        if (newEnd < origStart + MIN_CLIP_MS) newEnd = origStart + MIN_CLIP_MS
+        updateAdjustmentLayer(layer.id, { endMs: newEnd })
+      }
+    }
+    const onUp = (): void => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  /** Add a new adjustment layer at the playhead, then select it. */
+  const handleAddAdjustmentLayer = useCallback((): void => {
+    const id = addAdjustmentLayer(
+      playheadMs,
+      playheadMs + DEFAULT_ADJUSTMENT_LAYER_MS
+    )
+    if (id) setSelectedAdjustmentLayerId(id)
+  }, [addAdjustmentLayer, playheadMs, setSelectedAdjustmentLayerId])
 
   // -------------------------------------------------------------------------
   // Phase 5 — toolbar handlers.
@@ -1585,6 +1876,97 @@ export function Timeline(props: TimelineProps): JSX.Element {
               <div style={styles.rulerMarkerFlag} />
             </div>
           ))}
+          {/* Phase 3.27 — cover / thumbnail frame marker. Rendered only when
+              the project has an explicit cover; positioned with the same
+              px/sec as ticks/beats/markers. */}
+          {project.coverMs != null && (
+            <div
+              style={{
+                ...styles.rulerCoverMarker,
+                left: (project.coverMs / 1000) * pps
+              }}
+              data-testid="ruler-cover-marker"
+              data-cover-ms={project.coverMs}
+              title={`커버 프레임 · ${(project.coverMs / 1000).toFixed(2)}s`}
+            >
+              ★
+            </div>
+          )}
+        </div>
+      </div>
+      {/* Phase 3.32 — adjustment-layer lane. A dedicated tinted row below the
+          ruler; each block is a range color-grade over the composite. */}
+      <div
+        style={styles.adjustmentLaneRow}
+        data-testid="adjustment-layer-lane"
+      >
+        <div style={styles.adjustmentLaneHeader}>
+          <span style={styles.adjustmentLaneTitle}>조정 레이어</span>
+          <button
+            type="button"
+            style={styles.adjustmentAddBtn}
+            data-testid="add-adjustment-layer"
+            onClick={handleAddAdjustmentLayer}
+            title="플레이헤드 위치에 조정 레이어 추가"
+          >
+            + 조정 레이어 추가
+          </button>
+        </div>
+        <div
+          style={{ ...styles.adjustmentLane, width: laneWidth }}
+          onMouseDown={() => setSelectedAdjustmentLayerId(null)}
+        >
+          {adjustmentLayers.map((layer) => {
+            const left = (layer.startMs / 1000) * pps
+            const width = Math.max(
+              8,
+              ((layer.endMs - layer.startMs) / 1000) * pps
+            )
+            const selected = layer.id === selectedAdjustmentLayerId
+            const neutral = isNeutralAdjustmentLayer(layer)
+            return (
+              <div
+                key={layer.id}
+                style={{
+                  ...styles.adjustmentBlock,
+                  ...(neutral ? styles.adjustmentBlockNeutral : null),
+                  ...(selected ? styles.adjustmentBlockSelected : null),
+                  left,
+                  width
+                }}
+                data-testid={`adjustment-layer-${layer.id}`}
+                data-adjustment-layer-id={layer.id}
+                data-start-ms={layer.startMs}
+                data-end-ms={layer.endMs}
+                data-selected={selected ? 'true' : 'false'}
+                data-neutral={neutral ? 'true' : 'false'}
+                title={`조정 레이어 · ${(layer.startMs / 1000).toFixed(2)}s – ${(
+                  layer.endMs / 1000
+                ).toFixed(2)}s`}
+                onMouseDown={(e) =>
+                  onAdjustmentLayerMouseDown(e, layer, 'move')
+                }
+              >
+                <div
+                  style={{ ...styles.trimHandle, ...styles.trimHandleLeft }}
+                  data-testid="adjustment-layer-trim-left"
+                  onMouseDown={(e) =>
+                    onAdjustmentLayerMouseDown(e, layer, 'left')
+                  }
+                />
+                <span style={styles.adjustmentBlockLabel}>
+                  {neutral ? '조정 (비활성)' : '조정'}
+                </span>
+                <div
+                  style={{ ...styles.trimHandle, ...styles.trimHandleRight }}
+                  data-testid="adjustment-layer-trim-right"
+                  onMouseDown={(e) =>
+                    onAdjustmentLayerMouseDown(e, layer, 'right')
+                  }
+                />
+              </div>
+            )
+          })}
         </div>
       </div>
       <div style={styles.body} ref={bodyRef}>
@@ -1689,7 +2071,11 @@ export function Timeline(props: TimelineProps): JSX.Element {
                 const w = clipWidth(clip, pps)
                 const isCap = isCaptionClip(clip)
                 const isOverlay = isOverlayClip(clip)
-                const isSel = clip.id === selectedClipId
+                // Phase 3.33 — a clip is visually selected when it is the
+                // single active clip OR a member of the multi-select set, so
+                // Ctrl+click multi-selection is visible on every member.
+                const isSel =
+                  clip.id === selectedClipId || selectedClipIds.has(clip.id)
                 const label = isCap
                   ? getClipSourceText(clip) || '(빈 자막)'
                   : isOverlayClip(clip)
@@ -1781,10 +2167,15 @@ export function Timeline(props: TimelineProps): JSX.Element {
                         ...styles.clipBody,
                         left: isMediaClip(clip) ? HANDLE_PX : 0,
                         right: isMediaClip(clip) ? HANDLE_PX : 0,
-                        cursor: toolMode === 'split' ? 'col-resize' : 'grab'
+                        cursor: toolMode === 'split' ? 'col-resize' : 'grab',
+                        // Phase 3.33 — grouped clips get a distinct outline.
+                        ...(clip.groupId
+                          ? { outline: '2px solid #a855f7', outlineOffset: -2 }
+                          : {})
                       }}
                       data-testid="clip-body"
                       data-clip-id={clip.id}
+                      data-group-id={clip.groupId}
                       onMouseDown={(e) => {
                         // Split tool — clicking a clip splits it; never drags.
                         if (toolMode === 'split') {
@@ -1799,6 +2190,15 @@ export function Timeline(props: TimelineProps): JSX.Element {
                           handleSplitToolClick(e, clip)
                           return
                         }
+                        // Ctrl/Cmd+click toggles this clip in the multi-select
+                        // set; a plain click stays single-select. This `onClick`
+                        // only fires for a click WITHOUT a drag (a drag is
+                        // handled entirely via mousemove in onClipBodyMouseDown),
+                        // so toggle-select never collides with drag.
+                        if (e.ctrlKey || e.metaKey) {
+                          handleToggleSelect(clip.id)
+                          return
+                        }
                         handleSelect(clip.id)
                       }}
                       onDoubleClick={(e) => {
@@ -1810,6 +2210,21 @@ export function Timeline(props: TimelineProps): JSX.Element {
                       {label}
                       {speedLabel && (
                         <span style={{ opacity: 0.7 }}>{speedLabel}</span>
+                      )}
+                      {/* Phase 3.33 — link badge marks a grouped clip. */}
+                      {clip.groupId && (
+                        <span
+                          data-testid="clip-group-badge"
+                          title="그룹 클립"
+                          style={{
+                            marginLeft: 4,
+                            fontSize: 10,
+                            color: '#e9d5ff',
+                            pointerEvents: 'none'
+                          }}
+                        >
+                          🔗
+                        </span>
                       )}
                     </div>
                     {isMediaClip(clip) && (
@@ -2154,6 +2569,33 @@ export function Timeline(props: TimelineProps): JSX.Element {
                         ◀◀
                       </div>
                     )}
+                    {/* Volume-envelope indicator (Phase 3.30) — green badge in
+                        the TOP-LEFT corner, just below the reverse badge
+                        (top 94). Shown when the clip has an active (>= 2
+                        keyframe) volume envelope. Follows the speed-curve /
+                        blur / freeze / reverse badge pattern. */}
+                    {isMediaClip(clip) && hasVolumeEnvelope(clip) && (
+                      <div
+                        data-testid="volume-envelope-indicator"
+                        data-clip-id={clip.id}
+                        style={{
+                          position: 'absolute',
+                          left: 4,
+                          top: 94,
+                          padding: '1px 5px',
+                          borderRadius: 3,
+                          background: 'rgba(34, 197, 94, 0.95)',
+                          color: '#0c1322',
+                          fontSize: 9,
+                          fontWeight: 700,
+                          pointerEvents: 'none',
+                          zIndex: 4
+                        }}
+                        title="볼륨 커브"
+                      >
+                        ♪
+                      </div>
+                    )}
                     {/* Keyframe marker row (Phase 3.5) — one diamond per
                         keyframe, positioned by clip-relative atMs. Click →
                         seek; horizontal drag → re-time; right/Alt-click →
@@ -2221,6 +2663,9 @@ export function Timeline(props: TimelineProps): JSX.Element {
           x={ctx.x}
           y={ctx.y}
           playheadMs={playheadMs}
+          audioDetachable={audioDetachable}
+          groupable={groupable}
+          grouped={grouped}
           onAction={onMenuAction}
           onSpeedChange={
             isMediaClip(ctxClip)
@@ -2578,6 +3023,63 @@ export function Timeline(props: TimelineProps): JSX.Element {
                   ?.durationMs ?? DEFAULT_FREEZE_MS
               : DEFAULT_FREEZE_MS
           }
+          onAddVolumeKeyframe={
+            isMediaClip(ctxClip)
+              ? (): void => {
+                  // Phase 3.30 — volume keyframes are clip-relative TIMELINE
+                  // ms (no source mapping), so pass the raw playhead offset.
+                  // The first add seeds two keyframes; later adds insert one.
+                  if (!isMediaClip(ctxClip)) return
+                  addVolumeKeyframe(
+                    ctxClip.id,
+                    playheadMs - ctxClip.startMs
+                  )
+                }
+              : undefined
+          }
+          onUpdateVolumeKeyframeAtPlayhead={
+            isMediaClip(ctxClip)
+              ? (gainDb: number): void => {
+                  if (!isMediaClip(ctxClip)) return
+                  if (ctxVolumeKeyframeIndex >= 0) {
+                    updateVolumeKeyframe(
+                      ctxClip.id,
+                      ctxVolumeKeyframeIndex,
+                      { gainDb }
+                    )
+                  }
+                }
+              : undefined
+          }
+          onRemoveVolumeKeyframeAtPlayhead={
+            isMediaClip(ctxClip)
+              ? (): void => {
+                  if (!isMediaClip(ctxClip)) return
+                  if (ctxVolumeKeyframeIndex >= 0) {
+                    removeVolumeKeyframe(ctxClip.id, ctxVolumeKeyframeIndex)
+                  }
+                }
+              : undefined
+          }
+          onClearVolumeEnvelope={
+            isMediaClip(ctxClip)
+              ? (): void => {
+                  if (!isMediaClip(ctxClip)) return
+                  clearVolumeKeyframes(ctxClip.id)
+                }
+              : undefined
+          }
+          volumeKeyframeCount={
+            isMediaClip(ctxClip) ? ctxClip.volumeKeyframes?.length ?? 0 : 0
+          }
+          isOnVolumeKeyframe={
+            isMediaClip(ctxClip) && ctxVolumeKeyframeIndex >= 0
+          }
+          volumeDbAtPlayhead={
+            isMediaClip(ctxClip)
+              ? getVolumeDbAt(ctxClip, playheadMs - ctxClip.startMs)
+              : 0
+          }
           onOverlayStyleChange={
             isOverlayClip(ctxClip) && ctxClip.source.type === 'shape'
               ? (partial): void => {
@@ -2591,6 +3093,16 @@ export function Timeline(props: TimelineProps): JSX.Element {
                       style: { ...ctxClip.source.style, ...partial }
                     }
                   })
+                }
+              : undefined
+          }
+          onOverlayShadowChange={
+            isOverlayClip(ctxClip)
+              ? (shadow): void => {
+                  // Phase 3.36 — set/clear the overlay drop shadow. null ⇒
+                  // drop the field so the byte-identical no-shadow gate holds.
+                  if (!isOverlayClip(ctxClip)) return
+                  updateOverlay(ctxClip.id, { shadow: shadow ?? undefined })
                 }
               : undefined
           }

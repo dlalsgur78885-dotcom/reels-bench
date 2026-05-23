@@ -8,6 +8,7 @@ import { SilenceRemoveDialog } from '../components/SilenceRemoveDialog'
 import { Timeline } from '../components/Timeline'
 import { Transport } from '../components/Transport'
 import { CaptionEditor } from '../components/CaptionEditor'
+import { TextTemplatePicker } from '../components/TextTemplatePicker'
 import { EffectsPanel } from '../components/EffectsPanel'
 import { ExportDialog } from '../components/ExportDialog'
 import { BatchExportDialog } from '../components/BatchExportDialog'
@@ -20,17 +21,27 @@ import type { AutoEditSummary } from '../lib/autoEdit'
 import { getTotalDurationMs, useProjectStore, useUndoRedo } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import {
+  isCaptionClip,
   isMediaClip,
   isOverlayClip,
+  MIN_PROGRESS_BAR_HEIGHT_FRAC,
+  MAX_PROGRESS_BAR_HEIGHT_FRAC,
   type AspectRatio,
   type Clip,
+  type ProgressBarPosition,
   type VideoAudioClip
 } from '../../../shared/project'
 import {
+  captionsToSubtitle,
+  type SubtitleFormat
+} from '../../../shared/subtitleExport'
+import {
   addClipsToStore,
   cuesToClips,
-  insertCaptionAtPlayhead
+  insertCaptionAtPlayhead,
+  insertTextTemplateAtPlayhead
 } from '../lib/captions'
+import { getTextTemplate } from '../../../shared/textTemplates'
 
 interface EditorProps {
   onBack: () => void
@@ -237,6 +248,10 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   const hydrated = useProjectStore((s) => s.hydrated)
   const setName = useProjectStore((s) => s.setName)
   const setAspectRatio = useProjectStore((s) => s.setAspectRatio)
+  const setCoverMs = useProjectStore((s) => s.setCoverMs)
+  const clearCoverMs = useProjectStore((s) => s.clearCoverMs)
+  const setProgressBar = useProjectStore((s) => s.setProgressBar)
+  const toggleProgressBar = useProjectStore((s) => s.toggleProgressBar)
   const removeClip = useProjectStore((s) => s.removeClip)
   const { undo, redo, canUndo, canRedo, pastCount, futureCount } = useUndoRedo()
 
@@ -274,6 +289,17 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
   const [editingCaptionId, setEditingCaptionId] = useState<string | null>(null)
   const [srtError, setSrtError] = useState<string | null>(null)
+  // Phase 3.34 — subtitle (.srt/.vtt) export. Transient UI state only.
+  const [subtitleFormat, setSubtitleFormat] = useState<SubtitleFormat>('srt')
+
+  // Live count of caption clips across all caption tracks — drives the
+  // 자막 파일 내보내기 button's disabled state. Read via a selector so it
+  // re-renders when captions are added/removed.
+  const captionClipCount = useProjectStore((s) =>
+    s.project.tracks
+      .filter((t) => t.kind === 'caption')
+      .reduce((sum, t) => sum + t.clips.length, 0)
+  )
   const [silenceTargetClipId, setSilenceTargetClipId] = useState<string | null>(
     null
   )
@@ -286,6 +312,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   const [leftTab, setLeftTab] = useState<'media' | 'overlay' | 'transcript'>(
     'media'
   )
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false)
   const [prefillOpen, setPrefillOpen] = useState(false)
   const [sttOpen, setSttOpen] = useState(false)
   const [autoEditOpen, setAutoEditOpen] = useState(false)
@@ -373,10 +400,20 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     return isMediaClip(found) || isOverlayClip(found) ? found.id : null
   }, [selectedClipId, project])
 
-  // The 효과 panel is shown only when the user has toggled it on AND an
-  // effect-eligible clip is selected. The caption editor takes the same
-  // 360px right slot, so it wins when a caption is being edited.
-  const showEffectsPanel = effectsOpen && !editingCaptionId && !!effectsClipId
+  // Phase 3.32 — when an adjustment layer is selected, the 효과 panel shows
+  // its grade editor. Selecting a layer is itself an explicit edit intent, so
+  // the panel auto-shows for a layer regardless of the `effectsOpen` toggle.
+  const selectedAdjustmentLayerId = useTimelineUi(
+    (s) => s.selectedAdjustmentLayerId
+  )
+
+  // The 효과 panel is shown when the user has toggled it on AND an effect-
+  // eligible clip is selected, OR whenever an adjustment layer is selected.
+  // The caption editor takes the same 360px right slot, so it wins when a
+  // caption is being edited.
+  const showEffectsPanel =
+    !editingCaptionId &&
+    ((effectsOpen && !!effectsClipId) || !!selectedAdjustmentLayerId)
 
   // Recompute beats whenever BPM or total duration changes — but ONLY if
   // current beats originated from the metronome. When prefill loads real
@@ -406,6 +443,23 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     }
   }, [playheadMs])
 
+  // Phase 3.24 — apply a text template. Inserts a plain caption clip, then
+  // selects it + opens CaptionEditor (mirrors handleAddCaption) so the user
+  // can immediately edit the template's sample text.
+  const handleApplyTemplate = useCallback(
+    (templateId: string): void => {
+      const tpl = getTextTemplate(templateId)
+      if (!tpl) return
+      const id = insertTextTemplateAtPlayhead(tpl, playheadMs)
+      if (id) {
+        setSelectedClipId(id)
+        setEditingCaptionId(id)
+        setTemplatePickerOpen(false)
+      }
+    },
+    [playheadMs]
+  )
+
   const handleImportSrt = useCallback(async (): Promise<void> => {
     setSrtError(null)
     try {
@@ -424,6 +478,41 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
       setSrtError(err instanceof Error ? err.message : String(err))
     }
   }, [])
+
+  // Phase 3.34 — export caption clips as a `.srt` / `.vtt` file. Read-only on
+  // the project store: gathers caption clips, builds the subtitle document,
+  // and writes it via the allow-listed `captions.exportSubtitle` IPC. Never
+  // mutates the project and does not touch the video/mp4 export pipeline.
+  const handleExportSubtitle = useCallback(async (): Promise<void> => {
+    setSrtError(null)
+    try {
+      const clips = project.tracks
+        .filter((t) => t.kind === 'caption')
+        .flatMap((t) => t.clips)
+        .filter(isCaptionClip)
+      if (clips.length === 0) return
+      const content = captionsToSubtitle(clips, subtitleFormat)
+      const picked = await window.electron.fs.saveFile(
+        `captions.${subtitleFormat}`
+      )
+      if (!picked) return
+      const result = await window.electron.captions.exportSubtitle(
+        picked,
+        content
+      )
+      if (result.ok) {
+        setToast({
+          message: `자막 파일을 내보냈습니다 (${result.bytesWritten.toLocaleString()} bytes)`,
+          variant: 'success',
+          id: Date.now()
+        })
+      } else {
+        setSrtError(result.error)
+      }
+    } catch (err) {
+      setSrtError(err instanceof Error ? err.message : String(err))
+    }
+  }, [project, subtitleFormat])
 
   // -----------------------------------------------------------------------
   // Keyboard shortcuts (Space is handled by Transport).
@@ -644,6 +733,10 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           {project.width}×{project.height} · {project.fps}fps
         </div>
 
+        <div style={styles.hint} data-testid="aspect-ratio-hint">
+          클립이 새 비율에 자동으로 맞춰집니다
+        </div>
+
         <div style={styles.flex1} />
 
         <button
@@ -736,10 +829,44 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         </button>
         <button
           style={styles.secondaryBtn}
+          onClick={() => setTemplatePickerOpen(true)}
+          data-testid="open-text-template-picker"
+          title="미리 디자인된 텍스트 블록 삽입"
+        >
+          텍스트 템플릿
+        </button>
+        <button
+          style={styles.secondaryBtn}
           onClick={handleImportSrt}
           data-testid="import-srt-button"
         >
           SRT 가져오기
+        </button>
+        <select
+          style={styles.select}
+          value={subtitleFormat}
+          onChange={(e) =>
+            setSubtitleFormat(e.target.value as SubtitleFormat)
+          }
+          aria-label="자막 파일 형식"
+          data-testid="export-subtitle-format"
+        >
+          <option value="srt">srt</option>
+          <option value="vtt">vtt</option>
+        </select>
+        <button
+          style={{
+            ...styles.secondaryBtn,
+            ...(captionClipCount === 0
+              ? { opacity: 0.5, cursor: 'not-allowed' }
+              : {})
+          }}
+          onClick={handleExportSubtitle}
+          disabled={captionClipCount === 0}
+          data-testid="export-srt-button"
+          title="자막 클립을 .srt/.vtt 파일로 내보내기"
+        >
+          자막 파일 내보내기
         </button>
         <button
           style={styles.primaryBtn}
@@ -775,6 +902,89 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           효과
         </button>
         <button
+          type="button"
+          style={styles.secondaryBtn}
+          onClick={() => setCoverMs(playheadMs)}
+          data-testid="set-cover-frame"
+          title="현재 플레이헤드 프레임을 커버(썸네일)로 지정"
+        >
+          커버로 지정
+        </button>
+        {project.coverMs != null && (
+          <button
+            type="button"
+            style={styles.secondaryBtn}
+            onClick={() => clearCoverMs()}
+            data-testid="clear-cover-frame"
+            title="커버 프레임 지정 해제"
+          >
+            커버 해제 ({(project.coverMs / 1000).toFixed(1)}s)
+          </button>
+        )}
+        {/* Phase 3.35 — 진행 바 오버레이 토글 + 인라인 설정. */}
+        <button
+          type="button"
+          style={{
+            ...styles.secondaryBtn,
+            ...(project.progressBar?.enabled
+              ? { background: '#6366f1', borderColor: '#6366f1', color: '#fff' }
+              : {})
+          }}
+          onClick={() => toggleProgressBar()}
+          aria-pressed={project.progressBar?.enabled ?? false}
+          data-testid="toggle-progress-bar"
+          title="영상 길이에 맞춰 차오르는 진행 바 오버레이"
+        >
+          진행 바
+        </button>
+        {project.progressBar?.enabled && (
+          <>
+            <select
+              style={styles.select}
+              value={project.progressBar.position}
+              onChange={(e) =>
+                setProgressBar({
+                  position: e.target.value as ProgressBarPosition
+                })
+              }
+              aria-label="진행 바 위치"
+              data-testid="progress-bar-position"
+            >
+              <option value="top">상단</option>
+              <option value="bottom">하단</option>
+            </select>
+            <input
+              type="color"
+              value={project.progressBar.color}
+              onChange={(e) => setProgressBar({ color: e.target.value })}
+              aria-label="진행 바 색상"
+              data-testid="progress-bar-color"
+              style={{
+                width: 32,
+                height: 28,
+                padding: 0,
+                border: '1px solid #2a2a2a',
+                borderRadius: 6,
+                background: '#0d0d0d',
+                cursor: 'pointer'
+              }}
+            />
+            <input
+              type="range"
+              min={MIN_PROGRESS_BAR_HEIGHT_FRAC}
+              max={MAX_PROGRESS_BAR_HEIGHT_FRAC}
+              step={0.001}
+              value={project.progressBar.heightFrac}
+              onChange={(e) =>
+                setProgressBar({ heightFrac: Number(e.target.value) })
+              }
+              aria-label="진행 바 두께"
+              data-testid="progress-bar-height"
+              style={{ width: 80, cursor: 'pointer' }}
+            />
+          </>
+        )}
+        <button
           style={styles.primaryBtn}
           onClick={() => setExportOpen(true)}
           data-testid="open-export-dialog"
@@ -798,7 +1008,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
 
       <div
         style={
-          editingCaptionId || showEffectsPanel
+          editingCaptionId || showEffectsPanel || templatePickerOpen
             ? styles.bodyWithEditor
             : styles.body
         }
@@ -939,15 +1149,27 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
             onClose={() => setEditingCaptionId(null)}
           />
         )}
+        {/* Phase 3.24 — text-template picker. Applying a template inserts a
+            plain caption clip, then opens CaptionEditor for the new clip. */}
+        {templatePickerOpen && (
+          <TextTemplatePicker
+            onClose={() => setTemplatePickerOpen(false)}
+            onApply={handleApplyTemplate}
+          />
+        )}
         {/* Phase 7 — docked 효과 panel. Mutually exclusive with the caption
-            editor (both occupy the right 360px slot). Renders only for an
-            effect-eligible (media/overlay) clip while toggled on. */}
-        {showEffectsPanel && effectsClipId && (
+            editor (both occupy the right 360px slot). Renders for an effect-
+            eligible (media/overlay) clip while toggled on, OR for a selected
+            adjustment layer (Phase 3.32 — shows the layer grade editor). */}
+        {showEffectsPanel && (
           <EffectsPanel
             project={project}
             clipId={effectsClipId}
             playheadMs={playheadMs}
-            onClose={() => setEffectsOpen(false)}
+            onClose={() => {
+              setEffectsOpen(false)
+              useTimelineUi.getState().setSelectedAdjustmentLayerId(null)
+            }}
           />
         )}
       </div>

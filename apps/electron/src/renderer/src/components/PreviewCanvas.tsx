@@ -2,17 +2,31 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import {
   CAPTION_POP_START_SCALE,
   CAPTION_SLIDE_FRAC,
+  KARAOKE_DIM_OPACITY,
+  KARAOKE_POP_SCALE,
   blurRegionBlurRadiusPx,
   blurRegionMosaicBlockPx,
   findMotionTrack,
+  getActiveWordIndex,
   getCaptionAnimWindows,
   getCaptionAnimation,
+  getCaptionKaraoke,
+  getCaptionTextShadow,
+  getCaptionTextStroke,
+  getAdjustmentLayers,
   getClipBlurRegions,
   getClipColorAdjust,
   getClipCropRect,
   getClipCurves,
   getClipRetouch,
+  getFilmLook,
   getOverlayBaseSize,
+  getOverlayShadow,
+  getProgressBar,
+  getProjectTotalMs,
+  PROGRESS_BAR_TRACK_OPACITY,
+  resolveClipCurves,
+  resolveColorAdjust,
   getSpeedAt,
   getTrackPositionAt,
   getTransformAt,
@@ -24,8 +38,10 @@ import {
   isMediaClip,
   isOverlayClip,
   MIN_TRACK_SOURCE_SIZE,
+  resolveCaptionWords,
   sourceOffsetForTimelineOffset,
   type CaptionClip,
+  type CaptionKaraoke,
   type CaptionSpan,
   type CaptionStyle,
   type Clip,
@@ -37,6 +53,7 @@ import {
 } from '../../../shared/project'
 import {
   colorAdjustToCss,
+  filmToneToCss,
   filterPresetToCss,
   sampleCurveTable
 } from '../../../shared/filterPresets'
@@ -49,6 +66,18 @@ import {
   getPreviewAudioGraph,
   installAutoResume
 } from '../lib/audioGraph'
+
+// ---------------------------------------------------------------------------
+// Phase 3.35 — convert a validated `#rrggbb` hex to an `rgba()` string at the
+// given opacity (used for the progress-bar track). `getProgressBar` already
+// guarantees the color is a valid 6-digit hex, so parsing cannot fail.
+// ---------------------------------------------------------------------------
+function hexToRgba(hex: string, opacity: number): string {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`
+}
 
 // ---------------------------------------------------------------------------
 // Source-time mapping (Phase 2.3 speed-aware; Phase 3.10 curve-aware;
@@ -356,6 +385,40 @@ function backgroundFor(style: CaptionStyle): React.CSSProperties {
   }
 }
 
+/**
+ * Phase 3.23 — live CSS for explicit caption outline / drop-shadow / glow.
+ * Both resolvers null ⇒ returns `{}` so the spread adds nothing and the
+ * caption container CSS + DOM stays byte-identical to the legacy path.
+ *
+ * Stroke/shadow px values are in the canvas-height ref frame (same as
+ * `fontSize`), so they scale by `fittedHeight / REF_HEIGHT` exactly like
+ * `scaledFontSize` does. The user shadow term is APPENDED to whatever
+ * `text-shadow` the preset already emits so both composite.
+ */
+function textDecorationFor(
+  style: CaptionStyle,
+  fittedHeight: number,
+  presetShadowCss: string | undefined
+): React.CSSProperties {
+  const stroke = getCaptionTextStroke(style)
+  const shadow = getCaptionTextShadow(style)
+  if (!stroke && !shadow) return {}
+  const REF_HEIGHT = 1920
+  const scale = fittedHeight > 0 ? fittedHeight / REF_HEIGHT : 1
+  const out: React.CSSProperties = {}
+  if (stroke) {
+    out.WebkitTextStroke = `${stroke.width * scale}px ${stroke.color}`
+    out.paintOrder = 'stroke fill'
+  }
+  if (shadow) {
+    const userShadow = `${shadow.offsetX * scale}px ${shadow.offsetY * scale}px ${shadow.blur * scale}px ${shadow.color}`
+    out.textShadow = presetShadowCss
+      ? `${presetShadowCss}, ${userShadow}`
+      : userShadow
+  }
+  return out
+}
+
 function alignToFlex(a: CaptionStyle['align']): React.CSSProperties['justifyContent'] {
   if (a === 'left') return 'flex-start'
   if (a === 'right') return 'flex-end'
@@ -409,8 +472,20 @@ function useFittedRect(
   return rect
 }
 
-function SpanView(props: { span: CaptionSpan; style: CaptionStyle }): JSX.Element {
-  const { span, style } = props
+/** Karaoke per-word state relative to the playhead (Phase 3.22). */
+type KaraokeWordState = 'active' | 'spoken' | 'upcoming'
+
+function SpanView(props: {
+  span: CaptionSpan
+  style: CaptionStyle
+  /**
+   * Karaoke highlight applied to this span. Present ONLY for a caption with an
+   * active karaoke spec — when absent the rendered DOM/CSS is byte-identical to
+   * the legacy path (CRITICAL invariant, see CaptionOverlay).
+   */
+  karaoke?: { spec: CaptionKaraoke; wordState: KaraokeWordState }
+}): JSX.Element {
+  const { span, style, karaoke } = props
   const isHighlightBg = style.background === 'highlight'
   const css: React.CSSProperties = {}
   if (span.emphasis === 'bold') css.fontWeight = 800
@@ -430,10 +505,37 @@ function SpanView(props: { span: CaptionSpan; style: CaptionStyle }): JSX.Elemen
     css.borderRadius = 3
   }
   if (span.color) css.color = span.color
+
+  // Karaoke highlight — layered LAST so it wins over emphasis/color. Only
+  // touched when `karaoke` is supplied; otherwise `css` is untouched.
+  if (karaoke) {
+    const { spec, wordState } = karaoke
+    if (wordState === 'active') {
+      if (spec.highlightStyle === 'color-fill') {
+        css.color = spec.highlightColor
+        if (spec.highlightBox) {
+          css.background = spec.highlightColor
+          css.color = '#1a1a1a'
+          css.padding = '0 0.2em'
+          css.borderRadius = 3
+        }
+      } else {
+        // 'scale-pop' — grow the active word in place.
+        css.display = 'inline-block'
+        css.transform = `scale(${KARAOKE_POP_SCALE})`
+      }
+    } else if (wordState === 'upcoming') {
+      // Words not yet spoken are dimmed.
+      css.opacity = KARAOKE_DIM_OPACITY
+    }
+    // 'spoken' — normal styling, no change.
+  }
+
   return (
     <span
       data-testid="caption-span"
       data-emphasis={span.emphasis ?? 'none'}
+      data-karaoke-state={karaoke?.wordState}
       style={css}
     >
       {span.text}
@@ -549,6 +651,19 @@ function CaptionOverlay(props: {
   // (bottom% + align-based left/right) with the tracked center. INVARIANT: an
   // unbound caption (no motionTrackId, or a dangling id) → trackPos is null →
   // the static path runs untouched, byte-identical legacy DOM.
+  // Phase 3.22 — karaoke (word-level highlight). `getCaptionKaraoke` returns
+  // null for any caption without an ACTIVE karaoke spec + resolvable words —
+  // in that case `karaokeSpec` stays null, no per-word state is computed, and
+  // nothing is passed to SpanView (byte-identical legacy DOM, see invariant).
+  const karaokeSpec = getCaptionKaraoke(caption)
+  let karaokeActiveIndex = -1
+  if (karaokeSpec) {
+    const localMs = playheadMs - caption.startMs
+    karaokeActiveIndex = getActiveWordIndex(
+      resolveCaptionWords(caption),
+      localMs
+    )
+  }
   const boundTrack = caption.motionTrackId
     ? findMotionTrack(project, caption.motionTrackId)
     : null
@@ -556,6 +671,14 @@ function CaptionOverlay(props: {
     boundTrack && boundTrack.points.length >= 2
       ? getTrackPositionAt(boundTrack, playheadMs - caption.startMs)
       : null
+  // Phase 3.23 — explicit outline / drop-shadow / glow. `presetExtras` may
+  // emit its own `textShadow`; the user shadow is appended onto it so both
+  // composite. `textDecorationFor` returns `{}` when neither resolver fires —
+  // the spread is then a no-op and the container CSS is byte-identical.
+  const presetCss = presetExtras(style)
+  const presetShadowCss =
+    typeof presetCss.textShadow === 'string' ? presetCss.textShadow : undefined
+  const textDecoration = textDecorationFor(style, fittedHeight, presetShadowCss)
   const containerStyle: React.CSSProperties = trackPos
     ? {
         // Track-bound path — center the caption on the tracked point.
@@ -575,7 +698,8 @@ function CaptionOverlay(props: {
         letterSpacing: 0.2,
         whiteSpace: 'normal',
         wordBreak: 'keep-all',
-        ...presetExtras(style),
+        ...presetCss,
+        ...textDecoration,
         ...backgroundFor(style)
       }
     : {
@@ -594,7 +718,8 @@ function CaptionOverlay(props: {
         whiteSpace: 'normal',
         wordBreak: 'keep-all',
         ...alignToHorizontalAnchor(style.align),
-        ...presetExtras(style),
+        ...presetCss,
+        ...textDecoration,
         ...backgroundFor(style)
       }
   // INVARIANT: an un-animated, unbound caption writes NEITHER `opacity` nor a
@@ -621,6 +746,11 @@ function CaptionOverlay(props: {
       data-anim-exit={anim?.exit ?? 'none'}
       data-revealed-spans={revealSpanCount}
       data-motion-track-id={trackPos ? caption.motionTrackId : undefined}
+      data-karaoke-active-index={
+        karaokeSpec ? karaokeActiveIndex : undefined
+      }
+      data-text-stroke={getCaptionTextStroke(style) ? 'on' : undefined}
+      data-text-shadow={getCaptionTextShadow(style) ? 'on' : undefined}
       style={containerStyle}
     >
       <div style={{ display: 'inline' }}>
@@ -629,13 +759,26 @@ function CaptionOverlay(props: {
           // layout reflow) so only the revealed prefix is visible.
           const hidden =
             revealSpanCount !== undefined && i >= revealSpanCount
+          // Karaoke per-word state — span index vs the active word index.
+          // Only built when a karaoke spec is active; otherwise SpanView is
+          // called with no `karaoke` prop → byte-identical legacy DOM.
+          const karaokeProp = karaokeSpec
+            ? {
+                spec: karaokeSpec,
+                wordState: (i === karaokeActiveIndex
+                  ? 'active'
+                  : i < karaokeActiveIndex
+                    ? 'spoken'
+                    : 'upcoming') as KaraokeWordState
+              }
+            : undefined
           return (
             <span
               key={i}
               style={hidden ? { visibility: 'hidden' } : undefined}
             >
               {i > 0 && ' '}
-              <SpanView span={s} style={style} />
+              <SpanView span={s} style={style} karaoke={karaokeProp} />
             </span>
           )
         })}
@@ -648,8 +791,11 @@ function CaptionOverlay(props: {
 // Overlay element renderer (Phase 3.8) — image/sticker → <img>, shape → SVG.
 // Positioned with the SAME CSS transform math as a video layer.
 // ---------------------------------------------------------------------------
-function OverlayShapeSvg(props: { style: ShapeStyle }): JSX.Element {
-  const { style } = props
+function OverlayShapeSvg(props: {
+  style: ShapeStyle
+  shadowFilter?: string
+}): JSX.Element {
+  const { style, shadowFilter } = props
   // viewBox is a fixed 100×100 unit box — the parent element supplies the
   // actual on-canvas size, so the SVG just scales to fill. strokeWidth is in
   // canvas px (pre-scale); we map it into viewBox units roughly via the box.
@@ -670,7 +816,7 @@ function OverlayShapeSvg(props: { style: ShapeStyle }): JSX.Element {
       preserveAspectRatio="none"
       width="100%"
       height="100%"
-      style={{ display: 'block', overflow: 'visible' }}
+      style={{ display: 'block', overflow: 'visible', filter: shadowFilter }}
     >
       {style.shape === 'rectangle' && (
         <rect
@@ -705,8 +851,9 @@ function OverlayElement(props: {
   clip: OverlayClip
   playheadMs: number
   project: Project
+  fittedHeight: number
 }): JSX.Element {
-  const { clip, playheadMs, project } = props
+  const { clip, playheadMs, project, fittedHeight } = props
   // Phase 3.5 transform — resolved at the playhead so keyframed overlays
   // animate. Identical CSS math to the video layer.
   const t = getTransformAt(clip, playheadMs)
@@ -728,6 +875,22 @@ function OverlayElement(props: {
   }) rotate(${t.rotation}deg)`
   const { w, h } = getOverlayBaseSize(clip)
   const src = clip.source
+  // Phase 3.36 — drop shadow. Null ⇒ NO `filter` key written at all so the
+  // overlay DOM stays byte-identical to the pre-feature path. Offsets/blur are
+  // canvas px in the 1920-height ref frame (same as caption shadow), so they
+  // scale into preview-fitted px by `fittedHeight / REF_HEIGHT`. CSS blur
+  // radius is `blur / 2` to visually match export's `boxblur`.
+  const shadow = getOverlayShadow(clip)
+  const REF_HEIGHT = 1920
+  const shadowScale = fittedHeight > 0 ? fittedHeight / REF_HEIGHT : 1
+  const shadowFilter: string | undefined = shadow
+    ? `drop-shadow(${shadow.offsetX * shadowScale}px ${
+        shadow.offsetY * shadowScale
+      }px ${(shadow.blur / 2) * shadowScale}px ${hexToRgba(
+        shadow.color,
+        shadow.opacity
+      )})`
+    : undefined
   // Un-transformed box: centered, sized by base*Frac of the canvas. The
   // CSS transform (translate/scale/rotate) + opacity apply on top.
   const boxStyle: React.CSSProperties = {
@@ -766,11 +929,14 @@ function OverlayElement(props: {
             height: '100%',
             objectFit: 'contain',
             display: 'block',
-            pointerEvents: 'none'
+            pointerEvents: 'none',
+            filter: shadowFilter
           }}
         />
       )}
-      {src.type === 'shape' && <OverlayShapeSvg style={src.style} />}
+      {src.type === 'shape' && (
+        <OverlayShapeSvg style={src.style} shadowFilter={shadowFilter} />
+      )}
     </div>
   )
 }
@@ -985,6 +1151,21 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   // exactly what gets covered by the platform UI.
   const socialZIndex = captionZIndex + 1
 
+  // Phase 3.35 — progress bar overlay. Resolved via the locked contract
+  // helpers: `getProgressBar` returns null for absent / disabled configs
+  // (legacy projects → byte-identical DOM). The bar fills 0→100% over the
+  // whole-video duration; it composites ABOVE everything (captions, social
+  // chrome) so it is never buried.
+  const progressBar = useMemo(() => {
+    const cfg = getProgressBar(project)
+    if (!cfg) return null
+    const totalMs = getProjectTotalMs(project)
+    if (!(totalMs > 0)) return null
+    const rawPct = (playheadMs / totalMs) * 100
+    const pct = Math.max(0, Math.min(100, Number.isFinite(rawPct) ? rawPct : 0))
+    return { cfg, pct }
+  }, [project, playheadMs])
+
   const activeCaptions = useMemo(
     () => captionsAtTime(project, playheadMs),
     [project, playheadMs]
@@ -994,6 +1175,86 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
     () => overlaysAtTime(project, playheadMs),
     [project, playheadMs]
   )
+
+  // Phase 3.32 — adjustment-layer preview grade. When the playhead falls
+  // within a layer's [startMs, endMs], that layer's grade is composed as a
+  // CSS `filter` on the WHOLE composited frame (the preview-fitted-rect).
+  // Multiple overlapping layers concatenate in startMs order (getAdjustment-
+  // Layers already sorts + drops neutral layers). Outside every layer the
+  // result is empty → the `filter` property is omitted → byte-identical
+  // preview. Curves go through a chained SVG feComponentTransfer per layer.
+  const adjustmentGrade = useMemo(() => {
+    const layers = getAdjustmentLayers(project).filter(
+      (l) => playheadMs >= l.startMs && playheadMs < l.endMs
+    )
+    if (layers.length === 0) {
+      return { filter: '', curveSvgs: [] as JSX.Element[], count: 0 }
+    }
+    const parts: string[] = []
+    const curveSvgs: JSX.Element[] = []
+    const CURVE_STEPS = 33
+    const curveTable = (pts: { x: number; y: number }[]): string =>
+      sampleCurveTable(pts, CURVE_STEPS)
+        .map((v) => v.toFixed(4))
+        .join(' ')
+    for (const layer of layers) {
+      const preset = filterPresetToCss(
+        layer.filterPreset,
+        layer.filterIntensity ?? 1
+      )
+      if (preset) parts.push(preset)
+      const ca = colorAdjustToCss(resolveColorAdjust(layer.colorAdjust))
+      if (ca) parts.push(ca)
+      const curves = resolveClipCurves(layer.curves)
+      if (curves) {
+        const filterId = `adj-curve-${layer.id}`
+        parts.push(`url(#${filterId})`)
+        curveSvgs.push(
+          <svg
+            key={filterId}
+            data-testid="adjustment-curve-filter-svg"
+            data-layer-id={layer.id}
+            aria-hidden="true"
+            width={0}
+            height={0}
+            style={{ position: 'absolute', width: 0, height: 0 }}
+          >
+            <defs>
+              <filter id={filterId} colorInterpolationFilters="sRGB">
+                <feComponentTransfer>
+                  <feFuncR type="table" tableValues={curveTable(curves.red)} />
+                  <feFuncG
+                    type="table"
+                    tableValues={curveTable(curves.green)}
+                  />
+                  <feFuncB type="table" tableValues={curveTable(curves.blue)} />
+                </feComponentTransfer>
+                <feComponentTransfer>
+                  <feFuncR
+                    type="table"
+                    tableValues={curveTable(curves.master)}
+                  />
+                  <feFuncG
+                    type="table"
+                    tableValues={curveTable(curves.master)}
+                  />
+                  <feFuncB
+                    type="table"
+                    tableValues={curveTable(curves.master)}
+                  />
+                </feComponentTransfer>
+              </filter>
+            </defs>
+          </svg>
+        )
+      }
+    }
+    return {
+      filter: parts.join(' '),
+      curveSvgs,
+      count: layers.length
+    }
+  }, [project, playheadMs])
 
   // All audio tracks in the project — we render an <audio> element per
   // track so the same WebAudio source survives across clip changes on that
@@ -1420,11 +1681,33 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
       data-testid="preview-canvas"
     >
       <div
-        style={fittedStyle}
+        style={
+          // Phase 3.32 — when an adjustment layer is active at the playhead,
+          // its composed grade is applied as a CSS `filter` on the whole
+          // fitted-rect. When inactive, NO `filter` key is added → the style
+          // object + DOM stay byte-identical to the pre-feature preview.
+          adjustmentGrade.filter
+            ? { ...fittedStyle, filter: adjustmentGrade.filter }
+            : fittedStyle
+        }
         data-testid="preview-fitted-rect"
         data-fitted-width={fitted.width}
         data-fitted-height={fitted.height}
+        data-adjustment-active={adjustmentGrade.count > 0 ? 'true' : 'false'}
+        data-adjustment-layer-count={adjustmentGrade.count}
       >
+        {/* Phase 3.32 — hidden SVG curve filters for active adjustment
+            layers. Emitted ONLY when a layer carries non-identity curves, so
+            the DOM stays byte-identical when no layer grade is active. */}
+        {adjustmentGrade.curveSvgs}
+        {adjustmentGrade.count > 0 && (
+          <div
+            data-testid="preview-adjustment-active"
+            data-adjustment-layer-count={adjustmentGrade.count}
+            aria-hidden="true"
+            style={{ position: 'absolute', width: 0, height: 0 }}
+          />
+        )}
         {/* Blurred background <video> — fills (object-fit: cover), heavy blur
             + dimmed brightness so the aspect-mismatched gutters get the
             iconic "vertical TikTok" look instead of black bars. z-index: 0.
@@ -1498,16 +1781,63 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           // null we append NOTHING — the `.filter(...)` below drops it so the
           // `filter:` string + DOM stay byte-identical for a retouch-off clip.
           const rt = clip ? getClipRetouch(clip) : null
+          // Phase 3.37 — film look (vignette / grain / faded tone). TONE is
+          // previewed as a cheap CSS approximation appended to combinedFilter
+          // (filmToneToCss returns '' for 'none'/null → dropped by the
+          // .filter(...) below so a look-less clip stays byte-identical).
+          // VIGNETTE is a sibling radial-gradient overlay (rendered below).
+          // GRAIN is export-only — no honest CSS primitive. INVARIANT: when
+          // getFilmLook(clip) is null nothing is added — DOM byte-identical.
+          const filmLook = clip ? getFilmLook(clip) : null
           const combinedFilter = clip
             ? [
                 filterPresetToCss(clip.filterPreset, clip.filterIntensity ?? 1),
                 colorAdjustToCss(getClipColorAdjust(clip)),
                 clipCurves ? `url(#curve-${clip.id})` : '',
-                rt !== null ? `blur(${((rt / 100) * 1.8).toFixed(2)}px)` : ''
+                rt !== null ? `blur(${((rt / 100) * 1.8).toFixed(2)}px)` : '',
+                filmToneToCss(filmLook?.toneId)
               ]
                 .filter((s) => s.length > 0)
                 .join(' ') || 'none'
             : 'none'
+          // Vignette overlay — rendered only when strength > 0. Opacity scales
+          // vignette/100 up to ~0.7. The radial-gradient fills the clip rect;
+          // it is placed inside the same crop/transform wrapper as the clip so
+          // it tracks crop + transform. `extraTransform` is non-empty only for
+          // the un-cropped path (there the <video> itself carries the CSS
+          // transform — no wrapper — so the vignette must mirror it).
+          const vignetteBg =
+            filmLook && filmLook.vignette > 0
+              ? `radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,${(
+                  (filmLook.vignette / 100) *
+                  0.7
+                ).toFixed(3)}) 100%)`
+              : null
+          const makeVignette = (
+            withTransform: boolean
+          ): JSX.Element | null =>
+            vignetteBg ? (
+              <div
+                key={`${track.id}-vignette`}
+                data-testid="preview-vignette"
+                aria-hidden
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  pointerEvents: 'none',
+                  zIndex: zIndex + 1,
+                  background: vignetteBg,
+                  ...(withTransform
+                    ? {
+                        display: layer ? undefined : 'none',
+                        transformOrigin: 'center center',
+                        transform: cssTransform,
+                        opacity: t ? t.opacity : 1
+                      }
+                    : null)
+                }}
+              />
+            ) : null
           const videoEl = (
             <video
               key={track.id}
@@ -1527,6 +1857,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               data-color-adjust={
                 clip && getClipColorAdjust(clip) ? 'true' : 'false'
               }
+              data-film-look={filmLook ? 'true' : 'false'}
               playsInline
               muted={false}
               style={
@@ -1768,14 +2099,18 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
 
           if (!cr) {
             // Un-cropped path. When the clip has no blur regions AND no tone
-            // curves, return the bare <video> exactly as before (byte-
-            // identical DOM). Otherwise emit the extras alongside it.
-            if (!blurLayer && !curveFilterSvg) return videoEl
+            // curves AND no vignette, return the bare <video> exactly as
+            // before (byte-identical DOM). Otherwise emit the extras
+            // alongside it. The vignette mirrors the <video>'s CSS transform
+            // (the <video> carries it directly — no wrapper on this path).
+            const vignetteEl = makeVignette(true)
+            if (!blurLayer && !curveFilterSvg && !vignetteEl) return videoEl
             return (
               <Fragment key={track.id}>
                 {videoEl}
                 {curveFilterSvg}
                 {blurLayer}
+                {vignetteEl}
               </Fragment>
             )
           }
@@ -1806,6 +2141,10 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               }}
             >
               {videoEl}
+              {/* Vignette lives INSIDE the crop wrapper so it tracks both
+                  the crop sub-rect and the wrapper's CSS transform. No own
+                  transform here — the wrapper already applies it. */}
+              {makeVignette(false)}
             </div>
           )
           if (!blurLayer && !curveFilterSvg) return cropWrapper
@@ -1873,6 +2212,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               clip={o}
               playheadMs={playheadMs}
               project={project}
+              fittedHeight={fitted.height}
             />
           ))}
         </div>
@@ -1974,6 +2314,47 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
             user can rubber-band a box over the current frame. */}
         {trackingDrawMode && trackingDrawClipId && (
           <MotionTrackDrawLayer zIndex={socialZIndex + 2} />
+        )}
+
+        {/* Phase 3.35 — progress bar overlay. Renders ONLY when
+            `getProgressBar` is non-null (enabled config) AND the project has a
+            positive total duration. For legacy / disabled projects this whole
+            block is absent → byte-identical DOM. The track + fill composite
+            above EVERYTHING else (captions, social chrome, motion markers). */}
+        {progressBar && (
+          <div
+            data-testid="preview-progress-bar-track"
+            aria-hidden="true"
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              ...(progressBar.cfg.position === 'top'
+                ? { top: 0 }
+                : { bottom: 0 }),
+              height: `${progressBar.cfg.heightFrac * 100}%`,
+              background: hexToRgba(
+                progressBar.cfg.color,
+                PROGRESS_BAR_TRACK_OPACITY
+              ),
+              pointerEvents: 'none',
+              zIndex: socialZIndex + 3
+            }}
+          >
+            <div
+              data-testid="preview-progress-bar-fill"
+              data-progress-pct={progressBar.pct}
+              style={{
+                position: 'absolute',
+                left: 0,
+                top: 0,
+                height: '100%',
+                width: `${progressBar.pct}%`,
+                background: progressBar.cfg.color,
+                pointerEvents: 'none'
+              }}
+            />
+          </div>
         )}
 
         <style>{`

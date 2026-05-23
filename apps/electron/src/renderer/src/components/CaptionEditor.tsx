@@ -2,17 +2,32 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   CAPTION_ENTRANCE_KINDS,
   CAPTION_EXIT_KINDS,
+  DEFAULT_CAPTION_GLOW,
+  DEFAULT_CAPTION_SHADOW,
+  DEFAULT_CAPTION_STROKE_COLOR,
+  DEFAULT_CAPTION_STROKE_WIDTH,
+  KARAOKE_STYLES,
   MAX_CAPTION_ANIM_MS,
+  MAX_CAPTION_SHADOW_BLUR,
+  MAX_CAPTION_SHADOW_OFFSET,
+  MAX_CAPTION_STROKE_WIDTH,
   MIN_CAPTION_ANIM_MS,
   NO_CAPTION_ANIMATION,
+  NO_CAPTION_KARAOKE,
+  evenSplitWords,
   isCaptionClip,
+  resolveCaptionWords,
   type CaptionAnimation,
   type CaptionClip,
   type CaptionEmphasis,
   type CaptionEntranceKind,
   type CaptionExitKind,
+  type CaptionKaraoke,
+  type CaptionKaraokeStyle,
   type CaptionPreset,
   type CaptionSpan,
+  type CaptionTextShadow,
+  type CaptionTextStroke,
   type Project
 } from '../../../shared/project'
 import { useProjectStore } from '../store/project'
@@ -155,6 +170,23 @@ const styles = {
     borderRadius: 6,
     padding: 8,
     background: '#0d0d0d'
+  } as React.CSSProperties,
+  karaokeToggleRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8
+  } as React.CSSProperties,
+  karaokeHint: {
+    fontSize: 10,
+    color: '#64748b',
+    lineHeight: 1.5
+  } as React.CSSProperties,
+  checkRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    fontSize: 11,
+    color: '#9aa0a6'
   } as React.CSSProperties
 }
 
@@ -307,6 +339,82 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
   const setAnim = (partial: Partial<CaptionAnimation>): void => {
     updateCaption(captionId, {
       animation: { ...(caption.animation ?? NO_CAPTION_ANIMATION), ...partial }
+    })
+  }
+
+  // Phase 3.22 — karaoke (word-level highlight). `words` resolves the clip's
+  // per-word timing; karaoke is only usable once word timing exists (from STT
+  // or an even-split fallback). Writes flow through updateCaption (zundo undo).
+  const words = resolveCaptionWords(caption)
+  const hasWordTiming = words.length > 0
+  const karaoke = caption.karaoke
+  const karaokeOn = karaoke?.enabled === true
+  const setKaraoke = (partial: Partial<CaptionKaraoke>): void => {
+    updateCaption(captionId, {
+      karaoke: { ...(caption.karaoke ?? NO_CAPTION_KARAOKE), ...partial }
+    })
+  }
+  // Toggle karaoke on/off. Turning ON also resets a typewriter entrance to
+  // 'none' — the two reveal mechanisms must not fight (see disabled option).
+  const toggleKaraoke = (): void => {
+    if (karaokeOn) {
+      setKaraoke({ enabled: false })
+      return
+    }
+    const patch: Partial<CaptionClip> = {
+      karaoke: { ...(caption.karaoke ?? NO_CAPTION_KARAOKE), enabled: true }
+    }
+    if ((caption.animation ?? NO_CAPTION_ANIMATION).entrance === 'typewriter') {
+      patch.animation = {
+        ...(caption.animation ?? NO_CAPTION_ANIMATION),
+        entrance: 'none'
+      }
+    }
+    updateCaption(captionId, patch)
+  }
+
+  // Phase 3.23 — caption text decoration (outline / drop-shadow / glow).
+  // `style.textStroke` / `style.textShadow` absent ⇒ byte-identical legacy
+  // caption. Writes flow through updateCaption (zundo undo). `null` clears the
+  // field; a partial merges over the current value (back-filling the default
+  // when the field is absent so the first toggle seeds a sensible look).
+  const textStroke = caption.style.textStroke
+  const textShadow = caption.style.textShadow
+  const setTextStroke = (partial: Partial<CaptionTextStroke> | null): void => {
+    if (partial === null) {
+      updateCaption(captionId, {
+        style: { ...caption.style, textStroke: undefined }
+      })
+      return
+    }
+    updateCaption(captionId, {
+      style: {
+        ...caption.style,
+        textStroke: {
+          ...(caption.style.textStroke ?? {
+            color: DEFAULT_CAPTION_STROKE_COLOR,
+            width: DEFAULT_CAPTION_STROKE_WIDTH
+          }),
+          ...partial
+        }
+      }
+    })
+  }
+  const setTextShadow = (partial: Partial<CaptionTextShadow> | null): void => {
+    if (partial === null) {
+      updateCaption(captionId, {
+        style: { ...caption.style, textShadow: undefined }
+      })
+      return
+    }
+    updateCaption(captionId, {
+      style: {
+        ...caption.style,
+        textShadow: {
+          ...(caption.style.textShadow ?? DEFAULT_CAPTION_SHADOW),
+          ...partial
+        }
+      }
     })
   }
 
@@ -474,6 +582,134 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
           </div>
         </div>
 
+        {/* Text effects (Phase 3.23) — outline / drop-shadow / glow */}
+        <div style={styles.group}>
+          <div style={styles.label}>텍스트 효과</div>
+
+          {/* Outline */}
+          <div style={styles.collapsible}>
+            <label style={styles.checkRow}>
+              <input
+                type="checkbox"
+                checked={textStroke !== undefined}
+                onChange={(e) =>
+                  setTextStroke(e.target.checked ? {} : null)
+                }
+                data-testid="caption-stroke-toggle"
+              />
+              외곽선
+            </label>
+            {textStroke && (
+              <>
+                <div style={{ ...styles.label, marginTop: 8 }}>
+                  외곽선 색상
+                </div>
+                <input
+                  type="color"
+                  value={textStroke.color}
+                  onChange={(e) =>
+                    setTextStroke({ color: e.target.value })
+                  }
+                  data-testid="caption-stroke-color"
+                />
+                <div style={{ ...styles.label, marginTop: 8 }}>
+                  외곽선 굵기: {textStroke.width}px
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={MAX_CAPTION_STROKE_WIDTH}
+                  step={1}
+                  value={textStroke.width}
+                  onChange={(e) =>
+                    setTextStroke({ width: Number(e.target.value) })
+                  }
+                  data-testid="caption-stroke-width"
+                />
+              </>
+            )}
+          </div>
+
+          {/* Drop-shadow / glow */}
+          <div style={{ ...styles.collapsible, marginTop: 8 }}>
+            <label style={styles.checkRow}>
+              <input
+                type="checkbox"
+                checked={textShadow !== undefined}
+                onChange={(e) =>
+                  setTextShadow(e.target.checked ? {} : null)
+                }
+                data-testid="caption-shadow-toggle"
+              />
+              그림자
+            </label>
+            {textShadow && (
+              <>
+                <div style={{ ...styles.label, marginTop: 8 }}>
+                  그림자 색상
+                </div>
+                <input
+                  type="color"
+                  value={textShadow.color}
+                  onChange={(e) =>
+                    setTextShadow({ color: e.target.value })
+                  }
+                  data-testid="caption-shadow-color"
+                />
+                <div style={{ ...styles.label, marginTop: 8 }}>
+                  가로 위치: {textShadow.offsetX}px
+                </div>
+                <input
+                  type="range"
+                  min={-MAX_CAPTION_SHADOW_OFFSET}
+                  max={MAX_CAPTION_SHADOW_OFFSET}
+                  step={1}
+                  value={textShadow.offsetX}
+                  onChange={(e) =>
+                    setTextShadow({ offsetX: Number(e.target.value) })
+                  }
+                  data-testid="caption-shadow-offset-x"
+                />
+                <div style={{ ...styles.label, marginTop: 8 }}>
+                  세로 위치: {textShadow.offsetY}px
+                </div>
+                <input
+                  type="range"
+                  min={-MAX_CAPTION_SHADOW_OFFSET}
+                  max={MAX_CAPTION_SHADOW_OFFSET}
+                  step={1}
+                  value={textShadow.offsetY}
+                  onChange={(e) =>
+                    setTextShadow({ offsetY: Number(e.target.value) })
+                  }
+                  data-testid="caption-shadow-offset-y"
+                />
+                <div style={{ ...styles.label, marginTop: 8 }}>
+                  번짐: {textShadow.blur}px
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={MAX_CAPTION_SHADOW_BLUR}
+                  step={1}
+                  value={textShadow.blur}
+                  onChange={(e) =>
+                    setTextShadow({ blur: Number(e.target.value) })
+                  }
+                  data-testid="caption-shadow-blur"
+                />
+              </>
+            )}
+            <button
+              style={{ ...styles.pillBtn, marginTop: 8 }}
+              onClick={() => setTextShadow(DEFAULT_CAPTION_GLOW)}
+              data-testid="caption-glow-btn"
+            >
+              글로우 적용
+            </button>
+          </div>
+        </div>
+
         {/* Animation (Phase 3.9) — entrance/exit + per-direction durations */}
         <div style={styles.group}>
           <div style={styles.label}>애니메이션</div>
@@ -491,7 +727,13 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
                 data-testid="caption-anim-entrance"
               >
                 {CAPTION_ENTRANCE_KINDS.map((k) => (
-                  <option key={k} value={k}>
+                  <option
+                    key={k}
+                    value={k}
+                    // Typewriter + karaoke are two competing reveal
+                    // mechanisms — disable typewriter while karaoke is on.
+                    disabled={k === 'typewriter' && karaokeOn}
+                  >
                     {CAPTION_ANIM_LABELS[k]}
                   </option>
                 ))}
@@ -541,6 +783,96 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
                 onChange={(e) => setAnim({ outMs: Number(e.target.value) })}
                 data-testid="caption-anim-out"
               />
+            </div>
+          )}
+        </div>
+
+        {/* Karaoke — word-level highlight (Phase 3.22) */}
+        <div style={styles.group}>
+          <div style={styles.label}>단어별 강조 (가라오케)</div>
+          <div style={styles.karaokeToggleRow}>
+            <input
+              type="checkbox"
+              checked={karaokeOn}
+              disabled={!hasWordTiming}
+              onChange={toggleKaraoke}
+              data-testid="caption-karaoke-toggle"
+            />
+            <span style={{ fontSize: 11, color: '#cbd5e1' }}>
+              말하는 단어를 실시간으로 강조
+            </span>
+          </div>
+          {!hasWordTiming && (
+            <>
+              <div style={styles.karaokeHint}>
+                STT로 생성한 자막에서 쓸 수 있어요. 직접 입력한 자막은 아래
+                버튼으로 단어 타이밍을 만들 수 있어요.
+              </div>
+              <button
+                style={{ ...styles.pillBtn, marginTop: 4 }}
+                onClick={() =>
+                  updateCaption(captionId, { words: evenSplitWords(caption) })
+                }
+                data-testid="caption-karaoke-evensplit"
+              >
+                단어 타이밍 균등 분배
+              </button>
+            </>
+          )}
+          {karaokeOn && (
+            <div style={styles.collapsible}>
+              {/* Highlight style */}
+              <div style={styles.label}>강조 방식</div>
+              <select
+                style={styles.input}
+                value={
+                  caption.karaoke?.highlightStyle ??
+                  NO_CAPTION_KARAOKE.highlightStyle
+                }
+                onChange={(e) =>
+                  setKaraoke({
+                    highlightStyle: e.target.value as CaptionKaraokeStyle
+                  })
+                }
+                data-testid="caption-karaoke-style"
+              >
+                {KARAOKE_STYLES.map((s) => (
+                  <option key={s} value={s}>
+                    {s === 'color-fill' ? '색상 채우기' : '확대 팝'}
+                  </option>
+                ))}
+              </select>
+              {/* Highlight color */}
+              <div style={{ ...styles.label, marginTop: 8 }}>강조 색상</div>
+              <input
+                type="color"
+                value={
+                  caption.karaoke?.highlightColor ??
+                  NO_CAPTION_KARAOKE.highlightColor
+                }
+                onChange={(e) =>
+                  setKaraoke({ highlightColor: e.target.value })
+                }
+                data-testid="caption-karaoke-color"
+              />
+              {/* Highlight box — color-fill only */}
+              {(caption.karaoke?.highlightStyle ??
+                NO_CAPTION_KARAOKE.highlightStyle) === 'color-fill' && (
+                <label
+                  style={{ ...styles.checkRow, marginTop: 8 }}
+                  data-testid="caption-karaoke-box-row"
+                >
+                  <input
+                    type="checkbox"
+                    checked={caption.karaoke?.highlightBox === true}
+                    onChange={(e) =>
+                      setKaraoke({ highlightBox: e.target.checked })
+                    }
+                    data-testid="caption-karaoke-box"
+                  />
+                  강조 단어에 박스 배경
+                </label>
+              )}
             </div>
           )}
         </div>

@@ -8,18 +8,26 @@ import type {
   FilterPreset,
   HslBandAdjust,
   HslBandKey,
+  OverlayShadow,
   Project,
   TransitionKind
 } from '../../../shared/project'
 import {
+  DEFAULT_OVERLAY_SHADOW,
   DEFAULT_RETOUCH,
   DEFAULT_TRANSITION_MS,
   FILTER_PRESETS,
+  FILM_TONE_IDS,
+  MIN_FILM_LOOK,
+  MAX_FILM_LOOK,
+  NEUTRAL_FILM_LOOK,
   getClipColorAdjust,
   getClipCropRect,
   getClipHsl,
   getClipMotionTracks,
   getClipRetouch,
+  getFilmLook,
+  getOverlayShadow,
   getTransformAt,
   hasTransformKeyframes,
   HSL_BAND_KEYS,
@@ -39,6 +47,8 @@ import {
   MIN_HSL_ADJUST,
   MIN_KEYFRAME_GAP_MS,
   MIN_RETOUCH,
+  MAX_OVERLAY_SHADOW_BLUR,
+  MAX_OVERLAY_SHADOW_OFFSET,
   MAX_RETOUCH,
   MIN_TRANSFORM_OFFSET,
   MIN_TRANSFORM_ROTATION,
@@ -50,12 +60,15 @@ import {
 } from '../../../shared/project'
 import {
   COLOR_ADJUST_LABELS,
+  FILM_LOOK_PRESETS,
+  FILM_TONE_LABELS,
   FILTER_PRESET_LABELS,
   HSL_BAND_LABELS,
   HSL_BAND_SWATCHES,
   TRANSITION_LABELS,
   filterPresetToCss
 } from '../../../shared/filterPresets'
+import { ZOOM_PRESETS } from '../../../shared/zoomPresets'
 import { useProjectStore } from '../store/project'
 import {
   computeAutoColorAdjust,
@@ -63,6 +76,8 @@ import {
 } from '../lib/autoColorAnalysis'
 import { CurveEditor } from './CurveEditor'
 import { LayoutPanel } from './LayoutPanel'
+import { AdjustmentLayerEditor } from './AdjustmentLayerEditor'
+import { useTimelineUi } from '../store/timelineUi'
 
 /**
  * Phase 7 — CapCut-style docked Effects panel.
@@ -82,8 +97,12 @@ import { LayoutPanel } from './LayoutPanel'
 
 interface EffectsPanelProps {
   project: Project
-  /** Currently selected clip id (media or overlay). */
-  clipId: string
+  /**
+   * Currently selected clip id (media or overlay). May be null when an
+   * adjustment layer is selected instead (mutually exclusive selection) — in
+   * that case the panel renders the adjustment-layer grade editor.
+   */
+  clipId: string | null
   /** Absolute playhead (ms) — drives keyframe gating for transform edits. */
   playheadMs: number
   onClose: () => void
@@ -333,6 +352,19 @@ function findClip(project: Project, id: string): Clip | null {
 export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   const { project, clipId, playheadMs, onClose } = props
 
+  // Phase 3.32 — when an adjustment layer is selected (mutually exclusive
+  // with clip selection), the panel shows the adjustment-layer grade editor
+  // INSTEAD of the clip editor. Resolve the id here (hook called every render).
+  const selectedAdjustmentLayerId = useTimelineUi(
+    (s) => s.selectedAdjustmentLayerId
+  )
+  const adjustmentLayer =
+    selectedAdjustmentLayerId != null
+      ? (project.adjustmentLayers ?? []).find(
+          (l) => l.id === selectedAdjustmentLayerId
+        ) ?? null
+      : null
+
   // --- Store actions: the EXACT same ones ClipContextMenu's handlers use. ---
   const setClipSpeed = useProjectStore((s) => s.setClipSpeed)
   const setClipTransitionIn = useProjectStore((s) => s.setClipTransitionIn)
@@ -347,15 +379,19 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   const setClipHslBand = useProjectStore((s) => s.setClipHslBand)
   const resetClipHsl = useProjectStore((s) => s.resetClipHsl)
   const setClipRetouch = useProjectStore((s) => s.setClipRetouch)
+  const setClipFilmLook = useProjectStore((s) => s.setClipFilmLook)
   const addTransformKeyframe = useProjectStore((s) => s.addTransformKeyframe)
   // Phase 3.13 — overlay → motion-track binding.
   const bindOverlayToTrack = useProjectStore((s) => s.bindOverlayToTrack)
+  const updateOverlay = useProjectStore((s) => s.updateOverlay)
   const updateTransformKeyframe = useProjectStore(
     (s) => s.updateTransformKeyframe
   )
   const removeTransformKeyframe = useProjectStore(
     (s) => s.removeTransformKeyframe
   )
+  // Phase 3.31 — auto-zoom / punch-in presets.
+  const applyZoomPreset = useProjectStore((s) => s.applyZoomPreset)
 
   const [tab, setTab] = useState<EffectTab>('transform')
   // HSL band selection — transient UI state (not in the project schema).
@@ -379,10 +415,13 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   const colorMatchAbortRef = useRef<AbortController | null>(null)
   // Always-current selected clip id — read inside the async auto-color
   // handler to detect a clip switch that happened mid-analysis.
-  const clipIdRef = useRef<string>(clipId)
-  clipIdRef.current = clipId
+  const clipIdRef = useRef<string>(clipId ?? '')
+  clipIdRef.current = clipId ?? ''
 
-  const clip = useMemo(() => findClip(project, clipId), [project, clipId])
+  const clip = useMemo(
+    () => (clipId ? findClip(project, clipId) : null),
+    [project, clipId]
+  )
 
   // Phase 3.15 — abort any in-flight auto-color analysis when the selected
   // clip changes or the panel unmounts, and reset the transient status so the
@@ -418,6 +457,30 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
     }
     return bestIdx
   }, [clip, playheadMs])
+
+  // Phase 3.32 — adjustment-layer grade editor takes priority. When a layer
+  // is selected, render its grade editor INSTEAD of the clip editor (the
+  // SAME color-adjust / curve / HSL / filter UI, wired to the layer actions).
+  if (adjustmentLayer) {
+    return (
+      <div style={styles.panel} data-testid="effects-panel">
+        <div style={styles.header}>
+          <div style={styles.title}>효과 · 조정 레이어</div>
+          <button
+            style={styles.closeBtn}
+            onClick={onClose}
+            aria-label="닫기"
+            data-testid="effects-panel-close"
+          >
+            ✕
+          </button>
+        </div>
+        <div style={styles.body}>
+          <AdjustmentLayerEditor layer={adjustmentLayer} />
+        </div>
+      </div>
+    )
+  }
 
   if (!clip || (!isMediaClip(clip) && !isOverlayClip(clip))) {
     return (
@@ -457,6 +520,10 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   const hslBandAdjust: HslBandAdjust = hsl[hslBand]
   // Retouch / beauty — current strength (0 = off). Media clips only.
   const retouch = isMediaClip(clip) ? getClipRetouch(clip) ?? 0 : 0
+  // Film look — resolved value (NEUTRAL when absent/neutral). Media clips only.
+  const film = isMediaClip(clip)
+    ? getFilmLook(clip) ?? NEUTRAL_FILM_LOOK
+    : NEUTRAL_FILM_LOOK
   const speed = isMedia ? clip.speed ?? 1 : 1
   const transitionKind: TransitionKind = isMedia
     ? clip.transitionIn?.kind ?? 'none'
@@ -807,6 +874,109 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 </select>
               </div>
             )}
+            {/* Phase 3.36 — overlay drop shadow (image / sticker / shape).
+                Mirrors the ClipContextMenu 그림자 control; persists via
+                updateOverlay. Distinct `-fx` testids so both panels can mount. */}
+            {isOverlay &&
+              (() => {
+                const shadow = isOverlayClip(clip)
+                  ? getOverlayShadow(clip)
+                  : null
+                const base = shadow ?? DEFAULT_OVERLAY_SHADOW
+                const setShadow = (next: OverlayShadow | null): void => {
+                  updateOverlay(clip.id, { shadow: next ?? undefined })
+                }
+                return (
+                  <div
+                    style={{ marginTop: 12 }}
+                    data-testid="effects-section-overlay-shadow"
+                  >
+                    <label
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={shadow !== null}
+                        data-testid="effects-overlay-shadow-toggle"
+                        aria-label="그림자"
+                        onChange={(e) =>
+                          setShadow(
+                            e.target.checked ? DEFAULT_OVERLAY_SHADOW : null
+                          )
+                        }
+                      />
+                      <span style={styles.sectionLabel}>그림자</span>
+                    </label>
+                    {shadow !== null && (
+                      <div
+                        style={{ marginTop: 6 }}
+                        data-testid="effects-overlay-shadow-panel"
+                      >
+                        <div style={styles.row}>
+                          <span style={styles.ctrlLabel}>색상</span>
+                          <input
+                            type="color"
+                            value={base.color}
+                            onChange={(e) =>
+                              setShadow({ ...base, color: e.target.value })
+                            }
+                            data-testid="effects-overlay-shadow-color"
+                            aria-label="그림자 색상"
+                            style={{ flex: 1, height: 24, cursor: 'pointer' }}
+                          />
+                        </div>
+                        {sliderRow(
+                          'X 오프셋',
+                          base.offsetX,
+                          -MAX_OVERLAY_SHADOW_OFFSET,
+                          MAX_OVERLAY_SHADOW_OFFSET,
+                          1,
+                          (v) => setShadow({ ...base, offsetX: v }),
+                          'effects-overlay-shadow-offsetx',
+                          0,
+                          true
+                        )}
+                        {sliderRow(
+                          'Y 오프셋',
+                          base.offsetY,
+                          -MAX_OVERLAY_SHADOW_OFFSET,
+                          MAX_OVERLAY_SHADOW_OFFSET,
+                          1,
+                          (v) => setShadow({ ...base, offsetY: v }),
+                          'effects-overlay-shadow-offsety',
+                          0,
+                          true
+                        )}
+                        {sliderRow(
+                          '흐림',
+                          base.blur,
+                          0,
+                          MAX_OVERLAY_SHADOW_BLUR,
+                          1,
+                          (v) => setShadow({ ...base, blur: v }),
+                          'effects-overlay-shadow-blur',
+                          0,
+                          true
+                        )}
+                        {sliderRow(
+                          '불투명도',
+                          base.opacity,
+                          0,
+                          1,
+                          0.05,
+                          (v) => setShadow({ ...base, opacity: v }),
+                          'effects-overlay-shadow-opacity'
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
           </div>
         )}
 
@@ -850,6 +1020,32 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
         {/* ---------------- 애니메이션 (keyframes) ---------------- */}
         {activeTab === 'animation' && (
           <div data-testid="effects-section-animation">
+            {/* Phase 3.31 — auto-zoom / punch-in presets. One click writes the
+                clip's transform-keyframe track (replacing any prior one). */}
+            <div data-testid="effects-section-zoom-presets">
+              <p style={styles.sectionLabel}>오토 줌 프리셋</p>
+              <div style={{ height: 6 }} />
+              <div style={styles.presetRow}>
+                {ZOOM_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    style={styles.preset}
+                    title={preset.description}
+                    onClick={() => applyZoomPreset(clip.id, preset.id)}
+                    data-testid={`zoom-preset-${preset.id}`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              {hasTransformKeyframes(clip) && (
+                <p style={{ ...styles.hint, marginTop: 6 }}>
+                  프리셋을 적용하면 기존 키프레임이 대체돼요.
+                </p>
+              )}
+            </div>
+            <hr style={styles.divider} />
             <p style={styles.sectionLabel}>변형 키프레임</p>
             <div style={{ height: 6 }} />
             <div style={styles.row}>
@@ -1201,6 +1397,92 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                   </div>
                   <p style={{ ...styles.hint, marginTop: 6 }}>
                     내보내기 시 적용 — 미리보기는 근사값입니다.
+                  </p>
+                </div>
+              )}
+
+            {/* 필름 룩 — vignette / grain / faded tone finishing filter.
+                VIDEO clips only (hidden for audio-kind media), mirroring the
+                retouch section gate. Tone + vignette preview live; grain is
+                export-only. */}
+            {isMediaClip(clip) &&
+              project.media[clip.mediaId]?.kind !== 'audio' && (
+                <div data-testid="effects-section-filmlook">
+                  <hr style={styles.divider} />
+                  <p style={styles.sectionLabel}>필름 룩</p>
+                  <div style={{ height: 6 }} />
+                  {/* One-click presets */}
+                  <div style={styles.presetRow}>
+                    {FILM_LOOK_PRESETS.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        style={styles.preset}
+                        data-testid={`filmlook-preset-${p.id}`}
+                        onClick={() => setClipFilmLook(clip.id, p.value)}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ height: 8 }} />
+                  {/* Tone dropdown */}
+                  <div style={styles.row}>
+                    <span style={styles.ctrlLabel}>톤</span>
+                    <select
+                      data-testid="filmlook-tone"
+                      value={film.toneId}
+                      onChange={(e) =>
+                        setClipFilmLook(clip.id, {
+                          toneId: e.target.value as (typeof FILM_TONE_IDS)[number]
+                        })
+                      }
+                      style={{
+                        flex: 1,
+                        background: '#0a0a0a',
+                        color: '#f5f5f5',
+                        border: '1px solid #2a2a2a',
+                        borderRadius: 4,
+                        padding: '4px 6px',
+                        fontSize: 12
+                      }}
+                      aria-label="필름 톤"
+                    >
+                      {FILM_TONE_IDS.map((t) => (
+                        <option key={t} value={t}>
+                          {FILM_TONE_LABELS[t]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div style={{ height: 6 }} />
+                  {/* Vignette strength */}
+                  {sliderRow(
+                    '비네트',
+                    film.vignette,
+                    MIN_FILM_LOOK,
+                    MAX_FILM_LOOK,
+                    1,
+                    (v) => setClipFilmLook(clip.id, { vignette: v }),
+                    'effects-filmlook-vignette',
+                    0,
+                    true
+                  )}
+                  {/* Grain strength */}
+                  {sliderRow(
+                    '그레인',
+                    film.grain,
+                    MIN_FILM_LOOK,
+                    MAX_FILM_LOOK,
+                    1,
+                    (v) => setClipFilmLook(clip.id, { grain: v }),
+                    'effects-filmlook-grain',
+                    0,
+                    true
+                  )}
+                  <p style={{ ...styles.hint, marginTop: 6 }}>
+                    그레인은 내보내기 시 적용됩니다 — 미리보기는 톤·비네트만
+                    표시합니다.
                   </p>
                 </div>
               )}

@@ -275,8 +275,10 @@ export function BatchExportDialog({
   )
 
   const sep = outputDir.includes('\\') ? '\\' : '/'
+  // GIF writes a `.gif`; every mp4 preset keeps `.mp4`.
+  const extFor = (key: ExportPresetKey): string => (key === 'gif' ? 'gif' : 'mp4')
   const outputPathFor = (key: ExportPresetKey): string =>
-    `${outputDir}${sep}${slug}_${PRESET_SUFFIX[key]}.mp4`
+    `${outputDir}${sep}${slug}_${PRESET_SUFFIX[key]}.${extFor(key)}`
 
   const batchState: 'idle' | 'running' | 'done' = running
     ? 'running'
@@ -566,7 +568,7 @@ export function BatchExportDialog({
             </div>
             {selectedKeys.map((k) => (
               <div key={k} data-testid={`batch-filename-${k}`}>
-                {slug}_{PRESET_SUFFIX[k]}.mp4
+                {slug}_{PRESET_SUFFIX[k]}.{extFor(k)}
               </div>
             ))}
           </div>

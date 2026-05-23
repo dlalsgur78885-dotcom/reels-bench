@@ -486,7 +486,10 @@ export function SttDialog({
         startMs: resolved.startMs,
         endMs: resolved.endMs,
         language,
-        model: 'base'
+        model: 'base',
+        // Word-granularity so `result.words` is populated — enables karaoke
+        // (word-level highlight) on the generated captions.
+        granularity: 'word'
       })
     } catch (err) {
       teardown()
@@ -514,7 +517,9 @@ export function SttDialog({
     }
 
     // Success — convert cues → caption clips and bulk-insert (one undo step).
-    const clips = sttCuesToClips(result.cues)
+    // `result.words` (word granularity) threads through so STT captions get
+    // per-word timing + karaoke-on by default.
+    const clips = sttCuesToClips(result.cues, result.words)
     if (clips.length > 0) {
       useProjectStore.getState().addCaptions(clips)
     }

@@ -35,6 +35,13 @@ import {
   MIN_MATCH_MAGNITUDE
 } from '../../../shared/autoColor'
 import { AUTO_COLOR_MAX_MAGNITUDE } from '../../../shared/project'
+import { ZOOM_PRESETS, buildZoomKeyframes } from '../../../shared/zoomPresets'
+import {
+  captionsToSrt,
+  captionsToVtt,
+  captionsToSubtitle,
+  formatTimestamp
+} from '../../../shared/subtitleExport'
 
 export function installTestBridge(): void {
   if (typeof window !== 'undefined') {
@@ -48,6 +55,7 @@ export function installTestBridge(): void {
         updateMediaClipTrim: Store['updateMediaClipTrim']
         splitClipAt: Store['splitClipAt']
         duplicateClip: Store['duplicateClip']
+        detachAudio: Store['detachAudio']
         setClipSpeed: Store['setClipSpeed']
         setClipReversed: Store['setClipReversed']
         createNew: Store['createNew']
@@ -66,10 +74,17 @@ export function installTestBridge(): void {
         updateTransformKeyframe: Store['updateTransformKeyframe']
         removeTransformKeyframe: Store['removeTransformKeyframe']
         clearTransformKeyframes: Store['clearTransformKeyframes']
+        // Phase 3.31 — auto-zoom / punch-in preset action.
+        applyZoomPreset: Store['applyZoomPreset']
         addSpeedKeyframe: Store['addSpeedKeyframe']
         updateSpeedKeyframe: Store['updateSpeedKeyframe']
         removeSpeedKeyframe: Store['removeSpeedKeyframe']
         clearSpeedKeyframes: Store['clearSpeedKeyframes']
+        // Phase 3.30 — volume-envelope project-store actions.
+        addVolumeKeyframe: Store['addVolumeKeyframe']
+        updateVolumeKeyframe: Store['updateVolumeKeyframe']
+        removeVolumeKeyframe: Store['removeVolumeKeyframe']
+        clearVolumeKeyframes: Store['clearVolumeKeyframes']
         // Phase 3.16 — freeze-frame project-store actions.
         addFreezeFrame: Store['addFreezeFrame']
         updateFreezeFrame: Store['updateFreezeFrame']
@@ -87,6 +102,8 @@ export function installTestBridge(): void {
         resetCurves: Store['resetCurves']
         setClipHslBand: Store['setClipHslBand']
         resetClipHsl: Store['resetClipHsl']
+        // Phase 3.37 — film look (vignette / grain / faded tone).
+        setClipFilmLook: Store['setClipFilmLook']
         // Phase 3.15 — auto color correction.
         applyAutoColorAdjust: Store['applyAutoColorAdjust']
         addVideoTrack: Store['addVideoTrack']
@@ -108,6 +125,30 @@ export function installTestBridge(): void {
         // Phase 3.18 — collage / split-screen layout.
         applyLayout: Store['applyLayout']
         clearLayout: Store['clearLayout']
+        // Phase 3.26 — aspect-ratio conversion.
+        setAspectRatio: Store['setAspectRatio']
+        // Phase 3.27 — cover / thumbnail frame picker.
+        setCoverMs: Store['setCoverMs']
+        clearCoverMs: Store['clearCoverMs']
+        // Phase 3.35 — progress bar overlay.
+        setProgressBar: Store['setProgressBar']
+        toggleProgressBar: Store['toggleProgressBar']
+        // Phase 3.32 — adjustment-layer project-store actions.
+        addAdjustmentLayer: Store['addAdjustmentLayer']
+        removeAdjustmentLayer: Store['removeAdjustmentLayer']
+        updateAdjustmentLayer: Store['updateAdjustmentLayer']
+        setAdjustmentLayerColorAdjust: Store['setAdjustmentLayerColorAdjust']
+        setAdjustmentLayerCurvePoint: Store['setAdjustmentLayerCurvePoint']
+        setAdjustmentLayerHslBand: Store['setAdjustmentLayerHslBand']
+        setAdjustmentLayerFilterPreset: Store['setAdjustmentLayerFilterPreset']
+        // Phase 3.32 — adjustment-layer selection (timeline-UI store).
+        setSelectedAdjustmentLayerId: (layerId: string | null) => void
+        // Phase 3.33 — clip grouping / linking.
+        groupClips: Store['groupClips']
+        ungroupClips: Store['ungroupClips']
+        moveClipGroup: Store['moveClipGroup']
+        // Phase 3.33 — selectClip (routes through timelineUi so group-expand fires).
+        selectClip: (clipId: string | null) => void
         newId: () => string
       }
     }).__reelsStore = {
@@ -120,6 +161,7 @@ export function installTestBridge(): void {
       splitClipAt: (id, atMs) =>
         useProjectStore.getState().splitClipAt(id, atMs),
       duplicateClip: (id) => useProjectStore.getState().duplicateClip(id),
+      detachAudio: (id) => useProjectStore.getState().detachAudio(id),
       setClipSpeed: (id, speed) =>
         useProjectStore.getState().setClipSpeed(id, speed),
       setClipReversed: (id, reversed) =>
@@ -157,6 +199,8 @@ export function installTestBridge(): void {
         useProjectStore.getState().removeTransformKeyframe(id, kfIndex),
       clearTransformKeyframes: (id) =>
         useProjectStore.getState().clearTransformKeyframes(id),
+      applyZoomPreset: (id, presetId) =>
+        useProjectStore.getState().applyZoomPreset(id, presetId),
       addSpeedKeyframe: (id, atMs, speed) =>
         useProjectStore.getState().addSpeedKeyframe(id, atMs, speed),
       updateSpeedKeyframe: (id, kfIndex, partial) =>
@@ -165,6 +209,14 @@ export function installTestBridge(): void {
         useProjectStore.getState().removeSpeedKeyframe(id, kfIndex),
       clearSpeedKeyframes: (id) =>
         useProjectStore.getState().clearSpeedKeyframes(id),
+      addVolumeKeyframe: (id, atMs, gainDb) =>
+        useProjectStore.getState().addVolumeKeyframe(id, atMs, gainDb),
+      updateVolumeKeyframe: (id, kfIndex, partial) =>
+        useProjectStore.getState().updateVolumeKeyframe(id, kfIndex, partial),
+      removeVolumeKeyframe: (id, kfIndex) =>
+        useProjectStore.getState().removeVolumeKeyframe(id, kfIndex),
+      clearVolumeKeyframes: (id) =>
+        useProjectStore.getState().clearVolumeKeyframes(id),
       addFreezeFrame: (id, sourceMs, durationMs) =>
         useProjectStore.getState().addFreezeFrame(id, sourceMs, durationMs),
       updateFreezeFrame: (id, freezeIndex, partial) =>
@@ -193,6 +245,8 @@ export function installTestBridge(): void {
       setClipHslBand: (id, band, partial) =>
         useProjectStore.getState().setClipHslBand(id, band, partial),
       resetClipHsl: (id) => useProjectStore.getState().resetClipHsl(id),
+      setClipFilmLook: (id, patch) =>
+        useProjectStore.getState().setClipFilmLook(id, patch),
       applyAutoColorAdjust: (id, adjust) =>
         useProjectStore.getState().applyAutoColorAdjust(id, adjust),
       addVideoTrack: () => useProjectStore.getState().addVideoTrack(),
@@ -226,6 +280,42 @@ export function installTestBridge(): void {
         useProjectStore.getState().applyLayout(presetId, clipIds, opts),
       clearLayout: (layoutGroupId) =>
         useProjectStore.getState().clearLayout(layoutGroupId),
+      setAspectRatio: (ratio) =>
+        useProjectStore.getState().setAspectRatio(ratio),
+      setCoverMs: (ms) => useProjectStore.getState().setCoverMs(ms),
+      clearCoverMs: () => useProjectStore.getState().clearCoverMs(),
+      setProgressBar: (patch) =>
+        useProjectStore.getState().setProgressBar(patch),
+      toggleProgressBar: () =>
+        useProjectStore.getState().toggleProgressBar(),
+      addAdjustmentLayer: (startMs, endMs) =>
+        useProjectStore.getState().addAdjustmentLayer(startMs, endMs),
+      removeAdjustmentLayer: (id) =>
+        useProjectStore.getState().removeAdjustmentLayer(id),
+      updateAdjustmentLayer: (id, patch) =>
+        useProjectStore.getState().updateAdjustmentLayer(id, patch),
+      setAdjustmentLayerColorAdjust: (id, partial) =>
+        useProjectStore.getState().setAdjustmentLayerColorAdjust(id, partial),
+      setAdjustmentLayerCurvePoint: (id, channel, pointIndex, p) =>
+        useProjectStore
+          .getState()
+          .setAdjustmentLayerCurvePoint(id, channel, pointIndex, p),
+      setAdjustmentLayerHslBand: (id, band, partial) =>
+        useProjectStore.getState().setAdjustmentLayerHslBand(id, band, partial),
+      setAdjustmentLayerFilterPreset: (id, preset, intensity) =>
+        useProjectStore
+          .getState()
+          .setAdjustmentLayerFilterPreset(id, preset, intensity),
+      setSelectedAdjustmentLayerId: (layerId) =>
+        useTimelineUi.getState().setSelectedAdjustmentLayerId(layerId),
+      // Phase 3.33 — clip grouping / linking.
+      groupClips: (clipIds) => useProjectStore.getState().groupClips(clipIds),
+      ungroupClips: (groupIdOrClipId) =>
+        useProjectStore.getState().ungroupClips(groupIdOrClipId),
+      moveClipGroup: (clipId, desiredStartMs) =>
+        useProjectStore.getState().moveClipGroup(clipId, desiredStartMs),
+      // selectClip routes through timelineUi so the group-expand logic fires.
+      selectClip: (clipId) => useTimelineUi.getState().selectClip(clipId),
       newId
     }
     ;(window as unknown as {
@@ -557,6 +647,35 @@ export function installTestBridge(): void {
       MIN_AUTO_MAGNITUDE,
       MIN_MATCH_MAGNITUDE,
       AUTO_COLOR_MAX_MAGNITUDE
+    }
+
+    // Phase 3.31 — expose the pure zoom-preset helpers so e2e can build the
+    // expected RELATIVE keyframes deterministically (no DOM) via page.evaluate.
+    ;(window as unknown as {
+      __reelsZoomPresets: {
+        ZOOM_PRESETS: typeof ZOOM_PRESETS
+        buildZoomKeyframes: typeof buildZoomKeyframes
+      }
+    }).__reelsZoomPresets = {
+      ZOOM_PRESETS,
+      buildZoomKeyframes
+    }
+
+    // Phase 3.34 — expose the pure subtitle-export builders so e2e can build
+    // the expected `.srt` / `.vtt` document deterministically (no DOM, no IPC)
+    // via page.evaluate.
+    ;(window as unknown as {
+      __reelsSubtitleExport: {
+        captionsToSrt: typeof captionsToSrt
+        captionsToVtt: typeof captionsToVtt
+        captionsToSubtitle: typeof captionsToSubtitle
+        formatTimestamp: typeof formatTimestamp
+      }
+    }).__reelsSubtitleExport = {
+      captionsToSrt,
+      captionsToVtt,
+      captionsToSubtitle,
+      formatTimestamp
     }
   }
 }

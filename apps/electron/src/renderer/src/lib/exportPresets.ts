@@ -77,6 +77,23 @@ export const EXPORT_PRESETS: Record<ExportPresetKey, ExportPreset> = {
     aBitrateKbps: 192,
     codec: 'libx264',
     preset: 'slow'
+  },
+  /**
+   * Phase 3.28 — animated GIF. width/height/fps are display values only; the
+   * main process owns the real GIF sizing (longest edge → 480px) and frame
+   * rate. vBitrate/aBitrate/codec are unused for GIF — they exist purely to
+   * satisfy the `ExportPreset` shape.
+   */
+  gif: {
+    label: 'GIF (애니메이션)',
+    description: '움직이는 GIF · 480px · 15fps · 무음',
+    width: 480,
+    height: 854,
+    fps: 15,
+    vBitrateKbps: 0,
+    aBitrateKbps: 0,
+    codec: 'libx264',
+    preset: 'medium'
   }
 }
 
@@ -85,8 +102,20 @@ export const EXPORT_PRESET_KEYS: readonly ExportPresetKey[] = [
   'tiktok',
   'youtube-shorts',
   'instagram-feed',
-  'high-quality'
+  'high-quality',
+  'gif'
 ]
+
+/**
+ * Phase 3.28 — GIF export parameters for renderer-side UI text (e.g. the
+ * duration-cap warning in ExportDialog). The main process holds its own
+ * authoritative copy of these numbers; this is only for display.
+ */
+export const GIF_EXPORT = {
+  fps: 15,
+  maxEdge: 480,
+  durationCapMs: 30000
+} as const
 
 /**
  * Output-filename suffix per preset, used by batch export so each preset's
@@ -98,7 +127,8 @@ export const PRESET_SUFFIX: Record<ExportPresetKey, string> = {
   tiktok: 'tiktok_1080x1920',
   'youtube-shorts': 'shorts_1080x1920',
   'instagram-feed': 'feed_1080x1080',
-  'high-quality': 'hq_1080x1920_60fps'
+  'high-quality': 'hq_1080x1920_60fps',
+  gif: 'gif_480'
 }
 
 /**
@@ -115,6 +145,8 @@ export function estimateFileSizeBytes(
   presetKey: ExportPresetKey,
   durationMs: number
 ): number {
+  // GIF size is unpredictable (palette + LZW); callers render 0 as "크기 가변".
+  if (presetKey === 'gif') return 0
   const p = EXPORT_PRESETS[presetKey]
   if (!p || durationMs <= 0) return 0
   const totalKbps = p.vBitrateKbps + p.aBitrateKbps

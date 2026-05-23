@@ -24,6 +24,8 @@ import {
   MAX_TRANSFORM_SCALE,
   MAX_TRANSITION_MS,
   MAX_VIDEO_TRACKS,
+  MAX_VOLUME_KEYFRAMES_PER_CLIP,
+  MIN_VOLUME_KEYFRAME_GAP_MS,
   MAX_DELETED_RANGES_PER_CLIP,
   MIN_DELETED_RANGE_GAP_MS,
   MIN_CLIP_MS,
@@ -38,6 +40,11 @@ import {
   MAX_NOISE_REDUCTION,
   MIN_RETOUCH,
   MAX_RETOUCH,
+  MIN_FILM_LOOK,
+  MAX_FILM_LOOK,
+  NEUTRAL_FILM_LOOK,
+  FILM_TONE_IDS,
+  isNeutralFilmLook,
   MIN_SPEED_KEYFRAME_GAP_MS,
   MIN_TRANSFORM_OFFSET,
   MIN_TRANSFORM_ROTATION,
@@ -51,6 +58,13 @@ import {
   MAX_CURVE_POINTS,
   MIN_HSL_ADJUST,
   MAX_HSL_ADJUST,
+  MAX_ADJUSTMENT_LAYERS,
+  DEFAULT_PROGRESS_BAR_COLOR,
+  DEFAULT_PROGRESS_BAR_HEIGHT_FRAC,
+  MIN_PROGRESS_BAR_HEIGHT_FRAC,
+  MAX_PROGRESS_BAR_HEIGHT_FRAC,
+  type ProgressBarConfig,
+  type AdjustmentLayer,
   type AspectRatio,
   type BlurRegion,
   type CaptionClip,
@@ -63,6 +77,7 @@ import {
   type TranscriptWord,
   type CurveChannelKey,
   type CurvePoint,
+  type FilmLook,
   type FilterPreset,
   type FreezeFrame,
   type HslBandAdjust,
@@ -78,8 +93,12 @@ import {
   type TransformKeyframe,
   type TransitionKind,
   type VideoAudioClip,
+  type VolumeKeyframe,
+  aspectRatioConversion,
+  resolveCoverMs,
   clampBlurRegion,
   getClipDuration,
+  getGroupMembers,
   getClipDeletedRanges,
   getClipFreezeFrames,
   getClipTimelineDuration,
@@ -91,6 +110,9 @@ import {
   hasFreezeFrames,
   hasSpeedCurve,
   hasTransformKeyframes,
+  hasVolumeEnvelope,
+  resolvedVolumeKeyframes,
+  getVolumeDbAt,
   isCaptionClip,
   isClipReversed,
   canReverseClip,
@@ -111,6 +133,7 @@ import {
   getLayoutPreset,
   type LayoutPresetId
 } from '../../../shared/layoutPresets'
+import { buildZoomKeyframes, getZoomPreset } from '../../../shared/zoomPresets'
 
 // ---------------------------------------------------------------------------
 // Helpers.
@@ -215,6 +238,24 @@ function clampColorAdjust(c: ColorAdjust): ColorAdjust {
 }
 
 /**
+ * Phase 3.32 — clamp an adjustment layer's [startMs, endMs] window to the
+ * SAME shape `getAdjustmentLayers` resolves defensively: startMs >= 0, endMs
+ * >= startMs + MIN_CLIP_MS, both coerced finite. Returns null when either
+ * input is non-finite (caller treats this as a no-op). Used by
+ * `addAdjustmentLayer` / `updateAdjustmentLayer` so the stored window is
+ * already canonical.
+ */
+function clampAdjustmentLayerWindow(
+  startMs: number,
+  endMs: number
+): { startMs: number; endMs: number } | null {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null
+  const s = Math.max(0, Math.round(startMs))
+  const e = Math.max(s + MIN_CLIP_MS, Math.round(endMs))
+  return { startMs: s, endMs: e }
+}
+
+/**
  * Normalize a keyframe list (Phase 3.5): clamp each keyframe transform, sort
  * ascending by atMs, then dedup — keyframes within MIN_KEYFRAME_GAP_MS of the
  * previously-kept one REPLACE it (last write wins). The result is the
@@ -268,6 +309,40 @@ function normalizeSpeedKeyframes(kfs: SpeedKeyframe[]): SpeedKeyframe[] {
     } else {
       out.push(kf)
     }
+  }
+  return out
+}
+
+/**
+ * Normalize a volume-keyframe list (Phase 3.30): round + clamp `atMs >= 0`,
+ * clamp each `gainDb` into [MIN_GAIN_DB, MAX_GAIN_DB], sort ascending by atMs,
+ * then dedup — keyframes within MIN_VOLUME_KEYFRAME_GAP_MS of the
+ * previously-kept one REPLACE it (last write wins), and the list is capped at
+ * MAX_VOLUME_KEYFRAMES_PER_CLIP. Mirrors `normalizeSpeedKeyframes`; callers
+ * must still enforce the >= 2 invariant (a normalized list MAY collapse to
+ * length 1). `atMs` is clip-relative TIMELINE ms (volume is authored in
+ * timeline space — no source mapping).
+ */
+function normalizeVolumeKeyframes(kfs: VolumeKeyframe[]): VolumeKeyframe[] {
+  const sorted = kfs
+    .map((kf) => ({
+      atMs: Math.max(0, Math.round(kf.atMs)),
+      gainDb: Math.max(
+        MIN_GAIN_DB,
+        Math.min(MAX_GAIN_DB, Number.isFinite(kf.gainDb) ? kf.gainDb : 0)
+      )
+    }))
+    .sort((a, b) => a.atMs - b.atMs)
+  const out: VolumeKeyframe[] = []
+  for (const kf of sorted) {
+    const last = out[out.length - 1]
+    if (last && kf.atMs - last.atMs < MIN_VOLUME_KEYFRAME_GAP_MS) {
+      // Within the dedup window — replace the kept keyframe.
+      out[out.length - 1] = kf
+    } else {
+      out.push(kf)
+    }
+    if (out.length >= MAX_VOLUME_KEYFRAMES_PER_CLIP) break
   }
   return out
 }
@@ -494,6 +569,75 @@ export interface ProjectStore {
   createNew(): void
   setName(name: string): void
   setAspectRatio(ratio: AspectRatio): void
+  /** Phase 3.27 — mark a timeline ms as the video's cover frame. */
+  setCoverMs(ms: number): void
+  /** Phase 3.27 — clear the cover-frame marker (export falls back to frame 0). */
+  clearCoverMs(): void
+  /** Phase 3.35 — merge a patch over the progress-bar config (one zundo step). */
+  setProgressBar(patch: Partial<ProgressBarConfig>): void
+  /** Phase 3.35 — flip the progress-bar `enabled` flag (config object survives). */
+  toggleProgressBar(): void
+
+  // --- Adjustment layers (Phase 3.32) — range color-grades over the composite ---
+  /**
+   * Append a new adjustment layer spanning [startMs, endMs]. The window is
+   * clamped (startMs >= 0, endMs >= startMs + MIN_CLIP_MS). Returns the new
+   * layer's id, or null when the project already holds MAX_ADJUSTMENT_LAYERS
+   * layers or either input is non-finite. The layer is created neutral (no
+   * grade payload) — it stays selectable/editable; the export-side
+   * `getAdjustmentLayers` drops it until a grade is set.
+   */
+  addAdjustmentLayer(startMs: number, endMs: number): string | null
+  /** Remove the adjustment layer matched by `id`. No-op when not found. */
+  removeAdjustmentLayer(id: string): void
+  /**
+   * Move / trim an adjustment layer's window. Merges the partial onto the
+   * current [startMs, endMs] then re-clamps. No-op when not found or for
+   * non-finite input.
+   */
+  updateAdjustmentLayer(
+    id: string,
+    patch: { startMs?: number; endMs?: number }
+  ): void
+  /**
+   * Merge a partial color adjust onto an adjustment layer, clamping each
+   * field. An all-neutral merged result collapses the `colorAdjust` field to
+   * `undefined`. No-op when not found or for non-finite input.
+   */
+  setAdjustmentLayerColorAdjust(
+    id: string,
+    partial: Partial<ColorAdjust>
+  ): void
+  /**
+   * Update one tone-curve control point's x/y (each clamped to [0,1]) on an
+   * adjustment layer. The whole `curves` object is re-sanitized; an all-
+   * identity result collapses to `undefined`.
+   */
+  setAdjustmentLayerCurvePoint(
+    id: string,
+    channel: CurveChannelKey,
+    pointIndex: number,
+    p: Partial<CurvePoint>
+  ): void
+  /**
+   * Merge a partial HslBandAdjust into one band of an adjustment layer's HSL
+   * grading, clamping each field. An all-neutral result collapses to
+   * `undefined`.
+   */
+  setAdjustmentLayerHslBand(
+    id: string,
+    band: HslBandKey,
+    partial: Partial<HslBandAdjust>
+  ): void
+  /**
+   * Set the filter preset + intensity (0..1) on an adjustment layer.
+   * preset='none' clears the preset.
+   */
+  setAdjustmentLayerFilterPreset(
+    id: string,
+    preset: FilterPreset,
+    intensity?: number
+  ): void
 
   addMedia(asset: MediaAsset): void
   removeMedia(mediaId: string): void
@@ -503,6 +647,29 @@ export interface ProjectStore {
 
   addClip(clip: Clip): void
   removeClip(clipId: string): void
+
+  // --- Clip grouping / linking (Phase 3.33) ---
+  /**
+   * Group the listed clips under a fresh link group. Counts distinct existing
+   * clips among `clipIds`; if fewer than 2 exist, returns null (no-op). Mints a
+   * new `groupId`, assigns it to every listed clip (overwriting any prior
+   * `groupId`). Then sweeps: any PRIOR group left with <2 members has those
+   * members' `groupId` cleared (no stale 1-member groups). Returns the new id.
+   */
+  groupClips(clipIds: string[]): string | null
+  /**
+   * Dissolve a link group. The argument may be the group's id OR any member
+   * clip's id; it's resolved to a groupId, then every member's `groupId` is
+   * cleared. No-op when the argument resolves to nothing.
+   */
+  ungroupClips(groupIdOrClipId: string): void
+  /**
+   * Move a clip (and, if it's grouped, its whole link group) so the anchor
+   * clip's `startMs` lands at `desiredStartMs`. The shift delta is pre-clamped
+   * so the earliest member can't go below 0 — the whole group stops together.
+   * trackIds are unchanged.
+   */
+  moveClipGroup(clipId: string, desiredStartMs: number): void
   /**
    * Partial update for a media clip's trim/timeline fields. Caption clips
    * are handled by `updateCaption` instead. Light invariants:
@@ -529,6 +696,22 @@ export interface ProjectStore {
    * clip's id, or null if the source clip can't be found.
    */
   duplicateClip(clipId: string): string | null
+  /**
+   * Detach (분리) a video-track media clip's embedded audio onto its own
+   * audio track. ONE atomic store mutation (single zundo undo step):
+   *   1. Create a new `'media'` clip on an audio track (reused if one exists,
+   *      else a fresh audio track is built inline) with the SAME `mediaId`
+   *      and timeline/trim/speed window — audio-only because the export
+   *      collectors are track-kind-scoped.
+   *   2. MUTE the source video clip so the audio isn't doubled.
+   * Returns the new audio clip's id, or null when:
+   *   - the clip can't be found / isn't a media clip
+   *   - its track isn't a `'video'` track (no embedded audio to detach)
+   *   - the source clip is ALREADY `isMuted` (already detached / deliberately
+   *     muted — adding a twin would double audio)
+   *   - the audio-track cap (MAX_AUDIO_TRACKS) is hit and none exists yet
+   */
+  detachAudio(clipId: string): string | null
   /**
    * Set a media clip's playback speed (clamped to [MIN_CLIP_SPEED,
    * MAX_CLIP_SPEED]). Keeps startMs and the source in/out range
@@ -568,6 +751,13 @@ export interface ProjectStore {
    * clips and for non-finite inputs.
    */
   setClipRetouch(clipId: string, strength: number): void
+  /**
+   * Merge a partial film-look (vignette / grain / tone) onto a media clip.
+   * Values are clamped to [MIN_FILM_LOOK, MAX_FILM_LOOK]; an unknown toneId
+   * falls back to 'none'. A fully-neutral result stores `filmLook: undefined`
+   * (OFF — lean snapshots). No-op for non-media clips.
+   */
+  setClipFilmLook(clipId: string, patch: Partial<FilmLook>): void
   /** Set track-wide mute. */
   setTrackMuted(trackId: string, muted: boolean): void
   /** Set track-wide solo. */
@@ -788,6 +978,18 @@ export interface ProjectStore {
   removeTransformKeyframe(clipId: string, kfIndex: number): void
   /** Clear a clip's keyframe track entirely; keeps its static `transform`. */
   clearTransformKeyframes(clipId: string): void
+  /**
+   * Apply an auto-zoom / punch-in preset (Phase 3.31). Resolves `presetId` via
+   * `getZoomPreset`, builds RELATIVE keyframes for the clip's on-timeline span
+   * (`buildZoomKeyframes`), composes each onto the clip's static transform
+   * (scale multiplied — floored at 1 so a zoom never reveals gutters — x/y
+   * offset added, rotation/opacity carried from the base), normalizes the
+   * result, and REPLACES the clip's `transformKeyframes` track (CapCut
+   * behavior). The static `transform` is left untouched. No-op for an unknown
+   * preset, a missing clip, a caption clip, or when fewer than 2 keyframes
+   * survive (clip too short). One undo step. Media + overlay clips only.
+   */
+  applyZoomPreset(clipId: string, presetId: string): void
 
   // --- Variable speed curve (Phase 3.10, media clips only) ---
   /**
@@ -821,6 +1023,41 @@ export interface ProjectStore {
   removeSpeedKeyframe(clipId: string, kfIndex: number): void
   /** Clear a clip's speed curve entirely; keeps its constant `speed`. */
   clearSpeedKeyframes(clipId: string): void
+
+  // --- Volume envelope (Phase 3.30, media clips only) ---
+  /**
+   * Add a volume keyframe at a clip-relative TIMELINE offset `atMs` (ms from
+   * clip.startMs — volume is authored in timeline space, no source mapping).
+   *  - If the clip has NO active envelope yet: seed TWO keyframes (atMs 0 +
+   *    the clip's timeline duration `endMs-startMs`), both at the clip's
+   *    current constant `gainDb` — enabling the envelope causes no jump.
+   *  - If an envelope exists: insert ONE keyframe; its dB defaults to the
+   *    interpolated value on the existing curve (`getVolumeDbAt`) unless
+   *    `gainDb` overrides it.
+   * A keyframe within MIN_VOLUME_KEYFRAME_GAP_MS of an existing one REPLACES
+   * it. Capped at MAX_VOLUME_KEYFRAMES_PER_CLIP. No-op for caption clips or a
+   * non-finite `atMs`. Collapses to `undefined` when fewer than 2 survive.
+   */
+  addVolumeKeyframe(clipId: string, atMs: number, gainDb?: number): void
+  /**
+   * Merge into the volume keyframe at `kfIndex`: re-clamp atMs into [0, clip
+   * timeline duration], clamp gainDb into [MIN_GAIN_DB, MAX_GAIN_DB], then
+   * re-normalize. If it collapses below 2 keyframes the envelope is dropped and
+   * the survivor's dB is baked into the clip's constant `gainDb`.
+   */
+  updateVolumeKeyframe(
+    clipId: string,
+    kfIndex: number,
+    partial: { atMs?: number; gainDb?: number }
+  ): void
+  /**
+   * Remove the volume keyframe at `kfIndex`. If removal drops the envelope
+   * below 2 keyframes, the envelope is cleared and the surviving keyframe's dB
+   * is baked into the clip's constant `gainDb` (the sound does not change).
+   */
+  removeVolumeKeyframe(clipId: string, kfIndex: number): void
+  /** Clear a clip's volume envelope entirely; keeps its constant `gainDb`. */
+  clearVolumeKeyframes(clipId: string): void
 
   /**
    * Insert a freeze frame at SOURCE offset `sourceMs` (ms from trimInMs). The
@@ -1117,15 +1354,270 @@ export const useProjectStore = create<ProjectStore>()(
     schedulePersist(next)
   },
 
+  /**
+   * Convert the project's aspect ratio. Routes through the documented pure
+   * helper `aspectRatioConversion`, which mutates ONLY `aspectRatio` / `width`
+   * / `height`. Clips re-fit the new canvas automatically because their
+   * transforms are canvas-relative (fractional), so no clip is touched. This
+   * is a single `touch` → one zundo (undo/redo) step. Export-graph-invariant:
+   * the export pipeline reads the export preset's dimensions, not the project
+   * dims, so converting never changes export output for a fixed preset.
+   * `ratio` is typed `AspectRatio`, so the helper always returns valid dims —
+   * no guard needed.
+   */
   setAspectRatio(ratio: AspectRatio): void {
-    const dims = ASPECT_RATIO_DIMENSIONS[ratio]
-    if (!dims) return
+    const next = touch({ ...get().project, ...aspectRatioConversion(ratio) })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  /**
+   * Phase 3.27 — mark a timeline ms as the video's cover frame. The ms is
+   * clamped into [0, totalDuration] via `resolveCoverMs`. Mutates ONLY
+   * `project.coverMs` → exactly one zundo (undo/redo) step. Export-graph-
+   * invariant: the cover JPG is a separate main-side ffmpeg pass.
+   */
+  setCoverMs(ms: number): void {
+    const project = get().project
+    const clamped = resolveCoverMs(ms, getTotalDurationMs(project))
+    const next = touch({ ...project, coverMs: clamped })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  /**
+   * Phase 3.27 — clear the cover-frame marker. Removes the `coverMs` field
+   * entirely so the export falls back to frame 0. No-op (no zundo step) when
+   * the project already has no cover.
+   */
+  clearCoverMs(): void {
+    const project = get().project
+    if (project.coverMs == null) return
+    const { coverMs: _drop, ...rest } = project
+    const next = touch(rest)
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  /**
+   * Phase 3.35 — merge `patch` over the progress-bar config. When the project
+   * has no config yet, a disabled default is used as the base. `heightFrac` is
+   * clamped to [MIN, MAX]; non-finite numeric fields are rejected (the prior
+   * value is kept). Mutates ONLY `project.progressBar` → exactly one zundo
+   * (undo/redo) step. The config object always survives an off→on round trip.
+   */
+  setProgressBar(patch: Partial<ProgressBarConfig>): void {
+    const project = get().project
+    const base: ProgressBarConfig = project.progressBar ?? {
+      enabled: false,
+      position: 'bottom',
+      color: DEFAULT_PROGRESS_BAR_COLOR,
+      heightFrac: DEFAULT_PROGRESS_BAR_HEIGHT_FRAC
+    }
+    const merged: ProgressBarConfig = { ...base, ...patch }
+    // Reject non-finite numbers — fall back to the pre-patch value.
+    let heightFrac = Number.isFinite(merged.heightFrac)
+      ? merged.heightFrac
+      : base.heightFrac
+    heightFrac = Math.max(
+      MIN_PROGRESS_BAR_HEIGHT_FRAC,
+      Math.min(MAX_PROGRESS_BAR_HEIGHT_FRAC, heightFrac)
+    )
+    const nextCfg: ProgressBarConfig = {
+      enabled: merged.enabled === true,
+      position: merged.position === 'top' ? 'top' : 'bottom',
+      color: merged.color,
+      heightFrac
+    }
+    const next = touch({ ...project, progressBar: nextCfg })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  /**
+   * Phase 3.35 — flip the progress-bar `enabled` flag. Routes through
+   * `setProgressBar` so the rest of the config (position/color/height) is
+   * preserved across an off→on→off cycle.
+   */
+  toggleProgressBar(): void {
+    const enabled = !(get().project.progressBar?.enabled ?? false)
+    get().setProgressBar({ enabled })
+  },
+
+  // --------------------------------------------------------------------
+  // Adjustment layers (Phase 3.32) — range color-grades over the composite.
+  //
+  // Every mutation operates on `project.adjustmentLayers ?? []`, then
+  // touch()+set()+schedulePersist() = one zundo step. The store KEEPS a
+  // fully-neutral layer (so it stays selectable/editable) — only the
+  // export-side `getAdjustmentLayers` drops neutral layers. Each grade
+  // mutation neutral-collapses its own field (mirrors the per-clip grade
+  // actions) to keep the persisted JSON + undo snapshots lean.
+  // --------------------------------------------------------------------
+  addAdjustmentLayer(startMs: number, endMs: number): string | null {
+    const project = get().project
+    const window = clampAdjustmentLayerWindow(startMs, endMs)
+    if (!window) return null
+    const layers = project.adjustmentLayers ?? []
+    if (layers.length >= MAX_ADJUSTMENT_LAYERS) return null
+    const id = ulid()
+    const layer: AdjustmentLayer = {
+      id,
+      startMs: window.startMs,
+      endMs: window.endMs
+    }
     const next = touch({
-      ...get().project,
-      aspectRatio: ratio,
-      width: dims.width,
-      height: dims.height
+      ...project,
+      adjustmentLayers: [...layers, layer]
     })
+    set({ project: next })
+    schedulePersist(next)
+    return id
+  },
+
+  removeAdjustmentLayer(id: string): void {
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    const filtered = layers.filter((l) => l.id !== id)
+    if (filtered.length === layers.length) return
+    const next = touch({ ...project, adjustmentLayers: filtered })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  updateAdjustmentLayer(id, patch): void {
+    if (!patch || typeof patch !== 'object') return
+    // Reject any non-finite numeric input outright (caller bug → no-op).
+    for (const v of Object.values(patch)) {
+      if (v !== undefined && !Number.isFinite(v)) return
+    }
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    let changed = false
+    const nextLayers = layers.map((l) => {
+      if (l.id !== id) return l
+      const startMs = patch.startMs !== undefined ? patch.startMs : l.startMs
+      const endMs = patch.endMs !== undefined ? patch.endMs : l.endMs
+      const window = clampAdjustmentLayerWindow(startMs, endMs)
+      if (!window) return l
+      changed = true
+      return { ...l, startMs: window.startMs, endMs: window.endMs }
+    })
+    if (!changed) return
+    const next = touch({ ...project, adjustmentLayers: nextLayers })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  setAdjustmentLayerColorAdjust(id, partial): void {
+    if (!partial || typeof partial !== 'object') return
+    for (const v of Object.values(partial)) {
+      if (v !== undefined && !Number.isFinite(v)) return
+    }
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    let changed = false
+    const nextLayers = layers.map((l) => {
+      if (l.id !== id) return l
+      const merged = clampColorAdjust({
+        ...(l.colorAdjust ?? NEUTRAL_COLOR_ADJUST),
+        ...partial
+      })
+      changed = true
+      // Neutral-collapse: drop the field when all-neutral (mirrors setClipColorAdjust).
+      return isNeutralColorAdjust(merged)
+        ? { ...l, colorAdjust: undefined }
+        : { ...l, colorAdjust: merged }
+    })
+    if (!changed) return
+    const next = touch({ ...project, adjustmentLayers: nextLayers })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  setAdjustmentLayerCurvePoint(id, channel, pointIndex, p): void {
+    if (!p || typeof p !== 'object') return
+    for (const v of Object.values(p)) {
+      if (v !== undefined && !Number.isFinite(v)) return
+    }
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    let changed = false
+    const nextLayers = layers.map((l) => {
+      if (l.id !== id) return l
+      const base = sanitizeClipCurves(l.curves ?? IDENTITY_CLIP_CURVES)
+      const pts = base[channel]
+      if (!pts || pointIndex < 0 || pointIndex >= pts.length) return l
+      const clamp01 = (v: number): number => Math.min(1, Math.max(0, v))
+      const nextPts = pts.map((pt, i) =>
+        i === pointIndex
+          ? {
+              x: clamp01(p.x !== undefined ? p.x : pt.x),
+              y: clamp01(p.y !== undefined ? p.y : pt.y)
+            }
+          : pt
+      )
+      const merged = sanitizeClipCurves({ ...base, [channel]: nextPts })
+      changed = true
+      return isIdentityClipCurves(merged)
+        ? { ...l, curves: undefined }
+        : { ...l, curves: merged }
+    })
+    if (!changed) return
+    const next = touch({ ...project, adjustmentLayers: nextLayers })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  setAdjustmentLayerHslBand(id, band, partial): void {
+    if (!partial || typeof partial !== 'object') return
+    for (const v of Object.values(partial)) {
+      if (v !== undefined && !Number.isFinite(v)) return
+    }
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    let changed = false
+    const nextLayers = layers.map((l) => {
+      if (l.id !== id) return l
+      const base = sanitizeClipHsl(l.hsl ?? NEUTRAL_CLIP_HSL)
+      const clampAdj = (v: number): number =>
+        Math.min(MAX_HSL_ADJUST, Math.max(MIN_HSL_ADJUST, v))
+      const cur = base[band] ?? { ...NEUTRAL_HSL_BAND }
+      const nextBand: HslBandAdjust = {
+        hue: clampAdj(partial.hue !== undefined ? partial.hue : cur.hue),
+        saturation: clampAdj(
+          partial.saturation !== undefined ? partial.saturation : cur.saturation
+        ),
+        luminance: clampAdj(
+          partial.luminance !== undefined ? partial.luminance : cur.luminance
+        )
+      }
+      const merged = sanitizeClipHsl({ ...base, [band]: nextBand })
+      changed = true
+      return isNeutralClipHsl(merged)
+        ? { ...l, hsl: undefined }
+        : { ...l, hsl: merged }
+    })
+    if (!changed) return
+    const next = touch({ ...project, adjustmentLayers: nextLayers })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  setAdjustmentLayerFilterPreset(id, preset, intensity): void {
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    const clamped = Math.max(0, Math.min(1, Number(intensity ?? 1)))
+    let changed = false
+    const nextLayers = layers.map((l) => {
+      if (l.id !== id) return l
+      changed = true
+      return preset === 'none'
+        ? { ...l, filterPreset: 'none' as FilterPreset, filterIntensity: 1 }
+        : { ...l, filterPreset: preset, filterIntensity: clamped }
+    })
+    if (!changed) return
+    const next = touch({ ...project, adjustmentLayers: nextLayers })
     set({ project: next })
     schedulePersist(next)
   },
@@ -1219,14 +1711,169 @@ export const useProjectStore = create<ProjectStore>()(
 
   removeClip(clipId: string): void {
     const project = get().project
+    // Phase 3.33 — resolve the doomed set. If the target clip carries a
+    // groupId, every group member dies together (covers keyboard Delete +
+    // context-menu delete, both of which route here).
+    let target: Clip | null = null
+    for (const t of project.tracks) {
+      const c = t.clips.find((cc) => cc.id === clipId)
+      if (c) {
+        target = c
+        break
+      }
+    }
+    if (!target) return
+    const doomed = new Set<string>(
+      target.groupId
+        ? getGroupMembers(project, target.groupId).map((c) => c.id)
+        : [clipId]
+    )
     let touched = false
     const tracks = project.tracks.map((t) => {
       const before = t.clips.length
-      const clips = t.clips.filter((c) => c.id !== clipId)
+      const clips = t.clips.filter((c) => !doomed.has(c.id))
       if (clips.length !== before) touched = true
       return { ...t, clips }
     })
     if (!touched) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // --- Clip grouping / linking (Phase 3.33) ---
+  groupClips(clipIds: string[]): string | null {
+    const project = get().project
+    // Collect distinct, existing clip ids among the request.
+    const requested = new Set<string>()
+    for (const id of clipIds) {
+      if (typeof id === 'string') requested.add(id)
+    }
+    const known = new Set<string>()
+    for (const t of project.tracks) {
+      for (const c of t.clips) {
+        if (requested.has(c.id)) known.add(c.id)
+      }
+    }
+    // Need at least 2 real clips to form a group.
+    if (known.size < 2) return null
+
+    // Remember the prior groups touched, so we can sweep stale 1-member groups.
+    const priorGroups = new Set<string>()
+    for (const t of project.tracks) {
+      for (const c of t.clips) {
+        if (known.has(c.id) && c.groupId) priorGroups.add(c.groupId)
+      }
+    }
+
+    const groupId = newId()
+    // Assign the fresh groupId to every listed clip (overwriting any prior).
+    let tracks = project.tracks.map((t) => ({
+      ...t,
+      clips: t.clips.map((c) =>
+        known.has(c.id) ? { ...c, groupId } : c
+      )
+    }))
+
+    // Sweep: any PRIOR group now left with <2 members → clear those members'
+    // groupId so no stale 1-member group lingers.
+    const stale = new Set<string>()
+    for (const g of priorGroups) {
+      if (g === groupId) continue
+      let count = 0
+      for (const t of tracks) {
+        for (const c of t.clips) {
+          if (c.groupId === g) count++
+        }
+      }
+      if (count < 2) stale.add(g)
+    }
+    if (stale.size > 0) {
+      tracks = tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((c) =>
+          c.groupId && stale.has(c.groupId)
+            ? { ...c, groupId: undefined }
+            : c
+        )
+      }))
+    }
+
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+    return groupId
+  },
+
+  ungroupClips(groupIdOrClipId: string): void {
+    const project = get().project
+    // The arg may be a groupId OR any member clip id. Resolve to a groupId.
+    let groupId: string | null = null
+    for (const t of project.tracks) {
+      for (const c of t.clips) {
+        if (c.id === groupIdOrClipId && c.groupId) {
+          groupId = c.groupId
+          break
+        }
+        if (c.groupId === groupIdOrClipId) {
+          groupId = groupIdOrClipId
+          break
+        }
+      }
+      if (groupId) break
+    }
+    if (!groupId) return
+    const gid = groupId
+    let changed = false
+    const tracks = project.tracks.map((t) => ({
+      ...t,
+      clips: t.clips.map((c) => {
+        if (c.groupId === gid) {
+          changed = true
+          return { ...c, groupId: undefined }
+        }
+        return c
+      })
+    }))
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  moveClipGroup(clipId: string, desiredStartMs: number): void {
+    const project = get().project
+    // Locate the anchor clip.
+    let anchor: Clip | null = null
+    for (const t of project.tracks) {
+      const c = t.clips.find((cc) => cc.id === clipId)
+      if (c) {
+        anchor = c
+        break
+      }
+    }
+    if (!anchor) return
+    const members = anchor.groupId
+      ? getGroupMembers(project, anchor.groupId)
+      : [anchor]
+    const memberIds = new Set<string>(members.map((c) => c.id))
+    let delta = Math.round(desiredStartMs) - anchor.startMs
+    // Pre-clamp delta so the earliest member can't slide below 0 — the whole
+    // group stops together rather than drifting apart.
+    let earliest = Infinity
+    for (const m of members) {
+      if (m.startMs < earliest) earliest = m.startMs
+    }
+    if (earliest + delta < 0) delta = -earliest
+    if (delta === 0) return
+    const tracks = project.tracks.map((t) => ({
+      ...t,
+      clips: t.clips.map((c) =>
+        memberIds.has(c.id)
+          ? { ...c, startMs: c.startMs + delta, endMs: c.endMs + delta }
+          : c
+      )
+    }))
     const next = touch({ ...project, tracks })
     set({ project: next })
     schedulePersist(next)
@@ -1405,6 +2052,51 @@ export const useProjectStore = create<ProjectStore>()(
       rightFreezes = rightRaw.length > 0 ? rightRaw : undefined
     }
     // -------------------------------------------------------------------
+    // Phase 3.30 — volume-envelope split handling. PARALLEL to the
+    // transform-keyframe partition above — volume keyframes' atMs are
+    // clip-relative TIMELINE offsets (ms from clip.startMs), so the cut is
+    // keyed on `splitOffsetLocalMs` (= atMs - orig.startMs). Left keeps
+    // keyframes at/before the cut offset; right keeps those at/after,
+    // re-based by `-splitOffsetLocalMs`. A boundary keyframe (the dB AT the
+    // cut) is synthesized on both sides so neither half jumps. A half that
+    // collapses below 2 keyframes drops its envelope + bakes the survivor's
+    // dB into the constant `gainDb`.
+    // -------------------------------------------------------------------
+    let leftVolumeKfs: VolumeKeyframe[] | undefined
+    let rightVolumeKfs: VolumeKeyframe[] | undefined
+    let leftGainDb = orig.gainDb
+    let rightGainDb = orig.gainDb
+    if (hasVolumeEnvelope(orig)) {
+      const splitOffsetLocalMs = atMs - orig.startMs
+      const boundaryDb = getVolumeDbAt(orig, splitOffsetLocalMs)
+      const allVol = orig.volumeKeyframes as VolumeKeyframe[]
+      const leftVolRaw: VolumeKeyframe[] = [
+        ...allVol.filter((kf) => kf.atMs <= splitOffsetLocalMs),
+        { atMs: splitOffsetLocalMs, gainDb: boundaryDb }
+      ]
+      const rightVolRaw: VolumeKeyframe[] = [
+        { atMs: 0, gainDb: boundaryDb },
+        ...allVol
+          .filter((kf) => kf.atMs >= splitOffsetLocalMs)
+          .map((kf) => ({
+            atMs: kf.atMs - splitOffsetLocalMs,
+            gainDb: kf.gainDb
+          }))
+      ]
+      const leftVolNorm = normalizeVolumeKeyframes(leftVolRaw)
+      const rightVolNorm = normalizeVolumeKeyframes(rightVolRaw)
+      if (leftVolNorm.length >= 2) {
+        leftVolumeKfs = leftVolNorm
+      } else {
+        leftGainDb = leftVolNorm[0]?.gainDb ?? boundaryDb
+      }
+      if (rightVolNorm.length >= 2) {
+        rightVolumeKfs = rightVolNorm
+      } else {
+        rightGainDb = rightVolNorm[0]?.gainDb ?? boundaryDb
+      }
+    }
+    // -------------------------------------------------------------------
     // Phase 3.17 — text-based-editing split handling. PARALLEL to the
     // freeze-frame partition above. `transcript.words` + `deletedRanges` are
     // ABSOLUTE source ms, so the split is keyed on `splitSource` (the absolute
@@ -1471,6 +2163,8 @@ export const useProjectStore = create<ProjectStore>()(
       speed: leftSpeed,
       speedKeyframes: leftSpeedKfs,
       freezeFrames: leftFreezes,
+      gainDb: leftGainDb,
+      volumeKeyframes: leftVolumeKfs,
       transcript: leftTranscript,
       deletedRanges: leftDeletedRanges
     })
@@ -1484,6 +2178,8 @@ export const useProjectStore = create<ProjectStore>()(
       speed: rightSpeed,
       speedKeyframes: rightSpeedKfs,
       freezeFrames: rightFreezes,
+      gainDb: rightGainDb,
+      volumeKeyframes: rightVolumeKfs,
       transcript: rightTranscript,
       deletedRanges: rightDeletedRanges
     })
@@ -1537,6 +2233,8 @@ export const useProjectStore = create<ProjectStore>()(
     // don't mutate the original. Overlay clips need their `source` cloned
     // (shape overlays carry a nested `style`). Media clips have no nested
     // mutable refs.
+    // Phase 3.33 — STRIP groupId on every duplicate branch: a copy must NOT
+    // silently inherit the original's link group.
     let dup: Clip
     if (isCaptionClip(orig)) {
       dup = {
@@ -1544,6 +2242,7 @@ export const useProjectStore = create<ProjectStore>()(
         id: newClipId,
         startMs: start,
         endMs: start + duration,
+        groupId: undefined,
         spans: orig.spans.map((s) => ({ ...s })),
         style: { ...orig.style }
       }
@@ -1553,6 +2252,7 @@ export const useProjectStore = create<ProjectStore>()(
         id: newClipId,
         startMs: start,
         endMs: start + duration,
+        groupId: undefined,
         source:
           orig.source.type === 'shape'
             ? { ...orig.source, style: { ...orig.source.style } }
@@ -1563,13 +2263,141 @@ export const useProjectStore = create<ProjectStore>()(
         ...orig,
         id: newClipId,
         startMs: start,
-        endMs: start + duration
+        endMs: start + duration,
+        groupId: undefined
+      }
+      // Phase 3.30 — deep-copy the volume envelope so future edits to the
+      // duplicate's keyframes don't mutate the original's array.
+      if (orig.volumeKeyframes !== undefined) {
+        dup.volumeKeyframes = orig.volumeKeyframes.map((kf) => ({ ...kf }))
       }
     }
     const tracks = project.tracks.map((t, i) => {
       if (i !== trackIdx) return t
       return { ...t, clips: [...t.clips, dup] }
     })
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+    return newClipId
+  },
+
+  detachAudio(clipId: string): string | null {
+    const project = get().project
+    // Locate the source clip + its track.
+    let srcTrack: Track | null = null
+    let srcClip: Clip | null = null
+    for (const t of project.tracks) {
+      const c = t.clips.find((cc) => cc.id === clipId)
+      if (c) {
+        srcTrack = t
+        srcClip = c
+        break
+      }
+    }
+    if (!srcTrack || !srcClip) return null
+    // Only video-track media clips carry embedded audio to detach.
+    if (!isMediaClip(srcClip)) return null
+    if (srcTrack.kind !== 'video') return null
+    // Already muted → either already detached or deliberately silenced;
+    // adding an audible twin would double the audio. Bail.
+    if (srcClip.isMuted === true) return null
+
+    // Resolve a target audio track: reuse the first existing 'audio' track,
+    // else build a fresh one INLINE (so the whole detach is one set()).
+    const existingAudio = project.tracks.find((t) => t.kind === 'audio')
+    let audioTrackId: string
+    let newAudioTrack: Track | null = null
+    if (existingAudio) {
+      audioTrackId = existingAudio.id
+    } else {
+      // Respect the per-kind cap: if at MAX_AUDIO_TRACKS with no audio track,
+      // we cannot create one (unreachable when cap >= 1, but keeps the
+      // invariant explicit).
+      const audioCount = project.tracks.filter((t) => t.kind === 'audio').length
+      if (audioCount >= MAX_AUDIO_TRACKS) return null
+      audioTrackId = ulid()
+      newAudioTrack = {
+        id: audioTrackId,
+        kind: 'audio',
+        name: 'Voice 1',
+        clips: [],
+        role: 'voice'
+      }
+    }
+
+    // Build the detached audio clip — a new 'media' clip on the audio track.
+    // SAME mediaId + timeline/trim/speed window so the export audio collector
+    // reads [N:a:0] of the same video input. Video-only fields are NOT copied;
+    // the detached clip is NOT muted (it must be audible).
+    const newClipId = ulid()
+    // Phase 3.33 — auto-link: the detached audio and its source video join one
+    // link group so they move / delete together. Reuse the source's existing
+    // group if it has one, else mint a fresh group id.
+    const linkGroupId = srcClip.groupId ?? newId()
+    const detached: VideoAudioClip = {
+      id: newClipId,
+      kind: 'media',
+      mediaId: srcClip.mediaId,
+      trackId: audioTrackId,
+      startMs: srcClip.startMs,
+      endMs: srcClip.endMs,
+      trimInMs: srcClip.trimInMs,
+      trimOutMs: srcClip.trimOutMs,
+      groupId: linkGroupId
+    }
+    if (srcClip.speed !== undefined) detached.speed = srcClip.speed
+    if (srcClip.speedKeyframes !== undefined) {
+      detached.speedKeyframes = srcClip.speedKeyframes.map((kf) => ({ ...kf }))
+    }
+    if (srcClip.freezeFrames !== undefined) {
+      detached.freezeFrames = srcClip.freezeFrames.map((ff) => ({ ...ff }))
+    }
+    if (srcClip.deletedRanges !== undefined) {
+      detached.deletedRanges = srcClip.deletedRanges.map((dr) => ({ ...dr }))
+    }
+    if (srcClip.gainDb !== undefined) detached.gainDb = srcClip.gainDb
+    if (srcClip.volumeKeyframes !== undefined) {
+      detached.volumeKeyframes = srcClip.volumeKeyframes.map((kf) => ({
+        ...kf
+      }))
+    }
+    if (srcClip.fadeInMs !== undefined) detached.fadeInMs = srcClip.fadeInMs
+    if (srcClip.fadeOutMs !== undefined) detached.fadeOutMs = srcClip.fadeOutMs
+    if (srcClip.reversed !== undefined) detached.reversed = srcClip.reversed
+
+    // ONE immutable tracks rebuild: mute the source clip on its video track,
+    // add the detached clip onto the (reused or freshly-built) audio track.
+    let tracks = project.tracks.map((t) => {
+      if (t.id === srcTrack!.id) {
+        return {
+          ...t,
+          clips: t.clips.map((c) =>
+            // Phase 3.33 — also link the source clip into the same group.
+            c.id === clipId
+              ? { ...c, isMuted: true, groupId: linkGroupId }
+              : c
+          )
+        }
+      }
+      if (existingAudio && t.id === audioTrackId) {
+        return { ...t, clips: [...t.clips, detached] }
+      }
+      return t
+    })
+    if (newAudioTrack) {
+      // Insert the fresh audio track right after the last video/audio track
+      // (CapCut layout — audio lanes sit below video, above caption/overlay).
+      let insertIdx = tracks.length
+      for (let i = 0; i < tracks.length; i++) {
+        if (tracks[i].kind === 'video' || tracks[i].kind === 'audio') {
+          insertIdx = i + 1
+        }
+      }
+      const withClip: Track = { ...newAudioTrack, clips: [detached] }
+      tracks = [...tracks]
+      tracks.splice(insertIdx, 0, withClip)
+    }
     const next = touch({ ...project, tracks })
     set({ project: next })
     schedulePersist(next)
@@ -1780,6 +2608,36 @@ export const useProjectStore = create<ProjectStore>()(
     schedulePersist(next)
   },
 
+  setClipFilmLook(clipId: string, patch: Partial<FilmLook>): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const merged: FilmLook = { ...NEUTRAL_FILM_LOOK, ...c.filmLook, ...patch }
+      const clampOne = (n: number): number =>
+        Number.isFinite(n)
+          ? Math.max(MIN_FILM_LOOK, Math.min(MAX_FILM_LOOK, n))
+          : 0
+      merged.vignette = clampOne(merged.vignette)
+      merged.grain = clampOne(merged.grain)
+      if (!FILM_TONE_IDS.includes(merged.toneId)) merged.toneId = 'none'
+      // Collapse to `undefined` when OFF — keeps persisted JSON + undo
+      // snapshots lean, mirroring setClipRetouch's collapse-to-undefined.
+      const nextVal = isNeutralFilmLook(merged) ? undefined : merged
+      const clips = [...t.clips]
+      clips[idx] = { ...c, filmLook: nextVal }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
   setTrackMuted(trackId: string, muted: boolean): void {
     const project = get().project
     let changed = false
@@ -1942,6 +2800,36 @@ export const useProjectStore = create<ProjectStore>()(
           pieceSpeed = norm[0]?.speed ?? getSpeedAt(orig, srcOffStart)
         }
       }
+      // Phase 3.30 — volume-envelope partition per piece (parallel to the
+      // speed-curve partition above). Volume keyframes' atMs are clip-relative
+      // TIMELINE offsets, so the piece's window is keyed on its TIMELINE
+      // offsets within orig: [tlOffStart, tlOffEnd]. Keyframes inside are
+      // re-based to the piece's own start, plus boundary keyframes at both
+      // edges. A piece that collapses below 2 keyframes bakes the survivor's
+      // dB into the constant `gainDb`.
+      let pieceGainDb = orig.gainDb
+      let pieceVolumeKfs: VolumeKeyframe[] | undefined
+      if (hasVolumeEnvelope(orig)) {
+        const tlOffStart = s.startMs - orig.startMs
+        const tlOffEnd = s.endMs - orig.startMs
+        const allVol = orig.volumeKeyframes as VolumeKeyframe[]
+        const rawVol: VolumeKeyframe[] = [
+          { atMs: 0, gainDb: getVolumeDbAt(orig, tlOffStart) },
+          ...allVol
+            .filter((kf) => kf.atMs > tlOffStart && kf.atMs < tlOffEnd)
+            .map((kf) => ({ atMs: kf.atMs - tlOffStart, gainDb: kf.gainDb })),
+          {
+            atMs: tlOffEnd - tlOffStart,
+            gainDb: getVolumeDbAt(orig, tlOffEnd)
+          }
+        ]
+        const normVol = normalizeVolumeKeyframes(rawVol)
+        if (normVol.length >= 2) {
+          pieceVolumeKfs = normVol
+        } else {
+          pieceGainDb = normVol[0]?.gainDb ?? getVolumeDbAt(orig, tlOffStart)
+        }
+      }
       return recomputeEndMsForSpeed({
         ...orig,
         id,
@@ -1950,7 +2838,9 @@ export const useProjectStore = create<ProjectStore>()(
         trimInMs: Math.max(0, Math.round(trimIn)),
         trimOutMs: Math.max(0, Math.round(trimOut)),
         speed: pieceSpeed,
-        speedKeyframes: pieceSpeedKfs
+        speedKeyframes: pieceSpeedKfs,
+        gainDb: pieceGainDb,
+        volumeKeyframes: pieceVolumeKfs
       })
     })
     const tracks = project.tracks.map((t, i) => {
@@ -2938,6 +3828,51 @@ export const useProjectStore = create<ProjectStore>()(
     schedulePersist(next)
   },
 
+  applyZoomPreset(clipId, presetId): void {
+    // Bail on an unknown preset — keeps this a strict no-op.
+    if (!getZoomPreset(presetId)) return
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      // transformKeyframes live only on media + overlay clips — captions bail.
+      if (!isMediaClip(c) && !isOverlayClip(c)) return t
+      // Build RELATIVE keyframes for the clip's on-timeline span.
+      const dur = getClipDuration(c)
+      const rel = buildZoomKeyframes(presetId, dur)
+      if (rel.length < 2) return t
+      // Composition base — the clip's current static transform.
+      const base = clampClipTransform(getClipTransform(c))
+      // Compose each relative keyframe into an ABSOLUTE transform: scale is
+      // multiplied (floored at 1 so a zoom never reveals transparent gutters),
+      // x/y offsets are added, rotation/opacity carried from the base.
+      const composed: TransformKeyframe[] = rel.map((kf) => ({
+        atMs: kf.atMs,
+        transform: clampClipTransform({
+          x: base.x + kf.transform.x,
+          y: base.y + kf.transform.y,
+          scale: Math.max(1, base.scale * kf.transform.scale),
+          rotation: base.rotation,
+          opacity: base.opacity
+        })
+      }))
+      const finalKfs = normalizeKeyframes(composed)
+      if (finalKfs.length < 2) return t
+      const clips = [...t.clips]
+      // REPLACE any prior keyframe track (CapCut behavior); the static
+      // `transform` is left untouched.
+      clips[idx] = { ...c, transformKeyframes: finalKfs }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
   // --------------------------------------------------------------------
   // Variable speed curve (Phase 3.10) — media clips only. Mirrors the
   // Phase 3.5 transform-keyframe actions. Speed keyframes' atMs are SOURCE
@@ -3128,6 +4063,210 @@ export const useProjectStore = create<ProjectStore>()(
         ...c,
         speedKeyframes: undefined
       })
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // --------------------------------------------------------------------
+  // Volume envelope (Phase 3.30) — media clips only. Mirrors the Phase 3.10
+  // speed-keyframe actions, but volume keyframes' atMs are clip-relative
+  // TIMELINE offsets (ms from clip.startMs) — volume does NOT define the
+  // source↔timeline mapping, so it is authored in timeline space (same
+  // convention as TransformKeyframe). No endMs recompute — the envelope
+  // never changes the clip's timeline length.
+  //
+  // Invariants enforced after every mutation:
+  //   - volumeKeyframes is sorted ascending by atMs
+  //   - keyframes closer than MIN_VOLUME_KEYFRAME_GAP_MS are deduped/replaced
+  //   - a length-1 array is NEVER persisted (collapses to constant `gainDb`)
+  //   - every stored keyframe gainDb is clamped [MIN_GAIN_DB, MAX_GAIN_DB]
+  //   - the list is capped at MAX_VOLUME_KEYFRAMES_PER_CLIP
+  // The contract resolver `resolvedVolumeKeyframes` returns NULL when < 2 —
+  // the byte-identical legacy gate (export emits the constant-gain step).
+  // --------------------------------------------------------------------
+  addVolumeKeyframe(clipId, atMs, gainDb): void {
+    const at = Math.round(Number(atMs))
+    if (!Number.isFinite(at) || at < 0) return
+    if (gainDb !== undefined && !Number.isFinite(Number(gainDb))) return
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const dur = Math.max(0, c.endMs - c.startMs)
+      if (at > dur) return t
+      const existing = Array.isArray(c.volumeKeyframes)
+        ? [...c.volumeKeyframes]
+        : []
+      let nextKfs: VolumeKeyframe[]
+      if (existing.length < 2) {
+        // No active envelope — seed two keyframes spanning the full clip
+        // timeline window, both at the clip's current constant gainDb so
+        // enabling the envelope causes no jump.
+        const base = Math.max(
+          MIN_GAIN_DB,
+          Math.min(MAX_GAIN_DB, c.gainDb ?? 0)
+        )
+        nextKfs = [
+          { atMs: 0, gainDb: base },
+          { atMs: dur, gainDb: base }
+        ]
+        // The requested keyframe lands on the curve (= base before any
+        // override). dedup merges it if it sits on 0 or dur within the gap.
+        nextKfs.push({
+          atMs: at,
+          gainDb: gainDb !== undefined ? Number(gainDb) : base
+        })
+      } else {
+        if (existing.length >= MAX_VOLUME_KEYFRAMES_PER_CLIP) return t
+        // Land on the existing curve so the insert causes no volume jump.
+        const onCurve = getVolumeDbAt(c, at)
+        nextKfs = [
+          ...existing,
+          { atMs: at, gainDb: gainDb !== undefined ? Number(gainDb) : onCurve }
+        ]
+      }
+      const finalKfs = normalizeVolumeKeyframes(nextKfs)
+      if (finalKfs.length < 2) return t
+      const clips = [...t.clips]
+      clips[idx] = { ...c, volumeKeyframes: finalKfs }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  updateVolumeKeyframe(clipId, kfIndex, partial): void {
+    if (!partial || typeof partial !== 'object') return
+    if (partial.atMs !== undefined && !Number.isFinite(Number(partial.atMs))) {
+      return
+    }
+    if (
+      partial.gainDb !== undefined &&
+      !Number.isFinite(Number(partial.gainDb))
+    ) {
+      return
+    }
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const existing = Array.isArray(c.volumeKeyframes)
+        ? [...c.volumeKeyframes]
+        : []
+      if (kfIndex < 0 || kfIndex >= existing.length) return t
+      const dur = Math.max(0, c.endMs - c.startMs)
+      const cur = existing[kfIndex]
+      const nextAt =
+        partial.atMs !== undefined
+          ? Math.max(0, Math.min(dur, Math.round(Number(partial.atMs))))
+          : cur.atMs
+      const nextGain =
+        partial.gainDb !== undefined
+          ? Math.max(
+              MIN_GAIN_DB,
+              Math.min(MAX_GAIN_DB, Number(partial.gainDb))
+            )
+          : cur.gainDb
+      const updated = existing.map((kf, i) =>
+        i === kfIndex ? { atMs: nextAt, gainDb: nextGain } : kf
+      )
+      const finalKfs = normalizeVolumeKeyframes(updated)
+      const clips = [...t.clips]
+      if (finalKfs.length < 2) {
+        // Collapsed below the >= 2 invariant — drop the envelope + bake the
+        // surviving keyframe's dB into the constant `gainDb`.
+        clips[idx] = {
+          ...c,
+          gainDb: finalKfs[0]
+            ? Math.max(
+                MIN_GAIN_DB,
+                Math.min(MAX_GAIN_DB, finalKfs[0].gainDb)
+              )
+            : c.gainDb,
+          volumeKeyframes: undefined
+        }
+      } else {
+        clips[idx] = { ...c, volumeKeyframes: finalKfs }
+      }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  removeVolumeKeyframe(clipId, kfIndex): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      const existing = Array.isArray(c.volumeKeyframes)
+        ? [...c.volumeKeyframes]
+        : []
+      if (kfIndex < 0 || kfIndex >= existing.length) return t
+      const remaining = existing.filter((_, i) => i !== kfIndex)
+      const clips = [...t.clips]
+      if (remaining.length < 2) {
+        // Envelope would fall below the >= 2 invariant — clear it + bake the
+        // surviving keyframe's dB into the constant `gainDb` so the sound
+        // does not change.
+        const survivor = remaining[0]
+        clips[idx] = {
+          ...c,
+          gainDb: survivor
+            ? Math.max(
+                MIN_GAIN_DB,
+                Math.min(MAX_GAIN_DB, survivor.gainDb)
+              )
+            : c.gainDb,
+          volumeKeyframes: undefined
+        }
+      } else {
+        clips[idx] = {
+          ...c,
+          volumeKeyframes: normalizeVolumeKeyframes(remaining)
+        }
+      }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  clearVolumeKeyframes(clipId): void {
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      if (!isMediaClip(c)) return t
+      if (c.volumeKeyframes === undefined) return t
+      const clips = [...t.clips]
+      // Keep the constant `gainDb` untouched — only drop the envelope.
+      clips[idx] = { ...c, volumeKeyframes: undefined }
       changed = true
       return { ...t, clips }
     })
@@ -3791,11 +4930,26 @@ export const useProjectStore = create<ProjectStore>()(
 
   removeCaption(captionId: string): void {
     const project = get().project
+    // Phase 3.33 — resolve the doomed set so a grouped caption deleted from the
+    // caption editor still propagates to its whole link group.
+    let target: Clip | null = null
+    for (const t of project.tracks) {
+      const c = t.clips.find((cc) => isCaptionClip(cc) && cc.id === captionId)
+      if (c) {
+        target = c
+        break
+      }
+    }
+    if (!target) return
+    const doomed = new Set<string>(
+      target.groupId
+        ? getGroupMembers(project, target.groupId).map((c) => c.id)
+        : [captionId]
+    )
     let touched = false
     const tracks = project.tracks.map((t) => {
-      if (t.kind !== 'caption') return t
       const before = t.clips.length
-      const clips = t.clips.filter((c) => !(isCaptionClip(c) && c.id === captionId))
+      const clips = t.clips.filter((c) => !doomed.has(c.id))
       if (clips.length !== before) touched = true
       return { ...t, clips }
     })
@@ -3894,13 +5048,26 @@ export const useProjectStore = create<ProjectStore>()(
 
   removeOverlay(overlayId: string): void {
     const project = get().project
+    // Phase 3.33 — resolve the doomed set so a grouped overlay still drags its
+    // whole link group along when deleted.
+    let target: Clip | null = null
+    for (const t of project.tracks) {
+      const c = t.clips.find((cc) => isOverlayClip(cc) && cc.id === overlayId)
+      if (c) {
+        target = c
+        break
+      }
+    }
+    if (!target) return
+    const doomed = new Set<string>(
+      target.groupId
+        ? getGroupMembers(project, target.groupId).map((c) => c.id)
+        : [overlayId]
+    )
     let touched = false
     const tracks = project.tracks.map((t) => {
-      if (t.kind !== 'overlay') return t
       const before = t.clips.length
-      const clips = t.clips.filter(
-        (c) => !(isOverlayClip(c) && c.id === overlayId)
-      )
+      const clips = t.clips.filter((c) => !doomed.has(c.id))
       if (clips.length !== before) touched = true
       return { ...t, clips }
     })

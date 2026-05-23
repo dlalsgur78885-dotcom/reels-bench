@@ -107,6 +107,19 @@ export interface FreezeFrame {
   durationMs: number
 }
 
+/**
+ * One keyframe in a clip's volume envelope (Phase 3.30). `atMs` is RELATIVE to
+ * the clip's own start (clip.startMs == atMs 0) — the same clip-relative
+ * TIMELINE convention as `TransformKeyframe.atMs` (volume does not define the
+ * source↔timeline mapping, so it is authored in timeline space).
+ */
+export interface VolumeKeyframe {
+  /** Offset from clip.startMs, in ms. >= 0. */
+  atMs: number
+  /** Gain in dB at this instant. Clamped [MIN_GAIN_DB, MAX_GAIN_DB]. */
+  gainDb: number
+}
+
 // -----------------------------------------------------------------------------
 // Phase 3.17 — text-based editing. A per-clip transcript (word-level STT) plus
 // a non-destructive list of removed SOURCE ranges. Deleting transcript words
@@ -342,11 +355,25 @@ export interface VideoAudioClip {
    * is fully expressed by `transform` + `cropRect`). Absent = not in a layout.
    */
   layoutGroupId?: string
+  /**
+   * Phase 3.33 — id of the link group this clip belongs to. Clips sharing a
+   * `groupId` move / delete / select together. PURE editing metadata — export
+   * IGNORES it. Absent = not grouped. No migration.
+   */
+  groupId?: string
   // -----------------------------------------------------------------
   // Phase 2.5 — audio shaping (optional, backwards-compatible).
   // -----------------------------------------------------------------
   /** Gain in decibels, clamped to [MIN_GAIN_DB, MAX_GAIN_DB]. Default 0. */
   gainDb?: number
+  /**
+   * Phase 3.30 — volume envelope. With >= 2 entries the clip's volume VARIES
+   * (piecewise-linear in dB between keyframes); absent / empty / length 1 →
+   * falls back to the constant `gainDb`. `atMs` is clip-relative timeline ms.
+   * Resolved defensively by `resolvedVolumeKeyframes` (null when < 2). Replaces
+   * the constant-gain `volume=` step on export; fades + ducking still stack.
+   */
+  volumeKeyframes?: VolumeKeyframe[]
   /** Linear fade-in in ms from clip start. Default 0. */
   fadeInMs?: number
   /** Linear fade-out in ms before clip end. Default 0. */
@@ -367,6 +394,14 @@ export interface VideoAudioClip {
    * keep tasteful.
    */
   retouch?: number
+  /**
+   * Phase 3.37 — film-look finishing filter (vignette / grain / faded tone).
+   * Absent / all-neutral = no-op (byte-identical legacy export + preview).
+   * Resolved by `getFilmLook` (null = absent/neutral). Export-only filters are
+   * `vignette` + `noise` (core ffmpeg, no probe); tone is a curves/eq recipe.
+   * STATIC ONLY. No migration.
+   */
+  filmLook?: FilmLook
   // -----------------------------------------------------------------
   // Phase 2.6 — transitions + filter presets (optional, backwards-compatible).
   // -----------------------------------------------------------------
@@ -466,6 +501,34 @@ export type CaptionAlign = 'left' | 'center' | 'right'
 /** Background treatment for the caption overlay. */
 export type CaptionBackground = 'none' | 'solid' | 'pill' | 'highlight'
 
+/**
+ * Phase 3.23 — explicit caption text OUTLINE. Absent / width<=0 = no outline
+ * (byte-identical legacy caption). Composited ON TOP OF any outline a preset
+ * already bakes in. Resolved/validated by `getCaptionTextStroke`.
+ */
+export interface CaptionTextStroke {
+  /** Outline color, validated #rrggbb. */
+  color: string
+  /** Outline width in px (canvas-relative, same ref frame as fontSize). */
+  width: number
+}
+
+/**
+ * Phase 3.23 — explicit caption text DROP-SHADOW / GLOW. Absent = no shadow.
+ * A glow is just offsetX=0, offsetY=0, blur large. Composited on top of preset
+ * shadows. Resolved/validated by `getCaptionTextShadow`.
+ */
+export interface CaptionTextShadow {
+  /** Shadow color, validated #rrggbb. */
+  color: string
+  /** Horizontal offset px (may be negative). */
+  offsetX: number
+  /** Vertical offset px (may be negative). */
+  offsetY: number
+  /** Gaussian blur radius px, >= 0. */
+  blur: number
+}
+
 export interface CaptionStyle {
   preset: CaptionPreset
   /** Base font size in px (relative to canvas height — overlay scales). */
@@ -474,6 +537,15 @@ export interface CaptionStyle {
   /** 0..1, fraction of canvas height (0 = top, 1 = bottom anchor). */
   yPosition: number
   background: CaptionBackground
+  /**
+   * Phase 3.23 — explicit text outline. Absent = byte-identical legacy caption.
+   */
+  textStroke?: CaptionTextStroke
+  /**
+   * Phase 3.23 — explicit text drop-shadow / glow. Absent = byte-identical
+   * legacy caption.
+   */
+  textShadow?: CaptionTextShadow
 }
 
 /** Per-word optional emphasis. */
@@ -516,6 +588,77 @@ export interface CaptionAnimation {
   outMs: number
 }
 
+// -----------------------------------------------------------------------------
+// Phase 3.22 — word-level / karaoke captions. As the speaker talks, each word
+// highlights in real time (the dominant short-form caption look).
+// -----------------------------------------------------------------------------
+
+/** One word's timing within a caption. CLIP-RELATIVE ms (offset from startMs). */
+export interface CaptionWord {
+  text: string
+  /** Clip-relative start ms, clamped to [0, clip duration]. */
+  startMs: number
+  /** Clip-relative end ms, >= startMs. */
+  endMs: number
+}
+
+/** Karaoke highlight visual mode. */
+export type CaptionKaraokeStyle = 'color-fill' | 'scale-pop'
+
+/**
+ * Per-caption karaoke (word-level highlight) spec. Absent / `enabled:false`,
+ * OR no resolvable `words`, = byte-identical legacy caption.
+ */
+export interface CaptionKaraoke {
+  enabled: boolean
+  highlightStyle: CaptionKaraokeStyle
+  /** Active-word color for 'color-fill' (#rrggbb). */
+  highlightColor: string
+  /** When true ('color-fill' only): a filled box behind the active word. */
+  highlightBox: boolean
+}
+
+export const DEFAULT_KARAOKE_COLOR = '#ffd400'
+export const KARAOKE_POP_SCALE = 1.18
+export const KARAOKE_DIM_OPACITY = 0.55
+/** Hard cap on stepped PNGs / overlay ops for one karaoke caption at export. */
+export const MAX_CAPTION_KARAOKE_STEPS = 40
+export const KARAOKE_STYLES: readonly CaptionKaraokeStyle[] = [
+  'color-fill',
+  'scale-pop'
+]
+/** Neutral (disabled) karaoke spec — what a fresh caption starts at. */
+export const NO_CAPTION_KARAOKE: CaptionKaraoke = {
+  enabled: false,
+  highlightStyle: 'color-fill',
+  highlightColor: DEFAULT_KARAOKE_COLOR,
+  highlightBox: false
+}
+
+// --- Caption text decoration constants (Phase 3.23) ------------------------
+/** Caption text outline width bounds (px, canvas-relative ref frame). */
+export const MAX_CAPTION_STROKE_WIDTH = 24
+export const DEFAULT_CAPTION_STROKE_WIDTH = 4
+export const DEFAULT_CAPTION_STROKE_COLOR = '#000000'
+/** Caption text shadow offset / blur bounds (px). */
+export const MAX_CAPTION_SHADOW_OFFSET = 64
+export const MAX_CAPTION_SHADOW_BLUR = 64
+export const DEFAULT_CAPTION_SHADOW_COLOR = '#000000'
+/** Default drop-shadow when the shadow control is first switched on. */
+export const DEFAULT_CAPTION_SHADOW: CaptionTextShadow = {
+  color: DEFAULT_CAPTION_SHADOW_COLOR,
+  offsetX: 0,
+  offsetY: 4,
+  blur: 4
+}
+/** One-click glow preset — a shadow with no offset + a large blur. */
+export const DEFAULT_CAPTION_GLOW: CaptionTextShadow = {
+  color: '#00e5ff',
+  offsetX: 0,
+  offsetY: 0,
+  blur: 24
+}
+
 /**
  * Caption clip — lives on a `caption` track. No media reference, no trim
  * window, no playback speed. Discriminator: `kind === 'caption'`.
@@ -543,6 +686,20 @@ export interface CaptionClip {
    * static fallback.
    */
   motionTrackId?: string
+  /**
+   * Phase 3.22 — per-word timing for karaoke captions. CLIP-RELATIVE ms.
+   * Populated by the STT word-mode pass or an even-split fallback. Absent ⇒
+   * no word timing (karaoke unavailable). Resolved by `resolveCaptionWords`.
+   */
+  words?: CaptionWord[]
+  /**
+   * Phase 3.22 — karaoke (word highlight) spec. Absent / `enabled:false`, or
+   * no resolvable `words`, ⇒ byte-identical legacy caption. Resolved by
+   * `getCaptionKaraoke` (null when inactive).
+   */
+  karaoke?: CaptionKaraoke
+  /** Phase 3.33 — link-group id (move/delete/select together; export ignores). */
+  groupId?: string
 }
 
 // -----------------------------------------------------------------------------
@@ -583,6 +740,41 @@ export type OverlaySource =
   | { type: 'shape'; style: ShapeStyle }
 
 /**
+ * Phase 3.36 — drop shadow for an OverlayClip (image / sticker / shape).
+ * Absent on the clip = NO shadow, byte-identical legacy export + preview.
+ * Offsets/blur are canvas px (pre-transform-scale, same reference frame as
+ * `ShapeStyle.strokeWidth` and `CaptionTextShadow`). Resolved by
+ * `getOverlayShadow`, which is the byte-identical gate.
+ */
+export interface OverlayShadow {
+  /** Shadow color, validated #rrggbb. */
+  color: string
+  /** Horizontal offset px (may be negative). */
+  offsetX: number
+  /** Vertical offset px (may be negative). */
+  offsetY: number
+  /** Gaussian blur radius px, >= 0. */
+  blur: number
+  /** Shadow opacity 0..1 (1 = fully opaque shadow color). */
+  opacity: number
+}
+
+/** Overlay shadow offset bound (canvas px). */
+export const MAX_OVERLAY_SHADOW_OFFSET = 256
+/** Overlay shadow blur bound (canvas px). */
+export const MAX_OVERLAY_SHADOW_BLUR = 128
+/** Default overlay shadow color. */
+export const DEFAULT_OVERLAY_SHADOW_COLOR = '#000000'
+/** Default drop-shadow applied when the overlay shadow control is first enabled. */
+export const DEFAULT_OVERLAY_SHADOW: OverlayShadow = {
+  color: DEFAULT_OVERLAY_SHADOW_COLOR,
+  offsetX: 0,
+  offsetY: 12,
+  blur: 16,
+  opacity: 0.5
+}
+
+/**
  * Overlay clip — lives on an `overlay` track. Carries the SAME ClipTransform +
  * TransformKeyframe fields as a media clip, so Phase 3 / 3.5 transform + keyframe
  * code applies unchanged. Discriminator: `kind === 'overlay'`.
@@ -606,12 +798,20 @@ export interface OverlayClip {
   motionTrackId?: string
   /** Phase 3.18 — collage / split-screen layout group id (UI-only metadata). */
   layoutGroupId?: string
+  /** Phase 3.33 — link-group id (move/delete/select together; export ignores). */
+  groupId?: string
   /**
    * Base element size BEFORE transform.scale, as a fraction of canvas
    * width/height. `transform.scale/x/y/rotation/opacity` apply on top.
    */
   baseWidthFrac: number
   baseHeightFrac: number
+  /**
+   * Phase 3.36 — optional drop shadow (image / sticker / shape). Absent ⇒
+   * byte-identical legacy overlay: no shadow subchain emitted at export, no
+   * CSS `filter` written in preview. Resolved/validated by `getOverlayShadow`.
+   */
+  shadow?: OverlayShadow
 }
 
 // -----------------------------------------------------------------------------
@@ -703,6 +903,65 @@ export interface Track {
 
 export type AspectRatio = '9:16' | '1:1' | '16:9' | '4:5'
 
+// -----------------------------------------------------------------------------
+// Phase 3.32 — adjustment layers. A timeline element with a [startMs,endMs]
+// range that applies a color grade to the FINAL COMPOSITED frame (every video
+// track + overlay beneath it) within that range. Lives in
+// `Project.adjustmentLayers` — NOT a Clip, NOT a Track. Reuses the existing
+// color-grade payload types. Absent / empty / all-neutral = byte-identical.
+// -----------------------------------------------------------------------------
+
+/** A range color-grade applied to the composited frame. */
+export interface AdjustmentLayer {
+  /** Stable id (ulid). */
+  id: string
+  /** Timeline ms, inclusive (same axis as the playhead / clip.startMs). */
+  startMs: number
+  /** Timeline ms, exclusive. >= startMs + MIN_CLIP_MS. */
+  endMs: number
+  /** Manual color adjust. Absent / neutral = nothing emitted. */
+  colorAdjust?: ColorAdjust
+  /** Tone curves. Absent / all-identity = nothing emitted. */
+  curves?: ClipCurves
+  /** HSL secondary grade. Absent / neutral = nothing emitted. */
+  hsl?: ClipHsl
+  /** One-click filter preset. Absent / 'none' = nothing emitted. */
+  filterPreset?: FilterPreset
+  /** Preset intensity 0..1. Default 1. */
+  filterIntensity?: number
+}
+
+/** Hard cap on adjustment layers per project (filter-graph length guard). */
+export const MAX_ADJUSTMENT_LAYERS = 8
+/** Default span for a freshly added adjustment layer. */
+export const DEFAULT_ADJUSTMENT_LAYER_MS = 3000
+
+// -----------------------------------------------------------------------------
+// Phase 3.35 — progress bar overlay. A thin bar filling 0→100% over the whole
+// exported video (a short-form retention element). Project-level, like coverMs.
+// -----------------------------------------------------------------------------
+
+export type ProgressBarPosition = 'top' | 'bottom'
+
+/** Whole-video progress bar config. */
+export interface ProgressBarConfig {
+  /** Master switch. Absent config OR enabled:false ⇒ byte-identical export. */
+  enabled: boolean
+  /** 'top' = y=0; 'bottom' = y=ih-h. */
+  position: ProgressBarPosition
+  /** Fill (and track) color, '#rrggbb'. */
+  color: string
+  /** Bar thickness as a fraction of canvas height (resolution-independent). */
+  heightFrac: number
+}
+
+export const DEFAULT_PROGRESS_BAR_COLOR = '#ffffff'
+export const DEFAULT_PROGRESS_BAR_HEIGHT_FRAC = 0.012
+export const MIN_PROGRESS_BAR_HEIGHT_FRAC = 0.004
+export const MAX_PROGRESS_BAR_HEIGHT_FRAC = 0.08
+/** Opacity of the faint full-width track drawn behind the fill. */
+export const PROGRESS_BAR_TRACK_OPACITY = 0.25
+
 export interface Project {
   id: string
   name: string
@@ -717,6 +976,25 @@ export interface Project {
   media: Record<string, MediaAsset>
   createdAt: number
   updatedAt: number
+  /**
+   * Phase 3.27 — timeline ms (final-exported-timeline axis, same axis as the
+   * renderer playhead) marked by the user as the video's cover frame. Absent ⇒
+   * no explicit cover (export falls back to frame 0). Clamped on read by
+   * `resolveCoverMs`. The cover is exported as a standalone `<name>_cover.jpg`
+   * — a SEPARATE second ffmpeg pass; the main export graph is unaffected.
+   */
+  coverMs?: number
+  /**
+   * Phase 3.32 — adjustment layers (range color-grades over the composited
+   * frame). Absent / empty / all-neutral = byte-identical legacy export.
+   * Resolved defensively by `getAdjustmentLayers`. No migration.
+   */
+  adjustmentLayers?: AdjustmentLayer[]
+  /**
+   * Phase 3.35 — progress bar overlay. Absent / `enabled:false` = byte-
+   * identical legacy export. Resolved defensively by `getProgressBar`.
+   */
+  progressBar?: ProgressBarConfig
 }
 
 export const ASPECT_RATIO_DIMENSIONS: Record<
@@ -727,6 +1005,238 @@ export const ASPECT_RATIO_DIMENSIONS: Record<
   '1:1': { width: 1080, height: 1080 },
   '16:9': { width: 1920, height: 1080 },
   '4:5': { width: 1080, height: 1350 }
+}
+
+/**
+ * Phase 3.26 — aspect-ratio conversion. Returns the new
+ * `{ aspectRatio, width, height }` for a target ratio. PURE: clip transforms
+ * are canvas-RELATIVE fractions and re-fit the new canvas automatically, so
+ * conversion changes ONLY these three project fields — no clip is touched, and
+ * repeated conversions round-trip exactly (A→B→A restores byte-identical dims).
+ * NOT read by the export graph (export canvas size comes from the export
+ * preset), so converting never changes export output for a fixed preset.
+ */
+export function aspectRatioConversion(next: AspectRatio): {
+  aspectRatio: AspectRatio
+  width: number
+  height: number
+} {
+  const d = ASPECT_RATIO_DIMENSIONS[next]
+  return { aspectRatio: next, width: d.width, height: d.height }
+}
+
+/**
+ * Phase 3.27 — resolve a project's cover-frame timeline ms, clamped into
+ * [0, durationMs]. `durationMs` is the authoritative timeline length (renderer:
+ * `getTotalDurationMs(project)`; main: the exported mp4's probed duration).
+ * Returns 0 (frame-0 fallback) when `coverMs` is unset/invalid or duration ≤ 0.
+ */
+export function resolveCoverMs(
+  coverMs: number | undefined,
+  durationMs: number
+): number {
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return 0
+  if (coverMs == null || !Number.isFinite(coverMs)) return 0
+  return Math.max(0, Math.min(Math.round(coverMs), Math.round(durationMs)))
+}
+
+// ---------------------------------------------------------------------------
+// Adjustment-layer helpers (Phase 3.32) — pure, importable from any layer.
+// ---------------------------------------------------------------------------
+
+/** True iff a layer's entire grade payload is neutral (a pure no-op). */
+export function isNeutralAdjustmentLayer(layer: AdjustmentLayer): boolean {
+  return (
+    resolveColorAdjust(layer.colorAdjust) === null &&
+    resolveClipCurves(layer.curves) === null &&
+    resolveClipHsl(layer.hsl) === null &&
+    (!layer.filterPreset || layer.filterPreset === 'none')
+  )
+}
+
+/**
+ * Resolve a project's effective adjustment layers — sanitized, each clamped to
+ * a valid [startMs, endMs] window (startMs >= 0, endMs >= startMs + MIN_CLIP_MS),
+ * sorted ascending by startMs, capped at MAX_ADJUSTMENT_LAYERS. Drops malformed
+ * entries AND any fully-neutral layer (a neutral layer is a no-op — dropping it
+ * keeps the export graph byte-identical). [] when absent — the byte-identical
+ * gate. Defensive: the project arrives over IPC unvalidated.
+ */
+export function getAdjustmentLayers(project: Project): AdjustmentLayer[] {
+  const raw = project.adjustmentLayers
+  if (!Array.isArray(raw) || raw.length === 0) return []
+  const out: AdjustmentLayer[] = []
+  for (let i = 0; i < raw.length; i++) {
+    const l = raw[i]
+    if (!l || typeof l !== 'object') continue
+    const startMs = Math.max(0, Number.isFinite(l.startMs) ? l.startMs : 0)
+    const endRaw = Number.isFinite(l.endMs) ? l.endMs : startMs + MIN_CLIP_MS
+    const endMs = Math.max(startMs + MIN_CLIP_MS, endRaw)
+    const layer: AdjustmentLayer = {
+      id: typeof l.id === 'string' && l.id ? l.id : `adj-${i}`,
+      startMs,
+      endMs,
+      colorAdjust: l.colorAdjust,
+      curves: l.curves,
+      hsl: l.hsl,
+      filterPreset: l.filterPreset,
+      filterIntensity: l.filterIntensity
+    }
+    if (isNeutralAdjustmentLayer(layer)) continue
+    out.push(layer)
+  }
+  out.sort((a, b) => a.startMs - b.startMs)
+  return out.slice(0, MAX_ADJUSTMENT_LAYERS)
+}
+
+// ---------------------------------------------------------------------------
+// Clip-group helpers (Phase 3.33) — pure, importable from any layer.
+// ---------------------------------------------------------------------------
+
+/**
+ * All clips across the project carrying `groupId`. [] when `groupId` is falsy.
+ * Order: track order, then in-track order.
+ */
+export function getGroupMembers(project: Project, groupId: string): Clip[] {
+  if (!groupId) return []
+  const out: Clip[] = []
+  for (const t of project.tracks) {
+    for (const c of t.clips) {
+      if (c.groupId === groupId) out.push(c)
+    }
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// Progress-bar helpers (Phase 3.35) — pure, importable from any layer.
+// ---------------------------------------------------------------------------
+
+/** Max `endMs` across every clip — the exported timeline length (ms). */
+export function getProjectTotalMs(project: Project): number {
+  let max = 0
+  for (const t of project.tracks) {
+    for (const c of t.clips) {
+      if (c.endMs > max) max = c.endMs
+    }
+  }
+  return max
+}
+
+/**
+ * Resolve a project's progress-bar config, or null when absent / disabled.
+ * Defensive: validates color (#rrggbb), clamps `heightFrac`, coerces position.
+ * Null is the byte-identical legacy gate.
+ */
+export function getProgressBar(project: Project): ProgressBarConfig | null {
+  const raw = project.progressBar
+  if (!raw || typeof raw !== 'object' || raw.enabled !== true) return null
+  const position: ProgressBarPosition = raw.position === 'top' ? 'top' : 'bottom'
+  const color = /^#[0-9a-fA-F]{6}$/.test(raw.color)
+    ? raw.color
+    : DEFAULT_PROGRESS_BAR_COLOR
+  const h = Number.isFinite(raw.heightFrac)
+    ? raw.heightFrac
+    : DEFAULT_PROGRESS_BAR_HEIGHT_FRAC
+  const heightFrac = Math.max(
+    MIN_PROGRESS_BAR_HEIGHT_FRAC,
+    Math.min(MAX_PROGRESS_BAR_HEIGHT_FRAC, h)
+  )
+  return { enabled: true, position, color, heightFrac }
+}
+
+/**
+ * ffmpeg `drawbox` chain for the progress bar (faint full-width track + the
+ * time-varying fill). '' when `totalSec <= 0`. The `min(t,total)` clamp pins
+ * the fill at 100% on the last frame despite fps rounding.
+ */
+export function progressBarToFfmpeg(
+  cfg: ProgressBarConfig,
+  totalSec: number
+): string {
+  if (!Number.isFinite(totalSec) || totalSec <= 0) return ''
+  const hex = '0x' + cfg.color.replace(/^#/, '')
+  const hf = cfg.heightFrac
+  const y = cfg.position === 'top' ? '0' : `ih-ih*${hf}`
+  const total = totalSec.toFixed(3)
+  const track =
+    `drawbox=x=0:y=${y}:w=iw:h=ih*${hf}` +
+    `:color=${hex}@${PROGRESS_BAR_TRACK_OPACITY}:t=fill`
+  const fill =
+    `drawbox=x=0:y=${y}:w='iw*min(t\\,${total})/${total}':h=ih*${hf}` +
+    `:color=${hex}@1.0:t=fill`
+  return `${track},${fill}`
+}
+
+// ---------------------------------------------------------------------------
+// Volume-envelope helpers (Phase 3.30) — pure, importable from any layer.
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a clip's effective volume keyframes — sorted ascending by `atMs`,
+ * dB-clamped to [MIN_GAIN_DB, MAX_GAIN_DB], `atMs`-clamped to [0, clip timeline
+ * duration], deduped within MIN_VOLUME_KEYFRAME_GAP_MS, capped at
+ * MAX_VOLUME_KEYFRAMES_PER_CLIP — or NULL when fewer than 2 real keyframes
+ * survive. Defensive: the clip arrives over IPC unvalidated. NULL is the
+ * byte-identical legacy gate (caller emits the constant-`gainDb` `volume=` step).
+ */
+export function resolvedVolumeKeyframes(
+  clip: VideoAudioClip
+): VolumeKeyframe[] | null {
+  const raw = clip.volumeKeyframes
+  if (!Array.isArray(raw) || raw.length < 2) return null
+  const dur = Math.max(0, clip.endMs - clip.startMs)
+  const norm: VolumeKeyframe[] = []
+  for (const k of raw) {
+    if (!k || typeof k !== 'object') continue
+    const atMs = Number.isFinite(k.atMs) ? Math.min(dur, Math.max(0, k.atMs)) : 0
+    const g = Number.isFinite(k.gainDb) ? k.gainDb : 0
+    norm.push({ atMs, gainDb: Math.min(MAX_GAIN_DB, Math.max(MIN_GAIN_DB, g)) })
+  }
+  norm.sort((a, b) => a.atMs - b.atMs)
+  const out: VolumeKeyframe[] = []
+  for (const k of norm) {
+    const prev = out[out.length - 1]
+    if (prev && k.atMs - prev.atMs < MIN_VOLUME_KEYFRAME_GAP_MS) {
+      out[out.length - 1] = k
+    } else {
+      out.push(k)
+    }
+    if (out.length >= MAX_VOLUME_KEYFRAMES_PER_CLIP) break
+  }
+  return out.length >= 2 ? out : null
+}
+
+/** True iff the clip has an active (>= 2 keyframe) volume envelope. */
+export function hasVolumeEnvelope(clip: VideoAudioClip): boolean {
+  return resolvedVolumeKeyframes(clip) !== null
+}
+
+/**
+ * Volume (dB) at a clip-relative timeline ms — piecewise-linear between
+ * keyframes, hold-clamped before the first / after the last. Falls back to the
+ * clip's constant `gainDb` when there is no envelope.
+ */
+export function getVolumeDbAt(
+  clip: VideoAudioClip,
+  timelineOffsetMs: number
+): number {
+  const kfs = resolvedVolumeKeyframes(clip)
+  if (!kfs) return clip.gainDb ?? 0
+  const t = Number.isFinite(timelineOffsetMs) ? timelineOffsetMs : 0
+  if (t <= kfs[0].atMs) return kfs[0].gainDb
+  const last = kfs[kfs.length - 1]
+  if (t >= last.atMs) return last.gainDb
+  for (let i = 1; i < kfs.length; i++) {
+    const a = kfs[i - 1]
+    const b = kfs[i]
+    if (t <= b.atMs) {
+      const span = b.atMs - a.atMs
+      if (span <= 0) return b.gainDb
+      return a.gainDb + ((b.gainDb - a.gainDb) * (t - a.atMs)) / span
+    }
+  }
+  return last.gainDb
 }
 
 // ---------------------------------------------------------------------------
@@ -761,6 +1271,44 @@ export const MIN_RETOUCH = 0
 export const MAX_RETOUCH = 100
 /** Strength applied when the retouch toggle is first switched ON. */
 export const DEFAULT_RETOUCH = 40
+
+// ---------------------------------------------------------------------------
+// Phase 3.37 — film look (vignette / grain / faded tone) finishing filter.
+// ---------------------------------------------------------------------------
+/** Named faded-film tones. Each is a small fixed curves/eq recipe on export. */
+export type FilmToneId = 'none' | 'warm' | 'fade' | 'cool' | 'bw'
+
+/**
+ * Per-clip "film look" finishing filter. STATIC ONLY. Absent / fully-neutral
+ * (vignette 0 + grain 0 + toneId 'none') = no-op → byte-identical export +
+ * preview. Resolved defensively by `getFilmLook` (null when absent/neutral).
+ */
+export interface FilmLook {
+  /** Corner-darkening strength, 0..100. 0 = no vignette. */
+  vignette: number
+  /** Film-grain strength, 0..100. 0 = no grain. */
+  grain: number
+  /** Faded-tone recipe id; 'none' = no tone shift. */
+  toneId: FilmToneId
+}
+
+/** All film tone ids, in UI order. */
+export const FILM_TONE_IDS: readonly FilmToneId[] = [
+  'none',
+  'warm',
+  'fade',
+  'cool',
+  'bw'
+]
+/** A do-nothing film look (absent-equivalent). */
+export const NEUTRAL_FILM_LOOK: FilmLook = {
+  vignette: 0,
+  grain: 0,
+  toneId: 'none'
+}
+/** Film-look strength bounds (vignette / grain). */
+export const MIN_FILM_LOOK = 0
+export const MAX_FILM_LOOK = 100
 
 // ---------------------------------------------------------------------------
 // Transition / filter constants (Phase 2.6).
@@ -819,6 +1367,14 @@ export const MAX_BULK_TRACKS = 10
 export const MAX_KEYFRAMES_PER_CLIP = 24
 /** Two keyframes closer than this (clip-relative ms) are deduped/merged. */
 export const MIN_KEYFRAME_GAP_MS = 30
+
+// ---------------------------------------------------------------------------
+// Volume-envelope constants (Phase 3.30).
+// ---------------------------------------------------------------------------
+/** Hard cap on volume keyframes per clip (UI + ffmpeg expression-length guard). */
+export const MAX_VOLUME_KEYFRAMES_PER_CLIP = 24
+/** Two volume keyframes closer than this (clip-relative ms) are deduped/merged. */
+export const MIN_VOLUME_KEYFRAME_GAP_MS = 30
 
 // ---------------------------------------------------------------------------
 // Speed-curve constants (Phase 3.10).
@@ -1145,6 +1701,34 @@ export function getClipRetouch(clip: VideoAudioClip): number | null {
   return clamped <= 0 ? null : clamped
 }
 
+/** True when a film look does nothing (absent-equivalent). */
+export function isNeutralFilmLook(f: FilmLook): boolean {
+  return f.vignette <= 0 && f.grain <= 0 && f.toneId === 'none'
+}
+
+/**
+ * Resolve a clip's effective film look, or null when absent / neutral.
+ * Defensive (clip may arrive over IPC unvalidated): non-finite strengths → 0,
+ * clamped to [MIN_FILM_LOOK, MAX_FILM_LOOK]; unknown toneId → 'none'. A neutral
+ * result returns null — THE BYTE-IDENTICAL GATE: when this returns null,
+ * export emits the exact pre-Phase-3.37 graph and preview adds nothing.
+ */
+export function getFilmLook(clip: VideoAudioClip): FilmLook | null {
+  const f = clip.filmLook
+  if (!f) return null
+  const clampStrength = (v: unknown): number => {
+    const n = typeof v === 'number' && Number.isFinite(v) ? v : 0
+    return Math.min(MAX_FILM_LOOK, Math.max(MIN_FILM_LOOK, n))
+  }
+  const toneId: FilmToneId = FILM_TONE_IDS.includes(f.toneId) ? f.toneId : 'none'
+  const resolved: FilmLook = {
+    vignette: clampStrength(f.vignette),
+    grain: clampStrength(f.grain),
+    toneId
+  }
+  return isNeutralFilmLook(resolved) ? null : resolved
+}
+
 /** Type-narrowed predicate: is this clip an overlay clip? */
 export function isOverlayClip(clip: Clip): clip is OverlayClip {
   return clip.kind === 'overlay'
@@ -1322,8 +1906,14 @@ export function isNeutralColorAdjust(c: ColorAdjust): boolean {
  * (non-finite → 0) and clamped to [MIN_COLOR_ADJUST, MAX_COLOR_ADJUST]. A
  * neutral (all-zero) result returns null so callers skip work.
  */
-export function getClipColorAdjust(clip: VideoAudioClip): ColorAdjust | null {
-  const c = clip.colorAdjust
+/**
+ * Resolve a raw `ColorAdjust` payload, or null when absent/neutral. Defensive:
+ * every field coerced finite + clamped. Payload-level twin of
+ * `getClipColorAdjust` — reused by adjustment layers (Phase 3.32).
+ */
+export function resolveColorAdjust(
+  c: ColorAdjust | undefined
+): ColorAdjust | null {
   if (!c) return null
   const f = (v: number): number => {
     const n = Number.isFinite(v) ? v : 0
@@ -1336,6 +1926,10 @@ export function getClipColorAdjust(clip: VideoAudioClip): ColorAdjust | null {
     temperature: f(c.temperature)
   }
   return isNeutralColorAdjust(adj) ? null : adj
+}
+
+export function getClipColorAdjust(clip: VideoAudioClip): ColorAdjust | null {
+  return resolveColorAdjust(clip.colorAdjust)
 }
 
 // ---------------------------------------------------------------------------
@@ -1376,6 +1970,173 @@ export function getCaptionAnimation(clip: CaptionClip): CaptionAnimation | null 
     outMs: clampMs(a.outMs)
   }
   return isNoCaptionAnimation(resolved) ? null : resolved
+}
+
+// ---------------------------------------------------------------------------
+// Karaoke caption helpers (Phase 3.22) — pure, importable from any layer.
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a caption's per-word timing — clip-relative, clamped to the clip's
+ * duration, ascending by startMs. [] when absent / all malformed. Defensive:
+ * the caption may arrive over IPC unvalidated.
+ */
+export function resolveCaptionWords(clip: CaptionClip): CaptionWord[] {
+  const raw = clip.words
+  if (!Array.isArray(raw) || raw.length === 0) return []
+  const dur = Math.max(1, clip.endMs - clip.startMs)
+  const out: CaptionWord[] = []
+  for (const w of raw) {
+    if (!w || typeof w.text !== 'string') continue
+    const s = Math.min(dur, Math.max(0, Number.isFinite(w.startMs) ? w.startMs : 0))
+    const e = Math.min(dur, Math.max(s, Number.isFinite(w.endMs) ? w.endMs : s))
+    out.push({ text: w.text, startMs: s, endMs: e })
+  }
+  return out.sort((a, b) => a.startMs - b.startMs)
+}
+
+/**
+ * Resolve a caption's effective karaoke spec, or null when inactive. Inactive =
+ * absent / `enabled:false` / no resolvable words. Defensive: coerces the style
+ * + color to valid values. Null is the byte-identical legacy gate.
+ */
+export function getCaptionKaraoke(clip: CaptionClip): CaptionKaraoke | null {
+  const k = clip.karaoke
+  if (!k || k.enabled !== true) return null
+  if (resolveCaptionWords(clip).length === 0) return null
+  return {
+    enabled: true,
+    highlightStyle: (KARAOKE_STYLES as readonly string[]).includes(
+      k.highlightStyle
+    )
+      ? k.highlightStyle
+      : 'color-fill',
+    highlightColor: /^#[0-9a-fA-F]{6}$/.test(k.highlightColor)
+      ? k.highlightColor
+      : DEFAULT_KARAOKE_COLOR,
+    highlightBox: k.highlightBox === true
+  }
+}
+
+/**
+ * Index of the active word at a clip-relative ms, or -1 (before the first
+ * word). The last word that has started stays active through any gap until the
+ * next word starts — no flicker on silence gaps. `words` must be sorted.
+ */
+export function getActiveWordIndex(
+  words: CaptionWord[],
+  clipRelativeMs: number
+): number {
+  let idx = -1
+  for (let i = 0; i < words.length; i++) {
+    if (words[i].startMs <= clipRelativeMs) idx = i
+    else break
+  }
+  return idx
+}
+
+/**
+ * Even-split fallback: synthesize `words` from a caption's non-empty spans,
+ * distributed evenly across [0, clip duration]. For a manually-typed caption
+ * with no STT word timing.
+ */
+export function evenSplitWords(clip: CaptionClip): CaptionWord[] {
+  const dur = Math.max(1, clip.endMs - clip.startMs)
+  const spans = clip.spans.filter((s) => s.text.trim().length > 0)
+  if (spans.length === 0) return []
+  const step = dur / spans.length
+  return spans.map((s, i) => ({
+    text: s.text,
+    startMs: Math.round(i * step),
+    endMs: Math.round((i + 1) * step)
+  }))
+}
+
+// ---------------------------------------------------------------------------
+// Caption text-decoration helpers (Phase 3.23) — pure, importable anywhere.
+// ---------------------------------------------------------------------------
+
+const HEX6_RE = /^#[0-9a-fA-F]{6}$/
+
+/**
+ * Resolve a caption's effective text outline, or null when absent / inert
+ * (width <= 0). Defensive: validates color, clamps width. Null is the
+ * byte-identical legacy gate — callers MUST emit nothing new when null.
+ */
+export function getCaptionTextStroke(
+  style: CaptionStyle
+): CaptionTextStroke | null {
+  const s = style.textStroke
+  if (!s) return null
+  const w = Number.isFinite(s.width) ? s.width : 0
+  const width = Math.min(MAX_CAPTION_STROKE_WIDTH, Math.max(0, w))
+  if (width <= 0) return null
+  return {
+    color: HEX6_RE.test(s.color) ? s.color : DEFAULT_CAPTION_STROKE_COLOR,
+    width
+  }
+}
+
+/**
+ * Resolve a caption's effective text shadow / glow, or null when the field is
+ * absent. Defensive: validates color, clamps offsets to ±MAX, blur to [0,MAX].
+ * Absent field ⇒ null (the byte-identical legacy gate).
+ */
+export function getCaptionTextShadow(
+  style: CaptionStyle
+): CaptionTextShadow | null {
+  const s = style.textShadow
+  if (!s) return null
+  const clampOff = (v: number): number => {
+    const n = Number.isFinite(v) ? v : 0
+    return Math.min(
+      MAX_CAPTION_SHADOW_OFFSET,
+      Math.max(-MAX_CAPTION_SHADOW_OFFSET, n)
+    )
+  }
+  return {
+    color: HEX6_RE.test(s.color) ? s.color : DEFAULT_CAPTION_SHADOW_COLOR,
+    offsetX: clampOff(s.offsetX),
+    offsetY: clampOff(s.offsetY),
+    blur: Math.min(
+      MAX_CAPTION_SHADOW_BLUR,
+      Math.max(0, Number.isFinite(s.blur) ? s.blur : 0)
+    )
+  }
+}
+
+/**
+ * Resolve an overlay clip's effective drop shadow, or null when the `shadow`
+ * field is absent. Defensive (clips may arrive over IPC unvalidated): validates
+ * color, clamps offsets to ±MAX_OVERLAY_SHADOW_OFFSET, blur to
+ * [0,MAX_OVERLAY_SHADOW_BLUR], opacity to [0,1].
+ *
+ * Null is THE BYTE-IDENTICAL GATE: when this returns null, export emits the
+ * exact pre-Phase-3.36 overlay filter graph and preview writes no CSS `filter`.
+ */
+export function getOverlayShadow(clip: OverlayClip): OverlayShadow | null {
+  const s = clip.shadow
+  if (!s) return null
+  const clampOff = (v: number): number => {
+    const n = Number.isFinite(v) ? v : 0
+    return Math.min(
+      MAX_OVERLAY_SHADOW_OFFSET,
+      Math.max(-MAX_OVERLAY_SHADOW_OFFSET, n)
+    )
+  }
+  return {
+    color: HEX6_RE.test(s.color) ? s.color : DEFAULT_OVERLAY_SHADOW_COLOR,
+    offsetX: clampOff(s.offsetX),
+    offsetY: clampOff(s.offsetY),
+    blur: Math.min(
+      MAX_OVERLAY_SHADOW_BLUR,
+      Math.max(0, Number.isFinite(s.blur) ? s.blur : 0)
+    ),
+    opacity: Math.min(
+      1,
+      Math.max(0, Number.isFinite(s.opacity) ? s.opacity : 1)
+    )
+  }
 }
 
 /**
@@ -2053,10 +2814,17 @@ export function isIdentityClipCurves(c: ClipCurves): boolean {
  * (all-identity) result returns null so callers skip work — keeping the export
  * graph byte-identical to the pre-Phase-3.12 graph for unadjusted clips.
  */
+/** Payload-level twin of `getClipCurves` — reused by adjustment layers. */
+export function resolveClipCurves(
+  c: ClipCurves | undefined
+): ClipCurves | null {
+  if (!c) return null
+  const s = sanitizeClipCurves(c)
+  return isIdentityClipCurves(s) ? null : s
+}
+
 export function getClipCurves(clip: VideoAudioClip): ClipCurves | null {
-  if (!clip.curves) return null
-  const c = sanitizeClipCurves(clip.curves)
-  return isIdentityClipCurves(c) ? null : c
+  return resolveClipCurves(clip.curves)
 }
 
 /** Canonicalize one HSL band: each field coerced finite & clamped to range. */
@@ -2101,10 +2869,15 @@ export function isNeutralClipHsl(h: ClipHsl): boolean {
  * unknown band keys dropped, missing bands → neutral, every field clamped. A
  * neutral (all-zero) result returns null so callers skip work.
  */
+/** Payload-level twin of `getClipHsl` — reused by adjustment layers. */
+export function resolveClipHsl(h: ClipHsl | undefined): ClipHsl | null {
+  if (!h) return null
+  const s = sanitizeClipHsl(h)
+  return isNeutralClipHsl(s) ? null : s
+}
+
 export function getClipHsl(clip: VideoAudioClip): ClipHsl | null {
-  if (!clip.hsl) return null
-  const h = sanitizeClipHsl(clip.hsl)
-  return isNeutralClipHsl(h) ? null : h
+  return resolveClipHsl(clip.hsl)
 }
 
 // ---------------------------------------------------------------------------

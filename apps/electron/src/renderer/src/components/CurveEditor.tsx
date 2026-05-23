@@ -4,7 +4,8 @@ import {
   CURVE_CHANNEL_KEYS,
   IDENTITY_CLIP_CURVES,
   MIN_CURVE_POINTS,
-  getClipCurves
+  getClipCurves,
+  resolveClipCurves
 } from '../../../shared/project'
 import {
   CURVE_CHANNEL_LABELS,
@@ -23,8 +24,20 @@ import { useProjectStore } from '../store/project'
  */
 
 interface CurveEditorProps {
-  /** Media clip whose tone curves are being edited. */
+  /**
+   * Id of the entity whose tone curves are being edited. With `mode='clip'`
+   * (default) this is a media clip id; with `mode='adjustmentLayer'` it is an
+   * adjustment-layer id.
+   */
   clipId: string
+  /**
+   * Phase 3.32 — which store entity the curve edits route to. `'clip'` uses
+   * the per-clip curve actions; `'adjustmentLayer'` uses the
+   * `setAdjustmentLayerCurvePoint` action. Adjustment-layer mode supports
+   * dragging existing points (4-channel identity baseline) — add/remove of
+   * intermediate points is clip-only.
+   */
+  mode?: 'clip' | 'adjustmentLayer'
 }
 
 const GRAPH = 240
@@ -104,30 +117,54 @@ function fromSvgY(px: number): number {
 }
 
 export function CurveEditor(props: CurveEditorProps): JSX.Element {
-  const { clipId } = props
+  const { clipId, mode = 'clip' } = props
+  const isLayer = mode === 'adjustmentLayer'
 
   const project = useProjectStore((s) => s.project)
   const setCurvePoint = useProjectStore((s) => s.setCurvePoint)
   const addCurvePoint = useProjectStore((s) => s.addCurvePoint)
   const removeCurvePoint = useProjectStore((s) => s.removeCurvePoint)
   const resetCurves = useProjectStore((s) => s.resetCurves)
+  // Phase 3.32 — adjustment-layer curve action.
+  const setAdjustmentLayerCurvePoint = useProjectStore(
+    (s) => s.setAdjustmentLayerCurvePoint
+  )
 
   const [channel, setChannel] = useState<CurveChannelKey>('master')
   /** Index of the handle being dragged, or -1 when idle. */
   const dragRef = useRef<number>(-1)
   const svgRef = useRef<SVGSVGElement | null>(null)
 
-  // Resolve the clip's curves (null = identity → fall back to identity).
+  // Resolve the entity's curves (null = identity → fall back to identity).
   const curves = useMemo(() => {
+    if (isLayer) {
+      const layer = (project.adjustmentLayers ?? []).find(
+        (l) => l.id === clipId
+      )
+      return layer
+        ? resolveClipCurves(layer.curves) ?? IDENTITY_CLIP_CURVES
+        : IDENTITY_CLIP_CURVES
+    }
     for (const t of project.tracks) {
       const c = t.clips.find((cc) => cc.id === clipId)
       if (c && c.kind === 'media') return getClipCurves(c) ?? IDENTITY_CLIP_CURVES
     }
     return IDENTITY_CLIP_CURVES
-  }, [project, clipId])
+  }, [project, clipId, isLayer])
+
+  // Route a point edit to the clip OR the adjustment-layer store action.
+  const applySetCurvePoint = (
+    ch: CurveChannelKey,
+    index: number,
+    partial: { x?: number; y?: number }
+  ): void => {
+    if (isLayer) setAdjustmentLayerCurvePoint(clipId, ch, index, partial)
+    else setCurvePoint(clipId, ch, index, partial)
+  }
 
   const activePts = curves[channel]
-  const canRemove = activePts.length > MIN_CURVE_POINTS
+  // Adjustment-layer mode keeps the identity 2-point baseline (no add/remove).
+  const canRemove = !isLayer && activePts.length > MIN_CURVE_POINTS
 
   /** Convert a pointer event to graph-space {x,y}. */
   const eventToGraph = (
@@ -164,7 +201,7 @@ export function CurveEditor(props: CurveEditorProps): JSX.Element {
       : isLast
         ? { x: 1, y: g.y }
         : { x: g.x, y: g.y }
-    setCurvePoint(clipId, channel, index, partial)
+    applySetCurvePoint(channel, index, partial)
   }
 
   const handlePointerUp = (e: React.PointerEvent): void => {
@@ -174,10 +211,12 @@ export function CurveEditor(props: CurveEditorProps): JSX.Element {
     dragRef.current = -1
   }
 
-  /** Click on empty graph area → add a control point there. */
+  /** Click on empty graph area → add a control point there (clip mode only). */
   const handleSvgClick = (e: React.MouseEvent): void => {
     // Ignore the click that ends a drag.
     if (dragRef.current >= 0) return
+    // Adjustment-layer mode keeps the fixed 2-point identity baseline.
+    if (isLayer) return
     const g = eventToGraph(e)
     addCurvePoint(clipId, channel, g)
   }
@@ -336,7 +375,19 @@ export function CurveEditor(props: CurveEditorProps): JSX.Element {
         type="button"
         style={styles.resetBtn}
         data-testid="curve-reset"
-        onClick={() => resetCurves(clipId)}
+        onClick={() => {
+          if (isLayer) {
+            // Layer mode keeps the 2-point baseline — snap every channel's
+            // two endpoints back to the identity diagonal (the store
+            // neutral-collapses to `undefined` once all-identity).
+            for (const k of CURVE_CHANNEL_KEYS) {
+              setAdjustmentLayerCurvePoint(clipId, k, 0, { x: 0, y: 0 })
+              setAdjustmentLayerCurvePoint(clipId, k, 1, { x: 1, y: 1 })
+            }
+          } else {
+            resetCurves(clipId)
+          }
+        }}
       >
         곡선 초기화
       </button>

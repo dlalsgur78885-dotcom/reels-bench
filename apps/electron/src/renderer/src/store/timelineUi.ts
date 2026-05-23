@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import { getGroupMembers } from '../../../shared/project'
+import { useProjectStore } from './project'
 
 /**
  * Transient UI state for the timeline (selection model + playback state +
@@ -19,6 +21,19 @@ export interface TimelineUiStore {
   toggleClipSelected(clipId: string): void
   /** Clear all selection. */
   clearSelection(): void
+
+  // ----- Adjustment-layer selection (Phase 3.32) -----
+  /**
+   * The currently selected adjustment layer id, or null. Mutually exclusive
+   * with `selectedClipIds` — selecting a layer clears the clip selection and
+   * vice versa, so the EffectsPanel shows exactly one grade editor.
+   */
+  selectedAdjustmentLayerId: string | null
+  /**
+   * Select an adjustment layer (or clear when null). Selecting a non-null id
+   * clears the clip selection (mutually exclusive selection).
+   */
+  setSelectedAdjustmentLayerId(layerId: string | null): void
 
   // ----- Playback (Phase 2.2) -----
   /** Playhead position in milliseconds (>= 0). */
@@ -138,6 +153,7 @@ export const BEAT_SNAP_TOLERANCE_MS = 80
 
 export const useTimelineUi = create<TimelineUiStore>((set, get) => ({
   selectedClipIds: new Set<string>(),
+  selectedAdjustmentLayerId: null,
   playheadMs: 0,
   playing: false,
   pps: DEFAULT_PPS,
@@ -154,23 +170,64 @@ export const useTimelineUi = create<TimelineUiStore>((set, get) => ({
 
   selectClip(clipId: string | null): void {
     const current = get().selectedClipIds
+    const hadLayer = get().selectedAdjustmentLayerId !== null
     if (clipId === null) {
-      if (current.size === 0) return
-      set({ selectedClipIds: new Set() })
+      if (current.size === 0 && !hadLayer) return
+      set({ selectedClipIds: new Set(), selectedAdjustmentLayerId: null })
       return
     }
-    if (current.size === 1 && current.has(clipId)) return
-    set({ selectedClipIds: new Set([clipId]) })
+    // Phase 3.33 — selecting a grouped clip selects ALL its group members.
+    // The project state lives in a separate store; no import cycle exists
+    // (project.ts never imports timelineUi.ts), so reading it here is safe.
+    const project = useProjectStore.getState().project
+    let ids: string[] = [clipId]
+    for (const t of project.tracks) {
+      const c = t.clips.find((cc) => cc.id === clipId)
+      if (c) {
+        if (c.groupId) {
+          ids = getGroupMembers(project, c.groupId).map((m) => m.id)
+        }
+        break
+      }
+    }
+    // Skip the no-op set only when the selection is already exactly `ids`.
+    if (
+      !hadLayer &&
+      current.size === ids.length &&
+      ids.every((id) => current.has(id))
+    ) {
+      return
+    }
+    // Selecting a clip clears any adjustment-layer selection (mutually exclusive).
+    set({ selectedClipIds: new Set(ids), selectedAdjustmentLayerId: null })
   },
   toggleClipSelected(clipId: string): void {
     const next = new Set(get().selectedClipIds)
     if (next.has(clipId)) next.delete(clipId)
     else next.add(clipId)
-    set({ selectedClipIds: next })
+    set({ selectedClipIds: next, selectedAdjustmentLayerId: null })
   },
   clearSelection(): void {
-    if (get().selectedClipIds.size === 0) return
-    set({ selectedClipIds: new Set() })
+    if (get().selectedClipIds.size === 0 && get().selectedAdjustmentLayerId === null) {
+      return
+    }
+    set({ selectedClipIds: new Set(), selectedAdjustmentLayerId: null })
+  },
+
+  setSelectedAdjustmentLayerId(layerId: string | null): void {
+    if (layerId === null) {
+      if (get().selectedAdjustmentLayerId === null) return
+      set({ selectedAdjustmentLayerId: null })
+      return
+    }
+    // Selecting a layer clears the clip selection (mutually exclusive).
+    if (
+      get().selectedAdjustmentLayerId === layerId &&
+      get().selectedClipIds.size === 0
+    ) {
+      return
+    }
+    set({ selectedAdjustmentLayerId: layerId, selectedClipIds: new Set() })
   },
 
   setPlayheadMs(ms: number): void {

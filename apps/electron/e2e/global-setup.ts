@@ -149,4 +149,53 @@ export default async function globalSetup(): Promise<void> {
   })
 
   process.env.E2E_FIXTURE_MP3 = audioTarget
+
+  // Generate a 320×240 PNG overlay fixture (testsrc2, single frame).
+  // Used by overlay-shadow tests that need a real image-type overlay source
+  // (the export engine adds -loop 1 for image inputs; passing an mp4 there fails).
+  const pngTarget = path.join(e2eRoot, 'overlay.png')
+  if (existsSync(pngTarget)) {
+    try {
+      unlinkSync(pngTarget)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'testsrc2=size=320x240:rate=1',
+      '-frames:v',
+      '1',
+      '-update',
+      '1',
+      pngTarget
+    ]
+    const proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stderr = ''
+    proc.stderr.on('data', (b: Buffer) => {
+      stderr += b.toString('utf8')
+    })
+    proc.on('error', reject)
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`png fixture ffmpeg exited ${code}: ${stderr}`))
+        return
+      }
+      if (!existsSync(pngTarget) || statSync(pngTarget).size < 512) {
+        reject(new Error(`png fixture missing or too small at ${pngTarget}`))
+        return
+      }
+      resolve()
+    })
+  })
+
+  process.env.E2E_FIXTURE_PNG = pngTarget
 }

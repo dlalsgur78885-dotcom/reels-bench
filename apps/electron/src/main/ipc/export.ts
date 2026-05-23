@@ -23,7 +23,7 @@
 import { app, ipcMain, shell } from 'electron'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
   IPC_CHANNELS,
@@ -36,8 +36,10 @@ import {
 } from '../../shared/ipc'
 import { probeCapabilities } from '../ffmpeg/capabilities'
 import {
+  adjustmentLayerToFfmpeg,
   colorAdjustToFfmpeg,
   curvesToFfmpeg,
+  filmLookToFfmpeg,
   hslToFfmpeg,
   filterPresetToFfmpeg,
   retouchToFfmpeg,
@@ -74,6 +76,7 @@ import {
   hasTranscriptDeletions,
   isClipReversed,
   getClipTimelineDuration,
+  getAdjustmentLayers,
   MAX_TRANSFORM_OFFSET,
   MAX_TRANSFORM_ROTATION,
   MAX_TRANSFORM_SCALE,
@@ -83,12 +86,19 @@ import {
   CAPTION_SLIDE_FRAC,
   CAPTION_POP_START_SCALE,
   MAX_CAPTION_TYPEWRITER_STEPS,
+  MAX_CAPTION_KARAOKE_STEPS,
+  getCaptionKaraoke,
+  resolveCaptionWords,
   findMotionTrack,
+  getCaptionTextStroke,
+  getCaptionTextShadow,
   TRACK_EXPORT_STEP_MS,
   MAX_TRACK_EXPORT_KEYFRAMES,
+  type AdjustmentLayer,
   type BlurRegion,
   type CaptionAnimation,
   type CaptionClip,
+  type CaptionStyle,
   type ClipTransform,
   type DeletedRange,
   type MotionTrack,
@@ -100,7 +110,16 @@ import {
   type FreezeFrame,
   type SpeedKeyframe,
   type TransformKeyframe,
-  type VideoAudioClip
+  type VideoAudioClip,
+  type VolumeKeyframe,
+  resolveCoverMs,
+  resolvedVolumeKeyframes,
+  getProgressBar,
+  getProjectTotalMs,
+  progressBarToFfmpeg,
+  type ProgressBarConfig,
+  getOverlayShadow,
+  getFilmLook
 } from '../../shared/project'
 import { resolveFfmpegPath } from '../ffmpeg/binary'
 import { allowPath, assertPathAllowed } from '../ffmpeg/security'
@@ -253,6 +272,20 @@ const PRESETS: Record<ExportPresetKey, MainPreset> = {
     aBitrateKbps: 192,
     codec: 'libx264',
     preset: 'slow'
+  },
+  /**
+   * Phase 3.28 — GIF backing preset. Used only by the GIF branch as the
+   * composite render target for pass 0 (the intermediate mp4). The gif muxer
+   * itself is driven by exportGif. The 5 mp4 presets never touch this entry.
+   */
+  gif: {
+    width: 720,
+    height: 1280,
+    fps: 15,
+    vBitrateKbps: 3000,
+    aBitrateKbps: 128,
+    codec: 'libx264',
+    preset: 'fast'
   }
 }
 
@@ -715,6 +748,67 @@ function expandDeletedRanges(clip: VideoAudioClip): VideoAudioClip[] {
     const dur = getClipTimelineDuration(synth)
     synth.startMs = timelineCursor
     synth.endMs = timelineCursor + dur
+
+    // -----------------------------------------------------------------
+    // Phase 3.30 — Volume-keyframe re-basing for deletion survivors.
+    // VolumeKeyframe.atMs is clip-relative TIMELINE ms (offset from the
+    // ORIGINAL clip.startMs).  This survivor occupies:
+    //   localLo = timelineCursor - clip.startMs
+    //   localHi = localLo + dur
+    // in that original timeline.
+    //
+    // Keep every keyframe whose atMs falls in [localLo, localHi], plus the
+    // nearest neighbour outside each edge so the hold-clamp behaves correctly
+    // at the survivor boundaries. Re-base kept keyframes by subtracting localLo.
+    // Set volumeKeyframes: undefined when fewer than 2 survive so the constant
+    // gainDb fallback is used — mirroring the null gate of resolvedVolumeKeyframes.
+    // -----------------------------------------------------------------
+    if (Array.isArray(clip.volumeKeyframes) && clip.volumeKeyframes.length >= 2) {
+      const localLo = timelineCursor - clip.startMs
+      const localHi = localLo + dur
+      const vkfs = clip.volumeKeyframes as VolumeKeyframe[]
+
+      // Interior: strictly inside the window.
+      const interior = vkfs.filter((kf) => kf.atMs > localLo && kf.atMs < localHi)
+
+      // Nearest outside-left neighbour: largest atMs <= localLo.
+      const leftNeighbors = vkfs.filter((kf) => kf.atMs <= localLo)
+      const leftPin = leftNeighbors.length > 0
+        ? leftNeighbors.reduce((best, kf) => kf.atMs > best.atMs ? kf : best)
+        : null
+
+      // Nearest outside-right neighbour: smallest atMs >= localHi.
+      const rightNeighbors = vkfs.filter((kf) => kf.atMs >= localHi)
+      const rightPin = rightNeighbors.length > 0
+        ? rightNeighbors.reduce((best, kf) => kf.atMs < best.atMs ? kf : best)
+        : null
+
+      // Assemble: pin at localLo (if we have a left neighbour), interior, pin
+      // at localHi (if we have a right neighbour).  This guarantees boundary
+      // values are accurate regardless of where the original keyframes sit.
+      const assembled: VolumeKeyframe[] = []
+      if (leftPin !== null) {
+        assembled.push({ atMs: localLo, gainDb: leftPin.gainDb })
+      }
+      for (const kf of interior) {
+        assembled.push(kf)
+      }
+      if (rightPin !== null) {
+        assembled.push({ atMs: localHi, gainDb: rightPin.gainDb })
+      }
+
+      // Re-base to survivor-local 0.
+      const rebased = assembled.map((kf) => ({ atMs: kf.atMs - localLo, gainDb: kf.gainDb }))
+      // Dedupe same-atMs (keep first).
+      const deduped = rebased.filter(
+        (kf, idx) => idx === 0 || kf.atMs !== rebased[idx - 1].atMs
+      )
+
+      synth.volumeKeyframes = deduped.length >= 2 ? deduped : undefined
+    } else {
+      synth.volumeKeyframes = undefined
+    }
+
     timelineCursor += dur
 
     result.push(synth)
@@ -1106,6 +1200,43 @@ function collectSegments(
               }
             }
 
+            // -----------------------------------------------------------------
+            // Phase 3.30 — Volume-keyframe re-basing for video moving pieces.
+            // VolumeKeyframe.atMs is clip-relative timeline ms (offset from
+            // ec.startMs). This piece occupies [localLo, localHi] in that space.
+            // Mirror the transform-keyframe re-basing above: keep interior kfs
+            // plus nearest-neighbour boundary pins, re-base to [0, localHi-localLo].
+            // -----------------------------------------------------------------
+            if (Array.isArray(ec.volumeKeyframes) && ec.volumeKeyframes.length >= 2) {
+              const localLo = stepStartMs - ec.startMs
+              const localHi = stepEndMs - ec.startMs
+              const vkfs = ec.volumeKeyframes as VolumeKeyframe[]
+
+              const interior = vkfs.filter((kf) => kf.atMs > localLo && kf.atMs < localHi)
+
+              const leftNeighbors = vkfs.filter((kf) => kf.atMs <= localLo)
+              const leftPin = leftNeighbors.length > 0
+                ? leftNeighbors.reduce((best, kf) => kf.atMs > best.atMs ? kf : best)
+                : null
+              const rightNeighbors = vkfs.filter((kf) => kf.atMs >= localHi)
+              const rightPin = rightNeighbors.length > 0
+                ? rightNeighbors.reduce((best, kf) => kf.atMs < best.atMs ? kf : best)
+                : null
+
+              const assembled: VolumeKeyframe[] = []
+              if (leftPin !== null) assembled.push({ atMs: localLo, gainDb: leftPin.gainDb })
+              for (const kf of interior) assembled.push(kf)
+              if (rightPin !== null) assembled.push({ atMs: localHi, gainDb: rightPin.gainDb })
+
+              const rebased = assembled.map((kf) => ({ atMs: kf.atMs - localLo, gainDb: kf.gainDb }))
+              const vDeduped = rebased.filter(
+                (kf, idx) => idx === 0 || kf.atMs !== rebased[idx - 1].atMs
+              )
+              syntheticClip.volumeKeyframes = vDeduped.length >= 2 ? vDeduped : undefined
+            } else {
+              syntheticClip.volumeKeyframes = undefined
+            }
+
             const inputIdx = inputs.length
             inputs.push(media.path)
 
@@ -1294,6 +1425,41 @@ function collectSegments(
               fadeInMs:  isFirst ? (aec.fadeInMs ?? 0)  : 0,
               fadeOutMs: isLast  ? (aec.fadeOutMs ?? 0) : 0,
             }
+            // -----------------------------------------------------------------
+            // Phase 3.30 — Volume-keyframe re-basing for audio moving pieces.
+            // VolumeKeyframe.atMs is clip-relative timeline ms (offset from
+            // aec.startMs). This piece occupies [localLo, localHi].
+            // -----------------------------------------------------------------
+            if (Array.isArray(aec.volumeKeyframes) && aec.volumeKeyframes.length >= 2) {
+              const localLo = audioStepStartMs - aec.startMs
+              const localHi = audioStepEndMs - aec.startMs
+              const vkfs = aec.volumeKeyframes as VolumeKeyframe[]
+
+              const interior = vkfs.filter((kf) => kf.atMs > localLo && kf.atMs < localHi)
+
+              const leftNeighbors = vkfs.filter((kf) => kf.atMs <= localLo)
+              const leftPin = leftNeighbors.length > 0
+                ? leftNeighbors.reduce((best, kf) => kf.atMs > best.atMs ? kf : best)
+                : null
+              const rightNeighbors = vkfs.filter((kf) => kf.atMs >= localHi)
+              const rightPin = rightNeighbors.length > 0
+                ? rightNeighbors.reduce((best, kf) => kf.atMs < best.atMs ? kf : best)
+                : null
+
+              const assembled: VolumeKeyframe[] = []
+              if (leftPin !== null) assembled.push({ atMs: localLo, gainDb: leftPin.gainDb })
+              for (const kf of interior) assembled.push(kf)
+              if (rightPin !== null) assembled.push({ atMs: localHi, gainDb: rightPin.gainDb })
+
+              const rebased = assembled.map((kf) => ({ atMs: kf.atMs - localLo, gainDb: kf.gainDb }))
+              const vDeduped = rebased.filter(
+                (kf, idx) => idx === 0 || kf.atMs !== rebased[idx - 1].atMs
+              )
+              syntheticAudio.volumeKeyframes = vDeduped.length >= 2 ? vDeduped : undefined
+            } else {
+              syntheticAudio.volumeKeyframes = undefined
+            }
+
             const inputIdx = inputs.length
             inputs.push(media.path)
             audioSegments.push({ clip: syntheticAudio, track: t, inputIdx, fromVideoTrack: false })
@@ -1354,6 +1520,56 @@ function escapeDrawtext(s: string): string {
     .replace(/:/g, '\\:')
     .replace(/%/g, '\\%')
     .replace(/\r?\n/g, ' ')
+}
+
+/**
+ * Phase 3.23 — build drawtext border/shadow args from a caption style.
+ *
+ * Returns `{ borderArgs, shadowArgs }` — arrays of colon-delimited drawtext
+ * key=value tokens to splice into a drawtext arg list.
+ *
+ * BYTE-IDENTICAL GATE: when getCaptionTextStroke / getCaptionTextShadow both
+ * return null, BOTH arrays are empty → callers keep the legacy hardcoded
+ * `borderw=2:bordercolor=black@0.7` string CHARACTER-FOR-CHARACTER unchanged.
+ *
+ * Color conversion: #rrggbb → 0xRRGGBB (ffmpeg drawtext hex format, uppercase).
+ * Width scaling: style values are referenced against the 1920-px ref height;
+ * we scale linearly by canvasHeight/1920 (same formula used for fontSize).
+ *
+ * Shadow note: drawtext's `shadowx/shadowy` parameters have no blur support.
+ * A zero-offset glow (offsetX=0, offsetY=0) produces no drawtext shadow, which
+ * is accepted as an ffmpeg limitation on the fallback path; the SVG path renders
+ * the blur correctly.
+ */
+function captionDecorationDrawtextArgs(
+  style: CaptionStyle,
+  canvasHeight: number
+): { borderArgs: string[]; shadowArgs: string[] } {
+  const scale = canvasHeight / 1920
+
+  const stroke = getCaptionTextStroke(style)
+  const shadow = getCaptionTextShadow(style)
+
+  const borderArgs: string[] = []
+  const shadowArgs: string[] = []
+
+  if (stroke) {
+    // Convert #rrggbb → 0xRRGGBB (drop the '#', uppercase, prepend '0x').
+    const hex = stroke.color.slice(1).toUpperCase()
+    const scaledWidth = Math.round(stroke.width * scale)
+    if (scaledWidth > 0) {
+      borderArgs.push(`borderw=${scaledWidth}`, `bordercolor=0x${hex}`)
+    }
+  }
+
+  if (shadow && (shadow.offsetX !== 0 || shadow.offsetY !== 0)) {
+    const hex = shadow.color.slice(1).toUpperCase()
+    const sx = Math.round(shadow.offsetX * scale)
+    const sy = Math.round(shadow.offsetY * scale)
+    shadowArgs.push(`shadowcolor=0x${hex}`, `shadowx=${sx}`, `shadowy=${sy}`)
+  }
+
+  return { borderArgs, shadowArgs }
 }
 
 /** Compute atempo filter chain for a given speed, in 0.5..2 range steps. */
@@ -1485,6 +1701,73 @@ export function keyframeExpr(
       expr = `if(lt(${varName},${s0.toFixed(4)}),${v0.toFixed(6)},if(lt(${varName},${s1.toFixed(4)}),${interp},${expr}))`
     } else {
       expr = `if(lt(${varName},${s1.toFixed(4)}),${interp},${expr})`
+    }
+  }
+
+  return expr
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.30 — Volume-envelope expression builder.
+//
+// Given a RESOLVED (>= 2, segment-local) VolumeKeyframe array, emits a
+// nested-if piecewise-linear-in-dB expression over `t` (filter-local seconds)
+// suitable for the ffmpeg `volume` filter's `expr=` parameter:
+//
+//   volume=expr='pow(10\,(DBEXPR)/20)':eval=frame
+//
+// where DBEXPR is the string returned here.
+//
+// Convention mirrors keyframeExpr:
+//   - Hold-clamp before the first keyframe / after the last.
+//   - Zero-width intervals are skipped (divide-by-zero guard).
+//   - Flat segments emit a constant rather than a divide expression.
+//
+// `segDurSec` is currently accepted for documentation / future clamping but
+// is not used in the expression itself (the hold-clamp after the last keyframe
+// already handles t > last).
+// ---------------------------------------------------------------------------
+export function volumeKeyframeDbExpr(
+  kfs: VolumeKeyframe[],
+  _segDurSec: number
+): string {
+  // kfs is already resolved (sorted, deduped, clamped) by resolvedVolumeKeyframes.
+  // Still guard defensively against zero-gap pairs (IPC is untrusted).
+  const secs = kfs.map((kf) => kf.atMs / 1000)
+  const dbs  = kfs.map((kf) => kf.gainDb)
+
+  // Constant-skip optimisation: all dB values identical → bare constant.
+  if (dbs.every((v) => Math.abs(v - dbs[0]) < 1e-9)) {
+    return dbs[0].toFixed(6)
+  }
+
+  // Build right-to-left nested if() expression (hold-last after final kf).
+  let expr = dbs[dbs.length - 1].toFixed(6)
+
+  for (let i = kfs.length - 2; i >= 0; i--) {
+    const s0 = secs[i]
+    const s1 = secs[i + 1]
+    const d0 = dbs[i]
+    const d1 = dbs[i + 1]
+
+    const span = s1 - s0
+    // Guard: skip zero-width segment.
+    if (span < 1e-6) continue
+
+    const dd = d1 - d0
+    let interp: string
+    if (Math.abs(dd) < 1e-9) {
+      // Flat segment — no divide needed.
+      interp = d0.toFixed(6)
+    } else {
+      interp = `${d0.toFixed(6)}+${dd.toFixed(6)}*(t-${s0.toFixed(4)})/${span.toFixed(4)}`
+    }
+
+    if (i === 0) {
+      // Hold-first before s0, then interpolate s0..s1, then hold-last (expr).
+      expr = `if(lt(t,${s0.toFixed(4)}),${d0.toFixed(6)},if(lt(t,${s1.toFixed(4)}),${interp},${expr}))`
+    } else {
+      expr = `if(lt(t,${s1.toFixed(4)}),${interp},${expr})`
     }
   }
 
@@ -2045,6 +2328,13 @@ function buildVideoSegmentChain(
     //      stays byte-identical to the pre-Phase-3.21 graph.
     const rtFreeze = retouchToFfmpeg(getClipRetouch(seg.clip))
     if (rtFreeze) freezeParts.push(rtFreeze)
+    // FILM LOOK (Phase 3.37) — faded tone + vignette + grain. Stacks AFTER all
+    // colour grading + retouch, BEFORE fps normalization: tone joins the grade,
+    // vignette next, grain LAST so nothing blurs it away. vignette + noise are
+    // core ffmpeg filters (no probe needed).
+    // BYTE-IDENTICAL GATE: getFilmLook returns null for an absent OR neutral look
+    // → filmLookToFfmpeg returns [] → nothing pushed → `freezeParts` byte-identical.
+    for (const f of filmLookToFfmpeg(getFilmLook(seg.clip))) freezeParts.push(f)
     freezeParts.push(`fps=${preset.fps}`)
     const cropRectFreeze = getClipCropRect(seg.clip)
     if (cropRectFreeze) {
@@ -2095,12 +2385,15 @@ function buildVideoSegmentChain(
         const yPx = Math.round((1 - (1 - cap.style.yPosition)) * H - fontSize)
         const yExpr = `${Math.max(0, Math.min(H - fontSize, yPx))}`
         const hasBox = cap.style.background === 'solid' || cap.style.background === 'pill'
+        const { borderArgs: freezeBorderArgs, shadowArgs: freezeShadowArgs } =
+          captionDecorationDrawtextArgs(cap.style, H)
         const drawArgs = [
           `text='${txt}'`, `fontsize=${fontSize}`, `fontcolor=white`,
-          `borderw=2`, `bordercolor=black@0.7`,
+          ...(freezeBorderArgs.length > 0 ? freezeBorderArgs : [`borderw=2`, `bordercolor=black@0.7`]),
           `x=(w-text_w)/2`, `y=${yExpr}`,
           `enable='between(t,${localStart.toFixed(3)},${localEnd.toFixed(3)})'`
         ]
+        if (freezeShadowArgs.length > 0) drawArgs.push(...freezeShadowArgs)
         if (hasBox) drawArgs.push(`box=1`, `boxcolor=black@0.55`, `boxborderw=10`)
         drawtexts.push(`drawtext=${drawArgs.join(':')}`)
       }
@@ -2188,6 +2481,13 @@ function buildVideoSegmentChain(
   //      stays byte-identical to the pre-Phase-3.21 graph.
   const rt = retouchToFfmpeg(getClipRetouch(seg.clip))
   if (rt) parts.push(rt)
+  // FILM LOOK (Phase 3.37) — faded tone + vignette + grain. Stacks AFTER all
+  // colour grading + retouch, BEFORE fps normalization: tone joins the grade,
+  // vignette next, grain LAST so nothing blurs it away. vignette + noise are
+  // core ffmpeg filters (no probe needed).
+  // BYTE-IDENTICAL GATE: getFilmLook returns null for an absent OR neutral look
+  // → filmLookToFfmpeg returns [] → nothing pushed → `parts` byte-identical.
+  for (const f of filmLookToFfmpeg(getFilmLook(seg.clip))) parts.push(f)
   // 3. fps normalization (so xfade durations line up cleanly, and all layers
   //    share the same timebase before overlay).
   parts.push(`fps=${preset.fps}`)
@@ -2273,16 +2573,18 @@ function buildVideoSegmentChain(
       const yExpr = `${Math.max(0, Math.min(H - fontSize, yPx))}`
       // Background pill (box=1) — approximation of the React preview.
       const hasBox = cap.style.background === 'solid' || cap.style.background === 'pill'
+      const { borderArgs: segBorderArgs, shadowArgs: segShadowArgs } =
+        captionDecorationDrawtextArgs(cap.style, H)
       const drawArgs = [
         `text='${txt}'`,
         `fontsize=${fontSize}`,
         `fontcolor=white`,
-        `borderw=2`,
-        `bordercolor=black@0.7`,
+        ...(segBorderArgs.length > 0 ? segBorderArgs : [`borderw=2`, `bordercolor=black@0.7`]),
         `x=(w-text_w)/2`,
         `y=${yExpr}`,
         `enable='between(t,${localStart.toFixed(3)},${localEnd.toFixed(3)})'`
       ]
+      if (segShadowArgs.length > 0) drawArgs.push(...segShadowArgs)
       if (hasBox) {
         drawArgs.push(`box=1`, `boxcolor=black@0.55`, `boxborderw=10`)
       }
@@ -2400,13 +2702,23 @@ function buildAudioSegmentChain(
   const tempo = atempoChain(speed)
   if (tempo) parts.push(tempo)
 
-  // Volume from gainDb / mute.
-  const gainDb = seg.clip.gainDb ?? 0
+  // Volume from gainDb / mute / volume envelope.
+  // Phase 3.30: resolvedVolumeKeyframes returns null when the clip has < 2
+  // keyframes — the null gate falls through to the EXACT pre-3.30 constant-gain
+  // code, preserving byte-identical filter graphs for all non-envelope clips.
+  const env = resolvedVolumeKeyframes(seg.clip)
   if (seg.clip.isMuted) {
     parts.push('volume=0')
-  } else if (gainDb !== 0) {
-    const linear = Math.pow(10, gainDb / 20)
-    parts.push(`volume=${linear.toFixed(4)}`)
+  } else if (env) {
+    const dbExpr = volumeKeyframeDbExpr(env, segDurSec)
+    // The comma inside pow(10,...) MUST be backslash-escaped inside filter_complex.
+    parts.push(`volume=expr='pow(10\\,(${dbExpr})/20)':eval=frame`)
+  } else {
+    const gainDb = seg.clip.gainDb ?? 0
+    if (gainDb !== 0) {
+      const linear = Math.pow(10, gainDb / 20)
+      parts.push(`volume=${linear.toFixed(4)}`)
+    }
   }
 
   // Fades.
@@ -3029,20 +3341,169 @@ function stitchOverlays(
       ovLabelSuffix,
       preset.fps
     )
-    // The per-overlay chain: scale to base pixel size → format=rgba → transform.
-    // After the transform the frame is full-canvas (W×H) RGBA, so overlay=0:0
-    // pastes it correctly.
-    const ovChain = `scale=${ov.pxW}:${ov.pxH},format=rgba${transformFragment}`
     // Intermediate label for the transformed overlay stream.
     const ovStreamLabel = `ovs_${ov.clip.id.slice(-8)}`
 
+    // Phase 3.36 — byte-identical gate: when getOverlayShadow returns null the
+    // EXACT pre-3.36 two fragments are emitted. Any overlay without a shadow
+    // field takes this branch and produces an unchanged filter graph.
+    const shadow = getOverlayShadow(ov.clip)
+
+    if (shadow) {
+      // Drop-shadow subchain.
+      //
+      // Strategy: pad the element symmetrically so the blurred+offset shadow
+      // has room beyond the element boundary, split the padded stream into 3
+      // branches — one for the sharp source (ovsrc), one for the coloured+blurred
+      // shadow (ovsh), one for the transparent backdrop (ovbg) — composite shadow
+      // behind element, then run the combined unit through the transform chain.
+      //
+      // NOTE: geq cost scales with the padded area (element + 2·margin), which
+      // is bounded and far smaller than the full canvas frame.
+
+      // Parse the validated #rrggbb color into 0..255 R G B integers.
+      const R = parseInt(shadow.color.slice(1, 3), 16)
+      const G = parseInt(shadow.color.slice(3, 5), 16)
+      const B = parseInt(shadow.color.slice(5, 7), 16)
+
+      // Compute pad expansion so the shadow (blurred and offset) is never clipped.
+      const blurExpand = Math.ceil(shadow.blur * 3)
+      const margin = Math.ceil(
+        Math.max(Math.abs(shadow.offsetX), Math.abs(shadow.offsetY)) + blurExpand
+      ) + 4
+      const padW = ov.pxW + margin * 2
+      const padH = ov.pxH + margin * 2
+      // boxblur radius: /2 matches CSS/feDropShadow perception (box ≈ Gaussian).
+      const blurR = Math.max(0, Math.round(shadow.blur / 2))
+
+      // Deterministically stringify all numerics (byte-stable graph strings).
+      const sOffX = String(Math.round(shadow.offsetX))
+      const sOffY = String(Math.round(shadow.offsetY))
+      const sOpacity = shadow.opacity.toFixed(6)
+
+      // Label suffix shared by all internal nodes for this overlay (unique per overlay).
+      const id = ov.clip.id.slice(-8)
+
+      // Build the multi-node shadow subchain (all joined with ';' into fragments[]).
+      // [N:v] → scale → format=rgba → pad (transparent) → split=3
+      fragments.push(
+        `[${ov.inputIdx}:v]scale=${ov.pxW}:${ov.pxH},format=rgba,` +
+        `pad=${padW}:${padH}:${margin}:${margin}:color=0x00000000,` +
+        `split=3[ovsrc_${id}][ovsh_${id}][ovbg_${id}]`
+      )
+      // Transparent backdrop: zero the alpha of the padded stream.
+      fragments.push(
+        `[ovbg_${id}]colorchannelmixer=aa=0[ovtrans_${id}]`
+      )
+      // Shadow branch: recolour all pixels to flat RGB, copy original alpha,
+      // then scale alpha by shadow.opacity, then box-blur.
+      fragments.push(
+        `[ovsh_${id}]geq=r='${R}':g='${G}':b='${B}':a='alpha(X,Y)',` +
+        `colorchannelmixer=aa=${sOpacity},` +
+        `boxblur=${blurR}:${blurR}[ovshb_${id}]`
+      )
+      // Composite blurred shadow onto transparent backdrop at the offset position.
+      fragments.push(
+        `[ovtrans_${id}][ovshb_${id}]overlay=${sOffX}:${sOffY}[ovshlayer_${id}]`
+      )
+      // Composite sharp element on top of shadow layer.
+      fragments.push(
+        `[ovshlayer_${id}][ovsrc_${id}]overlay=0:0[ovcombined_${id}]`
+      )
+      // Apply existing transform subchain to the combined element+shadow unit,
+      // then emit the final overlay onto the canvas exactly as before.
+      // When transformFragment is '' (identity — no scale/rotation/keyframes),
+      // we must still emit a valid filter between the two labels; `null` is the
+      // ffmpeg passthrough filter that copies frames unchanged.
+      const shadowTransform = transformFragment !== '' ? transformFragment : 'null'
+      fragments.push(
+        `[ovcombined_${id}]${shadowTransform}[${ovStreamLabel}]`
+      )
+    } else {
+      // BYTE-IDENTICAL path — no shadow: emit the exact pre-3.36 fragments.
+      // The per-overlay chain: scale to base pixel size → format=rgba → transform.
+      // After the transform the frame is full-canvas (W×H) RGBA, so overlay=0:0
+      // pastes it correctly.
+      const ovChain = `scale=${ov.pxW}:${ov.pxH},format=rgba${transformFragment}`
+      fragments.push(
+        `[${ov.inputIdx}:v]${ovChain}[${ovStreamLabel}]`
+      )
+    }
+
     fragments.push(
-      `[${ov.inputIdx}:v]${ovChain}[${ovStreamLabel}]`,
       `[${prevLabel}][${ovStreamLabel}]overlay=0:0:enable='between(t,${startSec},${endSec})'[${newLabel}]`
     )
     prevLabel = newLabel
   }
   return { graph: fragments.join(';'), finalLabel: prevLabel }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.32 — adjustment layer stitching.
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply a sorted list of adjustment layers (time-gated color grades) to the
+ * composited video + overlays stream, producing a new label. The function is
+ * modeled byte-for-byte on `stitchCaptions` / `stitchOverlays`:
+ *   - When `layers` is empty, returns `{ graph: '', finalLabel: inputLabel }`
+ *     so `buildExportPlan` can skip the fragment entirely (byte-identical gate).
+ *   - When every layer's `adjustmentLayerToFfmpeg` call returns '' (neutral),
+ *     the same passthrough is returned.
+ *   - Each non-neutral layer emits one labelled filter fragment:
+ *       [prevLabel]<grade_fragment>[vadjN]
+ *     where every individual filter inside `<grade_fragment>` already carries
+ *     `:enable='between(t,startSec,endSec)'` (injected by `adjustmentLayerToFfmpeg`).
+ *   - No new ffmpeg inputs are added — adjustment layers are pure filter
+ *     expressions over the existing composite stream.
+ *
+ * `layers` MUST be pre-sorted ascending by `startMs` (guaranteed by
+ * `getAdjustmentLayers`). `hueSatAvailable` is forwarded to
+ * `adjustmentLayerToFfmpeg` to gate the `huesaturation` filter.
+ */
+function stitchAdjustments(
+  inputLabel: string,
+  layers: AdjustmentLayer[],
+  hueSatAvailable: boolean
+): { graph: string; finalLabel: string } {
+  const fragments: string[] = []
+  let prevLabel = inputLabel
+  let adjCount = 0
+
+  for (const layer of layers) {
+    const startSec = layer.startMs / 1000
+    const endSec = layer.endMs / 1000
+    const frag = adjustmentLayerToFfmpeg(layer, startSec, endSec, hueSatAvailable)
+    if (frag === '') continue // neutral layer — skip
+    const newLabel = `vadj${adjCount}`
+    adjCount++
+    fragments.push(`[${prevLabel}]${frag}[${newLabel}]`)
+    prevLabel = newLabel
+  }
+
+  if (fragments.length === 0) {
+    return { graph: '', finalLabel: inputLabel }
+  }
+  return { graph: fragments.join(';'), finalLabel: prevLabel }
+}
+
+/**
+ * Phase 3.35 — progress bar overlay.
+ *
+ * Wraps `progressBarToFfmpeg` in the same pattern as `stitchAdjustments`:
+ * - Null cfg or totalSec <= 0 → graph:'', finalLabel:inputLabel (byte-identical gate).
+ * - Non-null cfg → graph:[inputLabel]<drawbox chain>[vprog], finalLabel:'vprog'.
+ * The progress bar adds NO new ffmpeg inputs (pure drawbox filter).
+ */
+function stitchProgressBar(
+  inputLabel: string,
+  cfg: ProgressBarConfig | null,
+  totalSec: number
+): { graph: string; finalLabel: string } {
+  if (!cfg || totalSec <= 0) return { graph: '', finalLabel: inputLabel }
+  const frag = progressBarToFfmpeg(cfg, totalSec)
+  if (frag === '') return { graph: '', finalLabel: inputLabel }
+  return { graph: `[${inputLabel}]${frag}[vprog]`, finalLabel: 'vprog' }
 }
 
 /** Stitch all audio: per-segment chains then amix across the lot. */
@@ -3246,14 +3707,33 @@ function buildExportPlan(
     ? stitchOverlays(stitchedVideoLabel, overlayPngs, preset, project)
     : { graph: '', finalLabel: stitchedVideoLabel }
 
+  // Phase 3.32: apply adjustment layers AFTER overlays, BEFORE captions.
+  // Captions sit above the grade so subtitle text is never tinted.
+  // When there are no (non-neutral) adjustment layers, afterAdjustLabel ===
+  // afterOverlayLabel and adjustGraph === '' — the filter_complex is
+  // byte-identical to pre-3.32 projects.
+  const adjustmentLayers = getAdjustmentLayers(project)
+  const { graph: adjustGraph, finalLabel: afterAdjustLabel } =
+    adjustmentLayers.length > 0
+      ? stitchAdjustments(afterOverlayLabel, adjustmentLayers, hueSatAvailable)
+      : { graph: '', finalLabel: afterOverlayLabel }
+
   // Composite caption PNGs onto the stitched video. No-op when captionPngs
   // is undefined / empty — in that case all captions used the drawtext path
   // and are already baked into per-segment frames.
   // Phase 3.9: stitchCaptions receives preset so animation sub-chains can
   // reference canvas W/H/fps for zoompan and slide distance computations.
   const { graph: captionGraph, finalLabel: videoLabel } = captionPngs
-    ? stitchCaptions(afterOverlayLabel, captionPngs, preset)
-    : { graph: '', finalLabel: afterOverlayLabel }
+    ? stitchCaptions(afterAdjustLabel, captionPngs, preset)
+    : { graph: '', finalLabel: afterAdjustLabel }
+
+  // Phase 3.35 — progress bar draws ON TOP of everything (captions included).
+  const { graph: progressGraph, finalLabel: finalVideoLabel } = stitchProgressBar(
+    videoLabel,
+    getProgressBar(project),
+    getProjectTotalMs(project) / 1000
+  )
+
   const inputsWithAudio = options.inputsWithAudio
   const inputHasAudio = inputsWithAudio
     ? (idx: number): boolean => inputsWithAudio.has(idx)
@@ -3269,7 +3749,9 @@ function buildExportPlan(
   const filterFragments: string[] = []
   if (videoGraph) filterFragments.push(videoGraph)
   if (overlayGraph) filterFragments.push(overlayGraph)
+  if (adjustGraph) filterFragments.push(adjustGraph)
   if (captionGraph) filterFragments.push(captionGraph)
+  if (progressGraph) filterFragments.push(progressGraph)
   if (audioGraph) filterFragments.push(audioGraph)
 
   let useAudioLabel = audioLabel
@@ -3337,7 +3819,7 @@ function buildExportPlan(
     }
   }
   argv.push('-filter_complex', filterGraph)
-  argv.push('-map', `[${videoLabel}]`)
+  argv.push('-map', `[${finalVideoLabel}]`)
   argv.push('-map', `[${useAudioLabel}]`)
   argv.push('-c:v', codec)
   if (mappedPreset !== null) {
@@ -3458,9 +3940,20 @@ function probeOutput(
   })
 }
 
-async function runExport(
+/**
+ * Phase 3.28 — extracted composite-export body.  This is the VERBATIM body
+ * of the old `runExport`, lifted into a named function so that the GIF branch
+ * can call it for pass 0 with a temporary output path.  The mp4 export path
+ * calls it unchanged — argv/filter_complex is byte-identical.
+ *
+ * `safeOutput` is the already-resolved, already-allowed output path.  The
+ * caller is responsible for calling `allowPath(outputPath)` +
+ * `assertPathAllowed(outputPath, 'output')` before passing it in.
+ */
+async function runCompositeExport(
   project: Project,
-  options: ExportRunOptions
+  options: ExportRunOptions,
+  safeOutput: string
 ): Promise<ExportRunResult> {
   const ffmpegPath = resolveFfmpegPath()
 
@@ -3468,8 +3961,6 @@ async function runExport(
   for (const m of Object.values(project.media)) {
     if (m && typeof m.path === 'string') allowPath(m.path)
   }
-  allowPath(options.outputPath)
-  const safeOutput = assertPathAllowed(options.outputPath, 'output')
 
   // Decide encoder. If the renderer asked for HW accel, probe capabilities
   // and use the preferred HW encoder; otherwise stick with libx264. We also
@@ -3537,6 +4028,89 @@ async function runExport(
         const anim = getCaptionAnimation(cap)
         const { inMs: animInMs, outMs: animOutMs } = getCaptionAnimWindows(cap)
         const isTypewriter = anim !== null && anim.entrance === 'typewriter'
+
+        // ---------------------------------------------------------------
+        // KARAOKE branch — gated entirely on getCaptionKaraoke non-null.
+        // When getCaptionKaraoke returns null (disabled / no words / absent)
+        // this block is entirely skipped and the caption takes the existing
+        // typewriter or non-typewriter path — byte-identical invariant.
+        // ---------------------------------------------------------------
+        const karaoke = getCaptionKaraoke(cap)
+        if (karaoke !== null) {
+          const words = resolveCaptionWords(cap)
+          // words.length >= 1 guaranteed by getCaptionKaraoke returning non-null.
+          const wordCount = words.length
+          // Cap step count to MAX_CAPTION_KARAOKE_STEPS.
+          // When wordCount > MAX, group ceil(len/MAX) words per step so the
+          // step count stays at MAX (mirrors the typewriter groupSize logic).
+          const N = Math.min(wordCount, MAX_CAPTION_KARAOKE_STEPS)
+          const groupSize = Math.ceil(wordCount / N)
+          const steps: CaptionStep[] = []
+          let allOk = true
+
+          for (let k = 0; k < N; k++) {
+            // The active word for this step is the first word in the group.
+            const karaokeActiveIndex = k * groupSize
+            const result = await renderCaptionToFile(
+              cap,
+              canvasW,
+              canvasH,
+              { karaoke, karaokeActiveIndex }
+            )
+            if (!result) { allOk = false; break }
+            allowPath(result.pngPath)
+            const stepInputIdx = nextInputIdx++
+
+            // Visibility window for step k:
+            //   visStartMs = cap.startMs + words[firstWordOfStep_k].startMs
+            //                (for k === 0: cap.startMs so the caption shows from
+            //                 the very beginning, before any word has been spoken)
+            //   visEndMs   = cap.startMs + words[firstWordOfStep_(k+1)].startMs
+            //                (for the final step: cap.endMs)
+            const firstWordIdx = k * groupSize
+            const nextFirstWordIdx = (k + 1) * groupSize
+            const visStartMs =
+              k === 0
+                ? cap.startMs
+                : cap.startMs + words[firstWordIdx].startMs
+            const visEndMs =
+              k === N - 1
+                ? cap.endMs
+                : cap.startMs + words[Math.min(nextFirstWordIdx, wordCount - 1)].startMs
+
+            steps.push({
+              pngPath: result.pngPath,
+              inputIdx: stepInputIdx,
+              visStartMs,
+              visEndMs
+            })
+          }
+
+          if (!allOk || steps.length === 0) {
+            // Render failure — fall through to typewriter/plain path below.
+            // Undo the inputIdx advances for any steps we did allocate so
+            // later indices remain consistent. Since we haven't pushed to
+            // captionPngs yet, we just roll back nextInputIdx.
+            nextInputIdx -= steps.length
+            // Fall through to typewriter / non-typewriter path.
+          } else {
+            // Allow all step PNG paths (idempotent; some already allowed above).
+            for (const s of steps) allowPath(s.pngPath)
+
+            captionPngs.set(cap.id, {
+              pngPath: steps[0].pngPath,
+              inputIdx: steps[0].inputIdx,
+              startMs: cap.startMs,
+              endMs: cap.endMs,
+              cached: false, // individual steps may be cached; we don't aggregate
+              animation: anim,
+              animInMs,
+              animOutMs,
+              steps
+            })
+            continue // karaoke handled — skip typewriter / non-typewriter branches
+          }
+        }
 
         if (isTypewriter) {
           // ---------------------------------------------------------------
@@ -3769,6 +4343,8 @@ async function runExport(
     }
   }
   const probe = await probeOutput(ffmpegPath, safeOutput)
+  const resolvedCoverMs = resolveCoverMs(project.coverMs, probe.durationMs ?? 0)
+  const coverPath = await extractCoverFrame(ffmpegPath, safeOutput, resolvedCoverMs)
   return {
     jobId: options.jobId,
     ok: true,
@@ -3779,7 +4355,219 @@ async function runExport(
     vBitrate: probe.vBitrate,
     aBitrate: probe.aBitrate,
     debugLogPath: logPath,
-    usedEncoder: chosenCodec
+    usedEncoder: chosenCodec,
+    coverPath
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.28 — GIF export (2-pass: composite mp4 → palettegen/paletteuse GIF)
+// ---------------------------------------------------------------------------
+
+/**
+ * GIF filter graph. Resamples to a 480 px longest-edge square, builds an
+ * optimised palette from the diff stream, then uses sierra2_4a dithering with
+ * rectangle diff-mode for tight per-frame deltas.
+ *
+ * Resolution: fit the longest edge to 480 px (portrait Reels = 480 wide);
+ * the scale filter uses conditional if(gt(iw,ih),...) so it handles both
+ * landscape and portrait.
+ */
+const GIF_FILTER =
+  "fps=15,scale='if(gt(iw,ih),480,-2)':'if(gt(iw,ih),-2,480)':flags=lanczos,split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=sierra2_4a:diff_mode=rectangle"
+
+/** Hard-trim GIFs longer than this to avoid enormous files. */
+const GIF_MAX_DURATION_MS = 30_000
+
+async function exportGif(
+  project: Project,
+  options: ExportRunOptions,
+  ffmpegPath: string,
+  safeGifOutput: string
+): Promise<ExportRunResult> {
+  // Coerce the output extension to .gif — the gif muxer is extension-selected.
+  const gifExt = path.extname(safeGifOutput).toLowerCase()
+  const coercedGifOutput =
+    gifExt === '.gif'
+      ? safeGifOutput
+      : safeGifOutput.slice(0, safeGifOutput.length - gifExt.length) + '.gif'
+  if (coercedGifOutput !== safeGifOutput) {
+    allowPath(coercedGifOutput)
+  }
+
+  // Temp composite mp4 lives next to the gif output.
+  const exportDir = path.dirname(coercedGifOutput)
+  const tempVideo = path.join(exportDir, `gif-temp-${options.jobId}.mp4`)
+  allowPath(tempVideo)
+
+  const cleanupTemp = async (): Promise<void> => {
+    try {
+      await unlink(tempVideo)
+    } catch {
+      // ignore — file may not exist if pass 0 never created it
+    }
+  }
+
+  // Determine total exported duration for the 30s hard-trim.
+  // We walk all clips and take the maximum endMs as a proxy for total duration.
+  let maxEndMs = 0
+  for (const track of project.tracks) {
+    for (const clip of track.clips) {
+      if ('endMs' in clip && typeof clip.endMs === 'number') {
+        if (clip.endMs > maxEndMs) maxEndMs = clip.endMs
+      }
+    }
+  }
+
+  // Pass 0 — composite render to temp mp4.
+  // Override outputPath in options so runCompositeExport writes to tempVideo.
+  let composite: ExportRunResult
+  try {
+    composite = await runCompositeExport(
+      project,
+      { ...options, outputPath: tempVideo },
+      tempVideo
+    )
+  } catch (err) {
+    await cleanupTemp()
+    return {
+      jobId: options.jobId,
+      ok: false,
+      error: `GIF pass 0 (composite) threw: ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
+
+  if (!composite.ok) {
+    await cleanupTemp()
+    return {
+      jobId: options.jobId,
+      ok: false,
+      error: `GIF pass 0 (composite) failed: ${composite.error ?? 'unknown'}`,
+      debugLogPath: composite.debugLogPath
+    }
+  }
+
+  // Pass 1 — palettegen/paletteuse conversion to .gif.
+  const pass1Argv: string[] = [
+    '-hide_banner', '-y', '-nostdin',
+    // Hard-trim to GIF_MAX_DURATION_MS when needed.
+    ...(maxEndMs > GIF_MAX_DURATION_MS ? ['-t', String(GIF_MAX_DURATION_MS / 1000)] : []),
+    '-i', tempVideo,
+    '-filter_complex', GIF_FILTER,
+    '-loop', '0',
+    '-an',
+    '-progress', 'pipe:2',
+    '-nostats',
+    coercedGifOutput
+  ]
+
+  let pass1Result: { ok: boolean; error?: string }
+  try {
+    pass1Result = await spawnFfmpegDirect(ffmpegPath, pass1Argv, options.jobId)
+  } catch (err) {
+    await cleanupTemp()
+    return {
+      jobId: options.jobId,
+      ok: false,
+      error: `GIF pass 1 (palettegen) threw: ${err instanceof Error ? err.message : String(err)}`,
+      debugLogPath: composite.debugLogPath
+    }
+  }
+
+  await cleanupTemp()
+
+  if (!pass1Result.ok) {
+    return {
+      jobId: options.jobId,
+      ok: false,
+      error: `GIF pass 1 (palettegen) failed: ${pass1Result.error ?? 'unknown'}`,
+      debugLogPath: composite.debugLogPath
+    }
+  }
+
+  if (!existsSync(coercedGifOutput)) {
+    return {
+      jobId: options.jobId,
+      ok: false,
+      error: 'GIF output file missing after pass 1',
+      debugLogPath: composite.debugLogPath
+    }
+  }
+
+  const probe = await probeOutput(ffmpegPath, coercedGifOutput)
+  return {
+    jobId: options.jobId,
+    ok: true,
+    outputPath: coercedGifOutput,
+    durationMs: probe.durationMs,
+    width: probe.width,
+    height: probe.height,
+    debugLogPath: composite.debugLogPath,
+    usedEncoder: composite.usedEncoder
+    // No coverPath for GIF.
+  }
+}
+
+async function runExport(
+  project: Project,
+  options: ExportRunOptions
+): Promise<ExportRunResult> {
+  const ffmpegPath = resolveFfmpegPath()
+
+  // Allow + validate all media input paths and the output path.
+  for (const m of Object.values(project.media)) {
+    if (m && typeof m.path === 'string') allowPath(m.path)
+  }
+  allowPath(options.outputPath)
+  const safeOutput = assertPathAllowed(options.outputPath, 'output')
+
+  // Phase 3.28 — GIF branch. Intercept before the composite path so that
+  // buildExportPlan is NEVER called with 'gif'. The 5 mp4 presets continue
+  // into runCompositeExport unchanged — byte-identical invariant holds.
+  if (options.presetKey === 'gif') {
+    return await exportGif(project, options, ffmpegPath, safeOutput)
+  }
+
+  return runCompositeExport(project, options, safeOutput)
+}
+
+// ---------------------------------------------------------------------------
+// Cover-frame extraction — best-effort second pass after the main encode.
+// A failure here NEVER propagates to the main export result.
+// ---------------------------------------------------------------------------
+async function extractCoverFrame(
+  ffmpegPath: string,
+  outputMp4: string,
+  coverMs: number
+): Promise<string | undefined> {
+  try {
+    const coverPath = path.join(
+      path.dirname(outputMp4),
+      path.basename(outputMp4, path.extname(outputMp4)) + '_cover.jpg'
+    )
+    allowPath(coverPath)
+    const ok = await new Promise<boolean>((resolve) => {
+      const proc = spawn(
+        ffmpegPath,
+        [
+          '-hide_banner',
+          '-y',
+          '-ss', (coverMs / 1000).toFixed(3),
+          '-i', outputMp4,
+          '-frames:v', '1',
+          '-q:v', '2',
+          coverPath
+        ],
+        { stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true }
+      )
+      proc.on('error', () => resolve(false))
+      proc.on('close', (code) => resolve(code === 0))
+    })
+    if (ok && existsSync(coverPath)) return coverPath
+    return undefined
+  } catch (err) {
+    console.warn('[export] extractCoverFrame failed:', err)
+    return undefined
   }
 }
 
@@ -3927,6 +4715,18 @@ export function registerExportHandlers(): void {
       presetKey: ExportPresetKey,
       outputPath: string
     ): Promise<ExportBuildPlanResult> => {
+      // Phase 3.28 — GIF short-circuit. buildExportPlan is NEVER called with
+      // 'gif'; we return a synthetic result that describes the 2-pass approach
+      // so that the diagnostic UI does not crash.
+      if (presetKey === 'gif') {
+        return {
+          ok: true,
+          argvPreview: '[GIF 2-pass: pass0=composite-mp4 pass1=palettegen/paletteuse]',
+          filterGraph: GIF_FILTER,
+          inputs: [],
+          videoSegmentCount: 0
+        }
+      }
       try {
         // Allow paths so assertPathAllowed in plan can pass.
         for (const m of Object.values(project.media)) {
@@ -3990,6 +4790,7 @@ export const __test = {
   stitchVideoTrack,
   compositeLayers,
   stitchAudio,
+  stitchAdjustments,
   stitchCaptions,
   stitchOverlays,
   buildTransformSubchain,

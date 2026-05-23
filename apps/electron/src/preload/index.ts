@@ -23,9 +23,11 @@ import {
   type FilePickerFilter,
   type JobResult,
   type ParsedCaptionCue,
+  type SubtitleExportResult,
   type PickFileOptions,
   type ProgressEvent,
   type SaveRecordingResult,
+  type SaveStickerResult,
   type SilenceDetectOptions,
   type SilenceRange,
   type SttModelKey,
@@ -127,7 +129,12 @@ const api: ElectronApi = {
     importSrt: (filePath: string): Promise<ParsedCaptionCue[]> =>
       ipcRenderer.invoke(IPC_CHANNELS.captions.importSrt, filePath),
     parseSrtString: (raw: string): Promise<ParsedCaptionCue[]> =>
-      ipcRenderer.invoke(IPC_CHANNELS.captions.parseSrtString, raw)
+      ipcRenderer.invoke(IPC_CHANNELS.captions.parseSrtString, raw),
+    exportSubtitle: (
+      path: string,
+      content: string
+    ): Promise<SubtitleExportResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.captions.exportSubtitle, path, content)
   },
   exporter: {
     run: (project, options: ExportRunOptions): Promise<ExportRunResult> =>
@@ -182,6 +189,13 @@ const api: ElectronApi = {
       ),
     removeLogo: (variant: BrandLogoVariant): Promise<BrandKit> =>
       ipcRenderer.invoke(IPC_CHANNELS.brandKit.removeLogo, variant)
+  },
+  overlay: {
+    saveSticker: (
+      assetId: string,
+      pngBytes: ArrayBuffer | Uint8Array
+    ): Promise<SaveStickerResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.overlay.saveSticker, assetId, pngBytes)
   },
   stt: {
     transcribe: (opts: SttTranscribeOptions): Promise<SttResult> =>

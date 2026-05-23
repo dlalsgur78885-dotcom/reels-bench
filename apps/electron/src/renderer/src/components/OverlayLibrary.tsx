@@ -1,5 +1,12 @@
 import { useState } from 'react'
 import { BUNDLED_STICKERS } from '../../../shared/project'
+import {
+  EMOJI_LIBRARY,
+  GRAPHIC_STICKERS,
+  STICKER_CATEGORY_LABELS,
+  type EmojiItem,
+  type StickerCategory
+} from '../../../shared/bundledStickers'
 import { useProjectStore } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import {
@@ -7,6 +14,12 @@ import {
   makeShapeOverlay,
   makeStickerOverlay
 } from '../lib/overlays'
+import {
+  addEmojiOrStickerOverlay,
+  getOrRasterize,
+  rasterizeEmoji,
+  rasterizeSvg
+} from '../lib/stickerRaster'
 
 // ---------------------------------------------------------------------------
 // OverlayLibrary (Phase 3.8) — left-panel tab for placing overlay elements
@@ -99,13 +112,46 @@ const styles = {
     border: '1px solid #2a2a2a',
     borderRadius: 8,
     cursor: 'pointer',
-    padding: 4
+    padding: 4,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center'
+  } as React.CSSProperties,
+  emojiGlyph: {
+    fontSize: 26,
+    lineHeight: 1
+  } as React.CSSProperties,
+  stickerImg: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'contain'
+  } as React.CSSProperties,
+  catHeader: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: '#64748b',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    margin: '10px 0 6px'
   } as React.CSSProperties,
   empty: {
     color: '#64748b',
     fontSize: 11,
     padding: '4px 0'
   } as React.CSSProperties
+}
+
+/** Emoji categories in display order (graphic stickers get their own section). */
+const EMOJI_CATEGORIES: StickerCategory[] = [
+  'faces',
+  'reactions',
+  'gestures',
+  'objects'
+]
+
+/** SVG markup → an inline data-URL for `<img>` preview. */
+function svgDataUrl(svg: string): string {
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)
 }
 
 /** Read the image's intrinsic size from a `media://` URL. */
@@ -163,6 +209,45 @@ export function OverlayLibrary(): JSX.Element {
           `이미지 추가 실패: ${err instanceof Error ? err.message : String(err)}`
         )
       }
+    }
+  }
+
+  // Rasterize an emoji char → persist → add as a normal IMAGE overlay.
+  const onAddEmoji = async (item: EmojiItem): Promise<void> => {
+    setError(null)
+    try {
+      const bytes = await getOrRasterize(item.id, () =>
+        rasterizeEmoji(item.char)
+      )
+      await addEmojiOrStickerOverlay({
+        assetId: item.id,
+        bytes,
+        startMs: playheadAt()
+      })
+    } catch (err) {
+      setError(
+        `스티커 추가 실패: ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+  }
+
+  // Rasterize an SVG sticker → persist → add as a normal IMAGE overlay.
+  const onAddGraphicSticker = async (
+    id: string,
+    svg: string
+  ): Promise<void> => {
+    setError(null)
+    try {
+      const bytes = await getOrRasterize(id, () => rasterizeSvg(svg))
+      await addEmojiOrStickerOverlay({
+        assetId: id,
+        bytes,
+        startMs: playheadAt()
+      })
+    } catch (err) {
+      setError(
+        `스티커 추가 실패: ${err instanceof Error ? err.message : String(err)}`
+      )
     }
   }
 
@@ -279,6 +364,68 @@ export function OverlayLibrary(): JSX.Element {
             ))}
           </div>
         )}
+      </div>
+
+      {/* ── 이모지 ── */}
+      <div style={styles.section}>
+        <div style={styles.sectionTitle}>이모지</div>
+        {EMOJI_CATEGORIES.map((cat) => {
+          const items = EMOJI_LIBRARY.filter((e) => e.category === cat)
+          if (items.length === 0) return null
+          return (
+            <div key={cat}>
+              <div style={styles.catHeader}>
+                {STICKER_CATEGORY_LABELS[cat]}
+              </div>
+              <div style={styles.stickerGrid}>
+                {items.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    title={item.label}
+                    style={styles.stickerBtn}
+                    data-testid={`overlay-add-emoji-${item.id}`}
+                    onClick={() => {
+                      void onAddEmoji(item)
+                    }}
+                  >
+                    <span style={styles.emojiGlyph} aria-hidden>
+                      {item.char}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* ── 그래픽 스티커 ── */}
+      <div style={styles.section}>
+        <div style={styles.sectionTitle}>
+          {STICKER_CATEGORY_LABELS.graphic}
+        </div>
+        <div style={styles.stickerGrid}>
+          {GRAPHIC_STICKERS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              title={item.label}
+              style={styles.stickerBtn}
+              data-testid={`overlay-add-sticker-${item.id}`}
+              onClick={() => {
+                void onAddGraphicSticker(item.id, item.svg)
+              }}
+            >
+              <img
+                src={svgDataUrl(item.svg)}
+                alt={item.label}
+                style={styles.stickerImg}
+                draggable={false}
+              />
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   )

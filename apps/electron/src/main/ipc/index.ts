@@ -10,6 +10,7 @@ import { registerUpdaterHandlers } from './updater'
 import { registerSttHandlers } from './stt'
 import { registerRecordingHandlers } from './recording'
 import { registerBrandKitHandlers } from './brand-kit'
+import { registerOverlayHandlers } from './overlay'
 
 export function registerIpcHandlers(): void {
   registerFfmpegHandlers()
@@ -24,4 +25,5 @@ export function registerIpcHandlers(): void {
   registerSttHandlers()
   registerRecordingHandlers()
   registerBrandKitHandlers()
+  registerOverlayHandlers()
 }

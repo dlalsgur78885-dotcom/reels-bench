@@ -6,11 +6,14 @@
  * via the `toFfmpegFilter()` helper which builds eq/hue/curves chains.
  */
 import type {
+  AdjustmentLayer,
   ClipCurves,
   ClipHsl,
   ColorAdjust,
   CurveChannelKey,
   CurvePoint,
+  FilmLook,
+  FilmToneId,
   FilterPreset,
   HslBandKey
 } from './project'
@@ -18,7 +21,10 @@ import {
   CURVE_CHANNEL_KEYS,
   HSL_BAND_KEYS,
   isIdentityCurveChannel,
-  isNeutralHslBand
+  isNeutralHslBand,
+  resolveClipCurves,
+  resolveClipHsl,
+  resolveColorAdjust
 } from './project'
 
 /** CSS `filter` string for the preview canvas. Returns empty for 'none'. */
@@ -419,4 +425,150 @@ export function retouchToFfmpeg(
   const ls = (0.3 + 0.45 * t).toFixed(3)
   const lt = Math.round(8 + 16 * t)
   return `smartblur=lr=${lr}:ls=${ls}:lt=${lt}`
+}
+
+// ---------------------------------------------------------------------------
+// Film look (Phase 3.37) — vignette / grain / faded tone finishing filter.
+// ---------------------------------------------------------------------------
+
+/** Human labels for the film tones (UI). */
+export const FILM_TONE_LABELS: Record<FilmToneId, string> = {
+  none: '없음',
+  warm: '웜',
+  fade: '페이드',
+  cool: '쿨',
+  bw: '흑백필름'
+}
+
+/**
+ * One-click film-look preset — pure renderer convenience; each just sets the
+ * three FilmLook values. NOT referenced by export (export only sees FilmLook).
+ */
+export interface FilmLookPreset {
+  id: string
+  label: string
+  value: FilmLook
+}
+
+/** Built-in film-look presets shown as one-click buttons. */
+export const FILM_LOOK_PRESETS: readonly FilmLookPreset[] = [
+  { id: 'vintage', label: '빈티지', value: { vignette: 55, grain: 45, toneId: 'warm' } },
+  { id: 'cinema', label: '시네마', value: { vignette: 40, grain: 18, toneId: 'fade' } },
+  { id: 'vhs', label: 'VHS', value: { vignette: 30, grain: 70, toneId: 'cool' } },
+  { id: 'bwfilm', label: '흑백필름', value: { vignette: 50, grain: 35, toneId: 'bw' } }
+]
+
+/**
+ * Fixed ffmpeg curves/eq recipe per film tone. Returns '' for 'none' (and any
+ * unknown id) so a tone-less look contributes nothing to the export graph.
+ */
+function filmToneToFfmpeg(toneId: FilmToneId): string {
+  switch (toneId) {
+    case 'warm':
+      return 'colortemperature=temperature=5200,eq=saturation=1.08'
+    case 'fade':
+      return "curves=master='0.0000/0.0800 0.5000/0.5000 1.0000/0.9400',eq=saturation=0.92"
+    case 'cool':
+      return 'colortemperature=temperature=8200,eq=saturation=0.95'
+    case 'bw':
+      return "eq=saturation=0,curves=master='0.0000/0.0500 0.5000/0.5200 1.0000/0.9500'"
+    default:
+      return ''
+  }
+}
+
+/**
+ * Cheap CSS `filter` approximation of a film tone for the preview canvas.
+ * Returns '' for 'none' so a neutral look keeps the preview byte-identical.
+ */
+export function filmToneToCss(toneId: FilmToneId | undefined): string {
+  switch (toneId) {
+    case 'warm':
+      return 'sepia(0.15) saturate(1.08)'
+    case 'fade':
+      return 'contrast(0.92) brightness(1.04)'
+    case 'cool':
+      return 'hue-rotate(-8deg) saturate(0.95)'
+    case 'bw':
+      return 'grayscale(1) contrast(1.04)'
+    default:
+      return ''
+  }
+}
+
+/**
+ * ffmpeg filter-chain fragments for a per-clip film look. Returns [] for a
+ * null / neutral look so the caller can unconditionally spread the result and
+ * keep a film-look-off clip's video graph BYTE-IDENTICAL.
+ *
+ * Returned order is [tone, vignette, grain]: tone (color grade) first, then
+ * vignette, then grain ON TOP of the graded + vignetted image (grain must be
+ * last so no later filter blurs it away). `noise` uses a FIXED seed so the
+ * export filter graph is a deterministic, stable string.
+ */
+export function filmLookToFfmpeg(look: FilmLook | null | undefined): string[] {
+  if (!look) return []
+  const out: string[] = []
+  const tone = filmToneToFfmpeg(look.toneId)
+  if (tone) out.push(tone)
+  if (look.vignette > 0) {
+    // 0..100 → angle PI/8 (subtle) .. PI/3 (deep corner falloff).
+    const t = Math.min(100, Math.max(0, look.vignette)) / 100
+    const angle = (Math.PI / 8 + (Math.PI / 3 - Math.PI / 8) * t).toFixed(4)
+    out.push(`vignette=angle=${angle}`)
+  }
+  if (look.grain > 0) {
+    // 0..100 → alls 0..40; temporal (t) + uniform (u); FIXED seed for a
+    // deterministic graph string.
+    const strength = Math.round(
+      (Math.min(100, Math.max(0, look.grain)) / 100) * 40
+    )
+    out.push(`noise=alls=${strength}:allf=t+u:all_seed=8086`)
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// Adjustment layer (Phase 3.32) — a time-gated color grade over the composite.
+// ---------------------------------------------------------------------------
+
+/**
+ * ffmpeg filter-chain fragment for ONE adjustment layer, fully time-gated.
+ * Reuses `filterPresetToFfmpeg` → `colorAdjustToFfmpeg` → `curvesToFfmpeg` →
+ * `hslToFfmpeg` (the same stacking order as the per-clip grade), then appends
+ * `:enable='between(t,a,b)'` to EVERY emitted filter. Returns '' for a fully
+ * neutral layer — so a neutral layer contributes nothing and the export graph
+ * stays byte-identical. `hueSatAvailable === false` drops the HSL segment
+ * (probe gate). `startSec`/`endSec` are timeline seconds.
+ */
+export function adjustmentLayerToFfmpeg(
+  layer: AdjustmentLayer,
+  startSec: number,
+  endSec: number,
+  hueSatAvailable: boolean
+): string {
+  const parts: string[] = []
+  const preset = filterPresetToFfmpeg(
+    layer.filterPreset ?? 'none',
+    layer.filterIntensity ?? 1
+  )
+  if (preset) parts.push(preset)
+  const ca = colorAdjustToFfmpeg(resolveColorAdjust(layer.colorAdjust))
+  if (ca) parts.push(ca)
+  const cv = curvesToFfmpeg(resolveClipCurves(layer.curves))
+  if (cv) parts.push(cv)
+  if (hueSatAvailable) {
+    const hs = hslToFfmpeg(resolveClipHsl(layer.hsl))
+    if (hs) parts.push(hs)
+  }
+  if (parts.length === 0) return ''
+  // Each `parts` entry may itself be a comma-joined multi-filter string. Split
+  // on the top-level commas (these color filters have no commas in their args)
+  // and time-gate every individual filter.
+  const enable = `:enable='between(t,${startSec.toFixed(3)},${endSec.toFixed(3)})'`
+  return parts
+    .join(',')
+    .split(',')
+    .map((f) => f + enable)
+    .join(',')
 }

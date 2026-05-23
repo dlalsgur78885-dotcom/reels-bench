@@ -7,16 +7,19 @@ import type {
   CropRect,
   FilterPreset,
   MotionTrack,
+  OverlayShadow,
   ShapeStyle,
   TransitionKind
 } from '../../../shared/project'
 import {
   BLUR_EFFECT_KINDS,
   BLUR_REGION_SHAPES,
+  DEFAULT_OVERLAY_SHADOW,
   DEFAULT_TRANSITION_MS,
   FILTER_PRESETS,
   getClipColorAdjust,
   getClipCropRect,
+  getOverlayShadow,
   getTransformAt,
   IDENTITY_CROP,
   isCaptionClip,
@@ -31,6 +34,8 @@ import {
   MAX_TRANSFORM_SCALE,
   MAX_TRANSITION_MS,
   MAX_NOISE_REDUCTION,
+  MAX_OVERLAY_SHADOW_BLUR,
+  MAX_OVERLAY_SHADOW_OFFSET,
   MIN_BLUR_REGION_SIZE,
   MIN_BLUR_STRENGTH,
   MIN_CLIP_SPEED,
@@ -43,6 +48,8 @@ import {
   MIN_NOISE_REDUCTION,
   MIN_FREEZE_MS,
   MAX_FREEZE_MS,
+  MIN_GAIN_DB,
+  MAX_GAIN_DB,
   DEFAULT_NOISE_REDUCTION,
   NEUTRAL_COLOR_ADJUST,
   TRANSITION_KINDS
@@ -190,9 +197,44 @@ interface ClipContextMenuProps {
   isOnFreezeFrame: boolean
   /** Held duration (ms) of the freeze under the playhead (DEFAULT when none). */
   freezeDurationAtPlayhead: number
+  // --- Phase 3.30 volume-envelope editing (media clips only) ---
+  /** Add (or update) a volume keyframe at the current playhead. */
+  onAddVolumeKeyframe?: () => void
+  /** Update the dB of the volume keyframe under the playhead (per-kf slider). */
+  onUpdateVolumeKeyframeAtPlayhead?: (gainDb: number) => void
+  /** Remove the volume keyframe under the current playhead (if any). */
+  onRemoveVolumeKeyframeAtPlayhead?: () => void
+  /** Clear the clip's volume envelope entirely (keeps the constant gainDb). */
+  onClearVolumeEnvelope?: () => void
+  /** Number of volume keyframes on the clip's envelope (0 when constant). */
+  volumeKeyframeCount?: number
+  /** True when the playhead currently sits on an existing volume keyframe. */
+  isOnVolumeKeyframe?: boolean
+  /** Effective dB at the playhead (instantaneous envelope value, or constant). */
+  volumeDbAtPlayhead?: number
   // --- Phase 3.8 overlay shape style (shape overlay clips only) ---
   /** Merge a partial ShapeStyle onto a shape overlay's source.style. */
   onOverlayStyleChange?: (partial: Partial<ShapeStyle>) => void
+  /**
+   * Phase 3.36 — set/clear an overlay clip's drop shadow (image/sticker/shape).
+   * `null` clears the shadow; an `OverlayShadow` sets it.
+   */
+  onOverlayShadowChange?: (shadow: OverlayShadow | null) => void
+  /**
+   * True when the "오디오 분리" row should be enabled — i.e. the target is a
+   * video-track media clip whose audio hasn't already been detached/muted.
+   */
+  audioDetachable?: boolean
+  /**
+   * Phase 3.33 — true when the "그룹 묶기" row should be enabled: ≥2 clips are
+   * selected and they don't already all share one group.
+   */
+  groupable?: boolean
+  /**
+   * Phase 3.33 — true when the "그룹 해제" row should be enabled: the context
+   * clip currently belongs to a link group.
+   */
+  grouped?: boolean
   onClose: () => void
 }
 
@@ -373,8 +415,26 @@ interface MenuRow {
   enabled?: boolean
 }
 
+/**
+ * Phase 3.33 — the group묶기 / 해제 rows shared by every clip kind. `groupable`
+ * gates 그룹 묶기 (≥2 clips selected, not all already one group); `grouped`
+ * gates 그룹 해제 (the ctx clip belongs to a link group).
+ */
+function groupRows(groupable: boolean, grouped: boolean): MenuRow[] {
+  return [
+    { key: 'group', label: '그룹 묶기', enabled: groupable },
+    { key: 'ungroup', label: '그룹 해제', enabled: grouped }
+  ]
+}
+
 /** Build the row list for a media clip. */
-function mediaRows(clip: Clip, playheadMs: number | undefined): MenuRow[] {
+function mediaRows(
+  clip: Clip,
+  playheadMs: number | undefined,
+  audioDetachable: boolean,
+  groupable: boolean,
+  grouped: boolean
+): MenuRow[] {
   // Strict-inside gate matches splitClipAt: must have ≥100ms on each side.
   const split = isMediaClip(clip) && playheadMs !== undefined
     ? playheadMs > clip.startMs + 100 && playheadMs < clip.endMs - 100
@@ -387,25 +447,31 @@ function mediaRows(clip: Clip, playheadMs: number | undefined): MenuRow[] {
       enabled: split
     },
     { key: 'duplicate', label: '복제', shortcut: 'Ctrl+D' },
+    // 오디오 분리 — split this video clip's audio onto its own audio track.
+    // Enabled only for a video-track media clip that isn't already muted.
+    { key: 'detach-audio', label: '오디오 분리', enabled: audioDetachable },
     // Phase 2.5 — opens the silence-remove dialog (handled by parent).
     { key: 'remove-silence', label: '무음 자동 제거…' },
+    ...groupRows(groupable, grouped),
     { key: 'delete', label: '삭제', shortcut: 'Delete', destructive: true }
   ]
 }
 
-function captionRows(): MenuRow[] {
+function captionRows(groupable: boolean, grouped: boolean): MenuRow[] {
   return [
     { key: 'edit-caption', label: '자막 편집' },
     { key: 'duplicate', label: '복제', shortcut: 'Ctrl+D' },
     { key: 'change-style', label: '스타일 변경' },
+    ...groupRows(groupable, grouped),
     { key: 'delete', label: '삭제', shortcut: 'Delete', destructive: true }
   ]
 }
 
 /** Build the row list for an overlay clip (Phase 3.8). */
-function overlayRows(): MenuRow[] {
+function overlayRows(groupable: boolean, grouped: boolean): MenuRow[] {
   return [
     { key: 'duplicate', label: '복제', shortcut: 'Ctrl+D' },
+    ...groupRows(groupable, grouped),
     { key: 'delete', label: '삭제', shortcut: 'Delete', destructive: true }
   ]
 }
@@ -477,12 +543,24 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
     freezeFrameCount,
     isOnFreezeFrame,
     freezeDurationAtPlayhead,
+    onAddVolumeKeyframe,
+    onUpdateVolumeKeyframeAtPlayhead,
+    onRemoveVolumeKeyframeAtPlayhead,
+    onClearVolumeEnvelope,
+    volumeKeyframeCount,
+    isOnVolumeKeyframe,
+    volumeDbAtPlayhead,
     onOverlayStyleChange,
+    onOverlayShadowChange,
+    audioDetachable,
+    groupable,
+    grouped,
     onClose
   } = props
   const ref = useRef<HTMLDivElement>(null)
   const [showSpeed, setShowSpeed] = useState(false)
   const [showFreeze, setShowFreeze] = useState(false)
+  const [showVolumeCurve, setShowVolumeCurve] = useState(false)
   const [showTransition, setShowTransition] = useState(false)
   const [showFilter, setShowFilter] = useState(false)
   const [showTransform, setShowTransform] = useState(false)
@@ -492,6 +570,7 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
   const [showBlur, setShowBlur] = useState(false)
   const [showMotionTrack, setShowMotionTrack] = useState(false)
   const [showShapeStyle, setShowShapeStyle] = useState(false)
+  const [showOverlayShadow, setShowOverlayShadow] = useState(false)
   // Phase 3.11 — which mosaic/blur region the panel is editing. null until
   // the user picks one (or the first region is auto-selected on open).
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null)
@@ -499,16 +578,25 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
   // Always recompute on each render so playhead/clip changes drive the gate.
   // 3-way switch on clip.kind: caption / overlay / media.
   const rows = isCaptionClip(clip)
-    ? captionRows()
+    ? captionRows(groupable === true, grouped === true)
     : isOverlayClip(clip)
-      ? overlayRows()
-      : mediaRows(clip, playheadMs)
+      ? overlayRows(groupable === true, grouped === true)
+      : mediaRows(
+          clip,
+          playheadMs,
+          audioDetachable === true,
+          groupable === true,
+          grouped === true
+        )
 
   // Read current speed (default 1) from the media clip; captions don't have one.
   const speed = isMediaClip(clip) ? clip.speed ?? 1 : 1
   // Phase 3.10 — a clip has an ACTIVE variable speed curve when it carries
   // >= 2 speed keyframes (mirrors `hasSpeedCurve`). Drives the curve sub-UI.
   const speedCurveActive = (speedKeyframeCount ?? 0) >= 2
+  // Phase 3.30 — a clip has an ACTIVE volume envelope when it carries >= 2
+  // volume keyframes (mirrors `hasVolumeEnvelope`). Drives the curve sub-UI.
+  const volumeCurveActive = (volumeKeyframeCount ?? 0) >= 2
   const transitionKind: TransitionKind = isMediaClip(clip)
     ? clip.transitionIn?.kind ?? 'none'
     : 'none'
@@ -546,6 +634,10 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
     isOverlayClip(clip) && clip.source.type === 'shape'
       ? clip.source.style
       : SHAPE_STYLE_FALLBACK
+  // Phase 3.36 — current overlay drop shadow (null = off). The slider base
+  // when the shadow is on falls back to DEFAULT_OVERLAY_SHADOW.
+  const overlayShadow = isOverlayClip(clip) ? getOverlayShadow(clip) : null
+  const shadowBase = overlayShadow ?? DEFAULT_OVERLAY_SHADOW
   // Source aspect ratio (W/H). Fall back to 1 when unknown so the centered
   // max-area preset math stays finite.
   const srcAspect =
@@ -2114,6 +2206,161 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
           </>
         )}
 
+      {/* Overlay drop-shadow sub-menu (Phase 3.36) — image / sticker / shape
+          overlay clips. Toggle on/off + color / X·Y offset / blur / opacity. */}
+      {isOverlayClip(clip) && onOverlayShadowChange && (
+        <>
+          <div style={styles.separator} />
+          <div
+            role="menuitem"
+            data-testid="menu-overlay-shadow"
+            style={styles.item}
+            onMouseEnter={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = '#2a2a2a'
+            }}
+            onMouseLeave={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background =
+                'transparent'
+            }}
+            onClick={() => setShowOverlayShadow((v) => !v)}
+          >
+            <span>그림자{showOverlayShadow ? '' : '…'}</span>
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                cursor: 'pointer'
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <input
+                type="checkbox"
+                checked={overlayShadow !== null}
+                data-testid="menu-overlay-shadow-toggle"
+                aria-label="그림자"
+                onChange={(e) =>
+                  onOverlayShadowChange(
+                    e.target.checked ? DEFAULT_OVERLAY_SHADOW : null
+                  )
+                }
+              />
+            </label>
+          </div>
+          {showOverlayShadow && overlayShadow !== null && (
+            <div
+              style={styles.speedPanel}
+              data-testid="menu-overlay-shadow-panel"
+            >
+              {/* Color */}
+              <div style={styles.transformRow}>
+                <span style={styles.transformLabel}>색상</span>
+                <input
+                  type="color"
+                  value={shadowBase.color}
+                  onChange={(e) =>
+                    onOverlayShadowChange({
+                      ...shadowBase,
+                      color: e.target.value
+                    })
+                  }
+                  data-testid="menu-overlay-shadow-color"
+                  aria-label="그림자 색상"
+                  style={{ flex: 1, height: 24, cursor: 'pointer' }}
+                />
+              </div>
+              {/* X offset */}
+              <div style={styles.transformRow}>
+                <span style={styles.transformLabel}>X 오프셋</span>
+                <input
+                  type="range"
+                  min={-MAX_OVERLAY_SHADOW_OFFSET}
+                  max={MAX_OVERLAY_SHADOW_OFFSET}
+                  step={1}
+                  value={shadowBase.offsetX}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10)
+                    if (!Number.isFinite(v)) return
+                    onOverlayShadowChange({ ...shadowBase, offsetX: v })
+                  }}
+                  style={styles.slider}
+                  data-testid="menu-overlay-shadow-offsetx"
+                  aria-label="그림자 X 오프셋"
+                />
+                <span style={{ ...styles.shortcut, width: 36 }}>
+                  {shadowBase.offsetX}
+                </span>
+              </div>
+              {/* Y offset */}
+              <div style={styles.transformRow}>
+                <span style={styles.transformLabel}>Y 오프셋</span>
+                <input
+                  type="range"
+                  min={-MAX_OVERLAY_SHADOW_OFFSET}
+                  max={MAX_OVERLAY_SHADOW_OFFSET}
+                  step={1}
+                  value={shadowBase.offsetY}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10)
+                    if (!Number.isFinite(v)) return
+                    onOverlayShadowChange({ ...shadowBase, offsetY: v })
+                  }}
+                  style={styles.slider}
+                  data-testid="menu-overlay-shadow-offsety"
+                  aria-label="그림자 Y 오프셋"
+                />
+                <span style={{ ...styles.shortcut, width: 36 }}>
+                  {shadowBase.offsetY}
+                </span>
+              </div>
+              {/* Blur */}
+              <div style={styles.transformRow}>
+                <span style={styles.transformLabel}>흐림</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={MAX_OVERLAY_SHADOW_BLUR}
+                  step={1}
+                  value={shadowBase.blur}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10)
+                    if (!Number.isFinite(v)) return
+                    onOverlayShadowChange({ ...shadowBase, blur: v })
+                  }}
+                  style={styles.slider}
+                  data-testid="menu-overlay-shadow-blur"
+                  aria-label="그림자 흐림"
+                />
+                <span style={{ ...styles.shortcut, width: 36 }}>
+                  {shadowBase.blur}
+                </span>
+              </div>
+              {/* Opacity */}
+              <div style={styles.transformRow}>
+                <span style={styles.transformLabel}>불투명도</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={shadowBase.opacity}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    onOverlayShadowChange({ ...shadowBase, opacity: v })
+                  }}
+                  style={styles.slider}
+                  data-testid="menu-overlay-shadow-opacity"
+                  aria-label="그림자 불투명도"
+                />
+                <span style={{ ...styles.shortcut, width: 36 }}>
+                  {Math.round(shadowBase.opacity * 100)}%
+                </span>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
       {/* Speed sub-menu is media-only. */}
       {isMediaClip(clip) && onSpeedChange && (
         <>
@@ -2451,6 +2698,127 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                     현재 위치에 프리즈 프레임 추가
                   </button>
                 </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+      {/* Phase 3.30 — volume-envelope sub-menu is media-only. Modeled on the
+          speed-curve block above. The envelope is a per-clip keyframed volume
+          curve (manually duck music under a voiceover). When OFF the clip
+          uses its constant gainDb; turning it ON seeds two keyframes at the
+          current gain so the sound does not jump. */}
+      {isMediaClip(clip) && onAddVolumeKeyframe && (
+        <>
+          <div style={styles.separator} />
+          <div
+            role="menuitem"
+            data-testid="menu-volume-curve"
+            style={styles.item}
+            onMouseEnter={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = '#2a2a2a'
+            }}
+            onMouseLeave={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = 'transparent'
+            }}
+            onClick={() => setShowVolumeCurve((v) => !v)}
+          >
+            <span>볼륨 커브{showVolumeCurve ? '' : '…'}</span>
+            <span
+              style={styles.keyframeCountBadge}
+              data-testid="volume-keyframe-count"
+            >
+              {volumeKeyframeCount ?? 0}
+            </span>
+          </div>
+          {showVolumeCurve && (
+            <div style={styles.speedPanel} data-testid="menu-volume-curve-panel">
+              {/* On/off toggle — modeled on the speed-curve checkbox. ON seeds
+                  the envelope (two keyframes) via addVolumeKeyframe; OFF drops
+                  the envelope, keeping the constant gainDb. */}
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  marginBottom: 8,
+                  cursor: 'pointer',
+                  fontSize: 11,
+                  color: '#9aa0a6'
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={volumeCurveActive}
+                  data-testid="volume-curve-toggle"
+                  aria-label="볼륨 커브 사용"
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      onAddVolumeKeyframe()
+                    } else {
+                      onClearVolumeEnvelope?.()
+                    }
+                  }}
+                />
+                <span>볼륨 커브 사용</span>
+              </label>
+              {/* Volume-curve controls — visible only when the envelope is on. */}
+              {volumeCurveActive && (
+                <>
+                  <div style={styles.keyframeRow}>
+                    <button
+                      type="button"
+                      style={styles.keyframeBtn}
+                      data-testid="menu-volume-keyframe-add"
+                      onClick={() => onAddVolumeKeyframe()}
+                    >
+                      {isOnVolumeKeyframe
+                        ? '볼륨 키프레임 갱신'
+                        : '현재 위치에 볼륨 키프레임 추가'}
+                    </button>
+                    <button
+                      type="button"
+                      style={{
+                        ...styles.keyframeBtn,
+                        ...(isOnVolumeKeyframe
+                          ? {}
+                          : styles.keyframeBtnDisabled)
+                      }}
+                      data-testid="menu-volume-keyframe-remove"
+                      disabled={!isOnVolumeKeyframe}
+                      onClick={() => {
+                        if (!isOnVolumeKeyframe) return
+                        onRemoveVolumeKeyframeAtPlayhead?.()
+                      }}
+                    >
+                      키프레임 삭제
+                    </button>
+                  </div>
+                  {/* Per-keyframe dB slider — edits the gain of the keyframe
+                      under the playhead. Disabled when not on one. */}
+                  <div style={styles.transformRow}>
+                    <span style={styles.transformLabel}>키프레임 볼륨</span>
+                    <input
+                      type="range"
+                      min={MIN_GAIN_DB}
+                      max={MAX_GAIN_DB}
+                      step={0.5}
+                      value={volumeDbAtPlayhead ?? 0}
+                      onChange={(e) => {
+                        const v = parseFloat(e.target.value)
+                        if (!Number.isFinite(v)) return
+                        onUpdateVolumeKeyframeAtPlayhead?.(v)
+                      }}
+                      style={styles.slider}
+                      data-testid="volume-keyframe-db-slider"
+                      aria-label="키프레임 볼륨"
+                      disabled={!isOnVolumeKeyframe}
+                    />
+                    <span style={{ ...styles.shortcut, width: 48 }}>
+                      {(volumeDbAtPlayhead ?? 0).toFixed(1)} dB
+                    </span>
+                  </div>
+                </>
               )}
             </div>
           )}

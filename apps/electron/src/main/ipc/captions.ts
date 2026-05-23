@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron'
-import { readFile } from 'node:fs/promises'
+import { readFile, rename, writeFile } from 'node:fs/promises'
 import { IPC_CHANNELS } from '../../shared/ipc'
-import type { ParsedCaptionCue } from '../../shared/ipc'
+import type { ParsedCaptionCue, SubtitleExportResult } from '../../shared/ipc'
 import { assertPathAllowed } from '../ffmpeg/security'
 
 // ---------------------------------------------------------------------------
@@ -173,6 +173,39 @@ export function registerCaptionHandlers(): void {
     const raw = await readFile(resolved, 'utf-8')
     return parseSrtOrVtt(raw)
   })
+
+  // Write a generated SRT/VTT string to disk. The renderer obtains `p` from
+  // fs.saveFile (which allow-lists it); we re-assert the allow check here.
+  ipcMain.handle(
+    IPC_CHANNELS.captions.exportSubtitle,
+    async (_event, p: unknown, content: unknown): Promise<SubtitleExportResult> => {
+      try {
+        if (typeof p !== 'string' || p.length === 0 || p.length > 4096) {
+          return { ok: false, error: 'bad path' }
+        }
+        if (typeof content !== 'string') {
+          return { ok: false, error: 'content must be a string' }
+        }
+        if (content.length > 8 * 1024 * 1024) {
+          return { ok: false, error: 'content too large (>8MB)' }
+        }
+        // Same allow-list check the export/cover-frame output handlers use.
+        const resolved = assertPathAllowed(p, 'output')
+        // Atomic write — write a sibling tmp file then rename.
+        const tmp = resolved + '.tmp'
+        await writeFile(tmp, content, 'utf-8')
+        await rename(tmp, resolved)
+        return {
+          ok: true,
+          path: resolved,
+          bytesWritten: Buffer.byteLength(content, 'utf-8')
+        }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err)
+        return { ok: false, error: message }
+      }
+    }
+  )
 
   // Renderer-side parsing escape hatch — pass a raw SRT/VTT string. Used for
   // test fixtures and for files the user pastes directly (no disk path).

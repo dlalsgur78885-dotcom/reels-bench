@@ -19,6 +19,7 @@ import {
   hasVolumeEnvelope,
   hasTransformKeyframes,
   canPlaceClipOnTrack,
+  CLIP_COLOR_HEX,
   isCaptionClip,
   isClipLocked,
   isClipReversed,
@@ -474,7 +475,18 @@ function snapMs(
   track: Track,
   ignoreClipId: string | null,
   altPressed: boolean,
-  options?: { beats?: number[]; beatSnapEnabled?: boolean; snapEnabled?: boolean }
+  options?: {
+    beats?: number[]
+    beatSnapEnabled?: boolean
+    snapEnabled?: boolean
+    /**
+     * Phase 3.78 — magnet timeline: additional clip boundaries from OTHER
+     * tracks. Pre-filtered by the caller (exclude moving clip + the same-
+     * track edges that this function already collects below). Empty / undef
+     * = same-track snap only (legacy behavior).
+     */
+    crossTrackEdges?: number[]
+  }
 ): number {
   // Persistent toggle off OR Alt held → no snapping at all.
   if (altPressed || options?.snapEnabled === false) {
@@ -487,6 +499,12 @@ function snapMs(
   for (const c of track.clips) {
     if (c.id === ignoreClipId) continue
     edges.push(c.startMs, c.endMs)
+  }
+  // Phase 3.78 — cross-track magnet.
+  if (options?.crossTrackEdges && options.crossTrackEdges.length > 0) {
+    for (const e of options.crossTrackEdges) {
+      if (Number.isFinite(e)) edges.push(e)
+    }
   }
   edges.push(Math.round(desiredMs / 1000) * 1000)
   for (const e of edges) {
@@ -675,6 +693,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const updateOverlay = useProjectStore((s) => s.updateOverlay)
   const setTrackMuted = useProjectStore((s) => s.setTrackMuted)
   const setTrackSolo = useProjectStore((s) => s.setTrackSolo)
+  const setTrackDucking = useProjectStore((s) => s.setTrackDucking)
 
   // Mirror selection into the timelineUi store so keyboard shortcuts (Editor)
   // and tests can introspect via __TIMELINE_UI_FOR_TEST__.
@@ -1175,17 +1194,27 @@ export function Timeline(props: TimelineProps): JSX.Element {
     const onMove = (ev: MouseEvent): void => {
       const dx = ev.clientX - startMouseX
       const deltaMs = (dx / pps) * 1000
+      const liveProject = useProjectStore.getState().project
       const liveTrack =
-        useProjectStore
-          .getState()
-          .project.tracks.find((t) => t.id === track.id) ?? track
+        liveProject.tracks.find((t) => t.id === track.id) ?? track
+      // Phase 3.78 — cross-track magnet: collect every OTHER track's clip
+      // boundaries so the trim/drag also snaps to multi-track edges.
+      const crossTrackEdges: number[] = []
+      for (const t of liveProject.tracks) {
+        if (t.id === track.id) continue
+        for (const c of t.clips) {
+          if (c.id === clip.id) continue
+          crossTrackEdges.push(c.startMs, c.endMs)
+        }
+      }
 
       if (side === 'left') {
         let desiredStart = orig.startMs + deltaMs
         desiredStart = snapMs(desiredStart, pps, liveTrack, clip.id, ev.altKey, {
           beats,
           beatSnapEnabled,
-          snapEnabled
+          snapEnabled,
+          crossTrackEdges
         })
         if (desiredStart > orig.endMs - MIN_CLIP_MS) {
           desiredStart = orig.endMs - MIN_CLIP_MS
@@ -1213,7 +1242,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
         desiredEnd = snapMs(desiredEnd, pps, liveTrack, clip.id, ev.altKey, {
           beats,
           beatSnapEnabled,
-          snapEnabled
+          snapEnabled,
+          crossTrackEdges
         })
         if (desiredEnd < orig.startMs + MIN_CLIP_MS) {
           desiredEnd = orig.startMs + MIN_CLIP_MS
@@ -1326,14 +1356,23 @@ export function Timeline(props: TimelineProps): JSX.Element {
       }
       const deltaMs = (dx / pps) * 1000
       let desired = origStart + deltaMs
+      const liveProject = useProjectStore.getState().project
       const liveTrack =
-        useProjectStore
-          .getState()
-          .project.tracks.find((t) => t.id === track.id) ?? track
+        liveProject.tracks.find((t) => t.id === track.id) ?? track
+      // Phase 3.78 — cross-track magnet edges.
+      const crossTrackEdges: number[] = []
+      for (const t of liveProject.tracks) {
+        if (t.id === track.id) continue
+        for (const c of t.clips) {
+          if (c.id === clip.id) continue
+          crossTrackEdges.push(c.startMs, c.endMs)
+        }
+      }
       desired = snapMs(desired, pps, liveTrack, clip.id, ev.altKey, {
         beats,
         beatSnapEnabled,
-        snapEnabled
+        snapEnabled,
+        crossTrackEdges
       })
       desired = clampNoOverlap(liveTrack, desired, duration, clip.id)
       desired = Math.max(0, Math.round(desired))
@@ -2274,6 +2313,28 @@ export function Timeline(props: TimelineProps): JSX.Element {
                     data-muted={audioMuted ? 'true' : 'false'}
                     onContextMenu={(e) => handleContext(e, clip)}
                   >
+                    {/* Phase 3.77 — color label accent strip. Sits at the
+                        left edge above the trim handle but is pointer-events:none
+                        so clicks pass through to the body / handle. */}
+                    {clip.color && clip.color !== 'none' && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          left: 0,
+                          top: 0,
+                          bottom: 0,
+                          width: 4,
+                          background:
+                            CLIP_COLOR_HEX[clip.color] ?? 'transparent',
+                          borderRadius: '4px 0 0 4px',
+                          pointerEvents: 'none',
+                          zIndex: 3
+                        }}
+                        data-testid="clip-color-strip"
+                        data-clip-id={clip.id}
+                        data-clip-color={clip.color}
+                      />
+                    )}
                     {isMediaClip(clip) && (
                       <div
                         style={{ ...styles.trimHandle, ...styles.trimHandleLeft }}
@@ -3328,6 +3389,9 @@ export function Timeline(props: TimelineProps): JSX.Element {
                 const ids = pickBulkDeleteIds(count)
                 if (ids.length > 0) removeTracks(ids)
               }}
+              onSetDucking={(target, db) =>
+                setTrackDucking(t.id, target, db)
+              }
               onClose={() => setTrackCtx(null)}
             />
           )

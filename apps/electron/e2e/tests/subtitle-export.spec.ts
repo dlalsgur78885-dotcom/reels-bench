@@ -21,6 +21,7 @@ import { existsSync, readFileSync, mkdirSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
+import { openCaptionsMenu } from '../helpers/topbar'
 
 // ---------------------------------------------------------------------------
 // Local type aliases (mirrors shared/project.ts — no cross-context import)
@@ -430,6 +431,8 @@ test.describe('@phase-3-34-subtitle-export SRT / VTT subtitle export', () => {
     // Stub the save dialog to return our path.
     await stubSaveDialog(launched, outPath)
 
+    // Phase 3.46 — caption export controls now live inside the 자막 ▾ popover.
+    await openCaptionsMenu(page)
     // Ensure format selector is set to 'srt' (it's the default, but be explicit).
     await page.locator('[data-testid="export-subtitle-format"]').selectOption('srt')
 
@@ -479,6 +482,7 @@ test.describe('@phase-3-34-subtitle-export SRT / VTT subtitle export', () => {
     cleanupFiles.push(outPath)
 
     await stubSaveDialog(launched, outPath)
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="export-subtitle-format"]').selectOption('vtt')
 
     const exportBtn = page.locator('[data-testid="export-srt-button"]')
@@ -505,6 +509,8 @@ test.describe('@phase-3-34-subtitle-export SRT / VTT subtitle export', () => {
     const { page } = launched
     await openEditor(launched)
 
+    // Phase 3.46 — caption controls live inside the 자막 ▾ popover.
+    await openCaptionsMenu(page)
     // No captions added — button must be disabled.
     const exportBtn = page.locator('[data-testid="export-srt-button"]')
     await expect(exportBtn).toBeVisible({ timeout: 5_000 })
@@ -531,6 +537,7 @@ test.describe('@phase-3-34-subtitle-export SRT / VTT subtitle export', () => {
     cleanupFiles.push(outPath)
 
     await stubSaveDialog(launched, outPath)
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="export-subtitle-format"]').selectOption('srt')
 
     const exportBtn = page.locator('[data-testid="export-srt-button"]')
@@ -632,6 +639,7 @@ test.describe('@phase-3-34-subtitle-export SRT / VTT subtitle export', () => {
     const subOutPath = path.join(subOutDir, `regression-${Date.now()}.srt`)
     cleanupFiles.push(subOutPath)
     await stubSaveDialog(launched, subOutPath)
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="export-subtitle-format"]').selectOption('srt')
     await page.locator('[data-testid="export-srt-button"]').click()
     await page.waitForTimeout(1_500)

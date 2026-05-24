@@ -188,7 +188,7 @@ test.describe('@phase-3-25-sticker-library emoji & sticker library', () => {
   async function openOverlayLibrary(): Promise<void> {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
-    await page.locator('[data-testid="media-overlay-tab"]').click()
+    await page.locator('[data-testid="left-rail-sticker"]').click()
     await expect(page.locator('[data-testid="overlay-library"]')).toBeVisible()
   }
 

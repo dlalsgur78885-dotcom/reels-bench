@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
+import { openOptionsMenu } from '../helpers/topbar'
 
 /**
  * Phase 2.5 — audio shaping, track controls, silence removal, beats, waveform.
@@ -519,6 +520,7 @@ test.describe('@phase-2-audio audio shaping + track controls', () => {
     await addClipOnTrack('video', mediaId, durationMs)
 
     // Set BPM=120 (so 2 beats / second) and turn on snap.
+    await openOptionsMenu(page)
     await page.locator('[data-testid="bpm-input"]').fill('120')
     await page.locator('[data-testid="bpm-input"]').blur()
     await page.locator('[data-testid="beat-snap-toggle"]').click()
@@ -543,6 +545,7 @@ test.describe('@phase-2-audio audio shaping + track controls', () => {
     await addClipOnTrack('video', mediaId, durationMs)
 
     // Enter BPM=120 via the input, then read back the beats array.
+    await openOptionsMenu(page)
     await page.locator('[data-testid="bpm-input"]').fill('120')
     await page.locator('[data-testid="bpm-input"]').blur()
     // Editor's useEffect runs synchronously after state set; a short wait is

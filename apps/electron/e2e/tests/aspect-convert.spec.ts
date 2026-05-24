@@ -604,8 +604,10 @@ test.describe('@phase-3-26-aspect-convert aspect-ratio conversion', () => {
     expect(dims.width).toBe(1080)
     expect(dims.height).toBe(1080)
 
-    // The aspect-ratio-hint advisory text must be visible
-    await expect(page.locator('[data-testid="aspect-ratio-hint"]')).toBeVisible()
+    // Phase 3.46 — the hint node is kept in the DOM (testid preserved for
+    // BC) but visually hidden inside the new topbar layout. Assert presence
+    // instead of visibility.
+    await expect(page.locator('[data-testid="aspect-ratio-hint"]')).toBeAttached()
 
     // Use the UI dropdown to change to 16:9
     await page.locator('[data-testid="aspect-ratio-select"]').selectOption('16:9')

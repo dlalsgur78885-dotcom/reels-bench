@@ -59,7 +59,7 @@ import {
   NEUTRAL_VOICE_ENHANCE,
   VOICE_CHANGER_IDS,
   isNeutralVoiceEnhance,
-  TRANSITION_KINDS
+  TRANSITION_CATEGORIES
 } from '../../../shared/project'
 import {
   COLOR_ADJUST_LABELS,
@@ -814,25 +814,63 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
           </div>
           {showTransition && (
             <div style={styles.speedPanel} data-testid="menu-transition-panel">
-              <div style={styles.presetRow}>
-                {TRANSITION_KINDS.map((k) => {
-                  const active = transitionKind === k
-                  return (
-                    <button
-                      key={k}
-                      type="button"
-                      style={{
-                        ...styles.preset,
-                        ...(active ? styles.presetActive : {})
-                      }}
-                      data-testid={`menu-transition-preset-${k}`}
-                      onClick={() => onTransitionChange(k, transitionMs)}
-                    >
-                      {TRANSITION_LABELS[k] ?? k}
-                    </button>
-                  )
-                })}
+              {/* Reset chip — 'none' separated above the category grid. */}
+              <div style={{ marginBottom: 6 }}>
+                <button
+                  type="button"
+                  style={{
+                    ...styles.preset,
+                    ...(transitionKind === 'none' ? styles.presetActive : {})
+                  }}
+                  data-testid="menu-transition-preset-none"
+                  onClick={() => onTransitionChange('none', transitionMs)}
+                >
+                  {TRANSITION_LABELS['none'] ?? 'none'}
+                </button>
               </div>
+              {TRANSITION_CATEGORIES.map((cat) => (
+                <div
+                  key={cat.id}
+                  style={{ marginBottom: 6 }}
+                  data-testid={`menu-transition-category-${cat.id}`}
+                >
+                  <div
+                    style={{
+                      fontSize: 10,
+                      color: '#94a3b8',
+                      marginBottom: 2,
+                      fontWeight: 600
+                    }}
+                  >
+                    {cat.title}
+                  </div>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(76px, 1fr))',
+                      gap: 3
+                    }}
+                  >
+                    {cat.kinds.map((k) => {
+                      const active = transitionKind === k
+                      return (
+                        <button
+                          key={k}
+                          type="button"
+                          style={{
+                            ...styles.preset,
+                            ...(active ? styles.presetActive : {})
+                          }}
+                          data-testid={`menu-transition-preset-${k}`}
+                          onClick={() => onTransitionChange(k, transitionMs)}
+                        >
+                          {TRANSITION_LABELS[k] ?? k}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
               <div style={styles.speedRow}>
                 <input
                   type="range"

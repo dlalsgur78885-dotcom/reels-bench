@@ -277,7 +277,7 @@ test.describe('@phase-3-8-overlays overlay elements', () => {
     await openEditor()
 
     // Switch to the overlay library tab.
-    await page.locator('[data-testid="media-overlay-tab"]').click()
+    await page.locator('[data-testid="left-rail-sticker"]').click()
     await expect(page.locator('[data-testid="overlay-library"]')).toBeVisible()
 
     // Add a rectangle shape.
@@ -390,7 +390,7 @@ test.describe('@phase-3-8-overlays overlay elements', () => {
     const { page } = launched
     await openEditor()
 
-    await page.locator('[data-testid="media-overlay-tab"]').click()
+    await page.locator('[data-testid="left-rail-sticker"]').click()
     await expect(page.locator('[data-testid="overlay-library"]')).toBeVisible()
 
     // The sticker grid is conditionally rendered only when BUNDLED_STICKERS.length > 0.

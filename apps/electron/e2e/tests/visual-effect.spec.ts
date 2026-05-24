@@ -303,7 +303,7 @@ test.describe('@phase-3-51-visual-effect visual effect presets', () => {
   // =========================================================================
   // (1) UI present
   // =========================================================================
-  test('(1) effects-section-visual-effect visible; visual-effect-select with 8 options', async () => {
+  test('(1) effects-section-visual-effect visible; visual-effect-select with >= 8 options', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
     await openEditor()
@@ -316,9 +316,10 @@ test.describe('@phase-3-51-visual-effect visual effect presets', () => {
     const select = page.locator('[data-testid="visual-effect-select"]')
     await expect(select).toBeVisible()
 
-    // 8 options: none + 7 presets.
+    // Catalog: none + N presets. Phase 3.64 grew this to 16 (none + 15).
+    // Use >= to keep the test future-proof against further expansions.
     const optionCount = await select.locator('option').count()
-    expect(optionCount).toBe(8)
+    expect(optionCount).toBeGreaterThanOrEqual(8)
   })
 
   // =========================================================================

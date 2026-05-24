@@ -77,6 +77,33 @@ export function filterPresetToCss(
       )}) brightness(${lerp(1.05, 1).toFixed(3)}) contrast(${lerp(1.05, 1).toFixed(
         3
       )})`
+    // Phase 3.63 — second-batch presets.
+    case 'moody':
+      return `contrast(${lerp(1.2, 1).toFixed(3)}) saturate(${lerp(0.75, 1).toFixed(3)}) brightness(${lerp(0.88, 1).toFixed(3)}) hue-rotate(${(-15 * t).toFixed(2)}deg)`
+    case 'noir':
+      return `grayscale(${lerp(1, 0).toFixed(3)}) contrast(${lerp(1.35, 1).toFixed(3)}) brightness(${lerp(0.92, 1).toFixed(3)})`
+    case 'pastel':
+      return `saturate(${lerp(0.7, 1).toFixed(3)}) brightness(${lerp(1.08, 1).toFixed(3)}) contrast(${lerp(0.92, 1).toFixed(3)})`
+    case 'sunset':
+      return `hue-rotate(${(25 * t).toFixed(2)}deg) saturate(${lerp(1.3, 1).toFixed(3)}) brightness(${lerp(1.05, 1).toFixed(3)})`
+    case 'arctic':
+      return `hue-rotate(${(-25 * t).toFixed(2)}deg) saturate(${lerp(0.85, 1).toFixed(3)}) brightness(${lerp(1.05, 1).toFixed(3)})`
+    case 'forest':
+      return `hue-rotate(${(-5 * t).toFixed(2)}deg) saturate(${lerp(1.15, 1).toFixed(3)}) contrast(${lerp(1.05, 1).toFixed(3)})`
+    case 'desert':
+      return `hue-rotate(${(20 * t).toFixed(2)}deg) saturate(${lerp(1.1, 1).toFixed(3)}) brightness(${lerp(1.05, 1).toFixed(3)}) contrast(${lerp(1.05, 1).toFixed(3)})`
+    case 'cyberpunk':
+      return `hue-rotate(${(-45 * t).toFixed(2)}deg) saturate(${lerp(1.5, 1).toFixed(3)}) contrast(${lerp(1.15, 1).toFixed(3)})`
+    case 'sepia':
+      return `sepia(${lerp(0.85, 0).toFixed(3)}) contrast(${lerp(0.95, 1).toFixed(3)}) brightness(${lerp(1.02, 1).toFixed(3)})`
+    case 'high-contrast':
+      return `contrast(${lerp(1.4, 1).toFixed(3)}) saturate(${lerp(1.1, 1).toFixed(3)})`
+    case 'low-contrast':
+      return `contrast(${lerp(0.75, 1).toFixed(3)}) saturate(${lerp(0.9, 1).toFixed(3)}) brightness(${lerp(1.05, 1).toFixed(3)})`
+    case 'punch':
+      return `saturate(${lerp(1.5, 1).toFixed(3)}) contrast(${lerp(1.2, 1).toFixed(3)}) brightness(${lerp(1.02, 1).toFixed(3)})`
+    case 'underwater':
+      return `hue-rotate(${(-15 * t).toFixed(2)}deg) saturate(${lerp(1.2, 1).toFixed(3)}) brightness(${lerp(0.95, 1).toFixed(3)})`
     default:
       return ''
   }
@@ -150,6 +177,87 @@ export function filterPresetToFfmpeg(
       const contrast = lerp(1.05, 1).toFixed(3)
       return `hue=h=${hueDeg}:s=${saturation},eq=brightness=${brightness}:contrast=${contrast}`
     }
+    // Phase 3.63 — second-batch presets.
+    case 'moody': {
+      const hueDeg = (-15 * t).toFixed(2)
+      const saturation = lerp(0.75, 1).toFixed(3)
+      const contrast = lerp(1.2, 1).toFixed(3)
+      const brightness = lerp(-0.12, 0).toFixed(3)
+      return `hue=h=${hueDeg}:s=${saturation},eq=contrast=${contrast}:brightness=${brightness}`
+    }
+    case 'noir': {
+      const saturation = lerp(0, 1).toFixed(3)
+      const contrast = lerp(1.35, 1).toFixed(3)
+      const brightness = lerp(-0.08, 0).toFixed(3)
+      return `eq=saturation=${saturation}:contrast=${contrast}:brightness=${brightness}`
+    }
+    case 'pastel': {
+      const saturation = lerp(0.7, 1).toFixed(3)
+      const brightness = lerp(0.08, 0).toFixed(3)
+      const contrast = lerp(0.92, 1).toFixed(3)
+      return `eq=saturation=${saturation}:brightness=${brightness}:contrast=${contrast}`
+    }
+    case 'sunset': {
+      const hueDeg = (25 * t).toFixed(2)
+      const saturation = lerp(1.3, 1).toFixed(3)
+      const brightness = lerp(0.05, 0).toFixed(3)
+      return `hue=h=${hueDeg}:s=${saturation},eq=brightness=${brightness}`
+    }
+    case 'arctic': {
+      const hueDeg = (-25 * t).toFixed(2)
+      const saturation = lerp(0.85, 1).toFixed(3)
+      const brightness = lerp(0.05, 0).toFixed(3)
+      return `hue=h=${hueDeg}:s=${saturation},eq=brightness=${brightness}`
+    }
+    case 'forest': {
+      const hueDeg = (-5 * t).toFixed(2)
+      const saturation = lerp(1.15, 1).toFixed(3)
+      const contrast = lerp(1.05, 1).toFixed(3)
+      return `hue=h=${hueDeg}:s=${saturation},eq=contrast=${contrast}`
+    }
+    case 'desert': {
+      const hueDeg = (20 * t).toFixed(2)
+      const saturation = lerp(1.1, 1).toFixed(3)
+      const brightness = lerp(0.05, 0).toFixed(3)
+      const contrast = lerp(1.05, 1).toFixed(3)
+      return `hue=h=${hueDeg}:s=${saturation},eq=brightness=${brightness}:contrast=${contrast}`
+    }
+    case 'cyberpunk': {
+      const hueDeg = (-45 * t).toFixed(2)
+      const saturation = lerp(1.5, 1).toFixed(3)
+      const contrast = lerp(1.15, 1).toFixed(3)
+      return `hue=h=${hueDeg}:s=${saturation},eq=contrast=${contrast}`
+    }
+    case 'sepia': {
+      const hueDeg = (25 * t).toFixed(2)
+      const saturation = lerp(0.4, 1).toFixed(3)
+      const contrast = lerp(0.95, 1).toFixed(3)
+      const brightness = lerp(0.02, 0).toFixed(3)
+      return `hue=h=${hueDeg}:s=${saturation},eq=contrast=${contrast}:brightness=${brightness}`
+    }
+    case 'high-contrast': {
+      const contrast = lerp(1.4, 1).toFixed(3)
+      const saturation = lerp(1.1, 1).toFixed(3)
+      return `eq=contrast=${contrast}:saturation=${saturation}`
+    }
+    case 'low-contrast': {
+      const contrast = lerp(0.75, 1).toFixed(3)
+      const saturation = lerp(0.9, 1).toFixed(3)
+      const brightness = lerp(0.05, 0).toFixed(3)
+      return `eq=contrast=${contrast}:saturation=${saturation}:brightness=${brightness}`
+    }
+    case 'punch': {
+      const saturation = lerp(1.5, 1).toFixed(3)
+      const contrast = lerp(1.2, 1).toFixed(3)
+      const brightness = lerp(0.02, 0).toFixed(3)
+      return `eq=saturation=${saturation}:contrast=${contrast}:brightness=${brightness}`
+    }
+    case 'underwater': {
+      const hueDeg = (-15 * t).toFixed(2)
+      const saturation = lerp(1.2, 1).toFixed(3)
+      const brightness = lerp(-0.05, 0).toFixed(3)
+      return `hue=h=${hueDeg}:s=${saturation},eq=brightness=${brightness}`
+    }
     default:
       return ''
   }
@@ -163,35 +271,151 @@ export const FILTER_PRESET_LABELS: Record<FilterPreset, string> = {
   vintage: '빈티지',
   cool: '쿨',
   warm: '웜',
-  'golden-hour': '골든 아워'
+  'golden-hour': '골든 아워',
+  moody: '무드',
+  noir: '느와르',
+  pastel: '파스텔',
+  sunset: '선셋',
+  arctic: '아틱',
+  forest: '포레스트',
+  desert: '데저트',
+  cyberpunk: '사이버펑크',
+  sepia: '세피아',
+  'high-contrast': '하이 콘트라스트',
+  'low-contrast': '로우 콘트라스트',
+  punch: '펀치',
+  underwater: '언더워터'
 }
 
 export const TRANSITION_LABELS: Record<string, string> = {
   none: '없음',
+  // Basic
   crossfade: '크로스페이드',
-  'slide-left': '왼쪽 슬라이드',
-  'slide-right': '오른쪽 슬라이드',
-  'fade-to-black': '검정으로 페이드',
+  'fade-to-black': '블랙 페이드',
+  'fade-to-white': '화이트 페이드',
+  dissolve: '디졸브',
+  // Slide
+  'slide-left': '슬라이드 ←',
+  'slide-right': '슬라이드 →',
+  'slide-up': '슬라이드 ↑',
+  'slide-down': '슬라이드 ↓',
+  // Wipe
+  'wipe-left': '와이프 ←',
+  'wipe-right': '와이프 →',
+  'wipe-up': '와이프 ↑',
+  'wipe-down': '와이프 ↓',
+  // Smooth
+  'smooth-left': '스무스 ←',
+  'smooth-right': '스무스 →',
+  'smooth-up': '스무스 ↑',
+  'smooth-down': '스무스 ↓',
+  // Cover
+  'cover-left': '커버 ←',
+  'cover-right': '커버 →',
+  'cover-up': '커버 ↑',
+  'cover-down': '커버 ↓',
+  // Reveal
+  'reveal-left': '리빌 ←',
+  'reveal-right': '리빌 →',
+  'reveal-up': '리빌 ↑',
+  'reveal-down': '리빌 ↓',
+  // Shape
+  'circle-open': '원 열림',
+  'circle-close': '원 닫힘',
+  'diag-top-left': '대각선 ↖',
+  'diag-top-right': '대각선 ↗',
+  'diag-bottom-left': '대각선 ↙',
+  'diag-bottom-right': '대각선 ↘',
+  // Effect
   'zoom-in': '줌 인',
+  pixelize: '픽셀라이즈',
+  radial: '레이디얼',
   glitch: '글리치'
 }
 
-/** ffmpeg xfade transition names. Maps our kind → xfade `transition=` value. */
+/**
+ * ffmpeg xfade transition names. Maps our kind → xfade `transition=` value.
+ * All names are native to ffmpeg's `xfade` filter (since 4.3, 2020).
+ * 'glitch' aliases to 'pixelize' for backwards compatibility — the data model
+ * keeps the legacy enum but renders the same chunky digital feel.
+ */
 export function transitionKindToXfade(kind: string): string {
   switch (kind) {
+    // Basic
     case 'crossfade':
       return 'fade'
+    case 'fade-to-black':
+      return 'fadeblack'
+    case 'fade-to-white':
+      return 'fadewhite'
+    case 'dissolve':
+      return 'dissolve'
+    // Slide
     case 'slide-left':
       return 'slideleft'
     case 'slide-right':
       return 'slideright'
-    case 'fade-to-black':
-      return 'fadeblack'
+    case 'slide-up':
+      return 'slideup'
+    case 'slide-down':
+      return 'slidedown'
+    // Wipe
+    case 'wipe-left':
+      return 'wipeleft'
+    case 'wipe-right':
+      return 'wiperight'
+    case 'wipe-up':
+      return 'wipeup'
+    case 'wipe-down':
+      return 'wipedown'
+    // Smooth
+    case 'smooth-left':
+      return 'smoothleft'
+    case 'smooth-right':
+      return 'smoothright'
+    case 'smooth-up':
+      return 'smoothup'
+    case 'smooth-down':
+      return 'smoothdown'
+    // Cover
+    case 'cover-left':
+      return 'coverleft'
+    case 'cover-right':
+      return 'coverright'
+    case 'cover-up':
+      return 'coverup'
+    case 'cover-down':
+      return 'coverdown'
+    // Reveal
+    case 'reveal-left':
+      return 'revealleft'
+    case 'reveal-right':
+      return 'revealright'
+    case 'reveal-up':
+      return 'revealup'
+    case 'reveal-down':
+      return 'revealdown'
+    // Shape
+    case 'circle-open':
+      return 'circleopen'
+    case 'circle-close':
+      return 'circleclose'
+    case 'diag-top-left':
+      return 'diagtl'
+    case 'diag-top-right':
+      return 'diagtr'
+    case 'diag-bottom-left':
+      return 'diagbl'
+    case 'diag-bottom-right':
+      return 'diagbr'
+    // Effect
     case 'zoom-in':
       return 'zoomin'
+    case 'pixelize':
+      return 'pixelize'
+    case 'radial':
+      return 'radial'
     case 'glitch':
-      // 'glitch' isn't a built-in xfade name; closest equivalent is 'pixelize'
-      // or 'hblur' — we map to 'pixelize' for a chunky digital feel.
       return 'pixelize'
     default:
       return 'fade'
@@ -795,7 +1019,15 @@ export const VISUAL_EFFECT_LABELS: Record<VisualEffectId, string> = {
   'dual-tone': '듀얼 톤',
   negative: '네거티브',
   sketch: '스케치',
-  infrared: '인프라레드'
+  infrared: '인프라레드',
+  pixelate: '픽셀',
+  'old-film': '올드 필름',
+  'blur-bg': '블러 배경',
+  cartoon: '카툰',
+  thermal: '써멀',
+  chromatic: '크로마틱',
+  'mirror-h': '좌우 미러',
+  'mirror-v': '상하 미러'
 }
 
 export function visualEffectToFfmpeg(
@@ -826,6 +1058,34 @@ export function visualEffectToFfmpeg(
       return 'edgedetect=mode=colormix:high=0.2:low=0.08'
     case 'infrared':
       return 'hue=H=180,eq=saturation=1.3'
+    // Phase 3.64 — second batch (ffmpeg native filters, no probe needed).
+    case 'pixelate':
+      // pixelize is part of xfade group, also a standalone filter. Default 16x16.
+      return 'pixelize=w=16:h=16'
+    case 'old-film':
+      // Warm tint + grain + slight contrast loss + vignette via eq.
+      return (
+        'eq=saturation=0.55:contrast=0.92:gamma=0.98,' +
+        'hue=h=22:s=1,' +
+        'noise=alls=12:allf=t+u:all_seed=4711'
+      )
+    case 'blur-bg':
+      // Strong gaussian blur — useful for "background" treatment under titles.
+      return 'gblur=sigma=8'
+    case 'cartoon':
+      // Edge mix overlay + saturation pop for a flat, posterized feel.
+      return 'edgedetect=mode=colormix:high=0.25:low=0.05,eq=saturation=1.4:contrast=1.1'
+    case 'thermal':
+      // Hue spin + heavy saturation/contrast for fake-thermal palette.
+      return 'hue=H=300,eq=saturation=2:contrast=1.35'
+    case 'chromatic':
+      // Stronger RGB shift than glitch (clean chromatic aberration look).
+      return 'rgbashift=rh=8:gv=4:bh=-8:bv=-4'
+    case 'mirror-h':
+      // Horizontal mirror via geq — sample the source pixel at (W-X, Y).
+      return "geq=lum='lum(W-X,Y)':cb='cb(W-X,Y)':cr='cr(W-X,Y)'"
+    case 'mirror-v':
+      return "geq=lum='lum(X,H-Y)':cb='cb(X,H-Y)':cr='cr(X,H-Y)'"
     default:
       return ''
   }

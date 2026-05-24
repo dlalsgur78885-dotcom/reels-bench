@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
+import { openCaptionsMenu } from '../helpers/topbar'
 
 /**
  * @phase-3-23 — Caption text decoration tests: text outline (stroke),
@@ -611,6 +612,7 @@ test.describe('@phase-3-23 caption text decoration (outline / shadow / glow)', (
     )
 
     // Add a caption via the UI button.
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
 
@@ -671,6 +673,7 @@ test.describe('@phase-3-23 caption text decoration (outline / shadow / glow)', (
       { timeout: 5_000 }
     )
 
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
 
@@ -731,6 +734,7 @@ test.describe('@phase-3-23 caption text decoration (outline / shadow / glow)', (
       { timeout: 5_000 }
     )
 
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
 

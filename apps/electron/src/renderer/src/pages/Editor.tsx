@@ -4,6 +4,8 @@ import { MediaLibrary } from '../components/MediaLibrary'
 import { OverlayLibrary } from '../components/OverlayLibrary'
 import { TranscriptPanel } from '../components/TranscriptPanel'
 import { PreviewCanvas, PreviewGuidesControl } from '../components/PreviewCanvas'
+import { AudioMeter } from '../components/AudioMeter'
+import { ColorScopes } from '../components/ColorScopes'
 import { SocialPreviewSelector } from '../components/SocialPreviewOverlay'
 import { SilenceRemoveDialog } from '../components/SilenceRemoveDialog'
 import { Timeline } from '../components/Timeline'
@@ -16,12 +18,14 @@ import { BatchExportDialog } from '../components/BatchExportDialog'
 import { PrefillDialog } from '../components/PrefillDialog'
 import { SttDialog } from '../components/SttDialog'
 import { AutoEditDialog } from '../components/AutoEditDialog'
+import { AutoReframeDialog } from '../components/AutoReframeDialog'
 import { Toast, type ToastVariant } from '../components/Toast'
 import type { PrefillResult } from '../lib/prefillFromReel'
 import type { AutoEditSummary } from '../lib/autoEdit'
 import { runBeatCut } from '../lib/beatCut'
 import { getTotalDurationMs, useProjectStore, useUndoRedo } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
+import { markersToChapters } from '../lib/markerExport'
 import {
   DEFAULT_CANVAS_BACKGROUND_COLOR,
   getCanvasBackground,
@@ -500,6 +504,45 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     }
   }, [])
 
+  // Phase 3.72 — fullscreen preview. `F` key toggles the preview wrapper
+  // into the browser's fullscreen mode; Esc / F again exits. The wrapper
+  // already lays out as `aspectRatio: project.width / project.height`, so
+  // the fullscreened view stays correctly letterboxed.
+  const previewWrapRef = useRef<HTMLDivElement | null>(null)
+  const togglePreviewFullscreen = useCallback((): void => {
+    const el = previewWrapRef.current
+    if (!el) return
+    if (document.fullscreenElement === el) {
+      void document.exitFullscreen().catch(() => {})
+    } else {
+      void el.requestFullscreen().catch(() => {})
+    }
+  }, [])
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      // Ignore when the user is typing into an input / textarea / contenteditable.
+      const t = e.target as HTMLElement | null
+      const tag = t?.tagName
+      if (
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        (t && t.isContentEditable)
+      ) {
+        return
+      }
+      // Plain `F` (no modifier) toggles preview fullscreen. Browsers reserve
+      // F11 for window fullscreen; Electron lets the page intercept it but
+      // we stick with plain F so the page-level shortcut composes cleanly.
+      if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault()
+        togglePreviewFullscreen()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [togglePreviewFullscreen])
+
   // Local mirror so the input feels responsive; flush to store on blur/enter.
   const [draftName, setDraftName] = useState(project.name)
   useEffect(() => {
@@ -545,6 +588,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   const [prefillOpen, setPrefillOpen] = useState(false)
   const [sttOpen, setSttOpen] = useState(false)
   const [autoEditOpen, setAutoEditOpen] = useState(false)
+  const [autoReframeOpen, setAutoReframeOpen] = useState(false)
   const [toast, setToast] = useState<{
     message: string
     variant: ToastVariant
@@ -1128,6 +1172,14 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           >
             자동 편집
           </button>
+          <button
+            style={styles.primaryBtn}
+            onClick={() => setAutoReframeOpen(true)}
+            data-testid="open-autoreframe-dialog"
+            title="자동 리프레임 (사람 추적 키프레임)"
+          >
+            자동 리프레임
+          </button>
           {/* Phase 3.48 — BPM 기반 비트 싱크 자동 컷. step=1 모든 비트,
               step=2 반박자(절반), step=4 다운비트(4박마다). */}
           <div style={styles.menuGroupLabel}>비트로 자르기 (BPM 사용)</div>
@@ -1218,6 +1270,45 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
             aria-label="플레이헤드(ms)"
             data-testid="playhead-input"
           />
+
+          {/* Phase 3.73 — chapter markers → YouTube format clipboard copy. */}
+          <div style={styles.menuGroupLabel}>챕터 마커</div>
+          <div style={styles.menuRow}>
+            <button
+              type="button"
+              style={styles.secondaryBtn}
+              onClick={async () => {
+                const markers = useTimelineUi.getState().markers
+                if (markers.length === 0) {
+                  setToast({
+                    message: '마커가 없습니다 — 타임라인에 마커를 먼저 추가하세요',
+                    variant: 'info',
+                    id: Date.now()
+                  })
+                  return
+                }
+                const text = markersToChapters(markers, 'youtube')
+                try {
+                  await navigator.clipboard.writeText(text)
+                  setToast({
+                    message: `챕터 ${markers.length}개를 클립보드에 복사했습니다`,
+                    variant: 'success',
+                    id: Date.now()
+                  })
+                } catch {
+                  setToast({
+                    message: '클립보드 복사 실패 — 권한을 확인하세요',
+                    variant: 'error',
+                    id: Date.now()
+                  })
+                }
+              }}
+              data-testid="copy-chapter-markers"
+              title="타임라인 마커를 YouTube 챕터 형식으로 클립보드에 복사"
+            >
+              YouTube 챕터로 복사
+            </button>
+          </div>
 
           <div style={styles.menuGroupLabel}>커버 프레임</div>
           <div style={styles.menuRow}>
@@ -1495,6 +1586,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
               <PreviewGuidesControl />
             </div>
             <div
+              ref={previewWrapRef}
               style={{
                 ...styles.previewBox,
                 aspectRatio: `${project.width} / ${project.height}`,
@@ -1507,6 +1599,39 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
               data-testid="preview-placeholder"
             >
               <PreviewCanvas project={project} playheadMs={playheadMs} />
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 8,
+                  right: 8,
+                  zIndex: 5,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'flex-end',
+                  gap: 4
+                }}
+              >
+                <AudioMeter />
+                <ColorScopes />
+                <button
+                  type="button"
+                  onClick={togglePreviewFullscreen}
+                  data-testid="preview-fullscreen-toggle"
+                  title="프리뷰 풀스크린 (F)"
+                  style={{
+                    background: '#1f2937',
+                    color: '#cbd5e1',
+                    border: '1px solid #374151',
+                    borderRadius: 4,
+                    padding: '3px 8px',
+                    fontSize: 10,
+                    cursor: 'pointer',
+                    fontWeight: 600
+                  }}
+                >
+                  ⛶ 풀스크린
+                </button>
+              </div>
             </div>
             {srtError && (
               <div
@@ -1619,6 +1744,17 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         open={autoEditOpen}
         onClose={() => setAutoEditOpen(false)}
         onComplete={handleAutoEditComplete}
+      />
+      <AutoReframeDialog
+        open={autoReframeOpen}
+        onClose={() => setAutoReframeOpen(false)}
+        onComplete={(s) =>
+          setToast({
+            message: `자동 리프레임 완료 — ${s.clipsReframed}개 클립에 키프레임 생성`,
+            variant: 'success',
+            id: Date.now()
+          })
+        }
       />
       {toast && (
         <Toast

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Track } from '../../../shared/project'
-import { MAX_BULK_TRACKS } from '../../../shared/project'
+import { DEFAULT_DUCKING_DB, MAX_BULK_TRACKS } from '../../../shared/project'
 
 /**
  * Phase 3 — timeline track context menu (slide 11).
@@ -33,6 +33,14 @@ interface TrackContextMenuProps {
   onDeleteOne: () => void
   onAddMany: (count: number) => void
   onDeleteMany: (count: number) => void
+  /**
+   * Phase 3.55 — set this track's voice-ducking config. `target='voice'`
+   * marks the track as BGM and turns on the sidechain compressor at export;
+   * `target=null` clears the ducking config. `db` is the post-compress
+   * attenuation in dB (negative number, default -12).
+   * The handler is only invoked from the panel rendered for audio tracks.
+   */
+  onSetDucking: (target: 'voice' | null, db?: number) => void
   onClose: () => void
 }
 
@@ -149,6 +157,7 @@ export function TrackContextMenu(props: TrackContextMenuProps): JSX.Element {
     onDeleteOne,
     onAddMany,
     onDeleteMany,
+    onSetDucking,
     onClose
   } = props
 
@@ -171,6 +180,13 @@ export function TrackContextMenu(props: TrackContextMenuProps): JSX.Element {
   const [deleteManyCount, setDeleteManyCount] = useState(
     Math.min(2, Math.max(1, deleteMax))
   )
+
+  // Phase 3.55 — ducking panel (audio tracks only).
+  const isAudioTrack = track.kind === 'audio'
+  const duckingActive = track.duckTarget === 'voice'
+  const initialDuckDb = track.duckingDb ?? DEFAULT_DUCKING_DB
+  const [showDucking, setShowDucking] = useState(false)
+  const [duckDb, setDuckDb] = useState(initialDuckDb)
 
   // Focus the rename field when the panel opens.
   useEffect(() => {
@@ -368,6 +384,99 @@ export function TrackContextMenu(props: TrackContextMenuProps): JSX.Element {
           </div>
           <div style={styles.hint}>최대 {addMax}개까지 추가할 수 있습니다</div>
         </div>
+      )}
+
+      {/* Phase 3.55 — 음성 더킹 (audio 트랙 전용) */}
+      {isAudioTrack && (
+        <>
+          <div style={styles.separator} />
+          <div
+            role="menuitem"
+            data-testid="track-menu-ducking"
+            style={styles.item}
+            onMouseEnter={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background = '#2a2a2a'
+            }}
+            onMouseLeave={(e) => {
+              ;(e.currentTarget as HTMLDivElement).style.background =
+                'transparent'
+            }}
+            onClick={() => setShowDucking((v) => !v)}
+          >
+            <span>음성 더킹{showDucking ? '' : '…'}</span>
+            <span
+              style={{
+                color: duckingActive ? '#a5b4fc' : '#64748b',
+                fontSize: 11
+              }}
+              data-testid="track-menu-ducking-status"
+            >
+              {duckingActive ? `${initialDuckDb} dB` : '꺼짐'}
+            </span>
+          </div>
+          {showDucking && (
+            <div style={styles.panel} data-testid="track-menu-ducking-panel">
+              <div style={styles.panelRow}>
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    cursor: 'pointer'
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={duckingActive}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        onSetDucking('voice', duckDb)
+                      } else {
+                        onSetDucking(null)
+                      }
+                    }}
+                    data-testid="track-menu-ducking-toggle"
+                  />
+                  <span>음성 트랙에 자동 낮춤</span>
+                </label>
+              </div>
+              <div style={{ ...styles.panelRow, marginTop: 6 }}>
+                <span style={{ width: 32 }}>dB</span>
+                <input
+                  type="range"
+                  min={-30}
+                  max={-1}
+                  step={1}
+                  value={duckDb}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10)
+                    if (!Number.isFinite(v)) return
+                    setDuckDb(v)
+                    if (duckingActive) onSetDucking('voice', v)
+                  }}
+                  disabled={!duckingActive}
+                  style={{ flex: 1, opacity: duckingActive ? 1 : 0.5 }}
+                  data-testid="track-menu-ducking-db-slider"
+                  aria-label="더킹 감쇠 dB"
+                />
+                <span
+                  style={{
+                    minWidth: 36,
+                    textAlign: 'right' as const,
+                    color: duckingActive ? '#a5b4fc' : '#64748b'
+                  }}
+                  data-testid="track-menu-ducking-db-value"
+                >
+                  {duckDb}
+                </span>
+              </div>
+              <div style={styles.hint}>
+                BGM 트랙이 voice 클립과 동시에 재생될 때 자동 감쇠 (export 시
+                sidechain compressor).
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* 6. 여러 트랙 삭제 */}

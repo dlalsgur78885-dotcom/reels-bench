@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
+import { openCaptionsMenu } from '../helpers/topbar'
 
 /**
  * Phase 2.3 — trim / split / duplicate / speed / shortcuts.
@@ -245,6 +246,7 @@ test.describe('@phase-2-editing core editing ops', () => {
     const { mediaId, durationMs } = await openEditorWithMedia()
     await addVideoClip(durationMs, mediaId)
     // Add a caption to compare against.
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
     await page.locator('[data-testid="caption-editor-close"]').click()
@@ -323,6 +325,7 @@ test.describe('@phase-2-editing core editing ops', () => {
     const { page } = launched
     // Add a caption via the button.
     await page.locator('[data-testid="open-editor-button"]').click()
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
 
@@ -390,6 +393,7 @@ test.describe('@phase-2-editing core editing ops', () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
     await page.locator('[data-testid="open-editor-button"]').click()
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
 
@@ -588,6 +592,7 @@ test.describe('@phase-2-editing core editing ops', () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
     await page.locator('[data-testid="open-editor-button"]').click()
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
 
@@ -700,6 +705,7 @@ test.describe('@phase-2-editing core editing ops', () => {
     await expect(page.locator('[data-testid="clip-context-menu"]')).toHaveCount(0)
 
     // Caption clip right-click.
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
     await page.locator('[data-testid="caption-editor-close"]').click()

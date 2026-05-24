@@ -19,6 +19,10 @@ export type StickerCategory =
   | 'reactions'
   | 'gestures'
   | 'objects'
+  | 'animals'
+  | 'food'
+  | 'nature'
+  | 'symbols'
   | 'graphic'
 
 /** Korean labels for the picker section headers. */
@@ -27,6 +31,10 @@ export const STICKER_CATEGORY_LABELS: Record<StickerCategory, string> = {
   reactions: '반응',
   gestures: '제스처',
   objects: '오브젝트',
+  animals: '동물',
+  food: '음식',
+  nature: '자연',
+  symbols: '기호',
   graphic: '그래픽 스티커'
 }
 
@@ -118,6 +126,184 @@ export const EMOJI_LIBRARY: readonly EmojiItem[] = [
     ['emoji-bell', '🔔', '알림'],
     ['emoji-speech', '💬', '말풍선'],
     ['emoji-question', '❓', '물음표']
+  ]),
+  // Phase 3.67 — second batch (extends faces / reactions / gestures / objects).
+  ...emojiGroup('faces', [
+    ['emoji-wink', '😉', '윙크'],
+    ['emoji-smile', '😊', '미소'],
+    ['emoji-joy', '😂', '웃음 눈물'],
+    ['emoji-rofl', '🤣', '바닥 굴림'],
+    ['emoji-zany', '🤪', '익살'],
+    ['emoji-melt', '🫠', '녹는 표정'],
+    ['emoji-mask', '😷', '마스크'],
+    ['emoji-sleep', '😴', '졸림'],
+    ['emoji-zip', '🤐', '입 다물기'],
+    ['emoji-shush', '🤫', '쉿'],
+    ['emoji-pleading', '🥺', '간절'],
+    ['emoji-yawn', '🥱', '하품'],
+    ['emoji-disappointed', '😞', '실망'],
+    ['emoji-weary', '😩', '지침'],
+    ['emoji-confused', '😕', '혼란'],
+    ['emoji-cry', '😢', '울음'],
+    ['emoji-vomit', '🤮', '구역'],
+    ['emoji-dizzy', '😵', '어지러움'],
+    ['emoji-exploding', '🤯', '폭발 머리'],
+    ['emoji-cowboy', '🤠', '카우보이']
+  ]),
+  ...emojiGroup('reactions', [
+    ['emoji-rocket', '🚀', '로켓'],
+    ['emoji-trophy', '🏆', '트로피'],
+    ['emoji-medal-gold', '🥇', '금메달'],
+    ['emoji-crown', '👑', '왕관'],
+    ['emoji-money', '💰', '돈'],
+    ['emoji-money-flying', '💸', '돈 날아감'],
+    ['emoji-diamond', '💎', '다이아'],
+    ['emoji-tada', '🎊', '폭죽'],
+    ['emoji-balloon', '🎈', '풍선'],
+    ['emoji-star2', '🌟', '반짝 별'],
+    ['emoji-shooting-star', '💫', '슈팅 스타'],
+    ['emoji-rainbow', '🌈', '무지개'],
+    ['emoji-comet', '☄️', '혜성'],
+    ['emoji-musical-note', '🎵', '음표'],
+    ['emoji-headphones', '🎧', '헤드폰']
+  ]),
+  ...emojiGroup('gestures', [
+    ['emoji-crossed-fingers', '🤞', '행운 빌기'],
+    ['emoji-i-love-you', '🤟', '아일러브유'],
+    ['emoji-vulcan', '🖖', '벌컨 인사'],
+    ['emoji-wave', '👋', '안녕 손'],
+    ['emoji-flex', '💪', '근육'],
+    ['emoji-handshake', '🤝', '악수'],
+    ['emoji-fist', '✊', '주먹'],
+    ['emoji-fist-bump', '👊', '주먹 부딪힘'],
+    ['emoji-write', '✍️', '쓰기'],
+    ['emoji-nail-care', '💅', '네일'],
+    ['emoji-selfie', '🤳', '셀카'],
+    ['emoji-folded-hands', '🫳', '손바닥 아래']
+  ]),
+  ...emojiGroup('objects', [
+    ['emoji-camera', '📷', '카메라'],
+    ['emoji-movie-camera', '🎥', '영상 카메라'],
+    ['emoji-clapper', '🎬', '슬레이트'],
+    ['emoji-microphone', '🎤', '마이크'],
+    ['emoji-tv', '📺', '티비'],
+    ['emoji-phone', '📱', '폰'],
+    ['emoji-computer', '💻', '노트북'],
+    ['emoji-clock-3', '🕒', '3시 시계'],
+    ['emoji-hourglass', '⏳', '모래시계'],
+    ['emoji-key', '🔑', '열쇠'],
+    ['emoji-lock', '🔒', '자물쇠'],
+    ['emoji-magnifier', '🔍', '돋보기'],
+    ['emoji-shopping-bag', '🛍️', '쇼핑백'],
+    ['emoji-credit-card', '💳', '카드'],
+    ['emoji-package', '📦', '상자'],
+    ['emoji-paint', '🎨', '팔레트'],
+    ['emoji-trophy-cup', '🏅', '메달'],
+    ['emoji-mic-studio', '🎙️', '스튜디오 마이크'],
+    ['emoji-soccer', '⚽', '축구공'],
+    ['emoji-game', '🎮', '게임패드']
+  ]),
+  // Phase 3.67 — new category: animals.
+  ...emojiGroup('animals', [
+    ['emoji-dog', '🐶', '강아지'],
+    ['emoji-cat', '🐱', '고양이'],
+    ['emoji-fox', '🦊', '여우'],
+    ['emoji-bear', '🐻', '곰'],
+    ['emoji-panda', '🐼', '판다'],
+    ['emoji-rabbit', '🐰', '토끼'],
+    ['emoji-koala', '🐨', '코알라'],
+    ['emoji-tiger', '🐯', '호랑이'],
+    ['emoji-lion', '🦁', '사자'],
+    ['emoji-cow', '🐮', '소'],
+    ['emoji-pig', '🐷', '돼지'],
+    ['emoji-monkey', '🐵', '원숭이'],
+    ['emoji-frog', '🐸', '개구리'],
+    ['emoji-chicken', '🐔', '닭'],
+    ['emoji-penguin', '🐧', '펭귄'],
+    ['emoji-bird', '🐦', '새'],
+    ['emoji-owl', '🦉', '부엉이'],
+    ['emoji-eagle', '🦅', '독수리'],
+    ['emoji-shark', '🦈', '상어'],
+    ['emoji-whale', '🐳', '고래'],
+    ['emoji-dolphin', '🐬', '돌고래'],
+    ['emoji-octopus', '🐙', '문어'],
+    ['emoji-butterfly', '🦋', '나비'],
+    ['emoji-snail', '🐌', '달팽이'],
+    ['emoji-bee', '🐝', '벌']
+  ]),
+  // Phase 3.67 — new category: food.
+  ...emojiGroup('food', [
+    ['emoji-pizza', '🍕', '피자'],
+    ['emoji-burger', '🍔', '버거'],
+    ['emoji-fries', '🍟', '감자튀김'],
+    ['emoji-hotdog', '🌭', '핫도그'],
+    ['emoji-sushi', '🍣', '초밥'],
+    ['emoji-ramen', '🍜', '라멘'],
+    ['emoji-rice-ball', '🍙', '주먹밥'],
+    ['emoji-curry', '🍛', '카레'],
+    ['emoji-bread', '🍞', '빵'],
+    ['emoji-cake', '🍰', '케이크'],
+    ['emoji-donut', '🍩', '도넛'],
+    ['emoji-cookie', '🍪', '쿠키'],
+    ['emoji-icecream', '🍦', '아이스크림'],
+    ['emoji-coffee', '☕', '커피'],
+    ['emoji-tea', '🍵', '차'],
+    ['emoji-beer', '🍺', '맥주'],
+    ['emoji-wine', '🍷', '와인'],
+    ['emoji-cocktail', '🍸', '칵테일'],
+    ['emoji-strawberry', '🍓', '딸기'],
+    ['emoji-watermelon', '🍉', '수박'],
+    ['emoji-apple', '🍎', '사과'],
+    ['emoji-banana', '🍌', '바나나'],
+    ['emoji-grape', '🍇', '포도'],
+    ['emoji-peach', '🍑', '복숭아'],
+    ['emoji-pineapple', '🍍', '파인애플']
+  ]),
+  // Phase 3.67 — new category: nature.
+  ...emojiGroup('nature', [
+    ['emoji-sun', '☀️', '해'],
+    ['emoji-cloud', '☁️', '구름'],
+    ['emoji-snowflake', '❄️', '눈송이'],
+    ['emoji-umbrella-rain', '☔', '비'],
+    ['emoji-moon', '🌙', '달'],
+    ['emoji-full-moon', '🌕', '보름달'],
+    ['emoji-tree', '🌳', '나무'],
+    ['emoji-palm', '🌴', '야자수'],
+    ['emoji-cactus', '🌵', '선인장'],
+    ['emoji-tulip', '🌷', '튤립'],
+    ['emoji-sunflower', '🌻', '해바라기'],
+    ['emoji-rose', '🌹', '장미'],
+    ['emoji-cherry-blossom', '🌸', '벚꽃'],
+    ['emoji-mountain', '⛰️', '산'],
+    ['emoji-ocean', '🌊', '바다'],
+    ['emoji-volcano', '🌋', '화산'],
+    ['emoji-tornado', '🌪️', '회오리'],
+    ['emoji-fog', '🌫️', '안개'],
+    ['emoji-droplet', '💧', '물방울'],
+    ['emoji-leaf', '🍀', '네잎클로버']
+  ]),
+  // Phase 3.67 — new category: symbols.
+  ...emojiGroup('symbols', [
+    ['emoji-no-entry', '⛔', '금지'],
+    ['emoji-prohibited', '🚫', '안 됨'],
+    ['emoji-recycle', '♻️', '재활용'],
+    ['emoji-info', 'ℹ️', '정보'],
+    ['emoji-symbol-new', '🆕', 'NEW'],
+    ['emoji-symbol-free', '🆓', 'FREE'],
+    ['emoji-symbol-cool', '🆒', 'COOL'],
+    ['emoji-symbol-hot', '🔥', 'HOT'],
+    ['emoji-symbol-up', '🆙', 'UP'],
+    ['emoji-arrow-up', '⬆️', '위 화살표'],
+    ['emoji-arrow-down', '⬇️', '아래 화살표'],
+    ['emoji-arrow-left', '⬅️', '왼쪽 화살표'],
+    ['emoji-arrow-right', '➡️', '오른쪽 화살표'],
+    ['emoji-soon', '🔜', 'SOON'],
+    ['emoji-back', '🔙', 'BACK'],
+    ['emoji-end', '🔚', 'END'],
+    ['emoji-on', '🔛', 'ON'],
+    ['emoji-top', '🔝', 'TOP'],
+    ['emoji-100-pct', '💯', '100%'],
+    ['emoji-double-exclam', '‼️', '!!']
   ])
 ]
 

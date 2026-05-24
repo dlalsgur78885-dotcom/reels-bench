@@ -101,6 +101,7 @@ import {
   type HslBandAdjust,
   type HslBandKey,
   type MediaAsset,
+  type SfxMeta,
   type MotionTrack,
   type OverlayClip,
   type Project,
@@ -137,6 +138,9 @@ import {
   isClipLocked,
   isClipReversed,
   canReverseClip,
+  CLIP_COLOR_IDS,
+  type ClipColorId,
+  EASING_KINDS,
   isIdentityCrop,
   isIdentityTransform,
   isMediaClip,
@@ -146,7 +150,8 @@ import {
   isIdentityClipCurves,
   sanitizeClipHsl,
   isNeutralClipHsl,
-  sourceOffsetForTimelineOffset
+  sourceOffsetForTimelineOffset,
+  type EasingKind
 } from '../../../shared/project'
 import type { SilenceRange } from '../../../shared/ipc'
 import {
@@ -287,7 +292,14 @@ function normalizeKeyframes(kfs: TransformKeyframe[]): TransformKeyframe[] {
   const sorted = kfs
     .map((kf) => ({
       atMs: Math.max(0, Math.round(kf.atMs)),
-      transform: clampClipTransform(kf.transform)
+      transform: clampClipTransform(kf.transform),
+      // Phase 3.54 — preserve outgoing easing through normalization. Linear /
+      // unknown values are dropped (BC-safe: absent = linear).
+      ...(kf.easing && (EASING_KINDS as readonly string[]).includes(kf.easing)
+        ? kf.easing === 'linear'
+          ? {}
+          : { easing: kf.easing }
+        : {})
     }))
     .sort((a, b) => a.atMs - b.atMs)
   const out: TransformKeyframe[] = []
@@ -697,6 +709,12 @@ export interface ProjectStore {
   updateMediaThumbnail(mediaId: string, thumbnailPath: string): void
   /** Attach a generated waveform PNG to a media asset (Phase 2.5). */
   updateMediaWaveform(mediaId: string, waveformPath: string): void
+  /**
+   * Phase 8 — attach SFX provenance (license/attribution/source) to a media
+   * asset. Called by the "🔊 효과음" import tab right after `addMedia`.
+   * No-op if the media id is unknown.
+   */
+  updateMediaSfxMeta(mediaId: string, meta: SfxMeta): void
 
   addClip(clip: Clip): void
   removeClip(clipId: string): void
@@ -709,6 +727,26 @@ export interface ProjectStore {
    * `groupId`). Then sweeps: any PRIOR group left with <2 members has those
    * members' `groupId` cleared (no stale 1-member groups). Returns the new id.
    */
+  /**
+   * Phase 3.61 — compound clip: apply a uniform patch to every clip sharing
+   * the given groupId. Supported patch fields:
+   *   - `colorAdjust`     → merged into each member's existing colorAdjust
+   *   - `filterPreset`    → set on each member (overwrites; pass 'none' to clear)
+   *   - `filterIntensity` → set on each member (clamped 0..1)
+   *   - `transform`       → merged into each member's existing transform
+   * Members on tracks where a field is meaningless (e.g. captions for
+   * filterPreset) are silently skipped. Returns the number of clips actually
+   * modified. Honors per-clip locks (locked members are skipped).
+   */
+  applyToGroup(
+    groupId: string,
+    patch: {
+      colorAdjust?: Partial<ColorAdjust>
+      filterPreset?: FilterPreset
+      filterIntensity?: number
+      transform?: Partial<ClipTransform>
+    }
+  ): number
   groupClips(clipIds: string[]): string | null
   /**
    * Dissolve a link group. The argument may be the group's id OR any member
@@ -754,6 +792,16 @@ export interface ProjectStore {
    *   - split position is outside [startMs+MIN, endMs-MIN]
    */
   splitClipAt(clipId: string, atMs: number): string | null
+  /**
+   * Phase 3.60 — split a clip at MANY timeline-ms offsets in one undo step.
+   * The returned array holds the new clip ids in left-to-right order; the
+   * input `clipId` ends up as the leftmost piece. Each offset MUST lie
+   * strictly inside the source clip (and its successively-split right
+   * fragment); offsets out of range are silently skipped. Ordering of the
+   * input list is irrelevant — the action sorts ascending and rebuilds the
+   * cut chain so each split operates on the correct surviving fragment.
+   */
+  splitClipAtMany(clipId: string, atMsList: number[]): string[]
   /**
    * Deep-clone a clip and place the duplicate at the next free slot on the
    * same track. Works for BOTH media and caption clips. Returns the new
@@ -851,10 +899,84 @@ export interface ProjectStore {
    * (OFF — lean snapshots). No-op for non-media clips.
    */
   setClipFilmLook(clipId: string, patch: Partial<FilmLook>): void
+  /**
+   * Phase 3.74 — set a clip's UI color label (or clear with `null` / 'none').
+   * Works on all clip kinds (media / caption / overlay). Locked clips are
+   * still updatable (color is metadata, not editing) — only operations that
+   * change the actual content / position respect the lock.
+   */
+  setClipColor(clipId: string, color: ClipColorId | null): void
+  /**
+   * Phase 3.75 — attach a user-supplied 3D LUT (.cube) path to a media clip.
+   * `null` / '' clears. The caller is responsible for picking a valid file
+   * (a follow-up phase ships an IPC `fs:pickLut` to gate this through the
+   * main-process security allow-list). Media clips only — caption / overlay
+   * are no-ops.
+   */
+  setClipLutPath(clipId: string, lutPath: string | null): void
+
+  // -----------------------------------------------------------------
+  // Phase 3.57 — advanced trim modes (ripple / rolling / slip / slide).
+  //
+  // All four actions are pure timeline-ms operations: they ignore `speed`
+  // (the trim ms applies 1:1 to source ms), reject invalid deltas, refuse
+  // moves that would push a clip endpoint past 0 or collide with neighbors,
+  // and never split / reorder / remove clips. Caption / overlay clips are
+  // ignored — these only act on `kind === 'media'` clips on the same track.
+  // -----------------------------------------------------------------
+
+  /**
+   * Ripple-trim a clip's edge by `deltaMs`, then translate every later clip
+   * on the same track by the same delta so no gap opens (and earlier clips
+   * stay put). Positive delta = clip shrinks; negative = clip grows. Refuses
+   * a delta that would push a trim out of [0, media.durationMs] or shrink
+   * the clip below ~30ms.
+   */
+  rippleTrim(clipId: string, side: 'in' | 'out', deltaMs: number): void
+  /**
+   * Rolling-trim the boundary between this clip and an adjacent clip on the
+   * same track. `side='out'` pairs with the next clip (this clip grows /
+   * shrinks at its trim out, neighbor's trim in moves the opposite way);
+   * `side='in'` pairs with the previous clip. The pair's combined timeline
+   * length is preserved. No-op when no adjacent neighbor exists or the move
+   * would overshoot either side's media bounds.
+   */
+  rollingTrim(clipId: string, side: 'in' | 'out', deltaMs: number): void
+  /**
+   * Slip a clip's source window by `deltaMs`. `trimInMs` and `trimOutMs`
+   * both shift by `deltaMs` (positive = later source content), `startMs`
+   * / `endMs` / timeline duration stay identical. No-op when the shifted
+   * window would exit [0, media.durationMs].
+   */
+  slipClip(clipId: string, deltaMs: number): void
+  /**
+   * Slide a clip along the timeline by `deltaMs` while extending the
+   * previous neighbor and trimming the next. Equivalent to a regular move
+   * with the two adjacent clips' boundaries dragged along. No-op without
+   * neighbors on both sides, or when the move would push any boundary out
+   * of bounds.
+   */
+  slideClip(clipId: string, deltaMs: number): void
   /** Set track-wide mute. */
   setTrackMuted(trackId: string, muted: boolean): void
   /** Set track-wide solo. */
   setTrackSolo(trackId: string, solo: boolean): void
+  /**
+   * Phase 3.55 — audio ducking. Toggle the BGM-side sidechain compressor
+   * on an audio track:
+   *   - `'voice'` → marks this track as BGM (role='bgm', duckTarget='voice')
+   *                 so the export pipeline runs sidechaincompress + volume
+   *                 attenuation whenever any voice clip plays.
+   *   - `null`    → clears duckTarget (role left as-is). Byte-identical export
+   *                 if no other BGM/voice pair declares ducking.
+   * `db` is clamped to [-30, -1]; defaults to DEFAULT_DUCKING_DB when omitted.
+   * No-op on non-audio tracks. No-op on identical state.
+   */
+  setTrackDucking(
+    trackId: string,
+    target: 'voice' | null,
+    db?: number
+  ): void
   /**
    * Remove silent sections from a media clip in one atomic step.
    * Splits the clip into the surviving voiced pieces. Returns the IDs of
@@ -1057,11 +1179,17 @@ export interface ProjectStore {
   /**
    * Merge into the keyframe at `kfIndex`: re-clamp atMs into [0, clipDuration],
    * merge + clamp the transform, then re-sort the track ascending by atMs.
+   * Phase 3.54 — `easing` patches the OUTGOING curve from this keyframe
+   * (linear / undefined = identity, byte-identical pre-3.54 export).
    */
   updateTransformKeyframe(
     clipId: string,
     kfIndex: number,
-    partial: { atMs?: number; transform?: Partial<ClipTransform> }
+    partial: {
+      atMs?: number
+      transform?: Partial<ClipTransform>
+      easing?: EasingKind | null
+    }
   ): void
   /**
    * Remove the keyframe at `kfIndex`. If removal would drop the track below 2
@@ -1083,6 +1211,19 @@ export interface ProjectStore {
    * survive (clip too short). One undo step. Media + overlay clips only.
    */
   applyZoomPreset(clipId: string, presetId: string): void
+
+  /**
+   * Phase 3.52 — Auto-Reframe. Bulk-replace a media clip's
+   * `transformKeyframes` with the array `kfs` (already in absolute, clip-
+   * relative form). Skips silently when:
+   *   - clip not found / not media / locked
+   *   - any kf has non-finite `atMs` or malformed transform
+   *   - after `normalizeKeyframes` + `clampClipTransform` the survivors
+   *     collapse to fewer than 2 keyframes
+   * One mutation per call; intended to be wrapped in a single undo step by
+   * `runAutoReframe` (which pauses zundo's temporal and pushes one snapshot).
+   */
+  applyAutoReframeKeyframes(clipId: string, kfs: TransformKeyframe[]): void
 
   // --- Variable speed curve (Phase 3.10, media clips only) ---
   /**
@@ -1894,6 +2035,21 @@ export const useProjectStore = create<ProjectStore>()(
     schedulePersist(next)
   },
 
+  updateMediaSfxMeta(mediaId: string, meta: SfxMeta): void {
+    const project = get().project
+    const existing = project.media[mediaId]
+    if (!existing) return
+    const next = touch({
+      ...project,
+      media: {
+        ...project.media,
+        [mediaId]: { ...existing, sfxMeta: meta }
+      }
+    })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
   removeMedia(mediaId: string): void {
     const project = get().project
     if (!project.media[mediaId]) return
@@ -2037,6 +2193,139 @@ export const useProjectStore = create<ProjectStore>()(
     set({ project: next })
     schedulePersist(next)
     return groupId
+  },
+
+  applyToGroup(groupId, patch): number {
+    if (typeof groupId !== 'string' || groupId.length === 0) return 0
+    if (!patch || typeof patch !== 'object') return 0
+    const project = get().project
+    const members = getGroupMembers(project, groupId)
+    if (members.length === 0) return 0
+    const clamp = (v: number, lo: number, hi: number): number =>
+      Math.max(lo, Math.min(hi, v))
+    let modified = 0
+    const tracks = project.tracks.map((t) => {
+      const clips = t.clips.map((c): typeof c => {
+        if (c.groupId !== groupId) return c
+        if (isClipLocked(c)) return c
+        // Type-narrow up front — caption clips have no colorAdjust /
+        // filterPreset / transform fields; skipping early keeps the spread
+        // assignments below well-typed and avoids stray field writes.
+        if (!isMediaClip(c) && !isOverlayClip(c)) return c
+        let next: VideoAudioClip | OverlayClip = c
+        let changed = false
+        // colorAdjust / filterPreset / filterIntensity are media-clip-only
+        // (OverlayClip doesn't carry these fields). Skip silently for overlays.
+        const isMedia = isMediaClip(c)
+        if (patch.colorAdjust !== undefined && isMedia) {
+          const cur =
+            (c as { colorAdjust?: ColorAdjust }).colorAdjust ??
+            NEUTRAL_COLOR_ADJUST
+          const merged: ColorAdjust = {
+            brightness: clamp(
+              Number.isFinite(patch.colorAdjust.brightness)
+                ? (patch.colorAdjust.brightness as number)
+                : cur.brightness,
+              MIN_COLOR_ADJUST,
+              MAX_COLOR_ADJUST
+            ),
+            contrast: clamp(
+              Number.isFinite(patch.colorAdjust.contrast)
+                ? (patch.colorAdjust.contrast as number)
+                : cur.contrast,
+              MIN_COLOR_ADJUST,
+              MAX_COLOR_ADJUST
+            ),
+            saturation: clamp(
+              Number.isFinite(patch.colorAdjust.saturation)
+                ? (patch.colorAdjust.saturation as number)
+                : cur.saturation,
+              MIN_COLOR_ADJUST,
+              MAX_COLOR_ADJUST
+            ),
+            temperature: clamp(
+              Number.isFinite(patch.colorAdjust.temperature)
+                ? (patch.colorAdjust.temperature as number)
+                : cur.temperature,
+              MIN_COLOR_ADJUST,
+              MAX_COLOR_ADJUST
+            )
+          }
+          const nextMedia = next as VideoAudioClip
+          if (isNeutralColorAdjust(merged)) {
+            const { colorAdjust: _drop, ...rest } = nextMedia
+            next = rest as VideoAudioClip
+          } else {
+            next = { ...nextMedia, colorAdjust: merged }
+          }
+          changed = true
+        }
+        if (patch.filterPreset !== undefined && isMedia) {
+          const nextMedia = next as VideoAudioClip
+          if (patch.filterPreset === 'none') {
+            const {
+              filterPreset: _fp,
+              filterIntensity: _fi,
+              ...rest
+            } = nextMedia
+            next = rest as VideoAudioClip
+          } else {
+            next = { ...nextMedia, filterPreset: patch.filterPreset }
+          }
+          changed = true
+        }
+        if (
+          patch.filterIntensity !== undefined &&
+          Number.isFinite(patch.filterIntensity) &&
+          isMedia
+        ) {
+          const v = clamp(Number(patch.filterIntensity), 0, 1)
+          next = { ...(next as VideoAudioClip), filterIntensity: v }
+          changed = true
+        }
+        if (patch.transform !== undefined) {
+          const cur =
+            ((c as unknown) as { transform?: ClipTransform }).transform ?? {
+              x: 0,
+              y: 0,
+              scale: 1,
+              rotation: 0,
+              opacity: 1
+            }
+          const merged: ClipTransform = clampClipTransform({
+            x: Number.isFinite(patch.transform.x)
+              ? (patch.transform.x as number)
+              : cur.x,
+            y: Number.isFinite(patch.transform.y)
+              ? (patch.transform.y as number)
+              : cur.y,
+            scale: Number.isFinite(patch.transform.scale)
+              ? (patch.transform.scale as number)
+              : cur.scale,
+            rotation: Number.isFinite(patch.transform.rotation)
+              ? (patch.transform.rotation as number)
+              : cur.rotation,
+            opacity: Number.isFinite(patch.transform.opacity)
+              ? (patch.transform.opacity as number)
+              : cur.opacity
+          })
+          if (isMedia) {
+            next = { ...(next as VideoAudioClip), transform: merged }
+          } else {
+            next = { ...(next as OverlayClip), transform: merged }
+          }
+          changed = true
+        }
+        if (changed) modified += 1
+        return next as typeof c
+      })
+      return { ...t, clips }
+    })
+    if (modified === 0) return 0
+    const nextProj = touch({ ...project, tracks })
+    set({ project: nextProj })
+    schedulePersist(nextProj)
+    return modified
   },
 
   ungroupClips(groupIdOrClipId: string): void {
@@ -2571,6 +2860,23 @@ export const useProjectStore = create<ProjectStore>()(
     return newClipId
   },
 
+  splitClipAtMany(clipId, atMsList): string[] {
+    if (!Array.isArray(atMsList) || atMsList.length === 0) return []
+    // Sort DESCENDING so each split bites the right-fragment first and the
+    // original clipId stays valid as the leftmost piece through the loop.
+    const sorted = [...atMsList]
+      .filter((x) => Number.isFinite(x))
+      .map((x) => Math.round(Number(x)))
+      .sort((a, b) => b - a)
+    const newIds: string[] = []
+    for (const at of sorted) {
+      const id = get().splitClipAt(clipId, at)
+      if (id) newIds.push(id)
+    }
+    // Reverse so the returned ids are in left→right timeline order.
+    return newIds.reverse()
+  },
+
   detachAudio(clipId: string): string | null {
     const project = get().project
     // Locate the source clip + its track.
@@ -3103,6 +3409,343 @@ export const useProjectStore = create<ProjectStore>()(
     schedulePersist(next)
   },
 
+  setClipLutPath(clipId, lutPath): void {
+    const next: string | undefined =
+      lutPath === null || lutPath === '' || typeof lutPath !== 'string'
+        ? undefined
+        : lutPath
+    if (next !== undefined && !next.toLowerCase().endsWith('.cube')) return
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const clips = t.clips.map((c) => {
+        if (c.id !== clipId) return c
+        if (!isMediaClip(c)) return c
+        const cur = c.lutPath
+        if (cur === next) return c
+        changed = true
+        if (next === undefined) {
+          const { lutPath: _drop, ...rest } = c
+          return rest as typeof c
+        }
+        return { ...c, lutPath: next }
+      })
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const nextProj = touch({ ...project, tracks })
+    set({ project: nextProj })
+    schedulePersist(nextProj)
+  },
+
+  setClipColor(clipId, color): void {
+    if (color !== null && !(CLIP_COLOR_IDS as readonly string[]).includes(color)) {
+      return
+    }
+    const next: ClipColorId | undefined =
+      color === null || color === 'none' ? undefined : (color as ClipColorId)
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const clips = t.clips.map((c) => {
+        if (c.id !== clipId) return c
+        const cur = (c as { color?: ClipColorId }).color
+        if (cur === next) return c
+        changed = true
+        if (next === undefined) {
+          const { color: _drop, ...rest } = c as typeof c & {
+            color?: ClipColorId
+          }
+          return rest as typeof c
+        }
+        return { ...c, color: next }
+      })
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const nextProj = touch({ ...project, tracks })
+    set({ project: nextProj })
+    schedulePersist(nextProj)
+  },
+
+  // ----- Phase 3.57 — advanced trim modes -----
+
+  rippleTrim(clipId, side, deltaMs): void {
+    if (!Number.isFinite(deltaMs)) return
+    const d = Math.round(Number(deltaMs))
+    if (d === 0) return
+    if (side !== 'in' && side !== 'out') return
+    const MIN_CLIP_MS = 30
+    const project = get().project
+    let trackIdx = -1
+    let clipIdx = -1
+    for (let i = 0; i < project.tracks.length; i++) {
+      const ci = project.tracks[i].clips.findIndex((c) => c.id === clipId)
+      if (ci !== -1) {
+        trackIdx = i
+        clipIdx = ci
+        break
+      }
+    }
+    if (trackIdx === -1) return
+    const track = project.tracks[trackIdx]
+    const clip = track.clips[clipIdx]
+    if (!isMediaClip(clip)) return
+    if (isClipLocked(clip)) return
+    const media = project.media[clip.mediaId]
+    const maxSource = media?.durationMs ?? Number.MAX_SAFE_INTEGER
+    let newStart = clip.startMs
+    let newEnd = clip.endMs
+    let newTrimIn = clip.trimInMs
+    let newTrimOut = clip.trimOutMs
+    if (side === 'out') {
+      newTrimOut = clip.trimOutMs - d
+      newEnd = clip.endMs - d
+      if (newTrimOut < 0 || newTrimOut > maxSource) return
+      if (newEnd - newStart < MIN_CLIP_MS) return
+    } else {
+      newTrimIn = clip.trimInMs + d
+      newStart = clip.startMs + d
+      if (newTrimIn < 0 || newTrimIn > maxSource) return
+      if (newEnd - newStart < MIN_CLIP_MS) return
+    }
+    // Translate later clips by -d ms (since this clip shrunk by d on
+    // either side). 'later' = startMs >= clip.endMs (current pre-edit).
+    const sameTrackLaterStartBoundary = clip.endMs
+    const tracks = project.tracks.map((t, i) => {
+      if (i !== trackIdx) return t
+      const clips = t.clips.map((c) => {
+        if (c.id === clipId) {
+          if (side === 'out') {
+            return { ...c, endMs: newEnd, trimOutMs: newTrimOut }
+          }
+          return { ...c, startMs: newStart, trimInMs: newTrimIn }
+        }
+        if (c.startMs >= sameTrackLaterStartBoundary) {
+          return { ...c, startMs: c.startMs - d, endMs: c.endMs - d }
+        }
+        return c
+      })
+      // Reject if any later clip would land at startMs < 0.
+      if (clips.some((c) => c.startMs < 0)) return t
+      return { ...t, clips }
+    })
+    // Detect no-op (no track was actually updated).
+    if (tracks === project.tracks) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  rollingTrim(clipId, side, deltaMs): void {
+    if (!Number.isFinite(deltaMs)) return
+    const d = Math.round(Number(deltaMs))
+    if (d === 0) return
+    if (side !== 'in' && side !== 'out') return
+    const MIN_CLIP_MS = 30
+    const project = get().project
+    let trackIdx = -1
+    let clipIdx = -1
+    for (let i = 0; i < project.tracks.length; i++) {
+      const ci = project.tracks[i].clips.findIndex((c) => c.id === clipId)
+      if (ci !== -1) {
+        trackIdx = i
+        clipIdx = ci
+        break
+      }
+    }
+    if (trackIdx === -1) return
+    const track = project.tracks[trackIdx]
+    const clip = track.clips[clipIdx]
+    if (!isMediaClip(clip)) return
+    if (isClipLocked(clip)) return
+    // Find neighbor: sort by startMs and find adjacent.
+    const ordered = [...track.clips]
+      .filter((c) => isMediaClip(c))
+      .sort((a, b) => a.startMs - b.startMs)
+    const orderedIdx = ordered.findIndex((c) => c.id === clipId)
+    const neighbor =
+      side === 'out'
+        ? ordered[orderedIdx + 1]
+        : ordered[orderedIdx - 1]
+    if (!neighbor || !isMediaClip(neighbor)) return
+    if (isClipLocked(neighbor)) return
+    const media = project.media[clip.mediaId]
+    const neighborMedia = project.media[neighbor.mediaId]
+    const maxSource = media?.durationMs ?? Number.MAX_SAFE_INTEGER
+    const maxNeighborSource =
+      neighborMedia?.durationMs ?? Number.MAX_SAFE_INTEGER
+    // Rolling at the shared boundary moves clip's edge by +d ms and the
+    // neighbor's facing edge by the same +d ms (so combined length is fixed).
+    if (side === 'out') {
+      const newEnd = clip.endMs + d
+      const newTrimOut = clip.trimOutMs + d
+      const newNeighborStart = neighbor.startMs + d
+      const newNeighborTrimIn = neighbor.trimInMs + d
+      if (newTrimOut < 0 || newTrimOut > maxSource) return
+      if (newEnd - clip.startMs < MIN_CLIP_MS) return
+      if (newNeighborTrimIn < 0 || newNeighborTrimIn > maxNeighborSource)
+        return
+      if (neighbor.endMs - newNeighborStart < MIN_CLIP_MS) return
+      const tracks = project.tracks.map((t, i) => {
+        if (i !== trackIdx) return t
+        const clips = t.clips.map((c) => {
+          if (c.id === clip.id)
+            return { ...c, endMs: newEnd, trimOutMs: newTrimOut }
+          if (c.id === neighbor.id)
+            return {
+              ...c,
+              startMs: newNeighborStart,
+              trimInMs: newNeighborTrimIn
+            }
+          return c
+        })
+        return { ...t, clips }
+      })
+      const next = touch({ ...project, tracks })
+      set({ project: next })
+      schedulePersist(next)
+    } else {
+      const newStart = clip.startMs + d
+      const newTrimIn = clip.trimInMs + d
+      const newNeighborEnd = neighbor.endMs + d
+      const newNeighborTrimOut = neighbor.trimOutMs + d
+      if (newTrimIn < 0 || newTrimIn > maxSource) return
+      if (clip.endMs - newStart < MIN_CLIP_MS) return
+      if (newNeighborTrimOut < 0 || newNeighborTrimOut > maxNeighborSource)
+        return
+      if (newNeighborEnd - neighbor.startMs < MIN_CLIP_MS) return
+      const tracks = project.tracks.map((t, i) => {
+        if (i !== trackIdx) return t
+        const clips = t.clips.map((c) => {
+          if (c.id === clip.id)
+            return { ...c, startMs: newStart, trimInMs: newTrimIn }
+          if (c.id === neighbor.id)
+            return {
+              ...c,
+              endMs: newNeighborEnd,
+              trimOutMs: newNeighborTrimOut
+            }
+          return c
+        })
+        return { ...t, clips }
+      })
+      const next = touch({ ...project, tracks })
+      set({ project: next })
+      schedulePersist(next)
+    }
+  },
+
+  slipClip(clipId, deltaMs): void {
+    if (!Number.isFinite(deltaMs)) return
+    const d = Math.round(Number(deltaMs))
+    if (d === 0) return
+    const project = get().project
+    let trackIdx = -1
+    let clipIdx = -1
+    for (let i = 0; i < project.tracks.length; i++) {
+      const ci = project.tracks[i].clips.findIndex((c) => c.id === clipId)
+      if (ci !== -1) {
+        trackIdx = i
+        clipIdx = ci
+        break
+      }
+    }
+    if (trackIdx === -1) return
+    const clip = project.tracks[trackIdx].clips[clipIdx]
+    if (!isMediaClip(clip)) return
+    if (isClipLocked(clip)) return
+    const media = project.media[clip.mediaId]
+    const maxSource = media?.durationMs ?? Number.MAX_SAFE_INTEGER
+    const newTrimIn = clip.trimInMs + d
+    const newTrimOut = clip.trimOutMs + d
+    if (newTrimIn < 0 || newTrimIn > maxSource) return
+    if (newTrimOut < 0 || newTrimOut > maxSource) return
+    if (newTrimIn >= newTrimOut) return
+    const tracks = project.tracks.map((t, i) => {
+      if (i !== trackIdx) return t
+      const clips = t.clips.map((c) =>
+        c.id === clipId
+          ? { ...c, trimInMs: newTrimIn, trimOutMs: newTrimOut }
+          : c
+      )
+      return { ...t, clips }
+    })
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  slideClip(clipId, deltaMs): void {
+    if (!Number.isFinite(deltaMs)) return
+    const d = Math.round(Number(deltaMs))
+    if (d === 0) return
+    const MIN_CLIP_MS = 30
+    const project = get().project
+    let trackIdx = -1
+    let clipIdx = -1
+    for (let i = 0; i < project.tracks.length; i++) {
+      const ci = project.tracks[i].clips.findIndex((c) => c.id === clipId)
+      if (ci !== -1) {
+        trackIdx = i
+        clipIdx = ci
+        break
+      }
+    }
+    if (trackIdx === -1) return
+    const track = project.tracks[trackIdx]
+    const clip = track.clips[clipIdx]
+    if (!isMediaClip(clip)) return
+    if (isClipLocked(clip)) return
+    const ordered = [...track.clips]
+      .filter((c) => isMediaClip(c))
+      .sort((a, b) => a.startMs - b.startMs)
+    const orderedIdx = ordered.findIndex((c) => c.id === clipId)
+    const prev = ordered[orderedIdx - 1]
+    const next_ = ordered[orderedIdx + 1]
+    if (!prev || !next_ || !isMediaClip(prev) || !isMediaClip(next_)) return
+    if (isClipLocked(prev) || isClipLocked(next_)) return
+    const prevMedia = project.media[prev.mediaId]
+    const nextMedia = project.media[next_.mediaId]
+    const maxPrevSource =
+      prevMedia?.durationMs ?? Number.MAX_SAFE_INTEGER
+    const maxNextSource =
+      nextMedia?.durationMs ?? Number.MAX_SAFE_INTEGER
+    // Slide clip by d ms: prev extends by +d (trimOut += d), next shrinks by
+    // +d (trimIn += d, startMs += d). Clip keeps duration.
+    const newClipStart = clip.startMs + d
+    const newClipEnd = clip.endMs + d
+    const newPrevEnd = prev.endMs + d
+    const newPrevTrimOut = prev.trimOutMs + d
+    const newNextStart = next_.startMs + d
+    const newNextTrimIn = next_.trimInMs + d
+    if (newPrevTrimOut < 0 || newPrevTrimOut > maxPrevSource) return
+    if (newPrevEnd - prev.startMs < MIN_CLIP_MS) return
+    if (newNextTrimIn < 0 || newNextTrimIn > maxNextSource) return
+    if (next_.endMs - newNextStart < MIN_CLIP_MS) return
+    if (newClipStart < 0) return
+    const tracks = project.tracks.map((t, i) => {
+      if (i !== trackIdx) return t
+      const clips = t.clips.map((c) => {
+        if (c.id === clip.id)
+          return { ...c, startMs: newClipStart, endMs: newClipEnd }
+        if (c.id === prev.id)
+          return { ...c, endMs: newPrevEnd, trimOutMs: newPrevTrimOut }
+        if (c.id === next_.id)
+          return {
+            ...c,
+            startMs: newNextStart,
+            trimInMs: newNextTrimIn
+          }
+        return c
+      })
+      return { ...t, clips }
+    })
+    const nextProj = touch({ ...project, tracks })
+    set({ project: nextProj })
+    schedulePersist(nextProj)
+  },
+
   setTrackMuted(trackId: string, muted: boolean): void {
     const project = get().project
     let changed = false
@@ -3126,6 +3769,46 @@ export const useProjectStore = create<ProjectStore>()(
       if (Boolean(t.solo) === Boolean(solo)) return t
       changed = true
       return { ...t, solo: Boolean(solo) }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  setTrackDucking(trackId, target, db): void {
+    // Defensive type guards — IPC may deliver malformed payloads.
+    if (target !== 'voice' && target !== null) return
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      if (t.id !== trackId) return t
+      if (t.kind !== 'audio') return t
+      if (target === null) {
+        if (t.duckTarget === undefined || t.duckTarget === null) return t
+        const { duckTarget: _drop, ...rest } = t
+        changed = true
+        return rest as typeof t
+      }
+      // target === 'voice': set BGM role + duckTarget + clamp dB.
+      const clampedDb =
+        db === undefined || !Number.isFinite(db)
+          ? DEFAULT_DUCKING_DB
+          : Math.max(-30, Math.min(-1, Number(db)))
+      if (
+        t.role === 'bgm' &&
+        t.duckTarget === 'voice' &&
+        (t.duckingDb ?? DEFAULT_DUCKING_DB) === clampedDb
+      ) {
+        return t
+      }
+      changed = true
+      return {
+        ...t,
+        role: 'bgm' as const,
+        duckTarget: 'voice' as const,
+        duckingDb: clampedDb
+      }
     })
     if (!changed) return
     const next = touch({ ...project, tracks })
@@ -4184,6 +4867,15 @@ export const useProjectStore = create<ProjectStore>()(
     ) {
       return
     }
+    // Phase 3.54 — validate easing: must be one of EASING_KINDS, or `null`
+    // (sentinel to clear), or undefined (don't touch). Unknown string → no-op.
+    if (
+      partial.easing !== undefined &&
+      partial.easing !== null &&
+      !(EASING_KINDS as readonly string[]).includes(partial.easing)
+    ) {
+      return
+    }
     const project = get().project
     let changed = false
     const tracks = project.tracks.map((t) => {
@@ -4204,8 +4896,25 @@ export const useProjectStore = create<ProjectStore>()(
       const nextTransform = partial.transform
         ? clampClipTransform({ ...cur.transform, ...partial.transform })
         : clampClipTransform(cur.transform)
+      // Phase 3.54 — easing patch semantics:
+      //   undefined → keep current
+      //   null      → CLEAR (drops easing field; identity-linear)
+      //   'linear'  → CLEAR (linear is the absent-default; keeps the JSON tight)
+      //   other     → set
+      const nextEasing: EasingKind | undefined =
+        partial.easing === undefined
+          ? cur.easing
+          : partial.easing === null || partial.easing === 'linear'
+            ? undefined
+            : partial.easing
       const updated = existing.map((kf, i) =>
-        i === kfIndex ? { atMs: nextAt, transform: nextTransform } : kf
+        i === kfIndex
+          ? {
+              atMs: nextAt,
+              transform: nextTransform,
+              ...(nextEasing ? { easing: nextEasing } : {})
+            }
+          : kf
       )
       const finalKfs = normalizeKeyframes(updated)
       const clips = [...t.clips]
@@ -4328,6 +5037,65 @@ export const useProjectStore = create<ProjectStore>()(
       const clips = [...t.clips]
       // REPLACE any prior keyframe track (CapCut behavior); the static
       // `transform` is left untouched.
+      clips[idx] = { ...c, transformKeyframes: finalKfs }
+      changed = true
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  applyAutoReframeKeyframes(clipId, kfs): void {
+    // Defensive entry guards — caller bug → strict no-op.
+    if (!Array.isArray(kfs)) return
+    for (const kf of kfs) {
+      if (!kf || typeof kf !== 'object') return
+      if (!Number.isFinite(kf.atMs)) return
+      const t = kf.transform
+      if (!t || typeof t !== 'object') return
+      if (
+        !Number.isFinite(t.x) ||
+        !Number.isFinite(t.y) ||
+        !Number.isFinite(t.scale) ||
+        !Number.isFinite(t.rotation) ||
+        !Number.isFinite(t.opacity)
+      ) {
+        return
+      }
+    }
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const idx = t.clips.findIndex((c) => c.id === clipId)
+      if (idx === -1) return t
+      const c = t.clips[idx]
+      // Media-clip only (auto-reframe inspects video pixels). Captions /
+      // overlay clips bail.
+      if (!isMediaClip(c)) return t
+      // Per-clip lock — never write through a locked clip.
+      if (isClipLocked(c)) return t
+      // normalizeKeyframes sorts ascending, clamps every transform, and
+      // dedups within MIN_KEYFRAME_GAP_MS (last write wins). It MAY collapse
+      // to length 1 — we re-check the >= 2 invariant below.
+      const normalized = normalizeKeyframes(kfs)
+      // Enforce the MAX_KEYFRAMES_PER_CLIP cap by uniform downsample. The
+      // run shouldn't produce that many in normal cases, but a long clip
+      // sampled fine could; trimming uniformly preserves curve shape.
+      let finalKfs = normalized
+      if (finalKfs.length > MAX_KEYFRAMES_PER_CLIP) {
+        const out: TransformKeyframe[] = []
+        const step = (finalKfs.length - 1) / (MAX_KEYFRAMES_PER_CLIP - 1)
+        for (let i = 0; i < MAX_KEYFRAMES_PER_CLIP; i++) {
+          const src = Math.min(finalKfs.length - 1, Math.round(i * step))
+          out.push(finalKfs[src])
+        }
+        finalKfs = out
+      }
+      if (finalKfs.length < 2) return t
+      const clips = [...t.clips]
+      // REPLACE any prior keyframe track. Static `transform` is untouched.
       clips[idx] = { ...c, transformKeyframes: finalKfs }
       changed = true
       return { ...t, clips }

@@ -1,7 +1,27 @@
 // Project / media / clip / track types — shared between main, preload, renderer.
-// Pure data; no runtime imports allowed here.
+// Pure data; no runtime imports allowed here (sibling shared/* modules OK).
+
+import { easeFraction, type EasingKind } from './easing'
+export { easeFraction, easingToFfmpegFExpr, EASING_KINDS, EASING_LABELS } from './easing'
+export type { EasingKind } from './easing'
 
 export type MediaKind = 'video' | 'audio' | 'image'
+
+/**
+ * Phase 8 — SFX (sound-effect) provenance metadata. Stamped onto the asset
+ * when imported via the "🔊 효과음" tab so credits/license can flow into
+ * the export step (caption/credit roll).
+ *   - source: which catalog the file came from.
+ *   - license: SPDX-ish short code ('CC0', 'CC-BY', 'CC-BY-NC', …).
+ *   - attribution: human-readable artist/uploader string (required for CC-BY).
+ *   - sourceUrl: original landing page URL (Freesound page, etc.).
+ */
+export interface SfxMeta {
+  source: 'ours' | 'freesound'
+  license: string
+  attribution?: string
+  sourceUrl?: string
+}
 
 export interface MediaAsset {
   /** Stable id (ulid). */
@@ -21,6 +41,8 @@ export interface MediaAsset {
   importedAt: number
   fileName: string
   fileSizeBytes: number
+  /** Phase 8 — SFX provenance (license/attribution/source) for credit roll. */
+  sfxMeta?: SfxMeta
 }
 
 export type TrackKind = 'video' | 'audio' | 'caption' | 'overlay'
@@ -67,11 +89,47 @@ export function canPlaceClipOnTrack(
 // -----------------------------------------------------------------------------
 export type TransitionKind =
   | 'none'
+  // Basic
   | 'crossfade'
+  | 'fade-to-black'
+  | 'fade-to-white'
+  | 'dissolve'
+  // Slide
   | 'slide-left'
   | 'slide-right'
-  | 'fade-to-black'
+  | 'slide-up'
+  | 'slide-down'
+  // Wipe
+  | 'wipe-left'
+  | 'wipe-right'
+  | 'wipe-up'
+  | 'wipe-down'
+  // Smooth (gradient-soft wipe)
+  | 'smooth-left'
+  | 'smooth-right'
+  | 'smooth-up'
+  | 'smooth-down'
+  // Cover (incoming clip pushes in)
+  | 'cover-left'
+  | 'cover-right'
+  | 'cover-up'
+  | 'cover-down'
+  // Reveal (outgoing clip slides out to expose incoming)
+  | 'reveal-left'
+  | 'reveal-right'
+  | 'reveal-up'
+  | 'reveal-down'
+  // Shape mask
+  | 'circle-open'
+  | 'circle-close'
+  | 'diag-top-left'
+  | 'diag-top-right'
+  | 'diag-bottom-left'
+  | 'diag-bottom-right'
+  // Effect
   | 'zoom-in'
+  | 'pixelize'
+  | 'radial'
   | 'glitch'
 
 export interface ClipTransition {
@@ -107,6 +165,13 @@ export interface TransformKeyframe {
   atMs: number
   /** Full transform snapshot at this instant (all 5 fields, no partials). */
   transform: ClipTransform
+  /**
+   * Phase 3.54 — OUTGOING easing curve from this keyframe to the next.
+   * Absent / 'linear' = pre-3.54 byte-identical linear interpolation
+   * (preview + export expression unchanged). The last keyframe's easing is
+   * IGNORED (no outgoing segment). See `shared/easing.ts`.
+   */
+  easing?: EasingKind
 }
 
 /**
@@ -316,6 +381,62 @@ export type FilterPreset =
   | 'cool'
   | 'warm'
   | 'golden-hour'
+  // Phase 3.63 — second-batch presets.
+  | 'moody'
+  | 'noir'
+  | 'pastel'
+  | 'sunset'
+  | 'arctic'
+  | 'forest'
+  | 'desert'
+  | 'cyberpunk'
+  | 'sepia'
+  | 'high-contrast'
+  | 'low-contrast'
+  | 'punch'
+  | 'underwater'
+
+/**
+ * Phase 3.74 — clip color label. One of `ClipColorId | undefined`. Pure
+ * editing metadata: the Timeline paints a left-edge accent strip in this
+ * color so users can categorise clips (interview / b-roll / opener etc).
+ * Export IGNORES it — the value never reaches the filter graph.
+ */
+export type ClipColorId =
+  | 'none'
+  | 'red'
+  | 'orange'
+  | 'yellow'
+  | 'green'
+  | 'blue'
+  | 'purple'
+  | 'pink'
+  | 'gray'
+
+export const CLIP_COLOR_IDS: readonly ClipColorId[] = [
+  'none',
+  'red',
+  'orange',
+  'yellow',
+  'green',
+  'blue',
+  'purple',
+  'pink',
+  'gray'
+]
+
+/** CSS hex for each color id — used by Timeline's accent strip. */
+export const CLIP_COLOR_HEX: Record<ClipColorId, string> = {
+  none: 'transparent',
+  red: '#ef4444',
+  orange: '#f97316',
+  yellow: '#facc15',
+  green: '#22c55e',
+  blue: '#3b82f6',
+  purple: '#a855f7',
+  pink: '#ec4899',
+  gray: '#94a3b8'
+}
 
 export interface VideoAudioClip {
   id: string
@@ -397,6 +518,11 @@ export interface VideoAudioClip {
    * `isClipLocked`. No migration.
    */
   locked?: boolean
+  /**
+   * Phase 3.74 — UI-only color label. Renders as a left-edge accent strip
+   * on the Timeline. Export ignores it; absent = no accent.
+   */
+  color?: ClipColorId
   // -----------------------------------------------------------------
   // Phase 2.5 — audio shaping (optional, backwards-compatible).
   // -----------------------------------------------------------------
@@ -495,6 +621,16 @@ export interface VideoAudioClip {
   filterPreset?: FilterPreset
   /** 0..1 intensity for the filter. Default 1 (full). */
   filterIntensity?: number
+  /**
+   * Phase 3.75 — absolute path to a user-supplied 3D LUT (.cube) file.
+   * Export wraps it as `lut3d=<path>` AFTER the built-in `filterPreset`
+   * filter chain and BEFORE `colorAdjust` / `curves` / `hsl`. Preview
+   * shows no LUT (CSS has no .cube equivalent — the post-export look is
+   * the source of truth). Absent / empty = no LUT (byte-identical legacy
+   * export). The path MUST be allow-listed by the main-process security
+   * layer; an unknown path falls back to "no LUT" with a console warning.
+   */
+  lutPath?: string
   // -----------------------------------------------------------------
   // Phase 3 — static transform + layer compositing (optional, BC-safe).
   // -----------------------------------------------------------------
@@ -801,6 +937,8 @@ export interface CaptionClip {
   groupId?: string
   /** Phase 3.41 — when true the clip is uneditable (UI + store guards). Export ignores. */
   locked?: boolean
+  /** Phase 3.74 — UI-only color label. Export ignores. */
+  color?: ClipColorId
 }
 
 // -----------------------------------------------------------------------------
@@ -903,6 +1041,8 @@ export interface OverlayClip {
   groupId?: string
   /** Phase 3.41 — when true the clip is uneditable (UI + store guards). Export ignores. */
   locked?: boolean
+  /** Phase 3.74 — UI-only color label. Export ignores. */
+  color?: ClipColorId
   /**
    * Base element size BEFORE transform.scale, as a fraction of canvas
    * width/height. `transform.scale/x/y/rotation/opacity` apply on top.
@@ -1568,6 +1708,15 @@ export type VisualEffectId =
   | 'negative'
   | 'sketch'
   | 'infrared'
+  // Phase 3.64 — second batch.
+  | 'pixelate'
+  | 'old-film'
+  | 'blur-bg'
+  | 'cartoon'
+  | 'thermal'
+  | 'chromatic'
+  | 'mirror-h'
+  | 'mirror-v'
 
 /** All visual-effect ids in UI order. */
 export const VISUAL_EFFECT_IDS: readonly VisualEffectId[] = [
@@ -1578,7 +1727,15 @@ export const VISUAL_EFFECT_IDS: readonly VisualEffectId[] = [
   'dual-tone',
   'negative',
   'sketch',
-  'infrared'
+  'infrared',
+  'pixelate',
+  'old-film',
+  'blur-bg',
+  'cartoon',
+  'thermal',
+  'chromatic',
+  'mirror-h',
+  'mirror-v'
 ]
 
 // ---------------------------------------------------------------------------
@@ -1664,12 +1821,119 @@ export const MIN_TRANSITION_MS = 100
 export const MAX_TRANSITION_MS = 3000
 export const TRANSITION_KINDS: readonly TransitionKind[] = [
   'none',
+  // Basic
   'crossfade',
+  'fade-to-black',
+  'fade-to-white',
+  'dissolve',
+  // Slide
   'slide-left',
   'slide-right',
-  'fade-to-black',
+  'slide-up',
+  'slide-down',
+  // Wipe
+  'wipe-left',
+  'wipe-right',
+  'wipe-up',
+  'wipe-down',
+  // Smooth
+  'smooth-left',
+  'smooth-right',
+  'smooth-up',
+  'smooth-down',
+  // Cover
+  'cover-left',
+  'cover-right',
+  'cover-up',
+  'cover-down',
+  // Reveal
+  'reveal-left',
+  'reveal-right',
+  'reveal-up',
+  'reveal-down',
+  // Shape
+  'circle-open',
+  'circle-close',
+  'diag-top-left',
+  'diag-top-right',
+  'diag-bottom-left',
+  'diag-bottom-right',
+  // Effect
   'zoom-in',
+  'pixelize',
+  'radial',
   'glitch'
+]
+
+/**
+ * Phase 3.53 — UI category grouping. The picker renders one section per
+ * category in this order; `kinds` order is the in-section button order.
+ * 'none' is special-cased above the grid (reset chip) and not listed here.
+ */
+export type TransitionCategoryId =
+  | 'basic'
+  | 'slide'
+  | 'wipe'
+  | 'smooth'
+  | 'cover'
+  | 'reveal'
+  | 'shape'
+  | 'effect'
+
+export interface TransitionCategory {
+  id: TransitionCategoryId
+  title: string
+  kinds: readonly TransitionKind[]
+}
+
+export const TRANSITION_CATEGORIES: readonly TransitionCategory[] = [
+  {
+    id: 'basic',
+    title: '기본',
+    kinds: ['crossfade', 'fade-to-black', 'fade-to-white', 'dissolve']
+  },
+  {
+    id: 'slide',
+    title: '슬라이드',
+    kinds: ['slide-left', 'slide-right', 'slide-up', 'slide-down']
+  },
+  {
+    id: 'wipe',
+    title: '와이프',
+    kinds: ['wipe-left', 'wipe-right', 'wipe-up', 'wipe-down']
+  },
+  {
+    id: 'smooth',
+    title: '스무스',
+    kinds: ['smooth-left', 'smooth-right', 'smooth-up', 'smooth-down']
+  },
+  {
+    id: 'cover',
+    title: '커버',
+    kinds: ['cover-left', 'cover-right', 'cover-up', 'cover-down']
+  },
+  {
+    id: 'reveal',
+    title: '리빌',
+    kinds: ['reveal-left', 'reveal-right', 'reveal-up', 'reveal-down']
+  },
+  {
+    id: 'shape',
+    title: '모양',
+    kinds: [
+      'circle-open',
+      'circle-close',
+      'diag-top-left',
+      'diag-top-right',
+      'diag-bottom-left',
+      'diag-bottom-right'
+    ]
+  },
+  {
+    id: 'effect',
+    title: '이펙트',
+    kinds: ['zoom-in', 'pixelize', 'radial', 'glitch']
+  }
 ]
 export const FILTER_PRESETS: readonly FilterPreset[] = [
   'none',
@@ -1679,7 +1943,20 @@ export const FILTER_PRESETS: readonly FilterPreset[] = [
   'vintage',
   'cool',
   'warm',
-  'golden-hour'
+  'golden-hour',
+  'moody',
+  'noir',
+  'pastel',
+  'sunset',
+  'arctic',
+  'forest',
+  'desert',
+  'cyberpunk',
+  'sepia',
+  'high-contrast',
+  'low-contrast',
+  'punch',
+  'underwater'
 ]
 
 // ---------------------------------------------------------------------------
@@ -2260,7 +2537,9 @@ export function getTransformAt(
   }
   const span = k1.atMs - k0.atMs
   if (span <= 0) return clampTransform(k0.transform)
-  const f = (localMs - k0.atMs) / span
+  const fRaw = (localMs - k0.atMs) / span
+  // Phase 3.54 — apply outgoing easing from k0 (linear / absent = identity).
+  const f = easeFraction(fRaw, k0.easing)
   const a = clampTransform(k0.transform)
   const b = clampTransform(k1.transform)
   const lerp = (u: number, v: number): number => u + (v - u) * f

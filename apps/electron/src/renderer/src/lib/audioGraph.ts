@@ -85,6 +85,18 @@ export class PreviewAudioGraph {
   private state: GraphState = 'idle'
   private ctx: AudioContext | null = null
   private masterGain: GainNode | null = null
+  /**
+   * Phase 3.58 — master output analyser. Tapped AFTER masterGain so the
+   * meter reflects what the user actually hears (including ducking + master
+   * attenuation). Null until the context is ready.
+   */
+  private masterAnalyser: AnalyserNode | null = null
+  /**
+   * Reusable Float32Array buffer for `getFloatTimeDomainData`. Avoids
+   * allocating per frame in the UI poll loop. Sized to the analyser's
+   * fftSize.
+   */
+  private analyserBuf: Float32Array | null = null
   /** Per-track output gain. Created lazily on first setTrackGain or attach. */
   private trackGains: Map<string, GainNode> = new Map()
   /**
@@ -118,15 +130,65 @@ export class PreviewAudioGraph {
       this.ctx = new Ctor()
       this.masterGain = this.ctx.createGain()
       this.masterGain.gain.value = 1
-      this.masterGain.connect(this.ctx.destination)
+      // Phase 3.58 — insert master AnalyserNode between masterGain and
+      // destination so the meter sees the post-master signal:
+      //   masterGain → masterAnalyser → destination
+      this.masterAnalyser = this.ctx.createAnalyser()
+      this.masterAnalyser.fftSize = 2048
+      this.masterAnalyser.smoothingTimeConstant = 0
+      this.analyserBuf = new Float32Array(this.masterAnalyser.fftSize)
+      this.masterGain.connect(this.masterAnalyser)
+      this.masterAnalyser.connect(this.ctx.destination)
       this.state = 'ready'
       return true
     } catch {
       this.state = 'failed'
       this.ctx = null
       this.masterGain = null
+      this.masterAnalyser = null
+      this.analyserBuf = null
       return false
     }
+  }
+
+  /**
+   * Phase 3.58 — read instantaneous master meter levels.
+   *
+   * Returns peak (max abs sample) and RMS (root-mean-square) of the most
+   * recent fftSize-sample window, both in dBFS (negative; 0 dBFS = full
+   * scale; silence → -Infinity).
+   *
+   * Graceful: when WebAudio isn't ready (suspended context before user
+   * gesture / failed graph), returns `{ peak: -Infinity, rms: -Infinity }`.
+   * The UI meter renders an empty bar from those values.
+   */
+  getMasterLevels(): { peak: number; rms: number } {
+    if (
+      this.state !== 'ready' ||
+      !this.masterAnalyser ||
+      !this.analyserBuf
+    ) {
+      return { peak: -Infinity, rms: -Infinity }
+    }
+    const buf = this.analyserBuf
+    // The Web Audio API's TS signature wants Float32Array<ArrayBuffer>; our
+    // `new Float32Array(n)` produces Float32Array<ArrayBufferLike>. Cast —
+    // the runtime call is identical.
+    this.masterAnalyser.getFloatTimeDomainData(
+      buf as unknown as Float32Array<ArrayBuffer>
+    )
+    let peak = 0
+    let sumSq = 0
+    for (let i = 0; i < buf.length; i++) {
+      const s = buf[i]
+      const a = s < 0 ? -s : s
+      if (a > peak) peak = a
+      sumSq += s * s
+    }
+    const rmsLinear = Math.sqrt(sumSq / buf.length)
+    const peakDb = peak > 0 ? 20 * Math.log10(peak) : -Infinity
+    const rmsDb = rmsLinear > 0 ? 20 * Math.log10(rmsLinear) : -Infinity
+    return { peak: peakDb, rms: rmsDb }
   }
 
   /** Get-or-create the GainNode for a track. */

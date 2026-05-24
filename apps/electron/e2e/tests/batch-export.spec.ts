@@ -36,6 +36,7 @@ import { existsSync, mkdirSync, rmSync, statSync, readdirSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
+import { openExportMenu } from '../helpers/topbar'
 
 // ---------------------------------------------------------------------------
 // Preset metadata mirrored from exportPresets.ts (avoids a cross-context import)
@@ -268,6 +269,7 @@ test.describe('@phase-3-20-batch-export batch export', () => {
     if (!launched) throw new Error('launch failed')
     await openEditor(launched)
 
+    await openExportMenu(launched.page)
     await launched.page
       .locator('[data-testid="open-batch-export-dialog"]')
       .click()
@@ -289,6 +291,7 @@ test.describe('@phase-3-20-batch-export batch export', () => {
     if (!launched) throw new Error('launch failed')
     await openEditor(launched)
 
+    await openExportMenu(launched.page)
     await launched.page
       .locator('[data-testid="open-batch-export-dialog"]')
       .click()
@@ -319,6 +322,7 @@ test.describe('@phase-3-20-batch-export batch export', () => {
     // Stub directory picker.
     await stubPickDirectory(launched, outDir)
 
+    await openExportMenu(launched.page)
     await launched.page
       .locator('[data-testid="open-batch-export-dialog"]')
       .click()
@@ -511,6 +515,7 @@ test.describe('@phase-3-20-batch-export batch export', () => {
     await stubPickDirectory(launched, outDir)
 
     // Open the batch dialog.
+    await openExportMenu(page)
     await page.locator('[data-testid="open-batch-export-dialog"]').click()
     const dialog = page.locator('[data-testid="batch-export-dialog"]')
     await expect(dialog).toBeVisible({ timeout: 5_000 })
@@ -618,6 +623,7 @@ test.describe('@phase-3-20-batch-export batch export', () => {
 
     await stubPickDirectory(launched, outDir)
 
+    await openExportMenu(page)
     await page.locator('[data-testid="open-batch-export-dialog"]').click()
     const dialog = page.locator('[data-testid="batch-export-dialog"]')
     await expect(dialog).toBeVisible({ timeout: 5_000 })

@@ -203,6 +203,52 @@ export function averageFrameStats(list: FrameStats[]): FrameStats {
   }
 }
 
+/**
+ * Phase 3.70 — outlier-robust frame stats average.
+ *
+ * Same shape as `averageFrameStats` but trims the brightest + darkest
+ * `trimFrac` of samples per scalar dimension (per-key median-like filter).
+ * Improves stability when the 5-sample frame batch happens to include a
+ * black-flash transition, a white card, or other one-off outlier — the
+ * cap absorbs it instead of dragging the mean.
+ *
+ * `trimFrac` is the fraction trimmed from EACH end. 0 → identical to
+ * `averageFrameStats` (no trimming, BC-safe). Clamped to [0, 0.45] so we
+ * never empty the sample pool. With trimFrac=0.2 on 5 samples we drop
+ * 1 from each end (floor(5*0.2)=1) and average the middle 3.
+ */
+export function averageFrameStatsTrimmed(
+  list: FrameStats[],
+  trimFrac = 0.2
+): FrameStats {
+  if (list.length === 0) return neutralFrameStats()
+  const tf = Math.max(0, Math.min(0.45, Number(trimFrac) || 0))
+  const n = list.length
+  const trim = Math.floor(n * tf)
+  // Tiny pools fall back to the plain mean (trimming would leave < 1 sample).
+  if (trim <= 0 || n - 2 * trim < 1) return averageFrameStats(list)
+  const trimmedMean = (pick: (s: FrameStats) => number): number => {
+    const sorted = list.map(pick).sort((a, b) => a - b)
+    const window = sorted.slice(trim, sorted.length - trim)
+    if (window.length === 0) return 0
+    let sum = 0
+    for (const v of window) sum += v
+    return sum / window.length
+  }
+  let sampleCount = 0
+  for (const s of list) sampleCount += s.sampleCount
+  return {
+    meanLuma: trimmedMean((s) => s.meanLuma),
+    lumaP1: trimmedMean((s) => s.lumaP1),
+    lumaP99: trimmedMean((s) => s.lumaP99),
+    meanSaturation: trimmedMean((s) => s.meanSaturation),
+    meanR: trimmedMean((s) => s.meanR),
+    meanG: trimmedMean((s) => s.meanG),
+    meanB: trimmedMean((s) => s.meanB),
+    sampleCount
+  }
+}
+
 /** Clamp to the auto magnitude cap and round to an integer. */
 function clampAuto(v: number): number {
   const n = Number.isFinite(v) ? v : 0

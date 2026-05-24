@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { existsSync, mkdirSync } from 'node:fs'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
+import { openCaptionsMenu } from '../helpers/topbar'
 
 /**
  * @phase-3-22-karaoke — Word-level / karaoke caption tests.
@@ -613,6 +614,7 @@ test.describe('@phase-3-22-karaoke word-level karaoke captions', () => {
     )
 
     // Add a plain caption WITHOUT word timing via the UI button.
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
 

@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
+import { openCaptionsMenu } from '../helpers/topbar'
 
 /**
  * Phase 4.3 — Undo/Redo (zundo middleware on the project store).
@@ -380,6 +381,7 @@ test.describe('@phase-4-undo undo/redo via zundo middleware', () => {
       { timeout: 5_000 }
     )
 
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
     await tick()
@@ -725,6 +727,7 @@ test.describe('@phase-4-undo undo/redo via zundo middleware', () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
     await page.locator('[data-testid="open-editor-button"]').click()
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
     await tick()

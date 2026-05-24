@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { existsSync, mkdirSync } from 'node:fs'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
+import { openAiMenu } from '../helpers/topbar'
 
 /**
  * @phase-3-24 — Text-template picker tests.
@@ -256,7 +257,8 @@ test.describe('@phase-3-24 text template picker', () => {
     const pickerLocator = page.locator('[data-testid="text-template-picker"]')
     const pickerVisible = await pickerLocator.isVisible()
     if (!pickerVisible) {
-      await page.locator('[data-testid="open-text-template-picker"]').click()
+      await openAiMenu(page)
+    await page.locator('[data-testid="open-text-template-picker"]').click()
       await expect(pickerLocator).toBeVisible()
     }
 
@@ -282,6 +284,7 @@ test.describe('@phase-3-24 text template picker', () => {
     await expect(page.locator('[data-testid="editor-page"]')).toBeVisible()
 
     // Open picker.
+    await openAiMenu(page)
     await page.locator('[data-testid="open-text-template-picker"]').click()
     await expect(page.locator('[data-testid="text-template-picker"]')).toBeVisible()
 

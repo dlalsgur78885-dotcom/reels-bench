@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
+import { openCaptionsMenu, openOptionsMenu } from '../helpers/topbar'
 
 test.describe('@phase-2-captions caption track + overlay + editor', () => {
   let launched: LaunchedApp | null = null
@@ -54,7 +55,8 @@ test.describe('@phase-2-captions caption track + overlay + editor', () => {
     await page.locator('[data-testid="open-editor-button"]').click()
     await expect(page.locator('[data-testid="editor-page"]')).toBeVisible()
 
-    // Set playhead via the topbar input.
+    // Set playhead via the topbar input (now inside the 옵션 ▾ popover).
+    await openOptionsMenu(page)
     const playhead = page.locator('[data-testid="playhead-input"]')
     await playhead.click({ clickCount: 3 })
     await playhead.fill('1000')
@@ -110,6 +112,7 @@ test.describe('@phase-2-captions caption track + overlay + editor', () => {
     await page.waitForFunction(() => !!window.electron, null, { timeout: 5_000 })
     await page.locator('[data-testid="open-editor-button"]').click()
 
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
 
@@ -139,6 +142,7 @@ test.describe('@phase-2-captions caption track + overlay + editor', () => {
     await page.waitForFunction(() => !!window.electron, null, { timeout: 5_000 })
     await page.locator('[data-testid="open-editor-button"]').click()
 
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
 
@@ -210,6 +214,7 @@ test.describe('@phase-2-captions caption track + overlay + editor', () => {
     await page.locator('[data-testid="open-editor-button"]').click()
 
     // Create one caption clip via the button.
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
     // Close the editor so right-click target is unambiguous.
@@ -234,6 +239,7 @@ test.describe('@phase-2-captions caption track + overlay + editor', () => {
     await page.waitForFunction(() => !!window.electron, null, { timeout: 5_000 })
     await page.locator('[data-testid="open-editor-button"]').click()
 
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
 

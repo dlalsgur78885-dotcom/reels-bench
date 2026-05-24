@@ -28,6 +28,7 @@
 
 import { expect, test } from '@playwright/test'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
+import { openCaptionsMenu } from '../helpers/topbar'
 
 // ---------------------------------------------------------------------------
 // Window bridge types (mirrors existing specs)
@@ -458,6 +459,16 @@ test.describe('@phase-7-effects-panel CapCut 효과 패널 (Phase 7)', () => {
     await page.locator('[data-testid="effects-tab-animation"]').click()
     await expect(page.locator('[data-testid="effects-section-animation"]')).toBeVisible({ timeout: 2_000 })
 
+    // Phase 3.47 accordion — transform-keyframes section is collapsed by default.
+    const tkToggle = page.locator('[data-testid="section-toggle-transform-keyframes"]')
+    if ((await tkToggle.count()) > 0) {
+      const expanded = await tkToggle.getAttribute('aria-expanded')
+      if (expanded !== 'true') {
+        await tkToggle.click()
+        await page.waitForTimeout(120)
+      }
+    }
+
     const badge = page.locator('[data-testid="effects-keyframe-count"]')
     await expect(badge).toBeVisible()
     const initialCount = parseInt(await badge.textContent() ?? '0', 10)
@@ -555,6 +566,16 @@ test.describe('@phase-7-effects-panel CapCut 효과 패널 (Phase 7)', () => {
     await page.locator('[data-testid="effects-tab-adjust"]').click()
     await expect(page.locator('[data-testid="effects-section-adjust"]')).toBeVisible({ timeout: 2_000 })
 
+    // Phase 3.47 accordion — "고급 (준비 중)" section is collapsed by default.
+    const advToggle = page.locator('[data-testid="section-toggle-advanced"]')
+    if ((await advToggle.count()) > 0) {
+      const expanded = await advToggle.getAttribute('aria-expanded')
+      if (expanded !== 'true') {
+        await advToggle.click()
+        await page.waitForTimeout(120)
+      }
+    }
+
     const oosBox = page.locator('[data-testid="effects-oos-placeholders"]')
     await expect(oosBox).toBeVisible()
 
@@ -615,7 +636,8 @@ test.describe('@phase-7-effects-panel CapCut 효과 패널 (Phase 7)', () => {
     await toggleBtn.click()
     await expect(page.locator('[data-testid="effects-panel"]')).toBeVisible({ timeout: 3_000 })
 
-    // Now start editing a caption (click "자막 추가" in the topbar).
+    // Now start editing a caption (click "자막 추가" in the topbar's 자막 popover).
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await page.waitForTimeout(300)
 

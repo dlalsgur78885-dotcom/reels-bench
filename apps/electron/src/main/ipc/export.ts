@@ -134,7 +134,8 @@ import {
   getVoiceChanger,
   getVisualEffect,
   getCanvasBackground,
-  canvasBackgroundToFfmpegColor
+  canvasBackgroundToFfmpegColor,
+  easingToFfmpegFExpr
 } from '../../shared/project'
 import { resolveFfmpegPath } from '../ffmpeg/binary'
 import { allowPath, assertPathAllowed } from '../ffmpeg/security'
@@ -1944,11 +1945,19 @@ function atempoChain(speed: number): string {
  * can unconditionally push the result and the parts array stays byte-identical
  * to pre-Phase-4 for clips with noiseReduction absent / 0.
  */
-function denoiseChain(clip: VideoAudioClip): string {
+export function denoiseChain(clip: VideoAudioClip): string {
   const s = getClipDenoise(clip)
   if (s === null) return ''
-  const nr = (6 + (s / 100) * 24).toFixed(2) // strength 1..100 → 6.24..30.00 dB
-  return `afftdn=nr=${nr}:nf=-25`
+  // Phase 3.69 — multi-stage noise chain (was: single afftdn).
+  //   1. highpass = strip sub-80Hz rumble (AC hum / wind buffeting) the
+  //      spectral denoiser otherwise has to flatten.
+  //   2. afftdn   = main spectral subtraction (existing behavior).
+  //   3. dynaudnorm = gentle gain leveling so the post-denoise floor isn't
+  //      audibly louder than the original peaks. Strength scales the gain
+  //      cap so weak settings stay close to identity.
+  const nr = (6 + (s / 100) * 24).toFixed(2) // 6.24..30.00 dB
+  const gainCap = (1.5 + (s / 100) * 1.5).toFixed(2) // 1.5..3.0
+  return `highpass=f=80,afftdn=nr=${nr}:nf=-25,dynaudnorm=g=5:p=0.9:m=${gainCap}`
 }
 
 function retouchChain(clip: VideoAudioClip): string {
@@ -2029,14 +2038,20 @@ export function keyframeExpr(
     const span = s1 - s0
     if (span < 1e-6) continue
 
-    // Linear interpolation: v0 + (v1-v0)*(VAR-s0)/(s1-s0)
+    // Linear interpolation: v0 + (v1-v0) * easing((VAR-s0)/(s1-s0))
+    // Phase 3.54 — outgoing easing on deduped[i] wraps the raw [0,1]
+    // fraction. Absent / 'linear' → identity (byte-identical pre-3.54 string).
     const dv = v1 - v0
     let interp: string
     if (Math.abs(dv) < 1e-9) {
       // Flat segment — avoid emitting a divide for zero slope.
       interp = v0.toFixed(6)
     } else {
-      interp = `${v0.toFixed(6)}+${dv.toFixed(6)}*(${varName}-${s0.toFixed(4)})/${span.toFixed(4)}`
+      const fRawExpr = `(${varName}-${s0.toFixed(4)})/${span.toFixed(4)}`
+      const easedF = easingToFfmpegFExpr(deduped[i].easing, fRawExpr)
+      // Wrap in parens so the multiplication binds correctly when the eased
+      // form is a multi-token expression (pow(...) / if(lt(...)) / etc.).
+      interp = `${v0.toFixed(6)}+${dv.toFixed(6)}*(${easedF})`
     }
 
     // Hold-first before s0.
@@ -2668,6 +2683,19 @@ function buildVideoSegmentChain(
     // Color grading chain (identical to normal path).
     const fpFreeze = filterPresetToFfmpeg(seg.clip.filterPreset, seg.clip.filterIntensity ?? 1)
     if (fpFreeze) freezeParts.push(fpFreeze)
+    // Phase 3.79 — user LUT (.cube) follows the preset chain, before manual
+    // colour adjust. Path is normalized to forward slashes (ffmpeg accepts
+    // them on every platform) and any embedded single-quote is stripped
+    // so the wrapping single-quotes can't break out of the filter_complex
+    // token.
+    const lutFreeze = seg.clip.lutPath
+    if (
+      typeof lutFreeze === 'string' &&
+      lutFreeze.toLowerCase().endsWith('.cube')
+    ) {
+      const norm = lutFreeze.replace(/\\+/g, '/').replace(/'/g, '')
+      freezeParts.push(`lut3d='${norm}'`)
+    }
     const caFreeze = colorAdjustToFfmpeg(getClipColorAdjust(seg.clip))
     if (caFreeze) freezeParts.push(caFreeze)
     const cvFreeze = curvesToFfmpeg(getClipCurves(seg.clip))
@@ -2854,6 +2882,23 @@ function buildVideoSegmentChain(
   // 2. Filter preset (eq/hue chain).
   const fp = filterPresetToFfmpeg(seg.clip.filterPreset, seg.clip.filterIntensity ?? 1)
   if (fp) parts.push(fp)
+  // 2.4. USER LUT (Phase 3.79). `lut3d=PATH` after the preset chain so the
+  //      preset look can be augmented by the LUT, and BEFORE manual color
+  //      adjust so the user's sliders still bite on the LUT-graded image.
+  //      Path is forward-slashed (ffmpeg accepts on every platform) and
+  //      single-quote-stripped so the wrapping quotes can't escape the
+  //      filter_complex token. Absent / non-.cube → no-op (byte-identical).
+  const lutPath = seg.clip.lutPath
+  if (
+    typeof lutPath === 'string' &&
+    lutPath.toLowerCase().endsWith('.cube')
+  ) {
+    // Collapse one-or-more consecutive backslashes to a single forward
+    // slash so Windows paths (`C:\\luts\\look.cube` after json round-trip)
+    // come out as `C:/luts/look.cube` rather than `C://luts//look.cube`.
+    const norm = lutPath.replace(/\\+/g, '/').replace(/'/g, '')
+    parts.push(`lut3d='${norm}'`)
+  }
   // 2.5. MANUAL COLOR ADJUST (Phase 3.7). Stacks AFTER the filter preset
   //      (preset look first, manual brightness/contrast/saturation/temperature
   //      second) — same order as the PreviewCanvas CSS composition.

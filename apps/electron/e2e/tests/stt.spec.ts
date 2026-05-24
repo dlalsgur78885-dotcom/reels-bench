@@ -25,6 +25,7 @@
 
 import { expect, test } from '@playwright/test'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
+import { openAiMenu } from '../helpers/topbar'
 
 // ---------------------------------------------------------------------------
 // Shared fixture setup helpers.
@@ -195,6 +196,7 @@ test.describe('@phase-stt button and shortcut', () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
     await openEditor(launched)
+    await openAiMenu(page)
     await expect(page.locator('[data-testid="open-stt-dialog"]')).toBeVisible()
     await expect(page.locator('[data-testid="open-stt-dialog"]')).toContainText('자동 자막 생성')
   })
@@ -205,6 +207,7 @@ test.describe('@phase-stt button and shortcut', () => {
     await openEditor(launched)
     // Mock modelStatus so dialog opens cleanly without a real IPC call completing
     await mockModelStatus(launched, { present: true })
+    await openAiMenu(page)
     await page.locator('[data-testid="open-stt-dialog"]').click()
     await expect(page.locator('[data-testid="stt-dialog"]')).toBeVisible()
   })
@@ -321,6 +324,7 @@ test.describe('@phase-stt happy path', () => {
     })
 
     // Open dialog.
+    await openAiMenu(page)
     await page.locator('[data-testid="open-stt-dialog"]').click()
     await expect(page.locator('[data-testid="stt-dialog"]')).toBeVisible()
 
@@ -406,6 +410,7 @@ test.describe('@phase-stt no-audio error', () => {
       })
     })
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-stt-dialog"]').click()
     await expect(page.locator('[data-testid="stt-dialog"]')).toBeVisible()
     await page.locator('[data-testid="stt-source-timeline"]').click()
@@ -491,6 +496,7 @@ test.describe('@phase-stt cancel', () => {
     })
 
     // Open dialog and start.
+    await openAiMenu(page)
     await page.locator('[data-testid="open-stt-dialog"]').click()
     await expect(page.locator('[data-testid="stt-dialog"]')).toBeVisible()
     await page.locator('[data-testid="stt-source-timeline"]').click()
@@ -541,6 +547,7 @@ test.describe('@phase-stt model-missing notice', () => {
     // Mock modelStatus to return not present.
     await mockModelStatus(launched, { present: false, sizeBytes: 148897792 })
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-stt-dialog"]').click()
     await expect(page.locator('[data-testid="stt-dialog"]')).toBeVisible()
 
@@ -590,6 +597,7 @@ test.describe('@phase-stt concurrent guard', () => {
       })
     })
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-stt-dialog"]').click()
     await expect(page.locator('[data-testid="stt-dialog"]')).toBeVisible()
     await page.locator('[data-testid="stt-source-timeline"]').click()
@@ -634,6 +642,7 @@ test.describe('@phase-stt source picker states', () => {
     })
     await mockModelStatus(launched, { present: true })
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-stt-dialog"]').click()
     await expect(page.locator('[data-testid="stt-dialog"]')).toBeVisible()
 
@@ -666,6 +675,7 @@ test.describe('@phase-stt source picker states', () => {
     await selectClipInStore(launched, clipId)
     await mockModelStatus(launched, { present: true })
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-stt-dialog"]').click()
     await expect(page.locator('[data-testid="stt-dialog"]')).toBeVisible()
 

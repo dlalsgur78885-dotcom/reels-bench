@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
+import { openCaptionsMenu } from '../helpers/topbar'
 
 /**
  * Phase 3.9 — caption / text animation (entrance + exit).
@@ -260,6 +261,7 @@ test.describe('@phase-3-9-caption-anim caption animation', () => {
     await page.locator('[data-testid="open-editor-button"]').click()
     await expect(page.locator('[data-testid="editor-page"]')).toBeVisible()
 
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
 
@@ -287,6 +289,7 @@ test.describe('@phase-3-9-caption-anim caption animation', () => {
     )
 
     // Add a caption and put playhead in the middle.
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
 

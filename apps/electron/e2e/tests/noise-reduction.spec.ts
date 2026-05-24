@@ -32,6 +32,7 @@ import { expect, test } from '@playwright/test'
 import os from 'node:os'
 import path from 'node:path'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
+import { openCaptionsMenu } from '../helpers/topbar'
 
 // ---------------------------------------------------------------------------
 // Type declarations for window test bridges
@@ -270,6 +271,7 @@ test.describe('@phase-noise-reduction noise reduction toggle + export filter', (
     await expect(page.locator('[data-testid="clip-context-menu"]')).toHaveCount(0)
 
     // Caption clip: right-click → menu-denoise must NOT be present.
+    await openCaptionsMenu(page)
     await page.locator('[data-testid="add-caption-button"]').click()
     await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
     await page.locator('[data-testid="caption-editor-close"]').click()

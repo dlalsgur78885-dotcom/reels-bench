@@ -28,6 +28,7 @@
 
 import { expect, test } from '@playwright/test'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
+import { openAiMenu } from '../helpers/topbar'
 
 // ---------------------------------------------------------------------------
 // Shared helpers.
@@ -299,6 +300,7 @@ test.describe('@phase-auto-edit 1: open dialog via button and Ctrl+Shift+A', () 
     if (!launched) throw new Error('launch failed')
     const { page } = launched
     await openEditor(launched)
+    await openAiMenu(page)
     await page.locator('[data-testid="open-autoedit-dialog"]').click()
     await expect(page.locator('[data-testid="autoedit-dialog"]')).toBeVisible()
   })
@@ -340,6 +342,7 @@ test.describe('@phase-auto-edit 2: empty timeline state', () => {
     await openEditor(launched)
     await resetProject(launched)
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-autoedit-dialog"]').click()
     await expect(page.locator('[data-testid="autoedit-dialog"]')).toBeVisible()
     await expect(page.locator('[data-testid="autoedit-empty"]')).toBeVisible()
@@ -367,6 +370,7 @@ test.describe('@phase-auto-edit 3: both toggles off', () => {
     await seedClipOnTrack(launched)
     await page.waitForTimeout(300)
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-autoedit-dialog"]').click()
     await expect(page.locator('[data-testid="autoedit-dialog"]')).toBeVisible()
 
@@ -416,6 +420,7 @@ test.describe('@phase-auto-edit 4: happy path two clips', () => {
       [{ startMs: 1000, endMs: 2000, durationMs: 1000 }]
     ])
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-autoedit-dialog"]').click()
     await expect(page.locator('[data-testid="autoedit-start"]')).not.toBeDisabled()
     await page.locator('[data-testid="autoedit-start"]').click()
@@ -471,6 +476,7 @@ test.describe('@phase-auto-edit 5: ripple correctness', () => {
       [{ startMs: 1000, endMs: 2000, durationMs: 1000 }]
     ])
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-autoedit-dialog"]').click()
     await page.locator('[data-testid="autoedit-start"]').click()
     await expect(page.locator('[data-testid="autoedit-summary"]')).toBeVisible({ timeout: 15_000 })
@@ -514,6 +520,7 @@ test.describe('@phase-auto-edit 6: one undo step', () => {
       [{ startMs: 1000, endMs: 2000, durationMs: 1000 }]
     ])
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-autoedit-dialog"]').click()
     await page.locator('[data-testid="autoedit-start"]').click()
     await expect(page.locator('[data-testid="autoedit-summary"]')).toBeVisible({ timeout: 15_000 })
@@ -568,6 +575,7 @@ test.describe('@phase-auto-edit 7: no-audio guard', () => {
       [{ startMs: 100, endMs: 4900, durationMs: 4800 }]
     ])
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-autoedit-dialog"]').click()
     await page.locator('[data-testid="autoedit-start"]').click()
     await expect(page.locator('[data-testid="autoedit-summary"]')).toBeVisible({ timeout: 15_000 })
@@ -605,6 +613,7 @@ test.describe('@phase-auto-edit 8: detectSilence rejects', () => {
     // clips on the same media. Mock that call to reject.
     await mockDetectSilence(launched, ['reject'])
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-autoedit-dialog"]').click()
     await page.locator('[data-testid="autoedit-start"]').click()
 
@@ -661,6 +670,7 @@ test.describe('@phase-auto-edit 9: multi-track warning', () => {
       [{ startMs: 1000, endMs: 2000, durationMs: 1000 }]
     ])
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-autoedit-dialog"]').click()
     await expect(page.locator('[data-testid="autoedit-dialog"]')).toBeVisible()
 
@@ -714,6 +724,7 @@ test.describe('@phase-auto-edit 10: captions toggle', () => {
 
     const captionsBefore = await getCaptionClipCount(launched)
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-autoedit-dialog"]').click()
     await expect(page.locator('[data-testid="autoedit-dialog"]')).toBeVisible()
 
@@ -751,6 +762,7 @@ test.describe('@phase-auto-edit 10: captions toggle', () => {
 
     const captionsBefore = await getCaptionClipCount(launched)
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-autoedit-dialog"]').click()
     await page.locator('[data-testid="autoedit-toggle-captions"]').check()
     await page.locator('[data-testid="autoedit-start"]').click()
@@ -797,6 +809,7 @@ test.describe('@phase-auto-edit 11: cancel mid-run', () => {
       })
     })
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-autoedit-dialog"]').click()
     await page.locator('[data-testid="autoedit-start"]').click()
 
@@ -846,6 +859,7 @@ test.describe('@phase-auto-edit 12: no-silence case', () => {
 
     const clipsBefore = await getTrackClips(launched, clip.trackId)
 
+    await openAiMenu(page)
     await page.locator('[data-testid="open-autoedit-dialog"]').click()
     await page.locator('[data-testid="autoedit-start"]').click()
     await expect(page.locator('[data-testid="autoedit-summary"]')).toBeVisible({ timeout: 15_000 })

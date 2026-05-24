@@ -353,6 +353,38 @@ export function snapToNearestBeat(
   return bestDist <= toleranceMs ? best : desiredMs
 }
 
+/**
+ * Phase 3.76 — magnet timeline. Snap `desiredMs` to the nearest clip
+ * boundary (startMs / endMs) within tolerance. Pass `boundaries` as a flat
+ * list of timeline-ms values; the caller is responsible for excluding the
+ * clip currently being dragged (otherwise the drag would snap to its own
+ * pre-edit position and never move).
+ *
+ * Returns `desiredMs` unchanged when no boundary is within tolerance, the
+ * boundaries list is empty, or `desiredMs` is non-finite.
+ */
+export const CLIP_SNAP_TOLERANCE_MS = 80
+
+export function snapToNearestClipBoundary(
+  desiredMs: number,
+  boundaries: number[],
+  toleranceMs = CLIP_SNAP_TOLERANCE_MS
+): number {
+  if (!Number.isFinite(desiredMs)) return desiredMs
+  if (!boundaries || boundaries.length === 0) return desiredMs
+  let bestDist = Infinity
+  let best = desiredMs
+  for (const b of boundaries) {
+    if (!Number.isFinite(b)) continue
+    const d = Math.abs(b - desiredMs)
+    if (d < bestDist) {
+      bestDist = d
+      best = b
+    }
+  }
+  return bestDist <= toleranceMs ? best : desiredMs
+}
+
 /** Convenience: returns the currently selected single clip id, or null. */
 export function getSelectedClipId(): string | null {
   const sel = useTimelineUi.getState().selectedClipIds

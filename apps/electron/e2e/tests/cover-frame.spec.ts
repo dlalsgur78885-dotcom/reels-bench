@@ -22,6 +22,7 @@ import { readFileSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
+import { openOptionsMenu } from '../helpers/topbar'
 
 // ---------------------------------------------------------------------------
 // Local type aliases
@@ -216,7 +217,8 @@ test.describe('@phase-3-27-cover-frame cover / thumbnail frame picker', () => {
       ui.getState().setPlayheadMs(ms)
     }, targetMs)
 
-    // Click set-cover-frame button
+    // Click set-cover-frame button (now inside 옵션 ▾ popover).
+    await openOptionsMenu(page)
     await page.locator('[data-testid="set-cover-frame"]').click()
     await page.waitForTimeout(100)
 
@@ -228,7 +230,8 @@ test.describe('@phase-3-27-cover-frame cover / thumbnail frame picker', () => {
     // Should be close to targetMs (within one frame tolerance)
     expect(Math.abs(coverAfterSet! - targetMs)).toBeLessThanOrEqual(100)
 
-    // Click clear-cover-frame button
+    // Click clear-cover-frame button (옵션 popover may close after set-cover; re-open).
+    await openOptionsMenu(page)
     await page.locator('[data-testid="clear-cover-frame"]').click()
     await page.waitForTimeout(100)
 

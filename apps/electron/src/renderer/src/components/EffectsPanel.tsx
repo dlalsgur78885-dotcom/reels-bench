@@ -5,6 +5,7 @@ import type {
   ClipTransform,
   ColorAdjust,
   CropRect,
+  EasingKind,
   FilterPreset,
   HslBandAdjust,
   HslBandKey,
@@ -20,6 +21,8 @@ import {
   DEFAULT_RETOUCH,
   DEFAULT_STABILIZE,
   DEFAULT_TRANSITION_MS,
+  EASING_KINDS,
+  EASING_LABELS,
   FILTER_PRESETS,
   FILM_TONE_IDS,
   MIN_FILM_LOOK,
@@ -68,6 +71,7 @@ import {
   MIN_TRANSITION_MS,
   NEUTRAL_CLIP_HSL,
   NEUTRAL_COLOR_ADJUST,
+  TRANSITION_CATEGORIES,
   TRANSITION_KINDS
 } from '../../../shared/project'
 import {
@@ -1210,6 +1214,52 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                   {keyframeCount}
                 </span>
               </div>
+              {/* Phase 3.54 — outgoing easing selector. Active when the
+                  playhead is on a keyframe; the curve shapes interpolation
+                  FROM that kf TO the next one. The last kf's easing is
+                  ignored (no outgoing segment). */}
+              {hasTransformKeyframes(clip) && (
+                <div
+                  style={{ ...styles.row, marginTop: 8 }}
+                  data-testid="effects-keyframe-easing-row"
+                >
+                  <span style={styles.ctrlLabel}>이징</span>
+                  <select
+                    value={
+                      (isMediaClip(clip) || isOverlayClip(clip)) &&
+                      isOnKeyframe &&
+                      keyframeIndex >= 0
+                        ? ((
+                            clip.transformKeyframes as
+                              | { easing?: EasingKind }[]
+                              | undefined
+                          )?.[keyframeIndex]?.easing as EasingKind) ?? 'linear'
+                        : 'linear'
+                    }
+                    onChange={(e) => {
+                      if (!isOnKeyframe || keyframeIndex < 0) return
+                      const v = e.target.value as EasingKind
+                      updateTransformKeyframe(clip.id, keyframeIndex, {
+                        easing: v === 'linear' ? null : v
+                      })
+                    }}
+                    disabled={!isOnKeyframe}
+                    style={{
+                      ...styles.numInput,
+                      width: 140,
+                      opacity: isOnKeyframe ? 1 : 0.5
+                    }}
+                    data-testid="effects-keyframe-easing-select"
+                    aria-label="현재 키프레임의 이징"
+                  >
+                    {EASING_KINDS.map((k) => (
+                      <option key={k} value={k}>
+                        {EASING_LABELS[k]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <p style={{ ...styles.hint, marginTop: 8 }}>
                 재생헤드를 옮긴 뒤 변형 탭의 슬라이더를 조정하면 그 지점에
                 키프레임이 생겨 자연스럽게 보간돼요.
@@ -1873,25 +1923,68 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
             testId="effects-section-transition"
             defaultOpen
           >
-            <div style={styles.presetRow}>
-              {TRANSITION_KINDS.map((k) => {
-                const active = transitionKind === k
-                return (
-                  <button
-                    key={k}
-                    type="button"
-                    style={{
-                      ...styles.preset,
-                      ...(active ? styles.presetActive : {})
-                    }}
-                    data-testid={`effects-transition-preset-${k}`}
-                    onClick={() => setClipTransitionIn(clip.id, k, transitionMs)}
-                  >
-                    {TRANSITION_LABELS[k] ?? k}
-                  </button>
-                )
-              })}
+            {/* Reset chip — 'none' lives above the grid for visual hierarchy. */}
+            <div style={{ marginBottom: 8 }}>
+              <button
+                type="button"
+                style={{
+                  ...styles.preset,
+                  ...(transitionKind === 'none' ? styles.presetActive : {})
+                }}
+                data-testid="effects-transition-preset-none"
+                onClick={() =>
+                  setClipTransitionIn(clip.id, 'none', transitionMs)
+                }
+              >
+                {TRANSITION_LABELS['none'] ?? 'none'}
+              </button>
             </div>
+            {/* Categorized grid — one section per category in TRANSITION_CATEGORIES order. */}
+            {TRANSITION_CATEGORIES.map((cat) => (
+              <div
+                key={cat.id}
+                style={{ marginBottom: 10 }}
+                data-testid={`effects-transition-category-${cat.id}`}
+              >
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: '#94a3b8',
+                    marginBottom: 4,
+                    fontWeight: 600
+                  }}
+                >
+                  {cat.title}
+                </div>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(96px, 1fr))',
+                    gap: 4
+                  }}
+                >
+                  {cat.kinds.map((k) => {
+                    const active = transitionKind === k
+                    return (
+                      <button
+                        key={k}
+                        type="button"
+                        style={{
+                          ...styles.preset,
+                          ...(active ? styles.presetActive : {})
+                        }}
+                        data-testid={`effects-transition-preset-${k}`}
+                        onClick={() =>
+                          setClipTransitionIn(clip.id, k, transitionMs)
+                        }
+                      >
+                        {TRANSITION_LABELS[k] ?? k}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
             <div style={{ height: 8 }} />
             <div style={styles.row}>
               <span style={styles.ctrlLabel}>길이</span>

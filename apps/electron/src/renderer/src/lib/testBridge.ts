@@ -22,8 +22,16 @@ import { useTrackingStore } from '../store/tracking'
 import { emailToUserIdLabel, idToEmail } from '../store/auth'
 import { getPreviewAudioGraph } from './audioGraph'
 import {
+  analyzeRgbParade,
+  analyzeVectorscope,
+  analyzeWaveform
+} from './colorScopes'
+import { detectOnsets } from './onsetDetection'
+import { markersToChapters } from './markerExport'
+import {
   analyzeImageData,
   averageFrameStats,
+  averageFrameStatsTrimmed,
   statsToColorAdjust,
   statsToColorMatch,
   neutralFrameStats,
@@ -36,6 +44,7 @@ import {
 } from '../../../shared/autoColor'
 import { AUTO_COLOR_MAX_MAGNITUDE } from '../../../shared/project'
 import { ZOOM_PRESETS, buildZoomKeyframes } from '../../../shared/zoomPresets'
+import { computeReframeTransform } from './autoReframe'
 import {
   captionsToSrt,
   captionsToVtt,
@@ -66,6 +75,20 @@ export function installTestBridge(): void {
         setClipLocked: Store['setClipLocked']
         setTrackMuted: Store['setTrackMuted']
         setTrackSolo: Store['setTrackSolo']
+        setTrackDucking: Store['setTrackDucking']
+        // Phase 3.57 — advanced trim modes.
+        rippleTrim: Store['rippleTrim']
+        rollingTrim: Store['rollingTrim']
+        slipClip: Store['slipClip']
+        slideClip: Store['slideClip']
+        // Phase 3.60 — scene-cut split.
+        splitClipAtMany: Store['splitClipAtMany']
+        // Phase 3.61 — compound clip / group batch apply.
+        applyToGroup: Store['applyToGroup']
+        // Phase 3.74 — clip color label.
+        setClipColor: Store['setClipColor']
+        // Phase 3.75 — per-clip LUT (.cube) path.
+        setClipLutPath: Store['setClipLutPath']
         removeSilencesFromClip: Store['removeSilencesFromClip']
         updateMediaWaveform: Store['updateMediaWaveform']
         setClipTransitionIn: Store['setClipTransitionIn']
@@ -78,6 +101,8 @@ export function installTestBridge(): void {
         clearTransformKeyframes: Store['clearTransformKeyframes']
         // Phase 3.31 — auto-zoom / punch-in preset action.
         applyZoomPreset: Store['applyZoomPreset']
+        // Phase 3.52 — auto-reframe bulk-replace action.
+        applyAutoReframeKeyframes: Store['applyAutoReframeKeyframes']
         addSpeedKeyframe: Store['addSpeedKeyframe']
         updateSpeedKeyframe: Store['updateSpeedKeyframe']
         removeSpeedKeyframe: Store['removeSpeedKeyframe']
@@ -193,6 +218,24 @@ export function installTestBridge(): void {
         useProjectStore.getState().setTrackMuted(tid, muted),
       setTrackSolo: (tid, solo) =>
         useProjectStore.getState().setTrackSolo(tid, solo),
+      setTrackDucking: (tid, target, db) =>
+        useProjectStore.getState().setTrackDucking(tid, target, db),
+      rippleTrim: (id, side, delta) =>
+        useProjectStore.getState().rippleTrim(id, side, delta),
+      rollingTrim: (id, side, delta) =>
+        useProjectStore.getState().rollingTrim(id, side, delta),
+      slipClip: (id, delta) =>
+        useProjectStore.getState().slipClip(id, delta),
+      slideClip: (id, delta) =>
+        useProjectStore.getState().slideClip(id, delta),
+      splitClipAtMany: (id, atMsList) =>
+        useProjectStore.getState().splitClipAtMany(id, atMsList),
+      applyToGroup: (groupId, patch) =>
+        useProjectStore.getState().applyToGroup(groupId, patch),
+      setClipColor: (id, color) =>
+        useProjectStore.getState().setClipColor(id, color),
+      setClipLutPath: (id, path) =>
+        useProjectStore.getState().setClipLutPath(id, path),
       removeSilencesFromClip: (id, ranges) =>
         useProjectStore.getState().removeSilencesFromClip(id, ranges),
       updateMediaWaveform: (mid, p) =>
@@ -217,6 +260,8 @@ export function installTestBridge(): void {
         useProjectStore.getState().clearTransformKeyframes(id),
       applyZoomPreset: (id, presetId) =>
         useProjectStore.getState().applyZoomPreset(id, presetId),
+      applyAutoReframeKeyframes: (id, kfs) =>
+        useProjectStore.getState().applyAutoReframeKeyframes(id, kfs),
       addSpeedKeyframe: (id, atMs, speed) =>
         useProjectStore.getState().addSpeedKeyframe(id, atMs, speed),
       updateSpeedKeyframe: (id, kfIndex, partial) =>
@@ -637,6 +682,8 @@ export function installTestBridge(): void {
         /** Live AudioParam.value snapshot (for ramp-progress probing). */
         liveTrackGains: () => Record<string, number>
         resume: () => Promise<void>
+        /** Phase 3.58 — instantaneous master meter (dBFS). */
+        masterLevels: () => { peak: number; rms: number }
       }
     }).__previewAudioGraph = {
       getState: () => getPreviewAudioGraph().getState(),
@@ -644,7 +691,8 @@ export function installTestBridge(): void {
       sourceCount: () => getPreviewAudioGraph().readSourceCount(),
       trackGains: () => getPreviewAudioGraph().readTrackGains(),
       liveTrackGains: () => getPreviewAudioGraph().readLiveTrackGains(),
-      resume: () => getPreviewAudioGraph().resume()
+      resume: () => getPreviewAudioGraph().resume(),
+      masterLevels: () => getPreviewAudioGraph().getMasterLevels()
     }
 
     // Phase 3.15 — expose pure autoColor functions + tuning constants so
@@ -654,6 +702,7 @@ export function installTestBridge(): void {
       __reelsAutoColor: {
         analyzeImageData: typeof analyzeImageData
         averageFrameStats: typeof averageFrameStats
+        averageFrameStatsTrimmed: typeof averageFrameStatsTrimmed
         statsToColorAdjust: typeof statsToColorAdjust
         statsToColorMatch: typeof statsToColorMatch
         neutralFrameStats: typeof neutralFrameStats
@@ -668,6 +717,7 @@ export function installTestBridge(): void {
     }).__reelsAutoColor = {
       analyzeImageData,
       averageFrameStats,
+      averageFrameStatsTrimmed,
       statsToColorAdjust,
       statsToColorMatch,
       neutralFrameStats,
@@ -680,6 +730,29 @@ export function installTestBridge(): void {
       AUTO_COLOR_MAX_MAGNITUDE
     }
 
+    // Phase 3.59 — expose pure color-scope analyzers for layer-A e2e.
+    ;(window as unknown as {
+      __reelsColorScopes: {
+        analyzeWaveform: typeof analyzeWaveform
+        analyzeRgbParade: typeof analyzeRgbParade
+        analyzeVectorscope: typeof analyzeVectorscope
+      }
+    }).__reelsColorScopes = {
+      analyzeWaveform,
+      analyzeRgbParade,
+      analyzeVectorscope
+    }
+
+    // Phase 3.71 — expose pure onset detector for layer-A e2e.
+    ;(window as unknown as {
+      __reelsOnsetDetection: { detectOnsets: typeof detectOnsets }
+    }).__reelsOnsetDetection = { detectOnsets }
+
+    // Phase 3.73 — expose pure marker→chapter formatter for layer-A e2e.
+    ;(window as unknown as {
+      __reelsMarkerExport: { markersToChapters: typeof markersToChapters }
+    }).__reelsMarkerExport = { markersToChapters }
+
     // Phase 3.31 — expose the pure zoom-preset helpers so e2e can build the
     // expected RELATIVE keyframes deterministically (no DOM) via page.evaluate.
     ;(window as unknown as {
@@ -690,6 +763,16 @@ export function installTestBridge(): void {
     }).__reelsZoomPresets = {
       ZOOM_PRESETS,
       buildZoomKeyframes
+    }
+
+    // Phase 3.52 — expose the pure auto-reframe math so layer-A e2e can call
+    // it deterministically (no DOM, no model) via page.evaluate.
+    ;(window as unknown as {
+      __reelsAutoReframeMath: {
+        computeReframeTransform: typeof computeReframeTransform
+      }
+    }).__reelsAutoReframeMath = {
+      computeReframeTransform
     }
 
     // Phase 3.34 — expose the pure subtitle-export builders so e2e can build

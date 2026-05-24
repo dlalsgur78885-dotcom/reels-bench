@@ -32,6 +32,7 @@ import { spawn } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
+import { openExportMenu } from '../helpers/topbar'
 
 // ---------------------------------------------------------------------------
 // Preset metadata (mirrored from exportPresets.ts)
@@ -612,6 +613,7 @@ test.describe('@phase-3-28-gif-export animated GIF export', () => {
 
     await openEditor(launched)
 
+    await openExportMenu(page)
     await page.locator('[data-testid="open-batch-export-dialog"]').click()
     const dialog = page.locator('[data-testid="batch-export-dialog"]')
     await expect(dialog).toBeVisible({ timeout: 5_000 })

@@ -848,6 +848,18 @@ test.describe('@phase-3-36-overlay-shadow overlay drop shadow', () => {
       const shadowSection = page.locator('[data-testid="effects-section-overlay-shadow"]')
       await expect(shadowSection).toBeVisible({ timeout: 3_000 })
 
+      // Phase 3.47 accordion — overlay-shadow section is collapsed by default.
+      const shadowToggleSection = page.locator(
+        '[data-testid="section-toggle-overlay-shadow"]'
+      )
+      if ((await shadowToggleSection.count()) > 0) {
+        const expanded = await shadowToggleSection.getAttribute('aria-expanded')
+        if (expanded !== 'true') {
+          await shadowToggleSection.click()
+          await page.waitForTimeout(120)
+        }
+      }
+
       // Toggle must be unchecked initially (no shadow on clip).
       const effectsToggle = page.locator('[data-testid="effects-overlay-shadow-toggle"]')
       await expect(effectsToggle).toBeVisible()

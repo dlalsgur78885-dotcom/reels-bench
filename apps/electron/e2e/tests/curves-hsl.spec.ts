@@ -742,6 +742,16 @@ test.describe('@phase-3-12-curves-hsl tone curves + HSL secondary grading', () =
     const curvesSection = page.locator('[data-testid="effects-section-curves"]')
     await expect(curvesSection).toBeVisible({ timeout: 5_000 })
 
+    // Phase 3.47 accordion — curves section is collapsed by default.
+    const curvesToggle = page.locator('[data-testid="section-toggle-curves"]')
+    if ((await curvesToggle.count()) > 0) {
+      const expanded = await curvesToggle.getAttribute('aria-expanded')
+      if (expanded !== 'true') {
+        await curvesToggle.click()
+        await page.waitForTimeout(120)
+      }
+    }
+
     // The CurveEditor itself should be present.
     const curveEditor = page.locator('[data-testid="curve-editor"]')
     await expect(curveEditor).toBeVisible({ timeout: 5_000 })
@@ -791,6 +801,15 @@ test.describe('@phase-3-12-curves-hsl tone curves + HSL secondary grading', () =
     expect(countAfterReset).toBeGreaterThanOrEqual(2)
 
     // ---- HSL panel ----
+    // Phase 3.47 accordion — HSL section is collapsed by default.
+    const hslToggle = page.locator('[data-testid="section-toggle-hsl"]')
+    if ((await hslToggle.count()) > 0) {
+      const expanded = await hslToggle.getAttribute('aria-expanded')
+      if (expanded !== 'true') {
+        await hslToggle.click()
+        await page.waitForTimeout(120)
+      }
+    }
     const hslPanel = page.locator('[data-testid="hsl-panel"]')
     await expect(hslPanel).toBeVisible({ timeout: 5_000 })
 

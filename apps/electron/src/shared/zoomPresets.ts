@@ -20,6 +20,16 @@ export type ZoomPresetId =
   | 'zoom-out'
   | 'ken-burns'
   | 'zoom-pulse'
+  // Phase 3.66 — second batch.
+  | 'pan-left-to-right'
+  | 'pan-right-to-left'
+  | 'pan-up-to-down'
+  | 'pan-down-to-up'
+  | 'snap-zoom'
+  | 'breathing'
+  | 'zoom-in-tl'
+  | 'zoom-in-br'
+  | 'double-pulse'
 
 /** One keyframe of a preset recipe — RELATIVE deltas, not absolute transforms. */
 export interface ZoomKeyframeSpec {
@@ -96,6 +106,94 @@ export const ZOOM_PRESETS: readonly ZoomPreset[] = [
     specs: [
       { atFrac: 0, scaleFactor: 1.0, xOffset: 0, yOffset: 0 },
       { atFrac: 0.5, scaleFactor: 1.08, xOffset: 0, yOffset: 0 },
+      { atFrac: 1, scaleFactor: 1.0, xOffset: 0, yOffset: 0 }
+    ]
+  },
+  // Phase 3.66 — second batch.
+  {
+    id: 'pan-left-to-right',
+    label: '왼쪽→오른쪽 패닝',
+    description: '약간 확대된 상태에서 좌에서 우로 이동',
+    specs: [
+      { atFrac: 0, scaleFactor: 1.15, xOffset: 0.08, yOffset: 0 },
+      { atFrac: 1, scaleFactor: 1.15, xOffset: -0.08, yOffset: 0 }
+    ]
+  },
+  {
+    id: 'pan-right-to-left',
+    label: '오른쪽→왼쪽 패닝',
+    description: '우에서 좌로 이동',
+    specs: [
+      { atFrac: 0, scaleFactor: 1.15, xOffset: -0.08, yOffset: 0 },
+      { atFrac: 1, scaleFactor: 1.15, xOffset: 0.08, yOffset: 0 }
+    ]
+  },
+  {
+    id: 'pan-up-to-down',
+    label: '위→아래 패닝',
+    description: '상에서 하로 이동',
+    specs: [
+      { atFrac: 0, scaleFactor: 1.15, xOffset: 0, yOffset: 0.06 },
+      { atFrac: 1, scaleFactor: 1.15, xOffset: 0, yOffset: -0.06 }
+    ]
+  },
+  {
+    id: 'pan-down-to-up',
+    label: '아래→위 패닝',
+    description: '하에서 상으로 이동',
+    specs: [
+      { atFrac: 0, scaleFactor: 1.15, xOffset: 0, yOffset: -0.06 },
+      { atFrac: 1, scaleFactor: 1.15, xOffset: 0, yOffset: 0.06 }
+    ]
+  },
+  {
+    id: 'snap-zoom',
+    label: '스냅 줌',
+    description: '거의 끝까지 유지 → 마지막 순간 크게 확대',
+    specs: [
+      { atFrac: 0, scaleFactor: 1.0, xOffset: 0, yOffset: 0 },
+      { atFrac: 0.92, scaleFactor: 1.0, xOffset: 0, yOffset: 0 },
+      { atFrac: 1, scaleFactor: 1.3, xOffset: 0, yOffset: 0 }
+    ]
+  },
+  {
+    id: 'breathing',
+    label: '호흡감',
+    description: '미세하게 확대-축소를 반복하는 무드 줌',
+    specs: [
+      { atFrac: 0, scaleFactor: 1.0, xOffset: 0, yOffset: 0 },
+      { atFrac: 0.33, scaleFactor: 1.05, xOffset: 0, yOffset: 0 },
+      { atFrac: 0.66, scaleFactor: 1.0, xOffset: 0, yOffset: 0 },
+      { atFrac: 1, scaleFactor: 1.05, xOffset: 0, yOffset: 0 }
+    ]
+  },
+  {
+    id: 'zoom-in-tl',
+    label: '좌상단 줌인',
+    description: '좌상단 코너로 시선 이동하며 확대',
+    specs: [
+      { atFrac: 0, scaleFactor: 1.0, xOffset: 0, yOffset: 0 },
+      { atFrac: 1, scaleFactor: 1.25, xOffset: 0.1, yOffset: 0.08 }
+    ]
+  },
+  {
+    id: 'zoom-in-br',
+    label: '우하단 줌인',
+    description: '우하단 코너로 시선 이동하며 확대',
+    specs: [
+      { atFrac: 0, scaleFactor: 1.0, xOffset: 0, yOffset: 0 },
+      { atFrac: 1, scaleFactor: 1.25, xOffset: -0.1, yOffset: -0.08 }
+    ]
+  },
+  {
+    id: 'double-pulse',
+    label: '더블 펄스',
+    description: '두 번 튕기듯 확대했다 복귀',
+    specs: [
+      { atFrac: 0, scaleFactor: 1.0, xOffset: 0, yOffset: 0 },
+      { atFrac: 0.3, scaleFactor: 1.1, xOffset: 0, yOffset: 0 },
+      { atFrac: 0.5, scaleFactor: 1.0, xOffset: 0, yOffset: 0 },
+      { atFrac: 0.7, scaleFactor: 1.1, xOffset: 0, yOffset: 0 },
       { atFrac: 1, scaleFactor: 1.0, xOffset: 0, yOffset: 0 }
     ]
   }

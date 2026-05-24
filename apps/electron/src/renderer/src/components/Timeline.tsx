@@ -672,6 +672,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const updateSpeedKeyframe = useProjectStore((s) => s.updateSpeedKeyframe)
   const removeSpeedKeyframe = useProjectStore((s) => s.removeSpeedKeyframe)
   const clearSpeedKeyframes = useProjectStore((s) => s.clearSpeedKeyframes)
+  const setClipFade = useProjectStore((s) => s.setClipFade)
   const addVolumeKeyframe = useProjectStore((s) => s.addVolumeKeyframe)
   const updateVolumeKeyframe = useProjectStore((s) => s.updateVolumeKeyframe)
   const removeVolumeKeyframe = useProjectStore((s) => s.removeVolumeKeyframe)
@@ -2344,6 +2345,85 @@ export function Timeline(props: TimelineProps): JSX.Element {
                           onTrimHandleMouseDown(e, clip, track, 'left')
                         }
                       />
+                    )}
+                    {/* Phase 3.84 — fade handles. Two small 8px markers
+                        positioned at the current fade-in/out endpoint in px.
+                        Drag horizontally to set fadeInMs / fadeOutMs in real
+                        time. Media clips only (overlays / captions have no
+                        audio fade). */}
+                    {isMediaClip(clip) && (
+                      <>
+                        {(() => {
+                          const fadeIn = clip.fadeInMs ?? 0
+                          const fadeOut = clip.fadeOutMs ?? 0
+                          const clipDur = Math.max(1, clip.endMs - clip.startMs)
+                          const inPx = (fadeIn / clipDur) * w
+                          const outPx = (fadeOut / clipDur) * w
+                          const onFadeDown = (
+                            e: React.MouseEvent<HTMLDivElement>,
+                            side: 'in' | 'out'
+                          ): void => {
+                            e.stopPropagation()
+                            e.preventDefault()
+                            if (isClipLocked(clip)) return
+                            const startX = e.clientX
+                            const startFade = side === 'in' ? fadeIn : fadeOut
+                            const maxFade = clipDur
+                            const onMove = (ev: MouseEvent): void => {
+                              const dx = ev.clientX - startX
+                              const sign = side === 'in' ? 1 : -1
+                              const deltaMs = (dx / pps) * 1000 * sign
+                              const next = Math.max(
+                                0,
+                                Math.min(maxFade, Math.round(startFade + deltaMs))
+                              )
+                              if (side === 'in') {
+                                setClipFade(clip.id, next, fadeOut)
+                              } else {
+                                setClipFade(clip.id, fadeIn, next)
+                              }
+                            }
+                            const onUp = (): void => {
+                              window.removeEventListener('mousemove', onMove)
+                              window.removeEventListener('mouseup', onUp)
+                            }
+                            window.addEventListener('mousemove', onMove)
+                            window.addEventListener('mouseup', onUp)
+                          }
+                          const handleStyle = (left: number): React.CSSProperties => ({
+                            position: 'absolute',
+                            top: 2,
+                            left,
+                            width: 8,
+                            height: 8,
+                            borderRadius: '50%',
+                            background: '#fde047',
+                            border: '1px solid #161616',
+                            cursor: 'ew-resize',
+                            zIndex: 4
+                          })
+                          return (
+                            <>
+                              <div
+                                style={handleStyle(HANDLE_PX + inPx - 4)}
+                                onMouseDown={(e) => onFadeDown(e, 'in')}
+                                data-testid="fade-handle-left"
+                                data-clip-id={clip.id}
+                                data-fade-ms={fadeIn}
+                                title={`페이드 인: ${fadeIn}ms`}
+                              />
+                              <div
+                                style={handleStyle(w - HANDLE_PX - outPx - 4)}
+                                onMouseDown={(e) => onFadeDown(e, 'out')}
+                                data-testid="fade-handle-right"
+                                data-clip-id={clip.id}
+                                data-fade-ms={fadeOut}
+                                title={`페이드 아웃: ${fadeOut}ms`}
+                              />
+                            </>
+                          )
+                        })()}
+                      </>
                     )}
                     <div
                       style={{

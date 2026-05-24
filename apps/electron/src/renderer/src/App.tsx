@@ -293,6 +293,65 @@ export default function App(): JSX.Element {
   const handleScript = (): void => console.log('[App] Script clicked')
   const handleEditor = (): void => setView('editor')
 
+  // Phase 3.87 — human-friendly relative time formatter.
+  const formatRelativeTime = (ms: number): string => {
+    const now = Date.now()
+    const dt = Math.max(0, now - ms)
+    const sec = Math.floor(dt / 1000)
+    if (sec < 60) return '방금 전'
+    const min = Math.floor(sec / 60)
+    if (min < 60) return `${min}분 전`
+    const hr = Math.floor(min / 60)
+    if (hr < 24) return `${hr}시간 전`
+    const day = Math.floor(hr / 24)
+    if (day < 7) return `${day}일 전`
+    return new Date(ms).toLocaleDateString('ko-KR')
+  }
+
+  // Phase 3.87 — current-project info card. The Electron shell uses a
+  // single persisted store (userData/project.json), so "recent projects"
+  // collapses to "the one project you're working on". Surfacing its name +
+  // clip count + last-modified relative-time on Home is a meaningful UX
+  // step short of building a multi-project file manager.
+  const [projectSnapshot, setProjectSnapshot] = useState<{
+    name: string
+    aspectRatio: string
+    clipCount: number
+    captionCount: number
+    updatedAt: number
+  } | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    void import('./store/project').then(({ useProjectStore }) => {
+      const read = (): void => {
+        if (cancelled) return
+        const p = useProjectStore.getState().project
+        if (!p) return
+        let clipCount = 0
+        let captionCount = 0
+        for (const t of p.tracks) {
+          for (const c of t.clips) {
+            if (c.kind === 'caption') captionCount += 1
+            else clipCount += 1
+          }
+        }
+        setProjectSnapshot({
+          name: p.name || '제목 없음',
+          aspectRatio: p.aspectRatio,
+          clipCount,
+          captionCount,
+          updatedAt: p.updatedAt
+        })
+      }
+      read()
+      const unsub = useProjectStore.subscribe(read)
+      return () => unsub()
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   // Phase 3.88 — preset-start. Resets the project to a blank canvas at the
   // platform's native aspect ratio, then routes into the editor. The same
   // store action the editor uses for the 비율 dropdown — single source of
@@ -363,6 +422,44 @@ export default function App(): JSX.Element {
           Editor
         </button>
       </div>
+      {/* Phase 3.87 — current project info card. */}
+      {projectSnapshot && (
+        <div
+          style={{
+            marginTop: 12,
+            padding: 12,
+            background: '#1a1a1a',
+            border: '1px solid #2a2a2a',
+            borderRadius: 8,
+            color: '#cbd5e1',
+            fontSize: 13,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            maxWidth: 520
+          }}
+          data-testid="current-project-card"
+        >
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>
+              📁 {projectSnapshot.name}
+            </div>
+            <div style={{ fontSize: 11, color: '#94a3b8' }}>
+              {projectSnapshot.aspectRatio} · 클립 {projectSnapshot.clipCount}개
+              · 자막 {projectSnapshot.captionCount}개 · 수정{' '}
+              {formatRelativeTime(projectSnapshot.updatedAt)}
+            </div>
+          </div>
+          <button
+            type="button"
+            style={{ ...btn, padding: '6px 14px', fontSize: 12 }}
+            onClick={handleEditor}
+            data-testid="continue-current-project"
+          >
+            Editor로 계속 →
+          </button>
+        </div>
+      )}
       {/* Phase 3.88 — preset starts (Reels 9:16 / Shorts 9:16 / Square 1:1 /
           Long-form 16:9). One click resets the project to that aspect ratio
           and routes into the editor. */}

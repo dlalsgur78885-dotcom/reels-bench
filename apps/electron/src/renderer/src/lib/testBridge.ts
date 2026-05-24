@@ -28,6 +28,7 @@ import {
 } from './colorScopes'
 import { detectOnsets } from './onsetDetection'
 import { markersToChapters } from './markerExport'
+import { silenceToBgmKeyframes } from './autoBgmFade'
 import {
   analyzeImageData,
   averageFrameStats,
@@ -752,6 +753,13 @@ export function installTestBridge(): void {
     ;(window as unknown as {
       __reelsMarkerExport: { markersToChapters: typeof markersToChapters }
     }).__reelsMarkerExport = { markersToChapters }
+
+    // Phase 3.85 — expose pure silence→BGM-keyframes helper for layer-A e2e.
+    ;(window as unknown as {
+      __reelsAutoBgmFade: {
+        silenceToBgmKeyframes: typeof silenceToBgmKeyframes
+      }
+    }).__reelsAutoBgmFade = { silenceToBgmKeyframes }
 
     // Phase 3.31 — expose the pure zoom-preset helpers so e2e can build the
     // expected RELATIVE keyframes deterministically (no DOM) via page.evaluate.

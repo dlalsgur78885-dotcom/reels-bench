@@ -3620,11 +3620,17 @@ function stitchCaptions(
 
       // --- POP: zoompan from CAPTION_POP_START_SCALE → 1 over entrance window,
       //          centred on the PNG's own midpoint (PNG is full-canvas). ---
+      // NOTE: zoompan's `z=` expression does NOT accept the `t` time variable —
+      // only `in`, `on`, `pdur`, `px`, `py`, `pzoom`. Older docs hinted at
+      // `time` but that's not in our bundled ffmpeg. We derive time from the
+      // output frame counter `on` and the preset fps. Since the caption PNG is
+      // looped from input time 0, `on/fps` equals absolute timeline seconds.
       if (entrance === 'pop' && inSec > 1e-4) {
         const entranceEnd = (startSec + inSec).toFixed(4)
+        const timeVar = `(on/${preset.fps})`
         const scaleExpr =
-          `if(lt(t,${entranceEnd}),` +
-          `${CAPTION_POP_START_SCALE.toFixed(4)}+(1-${CAPTION_POP_START_SCALE.toFixed(4)})*(t-${startSec.toFixed(4)})/${inSec.toFixed(4)},` +
+          `if(lt(${timeVar},${entranceEnd}),` +
+          `${CAPTION_POP_START_SCALE.toFixed(4)}+(1-${CAPTION_POP_START_SCALE.toFixed(4)})*(${timeVar}-${startSec.toFixed(4)})/${inSec.toFixed(4)},` +
           `1)`
         chainParts.push(
           `zoompan=z='${scaleExpr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=${preset.fps}`

@@ -423,7 +423,19 @@ export async function runFfmpegJob(spec: FfmpegRunSpec): Promise<JobResult> {
         } catch {
           // ignore
         }
-        const tail = stderrLog.split(/\r?\n/).slice(-8).join('\n')
+        // Keep more context — `-progress pipe:2` floods stderr with progress
+        // lines that crowd out the actual ffmpeg error. Strip pure progress
+        // lines so the tail surfaces real diagnostic output.
+        const allLines = stderrLog.split(/\r?\n/)
+        const realLines = allLines.filter(
+          (ln) =>
+            !/^(frame|fps|stream_|bitrate|total_size|out_time|dup_frames|drop_frames|speed|progress)=/.test(
+              ln
+            )
+        )
+        const tail = (realLines.length > 0 ? realLines : allLines)
+          .slice(-30)
+          .join('\n')
         const reason = signal ? `signal ${signal}` : `exit code ${code}`
         emitProgress({
           jobId: spec.jobId,

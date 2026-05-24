@@ -493,6 +493,9 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   // truth.
   const playheadMs = useTimelineUi((s) => s.playheadMs)
   const setPlayheadMs = useTimelineUi((s) => s.setPlayheadMs)
+  // Phase 3.81 — preview playback speed.
+  const previewSpeed = useTimelineUi((s) => s.previewSpeed)
+  const setPreviewSpeed = useTimelineUi((s) => s.setPreviewSpeed)
 
   // Auto-pause playback when the editor unmounts (e.g., user clicks ← 홈).
   // Without this, `playing` stays true in the store, the rAF loop keeps
@@ -503,6 +506,22 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
       useTimelineUi.getState().setPlaying(false)
     }
   }, [])
+
+  // Phase 3.81 — propagate previewSpeed to every <video>/<audio> element on
+  // the page. Pure UI accelerator — doesn't touch the project or export.
+  useEffect(() => {
+    const apply = (): void => {
+      const els = document.querySelectorAll<HTMLMediaElement>('video, audio')
+      els.forEach((el) => {
+        if (el.playbackRate !== previewSpeed) el.playbackRate = previewSpeed
+      })
+    }
+    apply()
+    // Re-apply briefly later — media elements that mount after this tick
+    // (PreviewCanvas re-renders on clip change) miss the immediate set.
+    const t = window.setTimeout(apply, 250)
+    return () => window.clearTimeout(t)
+  }, [previewSpeed])
 
   // Phase 3.72 — fullscreen preview. `F` key toggles the preview wrapper
   // into the browser's fullscreen mode; Esc / F again exits. The wrapper
@@ -538,10 +557,30 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         e.preventDefault()
         togglePreviewFullscreen()
       }
+      // Phase 3.80 — frame-step preview. `,` (or `<`) moves the playhead
+      // one frame BACK; `.` (or `>`) moves it one frame FORWARD. Step is
+      // derived from the project's framerate (defaults 30fps).
+      if (
+        (e.key === ',' || e.key === '<' || e.key === '.' || e.key === '>') &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey
+      ) {
+        e.preventDefault()
+        const fps =
+          (project as { fps?: number }).fps && (project as { fps?: number }).fps! > 0
+            ? (project as { fps?: number }).fps!
+            : 30
+        const frameMs = 1000 / fps
+        const back = e.key === ',' || e.key === '<'
+        const cur = useTimelineUi.getState().playheadMs
+        const next = Math.max(0, Math.round(cur + (back ? -frameMs : frameMs)))
+        useTimelineUi.getState().setPlayheadMs(next)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [togglePreviewFullscreen])
+  }, [togglePreviewFullscreen, project])
 
   // Local mirror so the input feels responsive; flush to store on blur/enter.
   const [draftName, setDraftName] = useState(project.name)
@@ -715,6 +754,27 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
       setEditingCaptionId(id)
     }
   }, [playheadMs])
+
+  // Phase 3.82 — preset position add. Inserts a caption then patches its
+  // `style.yPosition` to a fixed value (top / center / bottom). 0 = canvas
+  // top, 1 = canvas bottom; we use 0.15 / 0.5 / 0.85 to avoid hugging the
+  // edges.
+  const handleAddCaptionAt = useCallback(
+    (yPos: number): void => {
+      const id = insertCaptionAtPlayhead(playheadMs)
+      if (!id) return
+      // Style merge is shallow in `updateCaption` — only yPosition is
+      // touched, every other style field on the inserted caption survives.
+      useProjectStore
+        .getState()
+        .updateCaption(id, {
+          style: { yPosition: yPos } as unknown as never
+        })
+      setSelectedClipId(id)
+      setEditingCaptionId(id)
+    },
+    [playheadMs]
+  )
 
   // Phase 3.24 — apply a text template. Inserts a plain caption clip, then
   // selects it + opens CaptionEditor (mirrors handleAddCaption) so the user
@@ -1108,6 +1168,37 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           >
             + 자막 추가
           </button>
+          {/* Phase 3.82 — quick position-preset add buttons. */}
+          <div style={styles.menuGroupLabel}>위치 프리셋</div>
+          <div style={styles.menuRow}>
+            <button
+              type="button"
+              style={{ ...styles.secondaryBtn, flex: 1 }}
+              onClick={() => handleAddCaptionAt(0.15)}
+              data-testid="add-caption-top"
+              title="상단(15%) 위치에 자막 추가"
+            >
+              ↑ 상단
+            </button>
+            <button
+              type="button"
+              style={{ ...styles.secondaryBtn, flex: 1 }}
+              onClick={() => handleAddCaptionAt(0.5)}
+              data-testid="add-caption-center"
+              title="중앙(50%) 위치에 자막 추가"
+            >
+              ↔ 중앙
+            </button>
+            <button
+              type="button"
+              style={{ ...styles.secondaryBtn, flex: 1 }}
+              onClick={() => handleAddCaptionAt(0.85)}
+              data-testid="add-caption-bottom"
+              title="하단(85%) 위치에 자막 추가"
+            >
+              ↓ 하단
+            </button>
+          </div>
           <button
             style={styles.secondaryBtn}
             onClick={handleImportSrt}
@@ -1631,6 +1722,32 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
                 >
                   ⛶ 풀스크린
                 </button>
+                {/* Phase 3.81 — preview speed (UI-only playbackRate). */}
+                <select
+                  value={previewSpeed}
+                  onChange={(e) =>
+                    setPreviewSpeed(parseFloat(e.target.value) || 1)
+                  }
+                  data-testid="preview-speed-select"
+                  title="프리뷰 재생 속도"
+                  style={{
+                    background: '#0d0d0d',
+                    color: '#cbd5e1',
+                    border: '1px solid #2a2a2a',
+                    borderRadius: 4,
+                    padding: '2px 6px',
+                    fontSize: 10,
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  <option value="0.25">0.25×</option>
+                  <option value="0.5">0.5×</option>
+                  <option value="1">1×</option>
+                  <option value="1.5">1.5×</option>
+                  <option value="2">2×</option>
+                  <option value="4">4×</option>
+                </select>
               </div>
             </div>
             {srtError && (

@@ -89,6 +89,15 @@ export function Transport(): JSX.Element {
       const current = ui.playheadMs
       const next = current + dt
       const cap = getTotalDurationMs(useProjectStore.getState().project)
+      // Phase 3.83 — A/B loop: when set and the playhead crosses `end`,
+      // wrap back to `start` and keep playing. Tested BEFORE the cap-stop
+      // so a loop range placed at the very end still cycles.
+      const loop = ui.loopRangeMs
+      if (loop && next >= loop[1]) {
+        ui.setPlayheadMs(loop[0])
+        rafRef.current = requestAnimationFrame(tick)
+        return
+      }
       if (cap > 0 && next >= cap) {
         ui.setPlayheadMs(cap)
         ui.setPlaying(false)

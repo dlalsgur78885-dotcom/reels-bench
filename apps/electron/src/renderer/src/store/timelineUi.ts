@@ -46,6 +46,21 @@ export interface TimelineUiStore {
   setPlaying(playing: boolean): void
   /** Flip the playing flag. */
   togglePlaying(): void
+  /**
+   * Phase 3.81 — preview playback speed multiplier. Pure UI accelerator —
+   * does NOT alter the project / export. 0.5 / 1.0 / 2.0 are the common
+   * values; values outside [0.1, 8] are clamped.
+   */
+  previewSpeed: number
+  setPreviewSpeed(speed: number): void
+  /**
+   * Phase 3.83 — A/B loop range. When set, the transport rAF loop wraps
+   * the playhead back to `start` whenever it crosses `end` (inclusive).
+   * `null` disables looping. Both ends are clamped to [0, +∞] and ordered
+   * by the setter (start ≤ end).
+   */
+  loopRangeMs: [number, number] | null
+  setLoopRange(range: [number, number] | null): void
 
   // ----- Zoom (Phase 2.2) -----
   /** Pixels-per-second. Default 60. Clamped to [MIN_PPS, MAX_PPS]. */
@@ -156,6 +171,34 @@ export const useTimelineUi = create<TimelineUiStore>((set, get) => ({
   selectedAdjustmentLayerId: null,
   playheadMs: 0,
   playing: false,
+  previewSpeed: 1,
+  setPreviewSpeed(speed: number): void {
+    if (!Number.isFinite(speed)) return
+    const clamped = Math.max(0.1, Math.min(8, Number(speed)))
+    if (clamped !== get().previewSpeed) set({ previewSpeed: clamped })
+  },
+  loopRangeMs: null,
+  setLoopRange(range): void {
+    if (range === null) {
+      if (get().loopRangeMs !== null) set({ loopRangeMs: null })
+      return
+    }
+    if (
+      !Array.isArray(range) ||
+      range.length !== 2 ||
+      !Number.isFinite(range[0]) ||
+      !Number.isFinite(range[1])
+    ) {
+      return
+    }
+    let a = Math.max(0, Math.round(Number(range[0])))
+    let b = Math.max(0, Math.round(Number(range[1])))
+    if (a === b) return // zero-length loop is useless
+    if (a > b) [a, b] = [b, a]
+    const cur = get().loopRangeMs
+    if (cur && cur[0] === a && cur[1] === b) return
+    set({ loopRangeMs: [a, b] })
+  },
   pps: DEFAULT_PPS,
   beatSnapEnabled: false,
   beats: [],

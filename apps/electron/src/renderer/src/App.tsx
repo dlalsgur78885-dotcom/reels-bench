@@ -292,6 +292,21 @@ export default function App(): JSX.Element {
   const handleAnalysis = (): void => console.log('[App] Analysis clicked')
   const handleScript = (): void => console.log('[App] Script clicked')
   const handleEditor = (): void => setView('editor')
+
+  // Phase 3.88 — preset-start. Resets the project to a blank canvas at the
+  // platform's native aspect ratio, then routes into the editor. The same
+  // store action the editor uses for the 비율 dropdown — single source of
+  // truth, no schema duplication.
+  const handleStartWithPreset = (
+    ratio: '9:16' | '1:1' | '16:9' | '4:5'
+  ): void => {
+    void import('./store/project').then(({ useProjectStore }) => {
+      const store = useProjectStore.getState()
+      store.createNew()
+      store.setAspectRatio(ratio)
+      setView('editor')
+    })
+  }
   const handleSignOut = (): void => {
     void signOut().then(() => setView('home'))
   }
@@ -346,6 +361,38 @@ export default function App(): JSX.Element {
         </button>
         <button style={btn} onClick={handleEditor} data-testid="open-editor-button">
           Editor
+        </button>
+      </div>
+      {/* Phase 3.88 — preset starts (Reels 9:16 / Shorts 9:16 / Square 1:1 /
+          Long-form 16:9). One click resets the project to that aspect ratio
+          and routes into the editor. */}
+      <div style={{ ...btnRow, marginTop: 12, gap: 8 }}>
+        <button
+          type="button"
+          style={btn}
+          onClick={() => handleStartWithPreset('9:16')}
+          data-testid="start-preset-reels"
+          title="9:16 세로 — Reels / Shorts / TikTok"
+        >
+          📱 Reels / Shorts
+        </button>
+        <button
+          type="button"
+          style={btn}
+          onClick={() => handleStartWithPreset('1:1')}
+          data-testid="start-preset-square"
+          title="1:1 정사각 — Instagram Feed"
+        >
+          ⬛ 정사각 (피드)
+        </button>
+        <button
+          type="button"
+          style={btn}
+          onClick={() => handleStartWithPreset('16:9')}
+          data-testid="start-preset-longform"
+          title="16:9 가로 — YouTube / 가로 영상"
+        >
+          🎬 YouTube 가로
         </button>
       </div>
       {isDev && hasBridge && <FfmpegSmokeTest />}

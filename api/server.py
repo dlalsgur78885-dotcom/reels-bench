@@ -63,6 +63,10 @@ async def api_key_middleware(request, call_next):
     # 공개 endpoint
     if path in _PUBLIC_API_PATHS:
         return await call_next(request)
+    # 썸네일 프록시 — public (이미지 자체가 storage public 버킷에 있고,
+    # Vercel edge cache 적용 위해 인증·referer 검사 우회)
+    if path.startswith("/api/thumb-proxy/"):
+        return await call_next(request)
 
     # same-origin (자체 사이트 + Vercel 프리뷰) → skip
     if _is_our_origin(request.headers.get("origin", "")) or _is_our_origin(request.headers.get("referer", "")):
@@ -4011,6 +4015,42 @@ def get_dashboard():
 
 # ── Thumbnails (local disk) ──
 
+# 정규식: shortcode = 알파벳/숫자/언더바/하이픈만 (path traversal 차단)
+_SC_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+
+@app.get("/api/thumb-proxy/{shortcode}.webp")
+def thumb_proxy(shortcode: str):
+    """Vercel edge에서 캐시되는 썸네일 프록시.
+
+    Why: Supabase Storage(Sydney)의 cold cache가 한국에서 ~1초.
+    Vercel edge에 1년 캐시해두면 첫 사용자만 부담, 그 다음부터 30ms.
+
+    응답은 binary stream + s-maxage 헤더. Vercel CDN이 자동 캐시.
+    """
+    from fastapi.responses import Response
+    if not _SC_RE.match(shortcode):
+        raise HTTPException(400, "invalid shortcode")
+    if not thumb.exists_in_storage(shortcode):
+        raise HTTPException(404, "thumbnail not in storage")
+    try:
+        r = requests.get(thumb.storage_url(shortcode), timeout=15)
+    except Exception as e:
+        raise HTTPException(502, f"upstream fetch failed: {e}")
+    if r.status_code != 200 or not r.content:
+        raise HTTPException(502, f"upstream {r.status_code}")
+    return Response(
+        content=r.content,
+        media_type="image/webp",
+        headers={
+            # 브라우저 + Vercel/Cloudflare edge 둘 다 1년 immutable
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "CDN-Cache-Control": "public, max-age=31536000, immutable",
+            "Vercel-CDN-Cache-Control": "public, max-age=31536000, immutable",
+        },
+    )
+
+
 @app.get("/api/thumb/{shortcode}")
 def get_thumb(shortcode: str):
     """Storage 308 redirect만. CDN 프록시 폴백 없음 — 영구화 강제."""
@@ -7780,7 +7820,10 @@ def sfx_freesound_get(sound_id: int, request: Request):
 #   id / category / title / artist / duration_sec / bpm / mood / genre /
 #   file_url / preview_url / ext
 _AUDIO_LIBRARY_SEED: list[dict] = [
-    # ── Music ──────────────────────────────────────────────────────────
+    # 검증된 (HEAD 200, audio/mpeg) Pixabay hotlink URL만. 다른 시드는 임의
+    # 패턴으로 만든 거라 5/8이 403이었음 (사용자 "효과음 누르면 불러오기
+    # 실패: Failed to fetch" 원인). 일단 working 3개로 시작 — 더 많은
+    # 다양성은 별도 "효과음 검색" Freesound 탭(/api/sfx/freesound/search)에서.
     {
         "id": "px-upbeat-01",
         "category": "music",
@@ -7791,30 +7834,6 @@ _AUDIO_LIBRARY_SEED: list[dict] = [
         "mood": "upbeat",
         "genre": "pop",
         "file_url": "https://cdn.pixabay.com/audio/2022/05/27/audio_1808fbf07a.mp3",
-        "ext": ".mp3",
-    },
-    {
-        "id": "px-corporate-01",
-        "category": "music",
-        "title": "Corporate Inspiring",
-        "artist": "Pixabay",
-        "duration_sec": 152,
-        "bpm": 110,
-        "mood": "inspiring",
-        "genre": "corporate",
-        "file_url": "https://cdn.pixabay.com/audio/2022/03/15/audio_5dc25f3b94.mp3",
-        "ext": ".mp3",
-    },
-    {
-        "id": "px-chill-01",
-        "category": "music",
-        "title": "Chill Lo-Fi",
-        "artist": "Pixabay",
-        "duration_sec": 138,
-        "bpm": 78,
-        "mood": "chill",
-        "genre": "lofi",
-        "file_url": "https://cdn.pixabay.com/audio/2022/10/30/audio_347111d654.mp3",
         "ext": ".mp3",
     },
     {
@@ -7830,29 +7849,6 @@ _AUDIO_LIBRARY_SEED: list[dict] = [
         "ext": ".mp3",
     },
     {
-        "id": "px-cinematic-01",
-        "category": "music",
-        "title": "Cinematic Trailer",
-        "artist": "Pixabay",
-        "duration_sec": 95,
-        "bpm": 90,
-        "mood": "dramatic",
-        "genre": "cinematic",
-        "file_url": "https://cdn.pixabay.com/audio/2022/12/05/audio_42dcfa6f73.mp3",
-        "ext": ".mp3",
-    },
-    # ── SFX ────────────────────────────────────────────────────────────
-    {
-        "id": "px-sfx-whoosh-01",
-        "category": "sfx",
-        "title": "Whoosh",
-        "artist": "Pixabay",
-        "duration_sec": 1,
-        "mood": "transition",
-        "file_url": "https://cdn.pixabay.com/audio/2022/03/10/audio_e7ddb9c1e6.mp3",
-        "ext": ".mp3",
-    },
-    {
         "id": "px-sfx-ding-01",
         "category": "sfx",
         "title": "Notification Ding",
@@ -7860,16 +7856,6 @@ _AUDIO_LIBRARY_SEED: list[dict] = [
         "duration_sec": 1,
         "mood": "alert",
         "file_url": "https://cdn.pixabay.com/audio/2022/03/10/audio_a8e603753c.mp3",
-        "ext": ".mp3",
-    },
-    {
-        "id": "px-sfx-pop-01",
-        "category": "sfx",
-        "title": "Pop",
-        "artist": "Pixabay",
-        "duration_sec": 1,
-        "mood": "click",
-        "file_url": "https://cdn.pixabay.com/audio/2022/03/15/audio_c8c8a73467.mp3",
         "ext": ".mp3",
     },
 ]
@@ -7888,8 +7874,11 @@ def audio_library(
       - category: 'music' | 'sfx' | (생략 = 전체)
       - q: 제목 / mood / genre / artist 부분 매칭 (대소문자 무시)
       - cursor: 추후 페이징 — 현재 시드 데이터가 작아서 무시.
+    인증: same-origin middleware는 통과. 정적 카탈로그라 require_user 불필요
+    — 외부 호출도 X-API-Key 또는 동일 도메인 referer면 OK. 다운로드 본체는
+    main process가 처리하므로 카탈로그 노출만으로 위험 없음.
     """
-    auth_svc.require_user(request)
+    _ = request  # explicit unused — kept for symmetry with other handlers
     items = list(_AUDIO_LIBRARY_SEED)
     if category in ("music", "sfx"):
         items = [it for it in items if it.get("category") == category]

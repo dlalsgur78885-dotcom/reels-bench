@@ -37,20 +37,35 @@ const VARIANT_COLOR: Record<ToastVariant, string> = {
 export function Toast({
   message,
   variant = 'info',
-  durationMs = 4000,
+  durationMs,
   onClose
 }: ToastProps): JSX.Element {
+  // Error toasts default to manual-dismiss (durationMs=0) so a user who
+  // looks away doesn't miss the failure — common AI failure modes
+  // (autoedit error, STT model download fail, export fail) all funnel
+  // through here. Info / success stay at 4s.
+  const effectiveDuration =
+    typeof durationMs === 'number' ? durationMs : variant === 'error' ? 0 : 4000
+
   useEffect(() => {
-    if (durationMs <= 0) return
-    const t = setTimeout(() => onClose(), durationMs)
+    if (effectiveDuration <= 0) return
+    const t = setTimeout(() => onClose(), effectiveDuration)
     return () => clearTimeout(t)
-  }, [durationMs, onClose])
+  }, [effectiveDuration, onClose])
+
+  // role="alert" + aria-live="assertive" so screen readers INTERRUPT for
+  // failures (WCAG 4.1.3). Info / success stay polite via role="status".
+  const isError = variant === 'error'
 
   return (
     <div
-      role="status"
+      role={isError ? 'alert' : 'status'}
+      aria-live={isError ? 'assertive' : 'polite'}
+      aria-atomic="true"
       onClick={onClose}
       data-testid={`toast-${variant}`}
+      data-toast-variant={variant}
+      data-toast-duration={effectiveDuration}
       style={{
         position: 'fixed',
         top: 16,

@@ -678,6 +678,12 @@ export function AutoEditDialog({
                   {generateCaptions && (
                     <div>자막 {summary.captionsAdded}개 생성</div>
                   )}
+                  <div
+                    style={{ marginTop: 6, color: '#94a3b8', fontSize: 11 }}
+                    data-testid="autoedit-undo-hint"
+                  >
+                    되돌릴 수 있어요 · Ctrl+Z
+                  </div>
                 </div>
                 <button
                   type="button"

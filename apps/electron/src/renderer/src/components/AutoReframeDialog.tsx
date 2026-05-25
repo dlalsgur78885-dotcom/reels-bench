@@ -460,6 +460,12 @@ export function AutoReframeDialog({
                   )}
                   리프레임 {summary.clipsReframed}개 · 얼굴 없음{' '}
                   {summary.clipsNoFace}개 · 보존 {summary.clipsPreserved}개
+                  <div
+                    style={{ marginTop: 6, color: '#94a3b8', fontSize: 11 }}
+                    data-testid="autoreframe-undo-hint"
+                  >
+                    되돌릴 수 있어요 · Ctrl+Z
+                  </div>
                 </div>
                 <button
                   type="button"

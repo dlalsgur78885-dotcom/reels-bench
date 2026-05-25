@@ -632,6 +632,8 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     message: string
     variant: ToastVariant
     id: number
+    /** Optional override for Toast's variant-based default duration. */
+    durationMs?: number
   } | null>(null)
 
   const handlePrefillComplete = useCallback((result: PrefillResult): void => {
@@ -658,8 +660,10 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
 
   const handleSttComplete = useCallback((count: number): void => {
     setToast({
-      message: `자막 ${count}개를 생성했습니다`,
+      message: `자막 ${count}개를 생성했습니다 · Ctrl+Z로 되돌리기`,
       variant: 'success',
+      // 6s — long enough to read the undo hint without sticking around.
+      durationMs: 6000,
       id: Date.now()
     })
     setSttOpen(false)
@@ -1032,10 +1036,32 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           }
         }
         if (selClip && isClipLocked(selClip)) return
+        // Resolve clip kind for the undo-hint Toast BEFORE removing (audit
+        // #1: deletes need a surfaced undo path). Same wording as the
+        // ClipContextMenu-dispatched path so users learn one hint.
+        let kindLabel = '클립'
+        if (selClip) {
+          if (selClip.kind === 'caption') kindLabel = '자막'
+          else if (selClip.kind === 'overlay') kindLabel = '오버레이'
+          else if (selClip.kind === 'media') {
+            for (const t of store.project.tracks) {
+              if (t.clips.some((c) => c.id === firstSelected)) {
+                kindLabel = t.kind === 'audio' ? '오디오' : '클립'
+                break
+              }
+            }
+          }
+        }
         store.removeClip(firstSelected)
         useTimelineUi.getState().clearSelection()
         setSelectedClipId((cur) => (cur === firstSelected ? null : cur))
         if (editingCaptionId === firstSelected) setEditingCaptionId(null)
+        setToast({
+          message: `${kindLabel} 삭제됨 · Ctrl+Z로 되돌리기`,
+          variant: 'info',
+          durationMs: 6000,
+          id: Date.now()
+        })
         return
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
@@ -1786,9 +1812,32 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
                 setEditingCaptionId(id)
               }}
               onDeleteClip={(id) => {
+                // Resolve the clip BEFORE removing so we know what kind to
+                // name in the undo-hint Toast. Misclicking on the context
+                // menu's destructive 삭제 was the audit's #1 Critical risk
+                // (instant delete, no confirm, no surfaced undo hint).
+                let kindLabel = '클립'
+                for (const t of project.tracks) {
+                  const c = t.clips.find((c) => c.id === id)
+                  if (!c) continue
+                  if (c.kind === 'caption') kindLabel = '자막'
+                  else if (c.kind === 'overlay') kindLabel = '오버레이'
+                  else if (c.kind === 'media') {
+                    kindLabel = t.kind === 'audio' ? '오디오' : '클립'
+                  }
+                  break
+                }
                 removeClip(id)
                 if (editingCaptionId === id) setEditingCaptionId(null)
                 if (selectedClipId === id) setSelectedClipId(null)
+                setToast({
+                  message: `${kindLabel} 삭제됨 · Ctrl+Z로 되돌리기`,
+                  variant: 'info',
+                  // 6s — long enough to read + reach for Ctrl+Z without
+                  // being a sticky modal.
+                  durationMs: 6000,
+                  id: Date.now()
+                })
               }}
               onOpenSilenceDialog={(id) => {
                 // Verify the clip is still a media clip before opening.
@@ -1878,6 +1927,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           key={toast.id}
           message={toast.message}
           variant={toast.variant}
+          durationMs={toast.durationMs}
           onClose={() => setToast(null)}
         />
       )}

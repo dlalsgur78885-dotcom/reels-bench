@@ -21,6 +21,21 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.1 (2026-05-26)
+
+인앱 자동 알람 실제 fire 확인용 patch — electron app 자체 동작 변경은 없음.
+
+### 백엔드 + 인프라
+- `/api/editor/latest` 옛 Supabase 파서 제거, GitHub Releases 기반 단일
+  endpoint로 정리.
+- Supabase Storage 잔여 manifest(latest.yml + blockmap) cleanup —
+  scripts/cleanup-supabase.mjs 신규.
+
+이 patch가 publish되면 깔린 0.2.0 클라이언트는 부팅 5분 후 자동 알람 OR
+옵션 popover → "업데이트 확인" 즉시 클릭으로 update 배너를 받게 됨.
+
+---
+
 ## 0.2.0 (2026-05-25)
 
 UI/UX harness 5 사이클 + 분석 영상 reproduce 격차 3종.

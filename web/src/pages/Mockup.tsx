@@ -642,41 +642,47 @@ export default function Mockup() {
 
           <hr style={{ border: 'none', borderTop: '1px solid var(--border-subtle)', margin: '18px 0' }} />
 
-          {/* 디바이스 */}
-          <Label>디바이스</Label>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-            {devices.map(d => (
-              <button key={d.id} onClick={() => !busy && setDeviceId(d.id)} disabled={busy}
-                style={chipBtn(deviceId === d.id, busy)}>{d.name}</button>
-            ))}
+          {/* ───── 디바이스 ───── */}
+          <div style={sectionSt}>
+            <Label>디바이스</Label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {devices.map(d => (
+                <button key={d.id} onClick={() => !busy && setDeviceId(d.id)} disabled={busy}
+                  style={chipBtn(deviceId === d.id, busy)}>{d.name}</button>
+              ))}
+            </div>
           </div>
 
-          {/* 디바이스 스타일 (default / outline / glass) */}
+          {/* ───── 스타일 (디바이스 frame 시각 변종) ───── */}
           {deviceStyles.length > 0 && (
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-              {deviceStyles.map(s => (
-                <button key={s.id} onClick={() => !busy && setDeviceStyleId(s.id)} disabled={busy}
-                  style={{ ...chipBtn(deviceStyleId === s.id, busy), fontSize: 11 }}>
-                  스타일 · {s.label}
-                </button>
-              ))}
+            <div style={sectionSt}>
+              <Label>스타일</Label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {deviceStyles.map(s => (
+                  <button key={s.id} onClick={() => !busy && setDeviceStyleId(s.id)} disabled={busy}
+                    style={{ ...chipBtn(deviceStyleId === s.id, busy), fontSize: 11 }}>
+                    {s.label}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
-          {/* 디바이스 그림자 */}
+          {/* ───── 그림자 ───── */}
           {deviceShadows.length > 0 && (
-            <div style={{ marginBottom: 10 }}>
+            <div style={sectionSt}>
+              <Label>그림자</Label>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
                 {deviceShadows.map(s => (
                   <button key={s.id} onClick={() => !busy && setDeviceShadowId(s.id)} disabled={busy}
                     style={{ ...chipBtn(deviceShadowId === s.id, busy), fontSize: 11 }}>
-                    섀도우 · {s.label}
+                    {s.label}
                   </button>
                 ))}
               </div>
               {deviceShadowId !== 'none' && (
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 60 }}>강도</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 40 }}>강도</span>
                   <input type="range" min={0} max={100} step={1}
                     value={Math.round(deviceShadowOpacity * 100)} disabled={busy}
                     onChange={e => setDeviceShadowOpacity(Number(e.target.value) / 100)}
@@ -1094,6 +1100,12 @@ const tabBtn = (active: boolean, busy: boolean): React.CSSProperties => ({
   color: active ? '#fff' : 'var(--text-secondary)',
   cursor: busy ? 'wait' : 'pointer', opacity: busy ? 0.6 : 1,
 })
+// 좌측 패널의 한 섹션 — 옅은 구분선 + 내부 padding 으로 그룹화
+const sectionSt: React.CSSProperties = {
+  padding: '10px 0 10px',
+  borderTop: '1px solid var(--border-subtle)',
+}
+
 const chipBtn = (active: boolean, busy: boolean): React.CSSProperties => ({
   padding: '6px 12px', fontSize: 12, fontWeight: 600,
   border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,

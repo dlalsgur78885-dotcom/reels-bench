@@ -1064,13 +1064,12 @@ export default function Mockup() {
               </div>
             </div>
           )}
-          </div>
         </div>
       </div>
 
-      {/* ═══════════ 하단 풀너비 timeline (sequence 또는 timeline 모드일 때) ═══════════ */}
-      {(mode === 'sequence' && scenes.length > 0)
-        || (mode === 'upload' && !sourceIsVideo && timelineEnabled && keyframes.length > 0) ? (
+      {/* 하단 풀너비 timeline - sequence 또는 timeline 모드일 때 */}
+      {((mode === 'sequence' && scenes.length > 0)
+        || (mode === 'upload' && !sourceIsVideo && timelineEnabled && keyframes.length > 0)) ? (
         <div style={{ ...cardSt, marginTop: 10, padding: 12 }}>
           <SectionHeader
             hint={mode === 'sequence'

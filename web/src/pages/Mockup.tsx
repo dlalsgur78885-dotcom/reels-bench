@@ -721,23 +721,7 @@ export default function Mockup() {
             </div>
           </div>
 
-          {/* Tilt (3D perspective) */}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 60 }}>좌우 기울기</span>
-            <input type="range" min={-30} max={30} step={1}
-              value={tiltX} disabled={busy}
-              onChange={e => setTiltX(Number(e.target.value))}
-              style={{ flex: 1 }} />
-            <span style={{ fontSize: 11, color: 'var(--text-secondary)', width: 36 }}>{tiltX}°</span>
-          </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 60 }}>위아래 기울기</span>
-            <input type="range" min={-30} max={30} step={1}
-              value={tiltY} disabled={busy}
-              onChange={e => setTiltY(Number(e.target.value))}
-              style={{ flex: 1 }} />
-            <span style={{ fontSize: 11, color: 'var(--text-secondary)', width: 36 }}>{tiltY}°</span>
-          </div>
+          {/* (Tilt / 비율 / 디바이스 크기 = LAYOUT preset — 우측 패널로 이동) */}
 
           {/* Scene shapes */}
           {sceneShapesItems.length > 0 && (
@@ -754,20 +738,7 @@ export default function Mockup() {
             </div>
           )}
 
-          {/* 비율 */}
-          <Label>출력 비율</Label>
-          <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-            {ASPECTS.map(a => (
-              <button key={a} onClick={() => !busy && setAspect(a)} disabled={busy}
-                style={chipBtn(aspect === a, busy)}>{a}</button>
-            ))}
-          </div>
-
-          {/* 디바이스 크기 */}
-          <Label>디바이스 크기 ({Math.round(deviceScale * 100)}%)</Label>
-          <input type="range" min={50} max={95} value={Math.round(deviceScale * 100)}
-            onChange={e => setDeviceScale(Number(e.target.value) / 100)}
-            disabled={busy} style={{ width: '100%', marginBottom: 14 }} />
+          {/* (비율 + 디바이스 크기 = LAYOUT preset — 우측 패널로 이동) */}
 
           {/* 배경 프리셋 카탈로그 (procedural — preset 선택 시 단색/이미지 위에 우선 적용) */}
           {bgPresets.length > 0 && (
@@ -960,8 +931,43 @@ export default function Mockup() {
           })()}
         </div>
 
-        {/* 우: 상태 + 결과 */}
-        <div style={{ ...cardSt, padding: 12 }}>
+        {/* 우: LAYOUT preset + 상태 + 결과 */}
+        <div style={{ ...cardSt, padding: 12, display: 'flex',
+                       flexDirection: 'column', gap: 12 }}>
+          {/* ───── LAYOUT (비율 / 디바이스 크기 / Tilt) ───── */}
+          <div>
+            <Label>LAYOUT · 비율</Label>
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 10 }}>
+              {ASPECTS.map(a => (
+                <button key={a} onClick={() => !busy && setAspect(a)} disabled={busy}
+                  style={{ ...chipBtn(aspect === a, busy), fontSize: 11, padding: '4px 8px' }}>
+                  {a}
+                </button>
+              ))}
+            </div>
+            <Label>LAYOUT · 디바이스 크기 ({Math.round(deviceScale * 100)}%)</Label>
+            <input type="range" min={50} max={95} value={Math.round(deviceScale * 100)}
+              onChange={e => setDeviceScale(Number(e.target.value) / 100)}
+              disabled={busy} style={{ width: '100%', marginBottom: 10 }} />
+            <Label>LAYOUT · 3D 기울기</Label>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 4 }}>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 40 }}>좌우</span>
+              <input type="range" min={-30} max={30} step={1}
+                value={tiltX} disabled={busy}
+                onChange={e => setTiltX(Number(e.target.value))}
+                style={{ flex: 1 }} />
+              <span style={{ fontSize: 10, color: 'var(--text-secondary)', width: 28 }}>{tiltX}°</span>
+            </div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 40 }}>상하</span>
+              <input type="range" min={-30} max={30} step={1}
+                value={tiltY} disabled={busy}
+                onChange={e => setTiltY(Number(e.target.value))}
+                style={{ flex: 1 }} />
+              <span style={{ fontSize: 10, color: 'var(--text-secondary)', width: 28 }}>{tiltY}°</span>
+            </div>
+          </div>
+
           <div>
             <Label>상태</Label>
             <div style={{

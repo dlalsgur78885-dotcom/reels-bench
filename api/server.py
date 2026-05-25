@@ -7940,6 +7940,71 @@ def audio_library(
     return {"items": items, "next_cursor": None}
 
 
+# ── Reels Studio (Electron) — latest release pointer ──
+#
+# `/editor` 페이지가 호출하는 단일 GET. GitHub Releases API에서 최신 릴리스
+# 정보를 가져와 NSIS Setup .exe asset만 골라 응답 shape으로 변환.
+# 0.2.0부터 Supabase Storage(50MB 한도) → GitHub Releases로 호스팅 이전.
+# unauthenticated GitHub API: 60 req/h per IP — 페이지 로드 빈도라 충분.
+_EDITOR_REPO = "dlalsgur78885-dotcom/reels-bench"
+_editor_cache: dict[str, tuple[float, dict]] = {}
+_EDITOR_CACHE_TTL = 120.0  # 2분 — 새 릴리스 알람 지연 허용
+
+
+@app.get("/api/editor/latest")
+def editor_latest():
+    """영상 편집기(Electron) 최신 NSIS installer 정보.
+
+    응답 shape: { version, filename, download_url, release_date, size, platform }.
+    asset이 없으면 download_url='' 로 graceful — UI 가 "준비 중" 표시.
+    """
+    import time as _time
+    now = _time.time()
+    cached = _editor_cache.get("latest")
+    if cached and now - cached[0] < _EDITOR_CACHE_TTL:
+        return cached[1]
+    try:
+        r = requests.get(
+            f"https://api.github.com/repos/{_EDITOR_REPO}/releases/latest",
+            headers={"Accept": "application/vnd.github+json"},
+            timeout=8,
+        )
+        if r.status_code == 404:
+            payload = {
+                "version": None, "filename": "", "download_url": "",
+                "release_date": None, "size": None, "platform": "win32",
+            }
+            _editor_cache["latest"] = (now, payload)
+            return payload
+        if r.status_code != 200:
+            raise HTTPException(502, f"GitHub Releases: {r.status_code}")
+        data = r.json() or {}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"GitHub Releases call failed: {e}")
+
+    # tag_name 'v0.2.0' → '0.2.0' 로 normalize.
+    tag = str(data.get("tag_name") or "").lstrip("v") or None
+    # NSIS installer 우선 (portable 'Reels-Studio-0.x.y.exe' 보다 'Setup-' 우선).
+    setup_asset = None
+    for a in data.get("assets") or []:
+        name = str(a.get("name") or "")
+        if name.endswith(".exe") and "Setup" in name:
+            setup_asset = a
+            break
+    payload = {
+        "version": tag,
+        "filename": (setup_asset or {}).get("name") or "",
+        "download_url": (setup_asset or {}).get("browser_download_url") or "",
+        "release_date": data.get("published_at"),
+        "size": (setup_asset or {}).get("size"),
+        "platform": "win32",
+    }
+    _editor_cache["latest"] = (now, payload)
+    return payload
+
+
 # ── Serve built frontend (must be last: catches all non-API routes) ──
 _PUBLIC_DIR = Path(__file__).parent.parent / "web" / "dist"
 

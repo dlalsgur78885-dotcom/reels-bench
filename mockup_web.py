@@ -230,6 +230,16 @@ def scene_shapes_catalog(request: Request):
                        for sid, spec in mockup_svc.SCENE_SHAPES.items()]}
 
 
+@app.get("/api/mockup/scene-shape/{shape_id}.png")
+def scene_shape_thumb(shape_id: str, request: Request):
+    auth_svc.require_user(request)
+    if shape_id not in mockup_svc.SCENE_SHAPES:
+        raise HTTPException(404, "unknown shape")
+    png = mockup_svc.render_scene_shape_thumbnail(shape_id)
+    return Response(content=png, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
 # ── Heavy: source upload ─────────────────────────────────────────────────
 
 @app.post("/api/mockup/upload")

@@ -698,35 +698,68 @@ export default function Mockup() {
             </div>
           </div>
 
-          {/* ───── STYLE ───── */}
+          {/* ───── STYLE — visual cards ───── */}
           {deviceStyles.length > 0 && (
             <div style={sectionSt}>
               <SectionHeader>Style</SectionHeader>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {deviceStyles.map(s => (
-                  <button key={s.id} onClick={() => !busy && setDeviceStyleId(s.id)} disabled={busy}
-                    style={{ ...chipBtn(deviceStyleId === s.id, busy), fontSize: 11 }}>
-                    {s.label}
-                  </button>
-                ))}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
+                {deviceStyles.map(s => {
+                  const did = device?.id || 'iphone-16-pro'
+                  const url = `${MOCKUP_BASE_URL}/api/mockup/frame/${did}.png?style=${encodeURIComponent(s.id)}`
+                  return (
+                    <button key={s.id} onClick={() => !busy && setDeviceStyleId(s.id)} disabled={busy}
+                      title={s.label}
+                      style={{
+                        aspectRatio: '1/1.4', borderRadius: 6, padding: 0,
+                        background: `center/contain no-repeat #f5f5f5 url(${url})`,
+                        border: deviceStyleId === s.id ? '2px solid var(--accent)' : '1px solid var(--border)',
+                        cursor: busy ? 'wait' : 'pointer',
+                        position: 'relative', overflow: 'hidden',
+                      }}>
+                      <span style={{
+                        position: 'absolute', bottom: 2, left: 0, right: 0,
+                        fontSize: 9, fontWeight: 600, color: '#fff',
+                        textShadow: '0 1px 2px rgba(0,0,0,0.7)',
+                      }}>{s.label}</span>
+                    </button>
+                  )
+                })}
               </div>
             </div>
           )}
 
-          {/* ───── SHADOW ───── */}
+          {/* ───── SHADOW — visual cards ───── */}
           {deviceShadows.length > 0 && (
             <div style={sectionSt}>
               <SectionHeader hint={deviceShadowId !== 'none'
                 ? `${Math.round(deviceShadowOpacity * 100)}%` : undefined}>
                 Shadow
               </SectionHeader>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
-                {deviceShadows.map(s => (
-                  <button key={s.id} onClick={() => !busy && setDeviceShadowId(s.id)} disabled={busy}
-                    style={{ ...chipBtn(deviceShadowId === s.id, busy), fontSize: 11 }}>
-                    {s.label}
-                  </button>
-                ))}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
+                            gap: 6, marginBottom: 6 }}>
+                {deviceShadows.map(s => {
+                  const did = device?.id || 'iphone-16-pro'
+                  const url = s.id === 'none'
+                    ? `${MOCKUP_BASE_URL}/api/mockup/frame/${did}.png`
+                    : `${MOCKUP_BASE_URL}/api/mockup/frame/${did}.png?shadow=${encodeURIComponent(s.id)}&shadow_opacity=1`
+                  return (
+                    <button key={s.id} onClick={() => !busy && setDeviceShadowId(s.id)} disabled={busy}
+                      title={s.label}
+                      style={{
+                        aspectRatio: '1/1.4', borderRadius: 6, padding: 0,
+                        background: `center/contain no-repeat #f0f0f0 url(${url})`,
+                        border: deviceShadowId === s.id ? '2px solid var(--accent)' : '1px solid var(--border)',
+                        cursor: busy ? 'wait' : 'pointer',
+                        position: 'relative', overflow: 'hidden',
+                      }}>
+                      <span style={{
+                        position: 'absolute', bottom: 2, left: 0, right: 0,
+                        fontSize: 9, fontWeight: 600, color: '#fff',
+                        textShadow: '0 1px 2px rgba(0,0,0,0.7)',
+                      }}>{s.label}</span>
+                    </button>
+                  )
+                })}
               </div>
               {deviceShadowId !== 'none' && (
                 <>
@@ -755,26 +788,40 @@ export default function Mockup() {
             </div>
           )}
 
-          {/* ───── BORDER (radius preset + custom) ───── */}
+          {/* ───── BORDER — visual cards (radius preset) ───── */}
           <div style={sectionSt}>
             <SectionHeader>Border</SectionHeader>
-            {/* Sharp / Curved / Round preset chip — radius_override 매핑 */}
-            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
+                          gap: 6, marginBottom: 8 }}>
               {[
                 { label: 'Sharp', v: 0 },
                 { label: 'Curved', v: 120 },
                 { label: 'Round', v: 240 },
-              ].map(p => (
-                <button key={p.label}
-                  onClick={() => !busy && setRadiusOverride(p.v)} disabled={busy}
-                  style={{ ...chipBtn(radiusOverride === p.v, busy), fontSize: 11 }}>
-                  {p.label}
-                </button>
-              ))}
-              <button onClick={() => !busy && setRadiusOverride(null)} disabled={busy}
-                style={{ ...chipBtn(radiusOverride === null, busy), fontSize: 11 }}>
-                Auto
-              </button>
+                { label: 'Auto', v: null as number | null },
+              ].map(p => {
+                const did = device?.id || 'iphone-16-pro'
+                const url = p.v == null
+                  ? `${MOCKUP_BASE_URL}/api/mockup/frame/${did}.png`
+                  : `${MOCKUP_BASE_URL}/api/mockup/frame/${did}.png?radius=${p.v}`
+                return (
+                  <button key={p.label}
+                    onClick={() => !busy && setRadiusOverride(p.v)} disabled={busy}
+                    title={p.label}
+                    style={{
+                      aspectRatio: '1/1.4', borderRadius: 6, padding: 0,
+                      background: `center/contain no-repeat #f0f0f0 url(${url})`,
+                      border: radiusOverride === p.v ? '2px solid var(--accent)' : '1px solid var(--border)',
+                      cursor: busy ? 'wait' : 'pointer',
+                      position: 'relative', overflow: 'hidden',
+                    }}>
+                    <span style={{
+                      position: 'absolute', bottom: 2, left: 0, right: 0,
+                      fontSize: 9, fontWeight: 600, color: '#fff',
+                      textShadow: '0 1px 2px rgba(0,0,0,0.7)',
+                    }}>{p.label}</span>
+                  </button>
+                )
+              })}
             </div>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Radius</span>
@@ -827,17 +874,32 @@ export default function Mockup() {
 
           {/* (Tilt / 비율 / 디바이스 크기 = LAYOUT preset — 우측 패널로 이동) */}
 
-          {/* ───── SCENE ───── */}
+          {/* ───── SCENE — visual cards ───── */}
           {sceneShapesItems.length > 0 && (
             <div id="mockup-scene-anchor" style={sectionSt}>
               <SectionHeader>Scene</SectionHeader>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {sceneShapesItems.map(s => (
-                  <button key={s.id} onClick={() => !busy && setSceneShapeId(s.id)} disabled={busy}
-                    style={{ ...chipBtn(sceneShapeId === s.id, busy), fontSize: 11 }}>
-                    {s.label}
-                  </button>
-                ))}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
+                {sceneShapesItems.map(s => {
+                  const url = `${MOCKUP_BASE_URL}/api/mockup/scene-shape/${s.id}.png`
+                  return (
+                    <button key={s.id} onClick={() => !busy && setSceneShapeId(s.id)} disabled={busy}
+                      title={s.label}
+                      style={{
+                        aspectRatio: '8/5', borderRadius: 6, padding: 0,
+                        backgroundImage: `url(${url})`,
+                        backgroundSize: 'cover', backgroundPosition: 'center',
+                        border: sceneShapeId === s.id ? '2px solid var(--accent)' : '1px solid var(--border)',
+                        cursor: busy ? 'wait' : 'pointer',
+                        position: 'relative', overflow: 'hidden',
+                      }}>
+                      <span style={{
+                        position: 'absolute', bottom: 2, left: 0, right: 0,
+                        fontSize: 9, fontWeight: 600, color: '#fff',
+                        textShadow: '0 1px 2px rgba(0,0,0,0.7)',
+                      }}>{s.label}</span>
+                    </button>
+                  )
+                })}
               </div>
             </div>
           )}

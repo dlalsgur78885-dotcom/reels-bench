@@ -868,6 +868,15 @@ def render_bg_preset_thumbnail(preset_id: str) -> bytes:
     return buf.getvalue()
 
 
+def render_scene_shape_thumbnail(shape_id: str) -> bytes:
+    """SCENE 도형 1종을 어두운 배경 위에 미리보기 PNG (160x100)."""
+    base = Image.new("RGB", (160, 100), (40, 50, 70))
+    out = _apply_scene_shapes(base, shape_id) if shape_id and shape_id != "none" else base
+    buf = io.BytesIO()
+    out.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
 # ── Scene Shapes (배경 도형 — shots.so SCENE: Shapes) ───────────────────
 SCENE_SHAPES: dict[str, dict] = {
     "none":      {"label": "없음"},

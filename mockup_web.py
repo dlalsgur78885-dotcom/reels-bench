@@ -99,7 +99,7 @@ def backgrounds(request: Request):
 
 @app.get("/api/mockup/background/{preset_id}.png")
 def background_png(preset_id: str, request: Request):
-    auth_svc.require_user(request)
+    # public — procedural 배경 thumbnail
     if preset_id not in mockup_svc.BG_PRESETS:
         raise HTTPException(404, "unknown bg preset")
     png = mockup_svc.render_bg_preset_thumbnail(preset_id)
@@ -123,7 +123,8 @@ def frame_png(device_id: str, request: Request,
               shadow: str | None = None,
               shadow_opacity: float = 1.0,
               shadow_angle: float | None = None):
-    auth_svc.require_user(request)
+    # public — procedural 디바이스 frame 이미지, 민감 데이터 없음.
+    # 카드 background-image 호출이 Authorization 헤더 없이 가니까 인증 제거.
     if device_id not in mockup_svc.DEVICES:
         raise HTTPException(404, "unknown device")
     use_style = style if (style and style in mockup_svc.DEVICE_STYLES) else None
@@ -232,7 +233,7 @@ def scene_shapes_catalog(request: Request):
 
 @app.get("/api/mockup/scene-shape/{shape_id}.png")
 def scene_shape_thumb(shape_id: str, request: Request):
-    auth_svc.require_user(request)
+    # public — procedural shape thumbnail
     if shape_id not in mockup_svc.SCENE_SHAPES:
         raise HTTPException(404, "unknown shape")
     png = mockup_svc.render_scene_shape_thumbnail(shape_id)

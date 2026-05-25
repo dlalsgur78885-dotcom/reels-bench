@@ -58,8 +58,16 @@ export const IPC_CHANNELS = {
   },
   updater: {
     installNow: 'updater:installNow',
+    /** Renderer → main: trigger an out-of-cycle check now ("지금 확인" 버튼). */
+    checkNow: 'updater:checkNow',
+    /** Renderer → main: read current app version. */
+    getVersion: 'updater:getVersion',
     downloadProgress: 'updater:download-progress',
-    downloaded: 'updater:downloaded'
+    downloaded: 'updater:downloaded',
+    /** Pushed when a check completes with no update — UI can flash "최신입니다". */
+    notAvailable: 'updater:not-available',
+    /** Pushed when a check / download errors so UI can show a one-line note. */
+    error: 'updater:error'
   },
   stt: {
     transcribe: 'stt:transcribe',
@@ -689,6 +697,20 @@ export interface ElectronApi {
      */
     installNow(): Promise<boolean>
     /**
+     * Trigger a manual update check ("업데이트 확인" 버튼). Resolves with the
+     * resolved status — useful so the UI can flash 최신/다운로드 시작/에러.
+     * No-op in dev (returns 'dev-mode').
+     */
+    checkNow(): Promise<
+      | 'checking'
+      | 'available'
+      | 'not-available'
+      | 'error'
+      | 'dev-mode'
+    >
+    /** Read app.getVersion() — for showing in 설정/About. */
+    getVersion(): Promise<string>
+    /**
      * Subscribe to the `updater:downloaded` event. Fires once per
      * downloaded update. Returns an unsubscribe function.
      */
@@ -700,6 +722,10 @@ export interface ElectronApi {
     onDownloadProgress(
       cb: (payload: UpdateDownloadProgressPayload) => void
     ): () => void
+    /** Subscribe to "최신입니다" — fires after a check finds no update. */
+    onNotAvailable(cb: (currentVersion: string) => void): () => void
+    /** Subscribe to updater errors (manual check or background). */
+    onError(cb: (message: string) => void): () => void
   }
   recording: {
     /**

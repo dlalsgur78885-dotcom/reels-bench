@@ -1,0 +1,73 @@
+# Reels Studio — CHANGELOG
+
+매 release에 진행률 + "지금 재시작" 배너로 인앱 알람이 발사됨
+(`src/main/auto-update.ts` + `components/UpdateBanner.tsx`). 사용자는
+설정 → 옵션 popover의 "업데이트 확인" 버튼으로 수동 트리거도 가능
+(`components/UpdateStatusPanel.tsx`).
+
+배포 (한 줄):
+```
+npm run release:minor && npm run publish:supabase
+```
+
+---
+
+## 0.2.0 (2026-05-25)
+
+UI/UX harness 5 사이클 + 분석 영상 reproduce 격차 3종.
+
+### 추가
+- **그린/블루스크린 chromakey** — `VideoAudioClip.chromaKey` + ffmpeg
+  `format=yuva420p,chromakey=` 필터. 다중 video track 위에 띄우면 진짜
+  합성 동작.
+- **카운트다운/카운트업 자막** — `addCountdownCaptions({from, to, intervalMs,
+  prefix?, suffix?})` — N개 정적 caption 자동 생성. 한글/폰트픽커/preview
+  1:1.
+- **음원·SFX 카탈로그** — `GET /api/audio-library` + Pixabay CDN 시드 8곡
+  (music 5 + sfx 3). ImportPanel → MusicLibraryTab 즉시 사용 가능.
+- **자막 폰트 픽커** — 8종 폰트 카탈로그 (`CAPTION_FONT_FAMILIES`). 한글
+  fallback 항상 꼬리에 — 어떤 family를 골라도 한글 글리프 안전.
+- **한글 SRT 임포트 데모** — `/my-scripts` → SRT 다운 → 에디터 import →
+  export까지 풀파이프 작동.
+
+### a11y / UX (audit 100% 처리)
+- Critical: 클립 삭제 후 "X 삭제됨 · Ctrl+Z로 되돌리기" Toast (메뉴 +
+  Delete 키 양쪽).
+- High: Toast `role="alert"` (error variant) · AudioMeter 색만 → ⚠ +
+  hatched gradient + `role="meter"` · 6 다이얼로그
+  `role="dialog"`+`aria-modal`+`aria-labelledby` · `useFocusTrap` Tab 트랩 +
+  opener focus 복원 · `prefers-reduced-motion` 전역 hook + CSS fallback ·
+  `:focus-visible` 글로벌 ring · `theme/tokens.ts` 디자인 토큰 인프라.
+- Medium: AI 다이얼로그 "되돌릴 수 있어요 · Ctrl+Z" hint · AutoEdit dry-run
+  silence preview · STT lowConfidence 캡션 점선 underline · Tooltip 컴포넌트
+  (키보드/포커스 hear) · 닫기 버튼 hit-area 24px 이상.
+- Low: previewSpeed setTimeout race → MutationObserver · eslint-disable
+  코멘트 보강.
+
+### 인프라
+- 신규 `src/renderer/src/theme/tokens.ts` — surface/text/accent/space/font/
+  radius/shadow.
+- 신규 `src/renderer/src/global.css` — `:focus-visible` + reduced-motion
+  CSS fallback.
+- 신규 `src/renderer/src/lib/usePrefersReducedMotion.ts`,
+  `src/renderer/src/lib/useFocusTrap.ts`.
+- 신규 `src/renderer/src/components/Tooltip.tsx`,
+  `UpdateStatusPanel.tsx`.
+- `apps/electron/.claude/` harness 자산 — 8 sub-agent + `/ui-improve`
+  slash command + crit skill.
+- 신규 `scripts/publish-supabase.mjs` — `release/win/` 산출물을 Supabase
+  Storage `electron-releases/win/` bucket에 업로드.
+
+### 수동 업데이트 확인
+- `updater:checkNow` IPC + `updater:notAvailable` / `updater:error`
+  push events. 옵션 popover의 "업데이트 확인" 버튼이 5분 대기 없이 트리거.
+
+### 회귀
+- 5사이클 합산 1000+ e2e spec 통과, 0 회귀.
+
+---
+
+## 0.1.0 (이전)
+
+초기 베타. OpenCut fork + ffmpeg 네이티브 export + 자동 자막(Whisper)
++ 자동 리프레임(BlazeFace) + 무음 자동 제거 + 비트 컷 + STT/karaoke 자막.

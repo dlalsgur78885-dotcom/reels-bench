@@ -220,6 +220,9 @@ const api: ElectronApi = {
   updater: {
     installNow: (): Promise<boolean> =>
       ipcRenderer.invoke(IPC_CHANNELS.updater.installNow),
+    checkNow: () => ipcRenderer.invoke(IPC_CHANNELS.updater.checkNow),
+    getVersion: (): Promise<string> =>
+      ipcRenderer.invoke(IPC_CHANNELS.updater.getVersion),
     onDownloaded: (
       cb: (payload: UpdateDownloadedPayload) => void
     ): (() => void) => {
@@ -244,6 +247,18 @@ const api: ElectronApi = {
           IPC_CHANNELS.updater.downloadProgress,
           listener
         )
+    },
+    onNotAvailable: (cb: (current: string) => void): (() => void) => {
+      const listener = (_ev: IpcRendererEvent, current: string): void => cb(current)
+      ipcRenderer.on(IPC_CHANNELS.updater.notAvailable, listener)
+      return () =>
+        ipcRenderer.removeListener(IPC_CHANNELS.updater.notAvailable, listener)
+    },
+    onError: (cb: (message: string) => void): (() => void) => {
+      const listener = (_ev: IpcRendererEvent, message: string): void => cb(message)
+      ipcRenderer.on(IPC_CHANNELS.updater.error, listener)
+      return () =>
+        ipcRenderer.removeListener(IPC_CHANNELS.updater.error, listener)
     }
   }
 }

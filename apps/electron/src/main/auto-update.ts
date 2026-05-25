@@ -86,10 +86,20 @@ export function initAutoUpdate(
 
   autoUpdater.on('update-not-available', (info) => {
     console.log('[updater] update not available; current:', info.version)
+    sendToRenderer(
+      getMainWindow,
+      IPC_CHANNELS.updater.notAvailable,
+      String(info.version ?? app.getVersion())
+    )
   })
 
   autoUpdater.on('error', (err) => {
     console.warn('[updater] error:', err?.message ?? err)
+    sendToRenderer(
+      getMainWindow,
+      IPC_CHANNELS.updater.error,
+      String(err?.message ?? err ?? 'unknown updater error')
+    )
   })
 
   autoUpdater.on('download-progress', (progress) => {
@@ -123,6 +133,30 @@ export function initAutoUpdate(
       console.warn('[updater] initial check failed:', err?.message ?? err)
     })
   }, BOOT_DELAY_MS)
+}
+
+/**
+ * Renderer-driven "지금 업데이트 확인" handler. Fires an out-of-cycle check
+ * so the user doesn't have to wait the BOOT_DELAY_MS. Returns a status the
+ * renderer can flash as a Toast.
+ */
+export async function checkForUpdateNow(): Promise<
+  'checking' | 'available' | 'not-available' | 'error' | 'dev-mode'
+> {
+  if (!app.isPackaged) return 'dev-mode'
+  try {
+    const result = await autoUpdater.checkForUpdates()
+    if (result && result.updateInfo) {
+      const current = app.getVersion()
+      return result.updateInfo.version && result.updateInfo.version !== current
+        ? 'available'
+        : 'not-available'
+    }
+    return 'checking'
+  } catch (err) {
+    console.warn('[updater] manual check failed:', err)
+    return 'error'
+  }
 }
 
 /**

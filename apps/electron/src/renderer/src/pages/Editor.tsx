@@ -21,6 +21,7 @@ import { AutoEditDialog } from '../components/AutoEditDialog'
 import { AutoReframeDialog } from '../components/AutoReframeDialog'
 import { Toast, type ToastVariant } from '../components/Toast'
 import { Tooltip } from '../components/Tooltip'
+import { UpdateStatusPanel } from '../components/UpdateStatusPanel'
 import type { PrefillResult } from '../lib/prefillFromReel'
 import type { AutoEditSummary } from '../lib/autoEdit'
 import { runBeatCut } from '../lib/beatCut'
@@ -1365,6 +1366,10 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
 
         {/* Phase 3.46 — 옵션 메뉴 popover: BPM/비트 스냅/커버/진행 바/캔버스 배경/플레이헤드 */}
         <ToolbarMenu label="옵션" testId="topbar-menu-options">
+          {/* 버전 + 업데이트 확인 — 자동 알람 인프라(UpdateBanner)는
+              packaged 빌드에서 5분마다 자체 동작. 여기는 수동 트리거 +
+              현재 버전 가시화. */}
+          <UpdateStatusPanel />
           <div style={styles.menuGroupLabel}>BPM · 비트 스냅</div>
           <div style={styles.menuRow}>
             <label style={styles.hint} htmlFor="bpm-input">

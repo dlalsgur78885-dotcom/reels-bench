@@ -1,7 +1,7 @@
 {
   "name": "reels-studio-electron",
   "productName": "Reels Studio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Short-form video editor for Reels Bench",
   "author": {
@@ -17,7 +17,10 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "test:e2e": "playwright test",
     "package": "npm run build && electron-builder --win --x64",
-    "package:portable": "npm run build && electron-builder --win portable --x64"
+    "package:portable": "npm run build && electron-builder --win portable --x64",
+    "release:patch": "npm version patch --no-git-tag-version",
+    "release:minor": "npm version minor --no-git-tag-version",
+    "publish:supabase": "npm run package && node scripts/publish-supabase.mjs"
   },
   "dependencies": {
     "@ffprobe-installer/ffprobe": "^2.1.2",

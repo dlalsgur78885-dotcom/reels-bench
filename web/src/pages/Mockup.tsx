@@ -168,6 +168,8 @@ export default function Mockup() {
   const [unsplashQ, setUnsplashQ] = useState<string>('')
   const [unsplashResults, setUnsplashResults] = useState<any[]>([])
   const [unsplashLoading, setUnsplashLoading] = useState<boolean>(false)
+  // 좌측 패널 탭 (shots.so 패턴)
+  const [activeLeftTab, setActiveLeftTab] = useState<'media' | 'mockup' | 'frame'>('media')
   // Animations 타임라인 (upload+이미지일 때만 의미)
   const [timelineEnabled, setTimelineEnabled] = useState<boolean>(false)
   const [keyframes, setKeyframes] = useState<AnimKeyframe[]>([])
@@ -541,12 +543,31 @@ export default function Mockup() {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr 280px', gap: 10, alignItems: 'start' }}>
-        {/* 좌: 모든 입력 (shots.so 스타일 — 스크롤 가능 사이드패널) */}
+        {/* 좌: 3개 탭 (Media / Mockup / Frame) — shots.so 패턴 */}
         <div style={{ ...cardSt, padding: 12, maxHeight: 'calc(100vh - 80px)',
                        overflowY: 'auto', overflowX: 'hidden' }}>
 
-          {/* ───── TEMPLATES (사전 콤보) ───── */}
-          {templates.length > 0 && (
+          {/* 좌측 탭 */}
+          <div style={{ display: 'flex', gap: 2, padding: 2,
+                         background: 'var(--bg-base)', borderRadius: 6,
+                         marginBottom: 14 }}>
+            {(['media', 'mockup', 'frame'] as const).map(t => (
+              <button key={t} onClick={() => setActiveLeftTab(t)} disabled={busy}
+                style={{
+                  flex: 1, padding: '6px 8px', fontSize: 11, fontWeight: 700,
+                  background: activeLeftTab === t ? 'var(--bg-surface)' : 'transparent',
+                  color: activeLeftTab === t ? 'var(--text-primary)' : 'var(--text-muted)',
+                  border: activeLeftTab === t ? '1px solid var(--border)' : '1px solid transparent',
+                  borderRadius: 4, textTransform: 'capitalize',
+                  cursor: busy ? 'wait' : 'pointer',
+                }}>
+                {t}
+              </button>
+            ))}
+          </div>
+
+          {/* ───── TEMPLATES (Media 탭) ───── */}
+          {activeLeftTab === 'media' && templates.length > 0 && (
             <div style={{ paddingBottom: 10 }}>
               <SectionHeader>Templates</SectionHeader>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
@@ -574,7 +595,8 @@ export default function Mockup() {
             </div>
           )}
 
-          {/* ───── MEDIA (모드 + 입력) ───── */}
+          {/* ───── MEDIA (Media 탭) ───── */}
+          {activeLeftTab === 'media' && (
           <div style={sectionSt}>
             <SectionHeader>Media</SectionHeader>
             <div style={{ display: 'flex', gap: 4, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -686,8 +708,10 @@ export default function Mockup() {
             </>
           )}
           </div>
+          )}
 
-          {/* ───── DEVICE ───── */}
+          {/* ───── DEVICE (Mockup 탭) ───── */}
+          {activeLeftTab === 'mockup' && (
           <div style={sectionSt}>
             <SectionHeader>Device</SectionHeader>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -697,9 +721,10 @@ export default function Mockup() {
               ))}
             </div>
           </div>
+          )}
 
-          {/* ───── STYLE — visual cards ───── */}
-          {deviceStyles.length > 0 && (
+          {/* ───── STYLE — visual cards (Mockup 탭) ───── */}
+          {activeLeftTab === 'mockup' && deviceStyles.length > 0 && (
             <div style={sectionSt}>
               <SectionHeader>Style</SectionHeader>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
@@ -728,8 +753,8 @@ export default function Mockup() {
             </div>
           )}
 
-          {/* ───── SHADOW — visual cards ───── */}
-          {deviceShadows.length > 0 && (
+          {/* ───── SHADOW — visual cards (Mockup 탭) ───── */}
+          {activeLeftTab === 'mockup' && deviceShadows.length > 0 && (
             <div style={sectionSt}>
               <SectionHeader hint={deviceShadowId !== 'none'
                 ? `${Math.round(deviceShadowOpacity * 100)}%` : undefined}>
@@ -788,7 +813,8 @@ export default function Mockup() {
             </div>
           )}
 
-          {/* ───── BORDER — visual cards (radius preset) ───── */}
+          {/* ───── BORDER — visual cards (Mockup 탭) ───── */}
+          {activeLeftTab === 'mockup' && (
           <div style={sectionSt}>
             <SectionHeader>Border</SectionHeader>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
@@ -840,9 +866,10 @@ export default function Mockup() {
               <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>px</span>
             </div>
           </div>
+          )}
 
-          {/* ───── DETAILS (디바이스 메타 readout) ───── */}
-          {device && (
+          {/* ───── DETAILS (디바이스 메타 readout — Mockup 탭) ───── */}
+          {activeLeftTab === 'mockup' && device && (
             <div style={sectionSt}>
               <SectionHeader>Details</SectionHeader>
               <div style={{ fontSize: 11, color: 'var(--text-secondary)',
@@ -861,7 +888,8 @@ export default function Mockup() {
             </div>
           )}
 
-          {/* ───── VISIBILITY ───── */}
+          {/* ───── VISIBILITY (Mockup 탭) ───── */}
+          {activeLeftTab === 'mockup' && (
           <div style={sectionSt}>
             <SectionHeader>Visibility</SectionHeader>
             <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12,
@@ -871,11 +899,12 @@ export default function Mockup() {
               Hide Mockup (콘텐츠만 표시)
             </label>
           </div>
+          )}
 
           {/* (Tilt / 비율 / 디바이스 크기 = LAYOUT preset — 우측 패널로 이동) */}
 
-          {/* ───── SCENE — visual cards ───── */}
-          {sceneShapesItems.length > 0 && (
+          {/* ───── SCENE — visual cards (Frame 탭) ───── */}
+          {activeLeftTab === 'frame' && sceneShapesItems.length > 0 && (
             <div id="mockup-scene-anchor" style={sectionSt}>
               <SectionHeader>Scene</SectionHeader>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
@@ -906,7 +935,8 @@ export default function Mockup() {
 
           {/* (비율 + 디바이스 크기 = LAYOUT preset — 우측 패널로 이동) */}
 
-          {/* ───── BACKGROUND ───── */}
+          {/* ───── BACKGROUND (Frame 탭) ───── */}
+          {activeLeftTab === 'frame' && (
           <div style={sectionSt}>
             <SectionHeader hint={
               bgColor === 'transparent' ? 'transparent'
@@ -1048,8 +1078,10 @@ export default function Mockup() {
               </button>
             )}
           </div>
+          )}
 
-          {/* ───── EFFECTS & WATERMARK ───── */}
+          {/* ───── EFFECTS & WATERMARK (Frame 탭) ───── */}
+          {activeLeftTab === 'frame' && (
           <div style={sectionSt}>
             <SectionHeader>Effects & Watermark</SectionHeader>
             {/* shots.so 4-toggle row: Portrait / Watermark / Bg Effects / VFX */}
@@ -1090,6 +1122,7 @@ export default function Mockup() {
               </div>
             )}
           </div>
+          )}
 
           {/* Export 버튼은 상단 toolbar 로 이동 */}
         </div>

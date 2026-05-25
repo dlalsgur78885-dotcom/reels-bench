@@ -1,7 +1,7 @@
 {
   "version": 2,
   "regions": ["icn1"],
-  "buildCommand": "echo cb-2026-05-26-6 && cd web && rm -rf dist node_modules/.vite && npm install && npm run build",
+  "buildCommand": "echo cb-2026-05-26-7 && cd web && rm -rf dist node_modules/.vite && npm install && npm run build",
   "builds": [
     { "src": "api/index.py", "use": "@vercel/python", "config": { "maxDuration": 800, "includeFiles": "web/dist/**" } },
     { "src": "api/cron/fb-scrape.ts", "use": "@vercel/node", "config": { "maxDuration": 60 } }

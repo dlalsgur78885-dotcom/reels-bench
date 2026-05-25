@@ -16,6 +16,7 @@ import {
   type AutoReframePhase,
   type AutoReframeSummary
 } from '../lib/autoReframe'
+import { useFocusTrap } from '../lib/useFocusTrap'
 
 interface AutoReframeDialogProps {
   open: boolean
@@ -82,12 +83,13 @@ const styles = {
     fontWeight: 700,
     flex: 1
   } as React.CSSProperties,
+  // padding bumped 4→8 vertical — WCAG 2.5.5 (24×24 min target).
   closeBtn: {
     background: 'transparent',
     color: '#9aa0a6',
     border: '1px solid #2a2a2a',
     borderRadius: 6,
-    padding: '4px 10px',
+    padding: '8px 12px',
     fontSize: 12,
     cursor: 'pointer'
   } as React.CSSProperties,
@@ -317,6 +319,8 @@ export function AutoReframeDialog({
     onComplete(result)
   }, [framesPerClip, overwriteExisting, onComplete])
 
+  const focusTrapRef = useFocusTrap<HTMLDivElement>(open)
+
   if (!open) return null
 
   const showProgress = busy || phase === 'done' || phase === 'cancelled'
@@ -330,6 +334,7 @@ export function AutoReframeDialog({
       data-testid="autoreframe-dialog-backdrop"
     >
       <div
+        ref={focusTrapRef}
         style={styles.modal}
         onClick={(e) => e.stopPropagation()}
         data-testid="autoreframe-dialog"

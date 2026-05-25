@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useFocusTrap } from '../lib/useFocusTrap'
 import {
   CAPTION_ENTRANCE_KINDS,
   CAPTION_EXIT_KINDS,
@@ -270,11 +271,23 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  // Hook declared at top-level to keep call order stable across the two
+  // possible returns below. Trap is always active while CaptionEditor is
+  // mounted — the parent controls mount based on `editingCaptionId`.
+  const focusTrapRef = useFocusTrap<HTMLDivElement>(true)
+
   if (!caption) {
     return (
-      <div style={styles.panel} data-testid="caption-editor">
+      <div
+        ref={focusTrapRef}
+        style={styles.panel}
+        data-testid="caption-editor"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="caption-editor-title"
+      >
         <div style={styles.header}>
-          <div style={styles.title}>자막 편집</div>
+          <div id="caption-editor-title" style={styles.title}>자막 편집</div>
           <button style={styles.closeBtn} onClick={onClose} aria-label="닫기">
             ✕
           </button>
@@ -423,6 +436,7 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
 
   return (
     <div
+      ref={focusTrapRef}
       style={styles.panel}
       data-testid="caption-editor"
       role="dialog"

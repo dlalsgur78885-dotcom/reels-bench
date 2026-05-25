@@ -15,6 +15,7 @@
  *     listMyReels already caps at 100).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useFocusTrap } from '../lib/useFocusTrap'
 import { listMyReels, getReelMetadata, type ReelMetadata, type ReelSummary } from '../lib/api'
 import { prefillFromReel, type PrefillResult } from '../lib/prefillFromReel'
 
@@ -331,6 +332,8 @@ export function PrefillDialog({
     [onComplete]
   )
 
+  const focusTrapRef = useFocusTrap<HTMLDivElement>(open)
+
   if (!open) return null
 
   return (
@@ -343,6 +346,7 @@ export function PrefillDialog({
       data-testid="prefill-dialog"
     >
       <div
+        ref={focusTrapRef}
         style={styles.modal}
         onClick={(e) => e.stopPropagation()}
         role="dialog"

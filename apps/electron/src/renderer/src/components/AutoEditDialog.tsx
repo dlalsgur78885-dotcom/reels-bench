@@ -21,6 +21,7 @@ import {
   type AutoEditSummary
 } from '../lib/autoEdit'
 import { useProjectStore } from '../store/project'
+import { useFocusTrap } from '../lib/useFocusTrap'
 
 interface AutoEditDialogProps {
   open: boolean
@@ -109,12 +110,13 @@ const styles = {
     fontWeight: 700,
     flex: 1
   } as React.CSSProperties,
+  // padding bumped 4→8 vertical so the hit area clears WCAG 2.5.5 (24×24 min).
   closeBtn: {
     background: 'transparent',
     color: '#9aa0a6',
     border: '1px solid #2a2a2a',
     borderRadius: 6,
-    padding: '4px 10px',
+    padding: '8px 12px',
     fontSize: 12,
     cursor: 'pointer'
   } as React.CSSProperties,
@@ -368,6 +370,58 @@ export function AutoEditDialog({
     cancelRef.current = false
   }, [open])
 
+  // -------------------------------------------------------------------------
+  // Dry-run silence preview — audit #9. Debounced so dragging the
+  // noiseDb / minMs sliders doesn't fire on every tick. We probe ONLY the
+  // first media clip on the primary track (full pipeline runs across N
+  // clips — would be ~Nx slower). The label says "첫 클립 기준 예상" so
+  // the user understands the number is a sample, not a guarantee.
+  // -------------------------------------------------------------------------
+  const [silencePreview, setSilencePreview] = useState<
+    { count: number; totalMs: number; loading: boolean } | null
+  >(null)
+  useEffect(() => {
+    if (!open || !removeSilence || !primary || primary.mediaClipIds.length === 0) {
+      setSilencePreview(null)
+      return
+    }
+    setSilencePreview((p) => (p ? { ...p, loading: true } : { count: 0, totalMs: 0, loading: true }))
+    let cancelled = false
+    const handle = window.setTimeout(async () => {
+      try {
+        const clipId = primary.mediaClipIds[0]
+        let path: string | null = null
+        for (const t of project.tracks) {
+          for (const c of t.clips) {
+            if (c.id === clipId && c.kind === 'media') {
+              const media = project.media[c.mediaId]
+              if (media) path = media.path
+              break
+            }
+          }
+          if (path) break
+        }
+        if (!path) {
+          if (!cancelled) setSilencePreview(null)
+          return
+        }
+        const ranges = await window.electron.audio.detectSilence(path, {
+          noiseDb,
+          minSilenceMs: minMs
+        })
+        if (cancelled) return
+        const totalMs = ranges.reduce((acc, r) => acc + r.durationMs, 0)
+        setSilencePreview({ count: ranges.length, totalMs, loading: false })
+      } catch {
+        if (!cancelled) setSilencePreview(null)
+      }
+    }, 400)
+    return () => {
+      cancelled = true
+      window.clearTimeout(handle)
+    }
+  }, [open, removeSilence, primary, noiseDb, minMs, project])
+
   // Esc closes the dialog (but never while a run is in flight).
   useEffect(() => {
     if (!open) return
@@ -445,6 +499,8 @@ export function AutoEditDialog({
     onComplete
   ])
 
+  const focusTrapRef = useFocusTrap<HTMLDivElement>(open)
+
   if (!open) return null
 
   const canStart =
@@ -468,6 +524,7 @@ export function AutoEditDialog({
       data-testid="autoedit-dialog"
     >
       <div
+        ref={focusTrapRef}
         style={styles.modal}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
@@ -625,6 +682,24 @@ export function AutoEditDialog({
           >
             취소
           </button>
+          {removeSilence && silencePreview && (
+            <div
+              data-testid="autoedit-silence-preview"
+              style={{
+                marginRight: 'auto',
+                color: '#94a3b8',
+                fontSize: 11,
+                lineHeight: 1.3,
+                opacity: silencePreview.loading ? 0.5 : 1
+              }}
+            >
+              {silencePreview.loading
+                ? '예상 분석 중…'
+                : `예상 제거: ${silencePreview.count}구간 · 약 ${(
+                    silencePreview.totalMs / 1000
+                  ).toFixed(1)}초 (첫 클립 기준)`}
+            </div>
+          )}
           <button
             type="button"
             style={canStart ? styles.primaryBtn : styles.primaryBtnDisabled}

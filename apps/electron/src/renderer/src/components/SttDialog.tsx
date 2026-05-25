@@ -23,6 +23,7 @@
  * emits a couple of progress events) drives the whole UI.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useFocusTrap } from '../lib/useFocusTrap'
 import type {
   SttErrorCode,
   SttLanguage,
@@ -207,12 +208,13 @@ const styles = {
     fontWeight: 700,
     flex: 1
   } as React.CSSProperties,
+  // padding bumped 4→8 vertical — WCAG 2.5.5 (24×24 min target).
   closeBtn: {
     background: 'transparent',
     color: '#9aa0a6',
     border: '1px solid #2a2a2a',
     borderRadius: 6,
-    padding: '4px 10px',
+    padding: '8px 12px',
     fontSize: 12,
     cursor: 'pointer'
   } as React.CSSProperties,
@@ -538,6 +540,8 @@ export function SttDialog({
     // rejection) — that path tears down + resets. Nothing else to do here.
   }, [])
 
+  const focusTrapRef = useFocusTrap<HTMLDivElement>(open)
+
   if (!open) return null
 
   const showProgress = busy && progress != null
@@ -556,6 +560,7 @@ export function SttDialog({
       data-testid="stt-dialog"
     >
       <div
+        ref={focusTrapRef}
         style={styles.modal}
         onClick={(e) => e.stopPropagation()}
         role="dialog"

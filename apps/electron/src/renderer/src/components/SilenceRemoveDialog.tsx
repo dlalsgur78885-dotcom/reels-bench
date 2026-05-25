@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { SilenceRange } from '../../../shared/ipc'
 import { isMediaClip, type Project } from '../../../shared/project'
 import { useProjectStore } from '../store/project'
+import { useFocusTrap } from '../lib/useFocusTrap'
 
 interface SilenceRemoveDialogProps {
   project: Project
@@ -119,10 +120,15 @@ export function SilenceRemoveDialog(
     ? ranges.reduce((acc, r) => acc + r.durationMs, 0)
     : 0
   const splitCount = ranges ? Math.max(0, ranges.length) : 0
+  // SilenceRemoveDialog has no `open` prop — it's mounted iff the caller
+  // decided it should show. Trap is always enabled while this component
+  // is in the tree.
+  const focusTrapRef = useFocusTrap<HTMLDivElement>(true)
 
   return (
     <div style={styles.scrim} onClick={onClose} data-testid="silence-dialog">
       <div
+        ref={focusTrapRef}
         style={styles.modal}
         onClick={(e) => e.stopPropagation()}
         role="dialog"

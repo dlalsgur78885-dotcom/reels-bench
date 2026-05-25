@@ -1,9 +1,51 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { authedFetch, mockupAuthedFetch, BASE } from '../api'
+import { authedFetch, mockupAuthedFetch, BASE, MOCKUP_BASE as MOCKUP_BASE_URL } from '../api'
 
-type Mode = 'url' | 'upload'
+type Mode = 'url' | 'upload' | 'sequence'
 type Status = 'idle' | 'uploading' | 'submitting' | 'queued' | 'recording' | 'compositing' | 'done' | 'failed'
+
+type MotionKind = 'none' | 'zoom-in' | 'zoom-out' | 'pan-tl-br' | 'pan-bl-tr' | 'pulse'
+
+const MOTIONS: { value: MotionKind; label: string }[] = [
+  { value: 'none',      label: '정지' },
+  { value: 'zoom-in',   label: '🔍↗ 줌인' },
+  { value: 'zoom-out',  label: '🔍↘ 줌아웃' },
+  { value: 'pan-tl-br', label: '↘ 좌상→우하' },
+  { value: 'pan-bl-tr', label: '↗ 좌하→우상' },
+  { value: 'pulse',     label: '💓 펄스' },
+]
+
+type TransitionKind = 'cut' | 'fade' | 'slide-left' | 'slide-right' | 'slide-up' | 'slide-down'
+
+const TRANSITIONS: { value: TransitionKind; label: string }[] = [
+  { value: 'cut',         label: '컷' },
+  { value: 'fade',        label: '페이드' },
+  { value: 'slide-left',  label: '← 슬라이드' },
+  { value: 'slide-right', label: '→ 슬라이드' },
+  { value: 'slide-up',    label: '↑ 슬라이드' },
+  { value: 'slide-down',  label: '↓ 슬라이드' },
+]
+
+interface Scene {
+  /** 안정 클라이언트 id (drag/delete key) */
+  uid: string
+  /** 백엔드 file_id (업로드 후 채워짐) */
+  fileId: string
+  fileName: string
+  isVideo: boolean
+  /** blob URL — 썸네일/프리뷰용 */
+  preview: string
+  durationSec: number
+  transition: TransitionKind
+  transitionMs: number
+  /** 정적 이미지 화면에 적용할 zoompan 모션 (영상 화면은 무시) */
+  motion: MotionKind
+}
+
+function newSceneUid(): string {
+  return `s_${Math.random().toString(36).slice(2, 10)}`
+}
 
 type Device = {
   id: string; name: string;
@@ -14,7 +56,7 @@ type Device = {
   color: string; notch: boolean;
 }
 
-const ASPECTS = ['9:16', '1:1', '16:9'] as const
+const ASPECTS = ['9:16', '1:1', '4:5', '3:4', '16:9', '16:10', '4:3'] as const
 
 const BG_PRESETS = [
   { label: '딥 네이비', value: '#1a1a2e' },
@@ -26,6 +68,45 @@ const BG_PRESETS = [
   { label: '라이트',     value: '#f3f4f6' },
   { label: '블랙',       value: '#0a0a0a' },
 ]
+
+interface BgPresetItem { id: string; label: string }
+interface OverlayEffectItem { id: string; label: string }
+interface DeviceStyleItem { id: string; label: string }
+interface DeviceShadowItem { id: string; label: string }
+interface TemplateItem {
+  id: string
+  label: string
+  tagline?: string
+  device_id: string
+  aspect: string
+  bg_preset: string
+  device_style: string
+  device_shadow: string
+  device_shadow_opacity: number
+  overlay_effect: string
+  motion: string
+}
+interface SceneShapeItem { id: string; label: string }
+
+interface AnimKeyframe {
+  uid: string
+  startSec: number
+  endSec: number
+  motion: MotionKind
+}
+
+function newKfUid(): string {
+  return `kf_${Math.random().toString(36).slice(2, 10)}`
+}
+
+const KF_COLORS: Record<MotionKind, string> = {
+  'none':      '#374151',
+  'zoom-in':   '#3b82f6',
+  'zoom-out':  '#06b6d4',
+  'pan-tl-br': '#f59e0b',
+  'pan-bl-tr': '#ec4899',
+  'pulse':     '#a855f7',
+}
 
 export default function Mockup() {
   const [mode, setMode] = useState<Mode>('url')
@@ -41,6 +122,13 @@ export default function Mockup() {
   const [sourceFileName, setSourceFileName] = useState<string>('')
   const [sourceIsVideo, setSourceIsVideo] = useState(true)
   const [sourcePreview, setSourcePreview] = useState<string>('')
+  // 단일 이미지에 적용할 motion (영상 업로드 시에는 무시)
+  const [uploadMotion, setUploadMotion] = useState<MotionKind>('zoom-in')
+  const [uploadMotionDur, setUploadMotionDur] = useState<number>(4.0)
+
+  // Sequence 모드 — 화면 N개
+  const [scenes, setScenes] = useState<Scene[]>([])
+  const [seqSelectedUid, setSeqSelectedUid] = useState<string>('')
 
   // 공통
   const [devices, setDevices] = useState<Device[]>([])
@@ -50,6 +138,28 @@ export default function Mockup() {
   const [bgFileId, setBgFileId] = useState<string>('')
   const [bgPreview, setBgPreview] = useState<string>('')
   const [deviceScale, setDeviceScale] = useState(0.85)
+  // shots.so 벤치 — procedural 배경 카탈로그 + 마감 효과
+  const [bgPresets, setBgPresets] = useState<BgPresetItem[]>([])
+  const [bgPresetId, setBgPresetId] = useState<string>('')          // '' = preset 미사용 (단색/이미지)
+  const [overlayEffects, setOverlayEffects] = useState<OverlayEffectItem[]>([])
+  const [overlayEffectId, setOverlayEffectId] = useState<string>('none')
+  // shots.so audit 추가분 — 디바이스 스타일/그림자/숨김/모서리
+  const [deviceStyles, setDeviceStyles] = useState<DeviceStyleItem[]>([])
+  const [deviceStyleId, setDeviceStyleId] = useState<string>('default')
+  const [deviceShadows, setDeviceShadows] = useState<DeviceShadowItem[]>([])
+  const [deviceShadowId, setDeviceShadowId] = useState<string>('none')
+  const [deviceShadowOpacity, setDeviceShadowOpacity] = useState<number>(1.0)
+  const [hideMockup, setHideMockup] = useState<boolean>(false)
+  const [radiusOverride, setRadiusOverride] = useState<number | null>(null)
+  const [templates, setTemplates] = useState<TemplateItem[]>([])
+  const [appliedTemplateId, setAppliedTemplateId] = useState<string>('')
+  const [tiltX, setTiltX] = useState<number>(0)
+  const [tiltY, setTiltY] = useState<number>(0)
+  const [sceneShapesItems, setSceneShapesItems] = useState<SceneShapeItem[]>([])
+  const [sceneShapeId, setSceneShapeId] = useState<string>('none')
+  // Animations 타임라인 (upload+이미지일 때만 의미)
+  const [timelineEnabled, setTimelineEnabled] = useState<boolean>(false)
+  const [keyframes, setKeyframes] = useState<AnimKeyframe[]>([])
 
   // 진행
   const [status, setStatus] = useState<Status>('idle')
@@ -69,17 +179,70 @@ export default function Mockup() {
       .then(r => r.ok ? r.json() : { devices: [] })
       .then(d => setDevices(d.devices || []))
       .catch(() => {})
+    mockupAuthedFetch('/api/mockup/backgrounds')
+      .then(r => r.ok ? r.json() : { backgrounds: [] })
+      .then(d => setBgPresets(d.backgrounds || []))
+      .catch(() => {})
+    mockupAuthedFetch('/api/mockup/effects')
+      .then(r => r.ok ? r.json() : { effects: [] })
+      .then(d => setOverlayEffects(d.effects || []))
+      .catch(() => {})
+    mockupAuthedFetch('/api/mockup/device-styles')
+      .then(r => r.ok ? r.json() : { styles: [] })
+      .then(d => setDeviceStyles(d.styles || []))
+      .catch(() => {})
+    mockupAuthedFetch('/api/mockup/device-shadows')
+      .then(r => r.ok ? r.json() : { shadows: [] })
+      .then(d => setDeviceShadows(d.shadows || []))
+      .catch(() => {})
+    mockupAuthedFetch('/api/mockup/templates')
+      .then(r => r.ok ? r.json() : { templates: [] })
+      .then(d => setTemplates(d.templates || []))
+      .catch(() => {})
+    mockupAuthedFetch('/api/mockup/scene-shapes')
+      .then(r => r.ok ? r.json() : { shapes: [] })
+      .then(d => setSceneShapesItems(d.shapes || []))
+      .catch(() => {})
   }, [])
+
+  const applyTemplate = (t: TemplateItem) => {
+    setAppliedTemplateId(t.id)
+    setDeviceId(t.device_id)
+    if ((ASPECTS as readonly string[]).includes(t.aspect)) {
+      setAspect(t.aspect as typeof ASPECTS[number])
+    }
+    setBgPresetId(t.bg_preset || '')
+    setDeviceStyleId(t.device_style || 'default')
+    setDeviceShadowId(t.device_shadow || 'none')
+    setDeviceShadowOpacity(t.device_shadow_opacity ?? 1.0)
+    setOverlayEffectId(t.overlay_effect || 'none')
+    if (mode === 'upload' && !sourceIsVideo) {
+      setUploadMotion((t.motion as MotionKind) || 'none')
+    }
+  }
 
   useEffect(() => () => {
     if (tickerRef.current) window.clearInterval(tickerRef.current)
     if (pollerRef.current) window.clearInterval(pollerRef.current)
     if (sourcePreview) URL.revokeObjectURL(sourcePreview)
     if (bgPreview) URL.revokeObjectURL(bgPreview)
+    scenes.forEach(s => { if (s.preview) URL.revokeObjectURL(s.preview) })
   }, [])
 
   const device = devices.find(d => d.id === deviceId) ?? null
   const busy = ['uploading', 'submitting', 'queued', 'recording', 'compositing'].includes(status)
+  const seqSelectedScene = scenes.find(s => s.uid === seqSelectedUid) ?? scenes[0] ?? null
+  const seqTotalSec = useMemo(() => {
+    if (scenes.length === 0) return 0
+    // 첫 화면은 transition 없음. 이후는 duration − transition_ms 만큼만 누적 (xfade 겹침)
+    let t = scenes[0].durationSec
+    for (let i = 1; i < scenes.length; i++) {
+      const s = scenes[i]
+      const xf = s.transition === 'cut' ? 0 : s.transitionMs / 1000
+      t += s.durationSec - xf
+    }
+    return Math.max(0, t)
+  }, [scenes])
 
   const reset = () => {
     setStatus('idle'); setJobId(''); setProgress(''); setOutputUrl(''); setElapsed(0); setError('')
@@ -119,6 +282,69 @@ export default function Mockup() {
     }
   }
 
+  // ── Sequence helpers ──────────────────────────────────────────────────
+  const addScenes = async (files: FileList | File[]) => {
+    const arr = Array.from(files)
+    if (!arr.length) return
+    setError('')
+    // 1) 낙관적 추가 — 업로드 전이라도 썸네일/순서가 보이게 한다
+    const placeholders: Scene[] = arr.map(f => {
+      const isVideo = f.type.startsWith('video/') || /\.(mp4|webm|mov)$/i.test(f.name)
+      return {
+        uid: newSceneUid(),
+        fileId: '',
+        fileName: f.name,
+        isVideo,
+        preview: URL.createObjectURL(f),
+        durationSec: 2.5,
+        transition: 'fade',
+        transitionMs: 400,
+        motion: isVideo ? 'none' : 'zoom-in',
+      }
+    })
+    setScenes(prev => [...prev, ...placeholders])
+    if (!seqSelectedUid && placeholders[0]) setSeqSelectedUid(placeholders[0].uid)
+    // 2) 순차 업로드 (parallel 도 가능하지만 worker 1대라 큰 이득 없음)
+    setStatus('uploading')
+    try {
+      for (let i = 0; i < arr.length; i++) {
+        const res = await uploadFile(arr[i])
+        const uid = placeholders[i].uid
+        setScenes(prev => prev.map(s => s.uid === uid
+          ? { ...s, fileId: res.file_id, isVideo: res.is_video } : s))
+      }
+      setStatus('idle')
+    } catch (e: any) {
+      setStatus('failed'); setError(e?.message || String(e))
+    }
+  }
+
+  const removeScene = (uid: string) => {
+    setScenes(prev => {
+      const target = prev.find(s => s.uid === uid)
+      if (target?.preview) URL.revokeObjectURL(target.preview)
+      const next = prev.filter(s => s.uid !== uid)
+      if (seqSelectedUid === uid) setSeqSelectedUid(next[0]?.uid || '')
+      return next
+    })
+  }
+
+  const updateScene = (uid: string, patch: Partial<Scene>) => {
+    setScenes(prev => prev.map(s => s.uid === uid ? { ...s, ...patch } : s))
+  }
+
+  const moveScene = (uid: string, dir: -1 | 1) => {
+    setScenes(prev => {
+      const idx = prev.findIndex(s => s.uid === uid)
+      if (idx < 0) return prev
+      const j = idx + dir
+      if (j < 0 || j >= prev.length) return prev
+      const next = prev.slice()
+      ;[next[idx], next[j]] = [next[j], next[idx]]
+      return next
+    })
+  }
+
   const onPickBg = async (f: File | null) => {
     if (bgPreview) URL.revokeObjectURL(bgPreview)
     if (!f) { setBgFileId(''); setBgPreview(''); return }
@@ -135,20 +361,63 @@ export default function Mockup() {
     reset()
     if (mode === 'url' && !url.startsWith('http')) { setError('http(s):// URL 필요'); return }
     if (mode === 'upload' && !sourceFileId) { setError('소스 파일 업로드 필요'); return }
+    if (mode === 'sequence') {
+      if (scenes.length < 2) { setError('화면을 2개 이상 추가하세요'); return }
+      const missing = scenes.find(s => !s.fileId)
+      if (missing) { setError(`업로드 미완료: ${missing.fileName}`); return }
+    }
     startTicker()
     try {
       setStatus('submitting')
-      const r = await mockupAuthedFetch('/api/mockup/generate', {
+      const path = mode === 'sequence' ? '/api/mockup/generate-sequence' : '/api/mockup/generate'
+      const common = {
+        bg_preset: bgPresetId || null,
+        overlay_effect: overlayEffectId === 'none' ? null : overlayEffectId,
+        device_shadow: deviceShadowId === 'none' ? null : deviceShadowId,
+        device_shadow_opacity: deviceShadowOpacity,
+        device_style: deviceStyleId === 'default' ? null : deviceStyleId,
+        hide_mockup: hideMockup,
+        radius_override: radiusOverride,
+        tilt_x: tiltX,
+        tilt_y: tiltY,
+        scene_shapes: sceneShapeId === 'none' ? null : sceneShapeId,
+      }
+      const body = mode === 'sequence'
+        ? {
+            scenes: scenes.map(s => ({
+              file_id: s.fileId,
+              duration_sec: s.durationSec,
+              transition: s.transition,
+              transition_ms: s.transitionMs,
+              motion: s.isVideo ? 'none' : s.motion,
+            })),
+            device_id: deviceId, aspect, bg_color: bgColor,
+            bg_file_id: bgFileId || null,
+            device_scale: deviceScale,
+            ...common,
+          }
+        : {
+            mode, url: mode === 'url' ? url : null,
+            source_file_id: mode === 'upload' ? sourceFileId : null,
+            bg_file_id: bgFileId || null,
+            device_id: deviceId, aspect, bg_color: bgColor,
+            device_scale: deviceScale,
+            viewport_w: viewportW, viewport_h: viewportH,
+            // upload+이미지+motion 이면 motion_dur 가 영상 길이를 결정 — 그 외는 기존 durationSec
+            duration_sec: (mode === 'upload' && !sourceIsVideo && uploadMotion !== 'none')
+              ? uploadMotionDur : durationSec,
+            motion: (mode === 'upload' && !sourceIsVideo && !timelineEnabled) ? uploadMotion : 'none',
+            animation_keyframes:
+              (mode === 'upload' && !sourceIsVideo && timelineEnabled && keyframes.length > 0)
+                ? keyframes.map(k => ({
+                    start_sec: k.startSec, end_sec: k.endSec, motion: k.motion,
+                  }))
+                : null,
+            ...common,
+          }
+      const r = await mockupAuthedFetch(path, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mode, url: mode === 'url' ? url : null,
-          source_file_id: mode === 'upload' ? sourceFileId : null,
-          bg_file_id: bgFileId || null,
-          device_id: deviceId, aspect, bg_color: bgColor,
-          device_scale: deviceScale,
-          viewport_w: viewportW, viewport_h: viewportH,
-          duration_sec: durationSec,
-        }),
+        body: JSON.stringify(body),
       })
       if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`)
       const data = await r.json()
@@ -211,20 +480,64 @@ export default function Mockup() {
         </span>
       </div>
 
+      {/* 템플릿 카드 그리드 — 한 클릭에 디바이스/배경/스타일/그림자/모션/효과 일괄 set */}
+      {templates.length > 0 && (
+        <div style={{ marginBottom: 16, padding: 12, ...cardSt }}>
+          <Label>템플릿 (사전 콤보)</Label>
+          <div style={{ display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
+                        gap: 8 }}>
+            {templates.map(t => (
+              <button key={t.id} onClick={() => !busy && applyTemplate(t)} disabled={busy}
+                title={t.tagline}
+                style={{
+                  textAlign: 'left', padding: 10, borderRadius: 8,
+                  background: 'var(--bg-base)',
+                  border: appliedTemplateId === t.id
+                    ? '2px solid var(--accent)' : '1px solid var(--border)',
+                  cursor: busy ? 'wait' : 'pointer',
+                  display: 'flex', flexDirection: 'column', gap: 4,
+                  minHeight: 70,
+                }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>
+                  {t.label}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.3 }}>
+                  {t.tagline}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 1fr', gap: 18 }}>
         {/* 좌: 입력 */}
         <div style={cardSt}>
           {/* 모드 */}
-          <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-            {(['url', 'upload'] as const).map(m => (
+          <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
+            {(['url', 'upload', 'sequence'] as const).map(m => (
               <button key={m} onClick={() => !busy && setMode(m)} disabled={busy}
                 style={tabBtn(mode === m, busy)}>
-                {m === 'url' ? 'URL 녹화' : '영상/이미지 업로드'}
+                {m === 'url' ? 'URL 녹화'
+                  : m === 'upload' ? '단일 화면 업로드'
+                  : '여러 화면 시퀀스'}
               </button>
             ))}
           </div>
 
-          {mode === 'url' ? (
+          {mode === 'sequence' ? (
+            <SceneList
+              scenes={scenes}
+              selectedUid={seqSelectedUid}
+              onSelect={setSeqSelectedUid}
+              onAddFiles={addScenes}
+              onRemove={removeScene}
+              onUpdate={updateScene}
+              onMove={moveScene}
+              disabled={busy}
+            />
+          ) : mode === 'url' ? (
             <>
               <Label>웹 페이지 URL</Label>
               <input type="url" value={url} onChange={e => setUrl(e.target.value)}
@@ -254,6 +567,62 @@ export default function Mockup() {
                   {sourceFileName} · {sourceIsVideo ? '영상' : '이미지'}
                 </div>
               )}
+              {/* 이미지일 때만 motion preset 노출 — 정적 캡처를 살아있는 mp4로 */}
+              {sourceFileId && !sourceIsVideo && (
+                <div style={{ marginTop: 14, padding: 10,
+                  background: 'var(--bg-base)', borderRadius: 6,
+                  border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between',
+                                alignItems: 'center', marginBottom: 6 }}>
+                    <Label>모션 (이미지 → 영상)</Label>
+                    <label style={{ display: 'flex', gap: 4, alignItems: 'center',
+                                    fontSize: 11, color: 'var(--text-secondary)',
+                                    cursor: busy ? 'wait' : 'pointer' }}>
+                      <input type="checkbox" checked={timelineEnabled} disabled={busy}
+                        onChange={e => setTimelineEnabled(e.target.checked)} />
+                      고급 타임라인
+                    </label>
+                  </div>
+                  {!timelineEnabled ? (
+                    <>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                        {MOTIONS.map(m => (
+                          <button key={m.value}
+                            onClick={() => !busy && setUploadMotion(m.value)} disabled={busy}
+                            style={chipBtn(uploadMotion === m.value, busy)}>
+                            {m.label}
+                          </button>
+                        ))}
+                      </div>
+                      {uploadMotion !== 'none' && (
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 40 }}>길이</span>
+                          <input type="range" min={1.5} max={10} step={0.1}
+                            value={uploadMotionDur} disabled={busy}
+                            onChange={e => setUploadMotionDur(Number(e.target.value))}
+                            style={{ flex: 1 }} />
+                          <span style={{ fontSize: 11, color: 'var(--text-secondary)', width: 36 }}>
+                            {uploadMotionDur.toFixed(1)}s
+                          </span>
+                        </div>
+                      )}
+                      <div style={{ marginTop: 6, fontSize: 10, color: 'var(--text-muted)' }}>
+                        {uploadMotion === 'none'
+                          ? '정지 PNG로 출력'
+                          : '미세 줌·팬으로 영상화 (mp4)'}
+                      </div>
+                    </>
+                  ) : (
+                    <KeyframeList
+                      totalSec={uploadMotionDur}
+                      onTotalChange={setUploadMotionDur}
+                      keyframes={keyframes}
+                      onChange={setKeyframes}
+                      disabled={busy}
+                    />
+                  )}
+                </div>
+              )}
             </>
           )}
 
@@ -261,12 +630,109 @@ export default function Mockup() {
 
           {/* 디바이스 */}
           <Label>디바이스</Label>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
             {devices.map(d => (
               <button key={d.id} onClick={() => !busy && setDeviceId(d.id)} disabled={busy}
                 style={chipBtn(deviceId === d.id, busy)}>{d.name}</button>
             ))}
           </div>
+
+          {/* 디바이스 스타일 (default / outline / glass) */}
+          {deviceStyles.length > 0 && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+              {deviceStyles.map(s => (
+                <button key={s.id} onClick={() => !busy && setDeviceStyleId(s.id)} disabled={busy}
+                  style={{ ...chipBtn(deviceStyleId === s.id, busy), fontSize: 11 }}>
+                  스타일 · {s.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* 디바이스 그림자 */}
+          {deviceShadows.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+                {deviceShadows.map(s => (
+                  <button key={s.id} onClick={() => !busy && setDeviceShadowId(s.id)} disabled={busy}
+                    style={{ ...chipBtn(deviceShadowId === s.id, busy), fontSize: 11 }}>
+                    섀도우 · {s.label}
+                  </button>
+                ))}
+              </div>
+              {deviceShadowId !== 'none' && (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 60 }}>강도</span>
+                  <input type="range" min={0} max={100} step={1}
+                    value={Math.round(deviceShadowOpacity * 100)} disabled={busy}
+                    onChange={e => setDeviceShadowOpacity(Number(e.target.value) / 100)}
+                    style={{ flex: 1 }} />
+                  <span style={{ fontSize: 11, color: 'var(--text-secondary)', width: 36 }}>
+                    {Math.round(deviceShadowOpacity * 100)}%
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* hide mockup + radius override */}
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12,
+                            color: 'var(--text-secondary)', cursor: busy ? 'wait' : 'pointer' }}>
+              <input type="checkbox" checked={hideMockup} disabled={busy}
+                onChange={e => setHideMockup(e.target.checked)} />
+              디바이스 숨기기 (콘텐츠만)
+            </label>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>모서리</span>
+              <input type="number" min={0} max={500} step={10}
+                value={radiusOverride ?? ''} disabled={busy}
+                placeholder="기본"
+                onChange={e => {
+                  const v = e.target.value.trim()
+                  if (!v) { setRadiusOverride(null); return }
+                  const n = parseInt(v, 10)
+                  setRadiusOverride(Number.isFinite(n) ? n : null)
+                }}
+                style={{ width: 70, fontSize: 12, padding: '4px 6px',
+                  border: '1px solid var(--border)', borderRadius: 4,
+                  background: 'var(--bg-base)', color: 'var(--text-body)' }} />
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>px</span>
+            </div>
+          </div>
+
+          {/* Tilt (3D perspective) */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 60 }}>좌우 기울기</span>
+            <input type="range" min={-30} max={30} step={1}
+              value={tiltX} disabled={busy}
+              onChange={e => setTiltX(Number(e.target.value))}
+              style={{ flex: 1 }} />
+            <span style={{ fontSize: 11, color: 'var(--text-secondary)', width: 36 }}>{tiltX}°</span>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 60 }}>위아래 기울기</span>
+            <input type="range" min={-30} max={30} step={1}
+              value={tiltY} disabled={busy}
+              onChange={e => setTiltY(Number(e.target.value))}
+              style={{ flex: 1 }} />
+            <span style={{ fontSize: 11, color: 'var(--text-secondary)', width: 36 }}>{tiltY}°</span>
+          </div>
+
+          {/* Scene shapes */}
+          {sceneShapesItems.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              <Label>씬 도형 (배경 위 추가)</Label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {sceneShapesItems.map(s => (
+                  <button key={s.id} onClick={() => !busy && setSceneShapeId(s.id)} disabled={busy}
+                    style={{ ...chipBtn(sceneShapeId === s.id, busy), fontSize: 11 }}>
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* 비율 */}
           <Label>출력 비율</Label>
@@ -283,7 +749,42 @@ export default function Mockup() {
             onChange={e => setDeviceScale(Number(e.target.value) / 100)}
             disabled={busy} style={{ width: '100%', marginBottom: 14 }} />
 
-          {/* 배경 */}
+          {/* 배경 프리셋 카탈로그 (procedural — preset 선택 시 단색/이미지 위에 우선 적용) */}
+          {bgPresets.length > 0 && (
+            <>
+              <Label>배경 프리셋</Label>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 6, marginBottom: 10 }}>
+                <button onClick={() => !busy && setBgPresetId('')} disabled={busy}
+                  title="단색/이미지 사용"
+                  style={{
+                    aspectRatio: '3/4', borderRadius: 6, fontSize: 10, fontWeight: 600,
+                    background: 'var(--bg-base)', color: 'var(--text-muted)',
+                    border: bgPresetId === '' ? '2px solid var(--accent)' : '1px solid var(--border)',
+                    cursor: busy ? 'wait' : 'pointer',
+                  }}>없음</button>
+                {bgPresets.map(p => (
+                  <button key={p.id} onClick={() => !busy && setBgPresetId(p.id)} disabled={busy}
+                    title={p.label}
+                    style={{
+                      aspectRatio: '3/4', borderRadius: 6, padding: 0,
+                      backgroundImage: `url(${MOCKUP_BASE_URL}/api/mockup/background/${p.id}.png)`,
+                      backgroundSize: 'cover', backgroundPosition: 'center',
+                      border: bgPresetId === p.id ? '2px solid var(--accent)' : '1px solid var(--border)',
+                      cursor: busy ? 'wait' : 'pointer',
+                      position: 'relative', overflow: 'hidden',
+                    }}>
+                    <span style={{
+                      position: 'absolute', bottom: 2, left: 0, right: 0,
+                      fontSize: 9, fontWeight: 600, color: '#fff',
+                      textShadow: '0 1px 2px rgba(0,0,0,0.6)',
+                    }}>{p.label}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {/* 배경 색상 (preset 미선택 시 사용) */}
           <Label>배경 색상</Label>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
             {BG_PRESETS.map(p => (
@@ -294,13 +795,20 @@ export default function Mockup() {
                   background: p.value,
                   border: bgColor === p.value ? '2px solid var(--accent)' : '1px solid var(--border)',
                   cursor: busy ? 'wait' : 'pointer',
+                  opacity: bgPresetId ? 0.4 : 1,
                 }} />
             ))}
             <input type="color" value={bgColor} onChange={e => setBgColor(e.target.value)}
               disabled={busy}
               style={{ width: 28, height: 28, padding: 0, border: '1px solid var(--border)',
-                borderRadius: 6, cursor: busy ? 'wait' : 'pointer', background: 'transparent' }} />
+                borderRadius: 6, cursor: busy ? 'wait' : 'pointer', background: 'transparent',
+                opacity: bgPresetId ? 0.4 : 1 }} />
           </div>
+          {bgPresetId && (
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 6 }}>
+              ※ 배경 프리셋 사용 중 — 단색/이미지는 무시됨
+            </div>
+          )}
 
           <Label>배경 이미지 (선택)</Label>
           <FilePicker preview={bgPreview} previewKind="image"
@@ -309,6 +817,26 @@ export default function Mockup() {
             <div style={{ marginTop: 4, fontSize: 11, color: 'var(--success, #10b981)' }}>
               ✓ 배경 이미지 적용됨 (단색보다 우선)
             </div>
+          )}
+
+          {/* 마감 효과 (영상 출력에만 적용) */}
+          {overlayEffects.length > 0 && (
+            <>
+              <div style={{ height: 14 }} />
+              <Label>마감 효과 (영상)</Label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+                {overlayEffects.map(e => (
+                  <button key={e.id}
+                    onClick={() => !busy && setOverlayEffectId(e.id)} disabled={busy}
+                    style={chipBtn(overlayEffectId === e.id, busy)}>
+                    {e.label}
+                  </button>
+                ))}
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 6 }}>
+                VHS·그레인·글리치 등 — mp4 출력에만 적용됨
+              </div>
+            </>
           )}
 
           <button onClick={submit} disabled={busy}
@@ -326,7 +854,14 @@ export default function Mockup() {
 
         {/* 우: 프리뷰 + 결과 */}
         <div style={cardSt}>
-          <Label>미리보기</Label>
+          <Label>
+            미리보기
+            {mode === 'sequence' && scenes.length > 0 && (
+              <span style={{ marginLeft: 6, fontWeight: 500, color: 'var(--text-muted)' }}>
+                · 선택된 화면 (총 {scenes.length}개 · 약 {seqTotalSec.toFixed(1)}s)
+              </span>
+            )}
+          </Label>
           {previewBox && device && (
             <div style={{
               width: previewBox.canvasW, height: previewBox.canvasH,
@@ -335,17 +870,46 @@ export default function Mockup() {
               borderRadius: 6, overflow: 'hidden',
               border: '1px solid var(--border)',
             }}>
-              <img
-                src={`${BASE}/api/mockup/frame/${device.id}.png`}
-                alt={device.name}
-                style={{
-                  position: 'absolute',
-                  width: previewBox.devW, height: previewBox.devH,
-                  left: (previewBox.canvasW - previewBox.devW) / 2,
-                  top: (previewBox.canvasH - previewBox.devH) / 2,
-                  pointerEvents: 'none',
-                }}
-              />
+              {/* screen 영역 (디바이스 frame 아래 레이어) — sequence 모드일 때 선택된 화면 표시 */}
+              {mode === 'sequence' && seqSelectedScene && (() => {
+                const scale = previewBox.devH / device.body_h
+                const scrL = (previewBox.canvasW - previewBox.devW) / 2 + device.screen_x * scale
+                const scrT = (previewBox.canvasH - previewBox.devH) / 2 + device.screen_y * scale
+                const scrW = device.screen_w * scale
+                const scrH = device.screen_h * scale
+                const common: React.CSSProperties = {
+                  position: 'absolute', left: scrL, top: scrT, width: scrW, height: scrH,
+                  objectFit: 'cover', borderRadius: device.screen_radius * scale,
+                  pointerEvents: 'none', background: '#000',
+                }
+                return seqSelectedScene.isVideo
+                  ? <video src={seqSelectedScene.preview} muted autoPlay loop playsInline style={common} />
+                  : <img src={seqSelectedScene.preview} alt="" style={common} />
+              })()}
+              {!hideMockup && (() => {
+                const params = new URLSearchParams()
+                if (deviceStyleId && deviceStyleId !== 'default') params.set('style', deviceStyleId)
+                if (deviceShadowId && deviceShadowId !== 'none') {
+                  params.set('shadow', deviceShadowId)
+                  params.set('shadow_opacity', deviceShadowOpacity.toFixed(2))
+                }
+                if (radiusOverride != null) params.set('radius', String(radiusOverride))
+                const qs = params.toString()
+                const url = `${MOCKUP_BASE_URL}/api/mockup/frame/${device.id}.png${qs ? '?' + qs : ''}`
+                return (
+                  <img
+                    src={url}
+                    alt={device.name}
+                    style={{
+                      position: 'absolute',
+                      width: previewBox.devW, height: previewBox.devH,
+                      left: (previewBox.canvasW - previewBox.devW) / 2,
+                      top: (previewBox.canvasH - previewBox.devH) / 2,
+                      pointerEvents: 'none',
+                    }}
+                  />
+                )
+              })()}
             </div>
           )}
 
@@ -495,3 +1059,302 @@ const chipBtn = (active: boolean, busy: boolean): React.CSSProperties => ({
   color: active ? 'var(--accent)' : 'var(--text-secondary)',
   cursor: busy ? 'wait' : 'pointer', opacity: busy ? 0.6 : 1,
 })
+
+// ── Scene list (시퀀스 모드) ─────────────────────────────────────────────
+
+function SceneList(props: {
+  scenes: Scene[]
+  selectedUid: string
+  onSelect: (uid: string) => void
+  onAddFiles: (files: FileList | File[]) => void
+  onRemove: (uid: string) => void
+  onUpdate: (uid: string, patch: Partial<Scene>) => void
+  onMove: (uid: string, dir: -1 | 1) => void
+  disabled?: boolean
+}) {
+  const { scenes, selectedUid, onSelect, onAddFiles, onRemove, onUpdate, onMove, disabled } = props
+  const inputId = 'mockup-scene-files'
+  return (
+    <div>
+      <Label>화면 시퀀스 ({scenes.length}개)</Label>
+      <div style={{ marginBottom: 10, fontSize: 11, color: 'var(--text-muted)' }}>
+        앱 캡처 이미지 또는 짧은 영상을 여러 개 올리면 한 줄로 이어 붙여요.
+        화면별로 길이와 화면→화면 전환을 조절할 수 있어요.
+      </div>
+
+      {scenes.length === 0 ? (
+        <label htmlFor={inputId}
+          style={{ display: 'block', padding: 32, textAlign: 'center',
+            cursor: disabled ? 'wait' : 'pointer',
+            border: '1.5px dashed var(--border)', borderRadius: 6,
+            background: 'var(--bg-base)', color: 'var(--text-muted)', fontSize: 12 }}>
+          + 화면 추가 (여러 개 선택 가능)
+        </label>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
+          {scenes.map((s, idx) => {
+            const isFirst = idx === 0
+            const active = s.uid === selectedUid
+            return (
+              <div key={s.uid}
+                onClick={() => onSelect(s.uid)}
+                style={{
+                  display: 'grid', gridTemplateColumns: '54px 1fr auto', gap: 10,
+                  padding: 8, alignItems: 'center',
+                  border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+                  borderRadius: 6, background: active ? 'rgba(99,102,241,0.08)' : 'var(--bg-base)',
+                  cursor: 'pointer',
+                }}>
+                {/* 썸네일 */}
+                <div style={{ width: 54, height: 96, borderRadius: 4, overflow: 'hidden',
+                  background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {s.preview
+                    ? (s.isVideo
+                        ? <video src={s.preview} muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        : <img src={s.preview} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />)
+                    : <span style={{ fontSize: 10, color: '#888' }}>...</span>}
+                </div>
+
+                {/* 메타 / 컨트롤 */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden',
+                      textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      #{idx + 1} · {s.fileName}
+                    </span>
+                    <span style={{ fontSize: 10, color: s.fileId ? 'var(--success, #10b981)' : 'var(--text-muted)' }}>
+                      {s.fileId ? '✓' : '업로드 중'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 40 }}>길이</span>
+                    <input type="range" min={0.5} max={10} step={0.1}
+                      value={s.durationSec} disabled={disabled}
+                      onChange={e => onUpdate(s.uid, { durationSec: Number(e.target.value) })}
+                      onClick={e => e.stopPropagation()}
+                      style={{ flex: 1 }} />
+                    <span style={{ fontSize: 10, color: 'var(--text-secondary)', width: 32 }}>
+                      {s.durationSec.toFixed(1)}s
+                    </span>
+                  </div>
+                  {!s.isVideo && (
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 40 }}>모션</span>
+                      <select value={s.motion} disabled={disabled}
+                        onChange={e => onUpdate(s.uid, { motion: e.target.value as MotionKind })}
+                        onClick={e => e.stopPropagation()}
+                        style={{ flex: 1, fontSize: 11, padding: '2px 4px',
+                          background: 'var(--bg-elevated)', color: 'var(--text-body)',
+                          border: '1px solid var(--border)', borderRadius: 4 }}>
+                        {MOTIONS.map(m => (
+                          <option key={m.value} value={m.value}>{m.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {!isFirst && (
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 40 }}>전환</span>
+                      <select value={s.transition} disabled={disabled}
+                        onChange={e => onUpdate(s.uid, { transition: e.target.value as TransitionKind })}
+                        onClick={e => e.stopPropagation()}
+                        style={{ fontSize: 11, padding: '2px 4px',
+                          background: 'var(--bg-elevated)', color: 'var(--text-body)',
+                          border: '1px solid var(--border)', borderRadius: 4 }}>
+                        {TRANSITIONS.map(t => (
+                          <option key={t.value} value={t.value}>{t.label}</option>
+                        ))}
+                      </select>
+                      {s.transition !== 'cut' && (
+                        <>
+                          <input type="range" min={50} max={1500} step={50}
+                            value={s.transitionMs} disabled={disabled}
+                            onChange={e => onUpdate(s.uid, { transitionMs: Number(e.target.value) })}
+                            onClick={e => e.stopPropagation()}
+                            style={{ flex: 1, minWidth: 60 }} />
+                          <span style={{ fontSize: 10, color: 'var(--text-secondary)', width: 38 }}>
+                            {s.transitionMs}ms
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* 액션 */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}
+                  onClick={e => e.stopPropagation()}>
+                  <button onClick={() => onMove(s.uid, -1)} disabled={disabled || idx === 0}
+                    style={smallIconBtn} title="위로">↑</button>
+                  <button onClick={() => onMove(s.uid, 1)} disabled={disabled || idx === scenes.length - 1}
+                    style={smallIconBtn} title="아래로">↓</button>
+                  <button onClick={() => onRemove(s.uid)} disabled={disabled}
+                    style={{ ...smallIconBtn, color: 'var(--error)' }} title="삭제">✕</button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      <label htmlFor={inputId}
+        style={{
+          display: 'inline-block', padding: '8px 14px', fontSize: 12, fontWeight: 600,
+          cursor: disabled ? 'wait' : 'pointer',
+          background: 'var(--bg-elevated)', color: 'var(--text-body)',
+          border: '1px solid var(--border)', borderRadius: 6, opacity: disabled ? 0.6 : 1,
+        }}>+ 화면 추가</label>
+      <input id={inputId} type="file" accept="image/*,video/*" multiple
+        disabled={disabled}
+        onChange={e => {
+          if (e.target.files) onAddFiles(e.target.files)
+          e.target.value = ''
+        }}
+        style={{ display: 'none' }} />
+    </div>
+  )
+}
+
+const smallIconBtn: React.CSSProperties = {
+  width: 24, height: 22, fontSize: 11,
+  background: 'var(--bg-elevated)', color: 'var(--text-secondary)',
+  border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+}
+
+// ── KeyframeList (Animations 타임라인) ──────────────────────────────────
+
+function KeyframeList(props: {
+  totalSec: number
+  onTotalChange: (v: number) => void
+  keyframes: AnimKeyframe[]
+  onChange: (kfs: AnimKeyframe[]) => void
+  disabled?: boolean
+}) {
+  const { totalSec, onTotalChange, keyframes, onChange, disabled } = props
+
+  const addKf = () => {
+    const last = keyframes[keyframes.length - 1]
+    const startSec = last ? Math.min(last.endSec, totalSec - 0.5) : 0
+    const endSec = Math.min(totalSec, startSec + 2.0)
+    onChange([...keyframes, {
+      uid: newKfUid(),
+      startSec, endSec,
+      motion: 'zoom-in',
+    }])
+  }
+
+  const update = (uid: string, patch: Partial<AnimKeyframe>) => {
+    onChange(keyframes.map(k => k.uid === uid ? { ...k, ...patch } : k))
+  }
+
+  const remove = (uid: string) => {
+    onChange(keyframes.filter(k => k.uid !== uid))
+  }
+
+  // 가로 막대 시각화 — 정렬된 keyframes 를 0~totalSec 비율로 배치
+  const sorted = [...keyframes].sort((a, b) => a.startSec - b.startSec)
+
+  return (
+    <div>
+      {/* 전체 길이 */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 60 }}>전체 길이</span>
+        <input type="range" min={2} max={20} step={0.5}
+          value={totalSec} disabled={disabled}
+          onChange={e => onTotalChange(Number(e.target.value))}
+          style={{ flex: 1 }} />
+        <span style={{ fontSize: 11, color: 'var(--text-secondary)', width: 36 }}>
+          {totalSec.toFixed(1)}s
+        </span>
+      </div>
+
+      {/* 가로 막대 시각화 */}
+      <div style={{
+        position: 'relative', height: 28, background: '#111', borderRadius: 4,
+        marginBottom: 10, border: '1px solid var(--border)', overflow: 'hidden',
+      }}>
+        {sorted.map(k => {
+          const left = `${(k.startSec / Math.max(0.1, totalSec)) * 100}%`
+          const width = `${((k.endSec - k.startSec) / Math.max(0.1, totalSec)) * 100}%`
+          return (
+            <div key={k.uid} title={`${k.motion} ${k.startSec.toFixed(1)}~${k.endSec.toFixed(1)}s`}
+              style={{
+                position: 'absolute', top: 0, bottom: 0, left, width,
+                background: KF_COLORS[k.motion] || '#374151', opacity: 0.85,
+                borderRight: '1px solid #000', fontSize: 9, color: '#fff',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                overflow: 'hidden', whiteSpace: 'nowrap',
+              }}>
+              {k.motion}
+            </div>
+          )
+        })}
+        {/* 시간 눈금 — 1초마다 */}
+        {Array.from({ length: Math.floor(totalSec) + 1 }, (_, i) => (
+          <div key={i} style={{
+            position: 'absolute', top: 0, bottom: 0,
+            left: `${(i / Math.max(0.1, totalSec)) * 100}%`,
+            width: 1, background: 'rgba(255,255,255,0.15)',
+          }} />
+        ))}
+      </div>
+
+      {/* 키프레임 리스트 */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+        {keyframes.length === 0 && (
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: 6 }}>
+            아직 키프레임 없음 — "+ 키프레임 추가"로 시작하세요.
+          </div>
+        )}
+        {keyframes.map((k, idx) => (
+          <div key={k.uid} style={{
+            display: 'grid',
+            gridTemplateColumns: '24px 60px 50px 60px 50px 1fr 24px',
+            gap: 6, alignItems: 'center', padding: 6,
+            background: 'var(--bg-elevated)', borderRadius: 4,
+            border: `1px solid ${KF_COLORS[k.motion]}40`,
+          }}>
+            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>#{idx + 1}</span>
+            <input type="number" min={0} max={totalSec} step={0.1}
+              value={k.startSec} disabled={disabled}
+              onChange={e => update(k.uid, { startSec: Number(e.target.value) })}
+              style={kfNumSt} />
+            <span style={{ fontSize: 10, color: 'var(--text-muted)', textAlign: 'center' }}>→</span>
+            <input type="number" min={0} max={totalSec} step={0.1}
+              value={k.endSec} disabled={disabled}
+              onChange={e => update(k.uid, { endSec: Number(e.target.value) })}
+              style={kfNumSt} />
+            <span style={{ fontSize: 10, color: 'var(--text-muted)', textAlign: 'center' }}>s</span>
+            <select value={k.motion} disabled={disabled}
+              onChange={e => update(k.uid, { motion: e.target.value as MotionKind })}
+              style={{ fontSize: 11, padding: '3px 4px',
+                background: 'var(--bg-base)', color: 'var(--text-body)',
+                border: '1px solid var(--border)', borderRadius: 4 }}>
+              {MOTIONS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+            </select>
+            <button onClick={() => remove(k.uid)} disabled={disabled}
+              style={{ ...smallIconBtn, color: 'var(--error)' }} title="삭제">✕</button>
+          </div>
+        ))}
+      </div>
+
+      <button onClick={addKf} disabled={disabled || keyframes.length >= 20}
+        style={{
+          padding: '6px 12px', fontSize: 11, fontWeight: 600,
+          background: 'var(--bg-elevated)', color: 'var(--text-body)',
+          border: '1px solid var(--border)', borderRadius: 6,
+          cursor: disabled ? 'wait' : 'pointer',
+        }}>+ 키프레임 추가</button>
+      <div style={{ marginTop: 6, fontSize: 10, color: 'var(--text-muted)' }}>
+        구간 사이 빈 공간은 자동으로 정지로 채워져요. 겹치는 구간은 뒤 keyframe이 이깁니다.
+      </div>
+    </div>
+  )
+}
+
+const kfNumSt: React.CSSProperties = {
+  width: '100%', padding: '3px 4px', fontSize: 11,
+  border: '1px solid var(--border)', borderRadius: 4,
+  background: 'var(--bg-base)', color: 'var(--text-body)',
+}

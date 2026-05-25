@@ -20,7 +20,7 @@
     "package:portable": "npm run build && electron-builder --win portable --x64",
     "release:patch": "npm version patch --no-git-tag-version",
     "release:minor": "npm version minor --no-git-tag-version",
-    "publish:supabase": "npm run package && node scripts/publish-supabase.mjs"
+    "publish": "node scripts/publish-github.mjs"
   },
   "dependencies": {
     "@ffprobe-installer/ffprobe": "^2.1.2",

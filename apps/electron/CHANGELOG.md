@@ -7,8 +7,17 @@
 
 배포 (한 줄):
 ```
-npm run release:minor && npm run publish:supabase
+npm run release:minor && npm run publish
 ```
+GitHub Releases로 publish됨 (https://github.com/dlalsgur78885-dotcom/reels-bench/releases).
+Supabase Storage Free tier 50MB per-file limit 때문에 호스팅을 옮김.
+electron-builder가 GH_TOKEN을 `gh auth token`에서 자동 추출 → 추가 환경
+변수 설정 없이 동작.
+
+기존에 0.1.x를 깐 사용자는 한 번만 수동으로 0.2.0 .exe를 받아야 함
+(`publish.url`이 Supabase → GitHub로 바뀌어 0.1.x 클라이언트의
+auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 정상
+인앱 알람.
 
 ---
 

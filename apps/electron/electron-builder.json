@@ -44,8 +44,10 @@
     "shortcutName": "Reels Studio"
   },
   "publish": {
-    "provider": "generic",
-    "url": "https://mrpbovbxtablvawszhey.supabase.co/storage/v1/object/public/electron-releases/win",
-    "channel": "latest"
+    "provider": "github",
+    "owner": "dlalsgur78885-dotcom",
+    "repo": "reels-bench",
+    "releaseType": "release",
+    "vPrefixedTagName": true
   }
 }

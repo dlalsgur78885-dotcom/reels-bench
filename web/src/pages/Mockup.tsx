@@ -2,6 +2,29 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { mockupAuthedFetch, MOCKUP_BASE as MOCKUP_BASE_URL } from '../api'
 
+// 카탈로그 endpoint 응답 5분 sessionStorage 캐시 — 재진입 즉시 반영
+const CATALOG_TTL_MS = 5 * 60 * 1000
+function cachedCatalog<T>(path: string, setter: (v: T) => void) {
+  const key = `mockup_cat_${path}`
+  try {
+    const raw = sessionStorage.getItem(key)
+    if (raw) {
+      const { t, v } = JSON.parse(raw)
+      if (Date.now() - t < CATALOG_TTL_MS) {
+        setter(v as T)
+      }
+    }
+  } catch {}
+  mockupAuthedFetch(path)
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      if (!d) return
+      setter(d as T)
+      try { sessionStorage.setItem(key, JSON.stringify({ t: Date.now(), v: d })) } catch {}
+    })
+    .catch(() => {})
+}
+
 type Mode = 'url' | 'upload' | 'sequence'
 type Status = 'idle' | 'uploading' | 'submitting' | 'queued' | 'recording' | 'compositing' | 'done' | 'failed'
 
@@ -188,34 +211,13 @@ export default function Mockup() {
   const startedAtRef = useRef(0)
 
   useEffect(() => {
-    mockupAuthedFetch('/api/mockup/devices')
-      .then(r => r.ok ? r.json() : { devices: [] })
-      .then(d => setDevices(d.devices || []))
-      .catch(() => {})
-    mockupAuthedFetch('/api/mockup/backgrounds')
-      .then(r => r.ok ? r.json() : { backgrounds: [] })
-      .then(d => setBgPresets(d.backgrounds || []))
-      .catch(() => {})
-    mockupAuthedFetch('/api/mockup/effects')
-      .then(r => r.ok ? r.json() : { effects: [] })
-      .then(d => setOverlayEffects(d.effects || []))
-      .catch(() => {})
-    mockupAuthedFetch('/api/mockup/device-styles')
-      .then(r => r.ok ? r.json() : { styles: [] })
-      .then(d => setDeviceStyles(d.styles || []))
-      .catch(() => {})
-    mockupAuthedFetch('/api/mockup/device-shadows')
-      .then(r => r.ok ? r.json() : { shadows: [] })
-      .then(d => setDeviceShadows(d.shadows || []))
-      .catch(() => {})
-    mockupAuthedFetch('/api/mockup/templates')
-      .then(r => r.ok ? r.json() : { templates: [] })
-      .then(d => setTemplates(d.templates || []))
-      .catch(() => {})
-    mockupAuthedFetch('/api/mockup/scene-shapes')
-      .then(r => r.ok ? r.json() : { shapes: [] })
-      .then(d => setSceneShapesItems(d.shapes || []))
-      .catch(() => {})
+    cachedCatalog<{devices: Device[]}>('/api/mockup/devices', d => setDevices(d.devices || []))
+    cachedCatalog<{backgrounds: BgPresetItem[]}>('/api/mockup/backgrounds', d => setBgPresets(d.backgrounds || []))
+    cachedCatalog<{effects: OverlayEffectItem[]}>('/api/mockup/effects', d => setOverlayEffects(d.effects || []))
+    cachedCatalog<{styles: DeviceStyleItem[]}>('/api/mockup/device-styles', d => setDeviceStyles(d.styles || []))
+    cachedCatalog<{shadows: DeviceShadowItem[]}>('/api/mockup/device-shadows', d => setDeviceShadows(d.shadows || []))
+    cachedCatalog<{templates: TemplateItem[]}>('/api/mockup/templates', d => setTemplates(d.templates || []))
+    cachedCatalog<{shapes: SceneShapeItem[]}>('/api/mockup/scene-shapes', d => setSceneShapesItems(d.shapes || []))
   }, [])
 
   const applyTemplate = (t: TemplateItem) => {
@@ -736,11 +738,14 @@ export default function Mockup() {
                       title={s.label}
                       style={{
                         aspectRatio: '1/1.4', borderRadius: 6, padding: 0,
-                        background: `center/contain no-repeat #f5f5f5 url(${url})`,
+                        background: '#f5f5f5',
                         border: deviceStyleId === s.id ? '2px solid var(--accent)' : '1px solid var(--border)',
                         cursor: busy ? 'wait' : 'pointer',
                         position: 'relative', overflow: 'hidden',
                       }}>
+                      <img src={url} loading="lazy" alt={s.label}
+                        style={{ position: 'absolute', inset: 0,
+                                 width: '100%', height: '100%', objectFit: 'contain' }} />
                       <span style={{
                         position: 'absolute', bottom: 2, left: 0, right: 0,
                         fontSize: 9, fontWeight: 600, color: '#fff',
@@ -772,11 +777,14 @@ export default function Mockup() {
                       title={s.label}
                       style={{
                         aspectRatio: '1/1.4', borderRadius: 6, padding: 0,
-                        background: `center/contain no-repeat #f0f0f0 url(${url})`,
+                        background: '#f0f0f0',
                         border: deviceShadowId === s.id ? '2px solid var(--accent)' : '1px solid var(--border)',
                         cursor: busy ? 'wait' : 'pointer',
                         position: 'relative', overflow: 'hidden',
                       }}>
+                      <img src={url} loading="lazy" alt={s.label}
+                        style={{ position: 'absolute', inset: 0,
+                                 width: '100%', height: '100%', objectFit: 'contain' }} />
                       <span style={{
                         position: 'absolute', bottom: 2, left: 0, right: 0,
                         fontSize: 9, fontWeight: 600, color: '#fff',
@@ -835,11 +843,14 @@ export default function Mockup() {
                     title={p.label}
                     style={{
                       aspectRatio: '1/1.4', borderRadius: 6, padding: 0,
-                      background: `center/contain no-repeat #f0f0f0 url(${url})`,
+                      background: '#f0f0f0',
                       border: radiusOverride === p.v ? '2px solid var(--accent)' : '1px solid var(--border)',
                       cursor: busy ? 'wait' : 'pointer',
                       position: 'relative', overflow: 'hidden',
                     }}>
+                    <img src={url} loading="lazy" alt={p.label}
+                      style={{ position: 'absolute', inset: 0,
+                               width: '100%', height: '100%', objectFit: 'contain' }} />
                     <span style={{
                       position: 'absolute', bottom: 2, left: 0, right: 0,
                       fontSize: 9, fontWeight: 600, color: '#fff',
@@ -915,12 +926,14 @@ export default function Mockup() {
                       title={s.label}
                       style={{
                         aspectRatio: '8/5', borderRadius: 6, padding: 0,
-                        backgroundImage: `url(${url})`,
-                        backgroundSize: 'cover', backgroundPosition: 'center',
+                        background: '#222',
                         border: sceneShapeId === s.id ? '2px solid var(--accent)' : '1px solid var(--border)',
                         cursor: busy ? 'wait' : 'pointer',
                         position: 'relative', overflow: 'hidden',
                       }}>
+                      <img src={url} loading="lazy" alt={s.label}
+                        style={{ position: 'absolute', inset: 0,
+                                 width: '100%', height: '100%', objectFit: 'cover' }} />
                       <span style={{
                         position: 'absolute', bottom: 2, left: 0, right: 0,
                         fontSize: 9, fontWeight: 600, color: '#fff',

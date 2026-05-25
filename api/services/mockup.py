@@ -868,6 +868,33 @@ def render_bg_preset_thumbnail(preset_id: str) -> bytes:
     return buf.getvalue()
 
 
+def render_frame_preview(device_id: str, *, style: str | None = None,
+                         radius_override: int | None = None,
+                         shadow: str | None = None,
+                         shadow_opacity: float = 1.0,
+                         shadow_angle: float | None = None,
+                         dummy_bg_id: str = "sunset") -> bytes:
+    """디바이스 frame + screen 영역에 procedural bg 합성된 PNG.
+    STYLE/SHADOW 카드 미리보기용 — 흰 카드 배경에 외곽 흑선만 보이는 문제 해결.
+    frame 의 alpha cutout 통해 bg 가 디바이스 화면처럼 보임.
+    """
+    frame_png_bytes = render_device_frame(device_id, style=style,
+                                           radius_override=radius_override)
+    if shadow and shadow in DEVICE_SHADOWS and shadow != "none":
+        frame_png_bytes = add_device_shadow(frame_png_bytes, shadow,
+                                             opacity=shadow_opacity,
+                                             angle_deg=shadow_angle)
+    frame_img = Image.open(io.BytesIO(frame_png_bytes)).convert("RGBA")
+    W, H = frame_img.size
+    bg = render_bg_preset(dummy_bg_id, W, H).convert("RGBA")
+    out = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    out.alpha_composite(bg)
+    out.alpha_composite(frame_img)
+    buf = io.BytesIO()
+    out.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
 def render_scene_shape_thumbnail(shape_id: str) -> bytes:
     """SCENE 도형 1종을 어두운 배경 위에 미리보기 PNG (160x100)."""
     base = Image.new("RGB", (160, 100), (40, 50, 70))

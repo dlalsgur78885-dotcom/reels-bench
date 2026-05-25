@@ -160,6 +160,28 @@ def templates(request: Request):
     return {"templates": out}
 
 
+@app.get("/api/mockup/frame-preview/{device_id}.png")
+def frame_preview_png(device_id: str, request: Request,
+                      style: str | None = None,
+                      radius: int | None = None,
+                      shadow: str | None = None,
+                      shadow_opacity: float = 1.0,
+                      shadow_angle: float | None = None,
+                      bg: str = "sunset"):
+    """STYLE/SHADOW 카드용 frame + 더미 screen content 합성 미리보기 PNG. public."""
+    if device_id not in mockup_svc.DEVICES:
+        raise HTTPException(404, "unknown device")
+    use_style = style if (style and style in mockup_svc.DEVICE_STYLES) else None
+    use_bg = bg if bg in mockup_svc.BG_PRESETS else "sunset"
+    png = mockup_svc.render_frame_preview(
+        device_id, style=use_style, radius_override=radius,
+        shadow=shadow, shadow_opacity=max(0.0, min(1.0, shadow_opacity)),
+        shadow_angle=shadow_angle, dummy_bg_id=use_bg,
+    )
+    return Response(content=png, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
 @app.get("/api/mockup/device-styles")
 def device_styles(request: Request):
     auth_svc.require_user(request)

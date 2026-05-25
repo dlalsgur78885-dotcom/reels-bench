@@ -812,7 +812,7 @@ export default function Mockup() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
                 {deviceStyles.map(s => {
                   const did = device?.id || 'iphone-16-pro'
-                  const url = `${MOCKUP_BASE_URL}/api/mockup/frame/${did}.png?style=${encodeURIComponent(s.id)}`
+                  const url = `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?style=${encodeURIComponent(s.id)}&bg=sunset`
                   return (
                     <button key={s.id} onClick={() => !busy && setDeviceStyleId(s.id)} disabled={busy}
                       title={s.label}
@@ -851,8 +851,8 @@ export default function Mockup() {
                 {deviceShadows.map(s => {
                   const did = device?.id || 'iphone-16-pro'
                   const url = s.id === 'none'
-                    ? `${MOCKUP_BASE_URL}/api/mockup/frame/${did}.png`
-                    : `${MOCKUP_BASE_URL}/api/mockup/frame/${did}.png?shadow=${encodeURIComponent(s.id)}&shadow_opacity=1`
+                    ? `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?bg=mesh-cool`
+                    : `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?shadow=${encodeURIComponent(s.id)}&shadow_opacity=1&bg=mesh-cool`
                   return (
                     <button key={s.id} onClick={() => !busy && setDeviceShadowId(s.id)} disabled={busy}
                       title={s.label}
@@ -917,8 +917,8 @@ export default function Mockup() {
               ].map(p => {
                 const did = device?.id || 'iphone-16-pro'
                 const url = p.v == null
-                  ? `${MOCKUP_BASE_URL}/api/mockup/frame/${did}.png`
-                  : `${MOCKUP_BASE_URL}/api/mockup/frame/${did}.png?radius=${p.v}`
+                  ? `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?bg=ocean`
+                  : `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?radius=${p.v}&bg=ocean`
                 return (
                   <button key={p.label}
                     onClick={() => !busy && setRadiusOverride(p.v)} disabled={busy}

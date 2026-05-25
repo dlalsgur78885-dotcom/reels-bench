@@ -6192,43 +6192,9 @@ def delete_character_group(gid: str, request: Request):
     return {"deleted": True}
 
 
-# ── 영상 편집기 (Reels Studio Electron 앱) 다운로드 ──
-
-_EDITOR_RELEASE_BASE = (
-    "https://mrpbovbxtablvawszhey.supabase.co/storage/v1/object/public"
-    "/electron-releases/win"
-)
-
-
-@app.get("/api/editor/latest")
-def editor_latest_release(request: Request):
-    """영상 편집기(Reels Studio) 최신 릴리스 정보 — Supabase Storage의 latest.yml 파싱."""
-    auth_svc.require_user(request)
-    from urllib.parse import quote
-    try:
-        r = requests.get(f"{_EDITOR_RELEASE_BASE}/latest.yml", timeout=10)
-    except Exception as e:
-        raise HTTPException(502, f"릴리스 정보 조회 실패: {e}")
-    if r.status_code != 200:
-        raise HTTPException(404, "게시된 영상 편집기 릴리스가 없습니다")
-    txt = r.text
-
-    def _m(pat):
-        x = re.search(pat, txt, re.M)
-        return x.group(1).strip().strip("'\"") if x else None
-
-    path = _m(r'^path:\s*(.+)$')
-    if not path:
-        raise HTTPException(502, "릴리스 파일명을 찾을 수 없습니다")
-    sm = re.search(r'^\s+size:\s*(\d+)', txt, re.M)
-    return {
-        "version": _m(r'^version:\s*(.+)$'),
-        "filename": path,
-        "download_url": f"{_EDITOR_RELEASE_BASE}/{quote(path)}",
-        "release_date": _m(r'^releaseDate:\s*(.+)$'),
-        "size": int(sm.group(1)) if sm else None,
-        "platform": "windows",
-    }
+# /api/editor/latest 은 0.2.0부터 GitHub Releases 기반 — server.py 아래쪽
+# `editor_latest`에 한 번만 등록. 옛 Supabase 파서는 50MB 한도 + 잔여
+# manifest 충돌 이슈로 제거됨.
 
 
 @app.get("/api/seedance/status")
@@ -7952,12 +7918,15 @@ _EDITOR_CACHE_TTL = 120.0  # 2분 — 새 릴리스 알람 지연 허용
 
 
 @app.get("/api/editor/latest")
-def editor_latest():
+def editor_latest(request: Request):
     """영상 편집기(Electron) 최신 NSIS installer 정보.
 
     응답 shape: { version, filename, download_url, release_date, size, platform }.
     asset이 없으면 download_url='' 로 graceful — UI 가 "준비 중" 표시.
+    옛 endpoint와 동일하게 require_user — 로그인된 사용자만 다운로드 페이지에서
+    호출 가능 (same-origin이면 middleware는 통과, require_user가 user 검증).
     """
+    auth_svc.require_user(request)
     import time as _time
     now = _time.time()
     cached = _editor_cache.get("latest")

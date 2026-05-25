@@ -48,11 +48,19 @@ test.describe('@phase-4-updater auto-update IPC + banner', () => {
       }).electron.updater
       return Object.keys(u).sort()
     })
-    // Object.keys().sort() — alphabetical, capital letters first then case-insensitive.
-    // 'installNow' < 'onDownloadProgress' < 'onDownloaded' under default sort
-    // (because 'P' (80) < 'e' (101)). Just check membership instead of order.
-    expect(keys.slice().sort()).toEqual(
-      ['installNow', 'onDownloadProgress', 'onDownloaded'].sort()
+    // 0.2.0 added checkNow / getVersion / onNotAvailable / onError for the
+    // manual "지금 업데이트 확인" panel + status pushes. Assert the original
+    // surface is still present (BC) AND the new keys all landed.
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        'installNow',
+        'onDownloadProgress',
+        'onDownloaded',
+        'checkNow',
+        'getVersion',
+        'onNotAvailable',
+        'onError'
+      ])
     )
   })
 

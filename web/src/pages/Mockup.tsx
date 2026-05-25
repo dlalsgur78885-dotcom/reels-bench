@@ -80,8 +80,71 @@ type Device = {
   color: string; notch: boolean;
 }
 
-// 백엔드 DEVICES dict 와 동기 — fetch 완료 전 즉시 표시용 fallback.
-// 백엔드 응답 도착 시 갱신됨.
+// 백엔드 정적 카탈로그 fallback — 첫 진입 시 fetch 결과 안 기다림.
+// 백엔드 응답 도착하면 background 로 갱신 (백엔드 변경 대비).
+const TEMPLATES_FALLBACK: TemplateItem[] = [
+  { id: 'saas-cosmic',    label: 'SaaS 코스믹',    tagline: '어두운 우주 + 글래스 디바이스',  device_id: 'iphone-16-pro',     aspect: '9:16', bg_preset: 'cosmic',    device_style: 'glass',   device_shadow: 'glow',     device_shadow_opacity: 0.9, overlay_effect: 'none', motion: 'zoom-in' },
+  { id: 'warm-sunset',    label: '웜 선셋',        tagline: '오렌지·핑크 + 부드러운 그림자', device_id: 'iphone-16-pro',     aspect: '9:16', bg_preset: 'sunset',    device_style: 'default', device_shadow: 'soft',     device_shadow_opacity: 0.8, overlay_effect: 'none', motion: 'pan-tl-br' },
+  { id: 'studio-paper',   label: '스튜디오 페이퍼', tagline: '베이지 + 하드 섀도우',          device_id: 'iphone-16-pro',     aspect: '1:1',  bg_preset: 'paper',     device_style: 'default', device_shadow: 'hard',     device_shadow_opacity: 1.0, overlay_effect: 'none', motion: 'none' },
+  { id: 'ocean-clean',    label: '오션 클린',      tagline: '청량한 그라데이션 + 디퓨즈 섀도우', device_id: 'iphone-16-pro',  aspect: '4:5',  bg_preset: 'ocean',     device_style: 'default', device_shadow: 'diffused', device_shadow_opacity: 0.7, overlay_effect: 'none', motion: 'zoom-in' },
+  { id: 'android-mesh',   label: '안드로이드 메시', tagline: 'Galaxy + 메시 그라데이션',     device_id: 'galaxy-s25-ultra', aspect: '9:16', bg_preset: 'mesh-cool', device_style: 'default', device_shadow: 'soft',     device_shadow_opacity: 0.85, overlay_effect: 'none', motion: 'zoom-in' },
+  { id: 'retro-vhs',      label: '레트로 VHS',     tagline: 'VHS 효과 + 그레인',             device_id: 'iphone-16-pro',     aspect: '9:16', bg_preset: 'grain-bw',  device_style: 'outline', device_shadow: 'none',     device_shadow_opacity: 0.0, overlay_effect: 'vhs',  motion: 'pulse' },
+  { id: 'minimal-glass',  label: '미니멀 글래스',   tagline: '글래스 디바이스 + 흰 배경',     device_id: 'iphone-16-pro',     aspect: '4:5',  bg_preset: 'glass',     device_style: 'glass',   device_shadow: 'soft',     device_shadow_opacity: 0.6, overlay_effect: 'none', motion: 'none' },
+  { id: 'radiant-burst',  label: '래디언트 버스트', tagline: 'Pixel + 중앙 burst + 글로우',  device_id: 'pixel-9-pro',       aspect: '9:16', bg_preset: 'radiant',   device_style: 'default', device_shadow: 'glow',     device_shadow_opacity: 1.0, overlay_effect: 'none', motion: 'zoom-out' },
+]
+
+const BG_PRESETS_FALLBACK: BgPresetItem[] = [
+  { id: 'sunset',    label: '선셋' },
+  { id: 'ocean',     label: '오션' },
+  { id: 'mint',      label: '민트' },
+  { id: 'violet',    label: '바이올렛' },
+  { id: 'mesh-warm', label: '메시 웜' },
+  { id: 'mesh-cool', label: '메시 쿨' },
+  { id: 'cosmic',    label: '코스믹' },
+  { id: 'radiant',   label: '래디언트' },
+  { id: 'paper',     label: '페이퍼' },
+  { id: 'glass',     label: '글래스' },
+  { id: 'grain-bw',  label: '그레인 블랙' },
+]
+
+const DEVICE_STYLES_FALLBACK: DeviceStyleItem[] = [
+  { id: 'default',      label: '기본' },
+  { id: 'outline',      label: '아웃라인' },
+  { id: 'border',       label: '보더' },
+  { id: 'glass',        label: '글래스' },
+  { id: 'glass-light',  label: '글래스 라이트' },
+  { id: 'glass-dark',   label: '글래스 다크' },
+  { id: 'liquid-glass', label: '리퀴드 글래스' },
+  { id: 'inset-light',  label: '인셋 라이트' },
+  { id: 'inset-dark',   label: '인셋 다크' },
+]
+
+const DEVICE_SHADOWS_FALLBACK: DeviceShadowItem[] = [
+  { id: 'none',     label: '없음' },
+  { id: 'soft',     label: '소프트' },
+  { id: 'hard',     label: '하드' },
+  { id: 'glow',     label: '글로우' },
+  { id: 'diffused', label: '디퓨즈' },
+]
+
+const OVERLAY_EFFECTS_FALLBACK: OverlayEffectItem[] = [
+  { id: 'none',      label: '효과 없음' },
+  { id: 'vhs',       label: 'VHS' },
+  { id: 'glitch',    label: '글리치' },
+  { id: 'grain',     label: '필름 그레인' },
+  { id: 'scanlines', label: '스캔라인' },
+  { id: 'vintage',   label: '빈티지' },
+]
+
+const SCENE_SHAPES_FALLBACK: SceneShapeItem[] = [
+  { id: 'none',      label: '없음' },
+  { id: 'circles',   label: '원형' },
+  { id: 'blobs',     label: '블롭' },
+  { id: 'triangles', label: '삼각형' },
+  { id: 'grid-dots', label: '도트 격자' },
+  { id: 'rings',     label: '링' },
+]
+
 const DEVICES_FALLBACK: Device[] = [
   { id: 'iphone-16-pro',        name: 'iPhone 16 Pro',        body_w: 1320, body_h: 2670, screen_x: 50, screen_y: 50, screen_w: 1220, screen_h: 2570, screen_radius: 140, corner_radius: 180, color: '#0a0a0a', notch: true },
   { id: 'iphone-16-pro-white',  name: 'iPhone 16 Pro (Silver)', body_w: 1320, body_h: 2670, screen_x: 50, screen_y: 50, screen_w: 1220, screen_h: 2570, screen_radius: 140, corner_radius: 180, color: '#e8e8ea', notch: true },
@@ -176,24 +239,24 @@ export default function Mockup() {
   const [bgFileId, setBgFileId] = useState<string>('')
   const [bgPreview, setBgPreview] = useState<string>('')
   const [deviceScale, setDeviceScale] = useState(0.85)
-  // shots.so 벤치 — procedural 배경 카탈로그 + 마감 효과
-  const [bgPresets, setBgPresets] = useState<BgPresetItem[]>([])
+  // shots.so 벤치 — procedural 배경 카탈로그 + 마감 효과 (정적 fallback → 즉시 표시)
+  const [bgPresets, setBgPresets] = useState<BgPresetItem[]>(BG_PRESETS_FALLBACK)
   const [bgPresetId, setBgPresetId] = useState<string>('')          // '' = preset 미사용 (단색/이미지)
-  const [overlayEffects, setOverlayEffects] = useState<OverlayEffectItem[]>([])
+  const [overlayEffects, setOverlayEffects] = useState<OverlayEffectItem[]>(OVERLAY_EFFECTS_FALLBACK)
   const [overlayEffectId, setOverlayEffectId] = useState<string>('none')
   // shots.so audit 추가분 — 디바이스 스타일/그림자/숨김/모서리
-  const [deviceStyles, setDeviceStyles] = useState<DeviceStyleItem[]>([])
+  const [deviceStyles, setDeviceStyles] = useState<DeviceStyleItem[]>(DEVICE_STYLES_FALLBACK)
   const [deviceStyleId, setDeviceStyleId] = useState<string>('default')
-  const [deviceShadows, setDeviceShadows] = useState<DeviceShadowItem[]>([])
+  const [deviceShadows, setDeviceShadows] = useState<DeviceShadowItem[]>(DEVICE_SHADOWS_FALLBACK)
   const [deviceShadowId, setDeviceShadowId] = useState<string>('none')
   const [deviceShadowOpacity, setDeviceShadowOpacity] = useState<number>(1.0)
   const [hideMockup, setHideMockup] = useState<boolean>(false)
   const [radiusOverride, setRadiusOverride] = useState<number | null>(null)
-  const [templates, setTemplates] = useState<TemplateItem[]>([])
+  const [templates, setTemplates] = useState<TemplateItem[]>(TEMPLATES_FALLBACK)
   const [appliedTemplateId, setAppliedTemplateId] = useState<string>('')
   const [tiltX, setTiltX] = useState<number>(0)
   const [tiltY, setTiltY] = useState<number>(0)
-  const [sceneShapesItems, setSceneShapesItems] = useState<SceneShapeItem[]>([])
+  const [sceneShapesItems, setSceneShapesItems] = useState<SceneShapeItem[]>(SCENE_SHAPES_FALLBACK)
   const [sceneShapeId, setSceneShapeId] = useState<string>('none')
   // shots.so EFFECTS & WATERMARK 4 토글
   const [watermark, setWatermark] = useState<boolean>(false)
@@ -582,19 +645,11 @@ export default function Mockup() {
             ))}
           </div>
 
-          {/* ───── TEMPLATES (Media 탭) ───── */}
-          {activeLeftTab === 'media' && (
+          {/* ───── TEMPLATES (Media 탭) — fallback 으로 즉시 표시 ───── */}
+          {activeLeftTab === 'media' && templates.length > 0 && (
             <div style={{ paddingBottom: 10 }}>
               <SectionHeader>Templates</SectionHeader>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
-                {templates.length === 0 && Array.from({ length: 8 }, (_, i) => (
-                  <div key={`skel-${i}`} style={{
-                    minHeight: 50, borderRadius: 6,
-                    background: 'linear-gradient(90deg, var(--bg-base) 25%, var(--bg-elevated) 50%, var(--bg-base) 75%)',
-                    backgroundSize: '200% 100%', animation: 'mockup-skel 1.4s ease-in-out infinite',
-                    border: '1px solid var(--border-subtle)',
-                  }} />
-                ))}
                 {templates.map(t => (
                   <button key={t.id} onClick={() => !busy && applyTemplate(t)} disabled={busy}
                     title={t.tagline}

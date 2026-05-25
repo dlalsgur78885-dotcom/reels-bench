@@ -555,9 +555,15 @@ export function SttDialog({
       }}
       data-testid="stt-dialog"
     >
-      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+      <div
+        style={styles.modal}
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="stt-dialog-title"
+      >
         <div style={styles.header}>
-          <div style={styles.title}>자동 자막 생성</div>
+          <div id="stt-dialog-title" style={styles.title}>자동 자막 생성</div>
           <button
             type="button"
             onClick={handleClose}

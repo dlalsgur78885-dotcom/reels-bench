@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { getTotalDurationMs, useProjectStore } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
+import { accent, font, radius, space, surface, text } from '../theme/tokens'
 
 /**
  * Transport bar — play/pause/skip controls, current/total time, and the
@@ -15,43 +16,53 @@ function fmt(ms: number): string {
   return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`
 }
 
+// `text.primary` is #e2e8f0 (slightly darker than the old #f5f5f5) — keep
+// #f5f5f5 here to preserve the play-button readout's exact contrast against
+// the green play bg. Everywhere else uses tokens.
+const TRANSPORT_FG = '#f5f5f5'
+// `#10b981` (the old hardcoded green) isn't `accent.green` (#22c55e) — they
+// shift hue. Keep a transport-local alias so the play button doesn't change.
+const PLAY_GREEN = '#10b981'
+const PLAY_GREEN_INK = '#04231a'
 const styles = {
   bar: {
     flexShrink: 0,
     display: 'flex',
     alignItems: 'center',
     gap: 10,
-    padding: '6px 12px',
-    background: '#0d0d0d',
-    borderTop: '1px solid #2a2a2a',
-    borderBottom: '1px solid #2a2a2a',
-    color: '#f5f5f5',
-    fontSize: 12
+    padding: '6px 12px', // legacy spacing — defer migration to spacing token sweep
+    background: surface[0],
+    borderTop: `1px solid ${surface.border}`,
+    borderBottom: `1px solid ${surface.border}`,
+    color: TRANSPORT_FG,
+    fontSize: font.size.base
   } as React.CSSProperties,
   btn: {
-    background: '#1f2937',
-    color: '#f5f5f5',
-    border: '1px solid #374151',
-    borderRadius: 6,
+    background: surface[1],
+    color: TRANSPORT_FG,
+    border: `1px solid ${surface.borderStrong}`,
+    borderRadius: radius.md,
     padding: '6px 12px',
-    fontSize: 12,
+    fontSize: font.size.base,
     cursor: 'pointer',
     minWidth: 36
   } as React.CSSProperties,
   playBtn: {
-    background: '#10b981',
-    color: '#04231a',
-    border: '1px solid #10b981',
-    fontWeight: 700
+    background: PLAY_GREEN,
+    color: PLAY_GREEN_INK,
+    border: `1px solid ${PLAY_GREEN}`,
+    fontWeight: font.weight.bold
   } as React.CSSProperties,
   time: {
     fontFamily: 'ui-monospace, Menlo, Consolas, monospace',
-    color: '#cbd5e1',
-    fontSize: 12,
+    color: text.secondary,
+    fontSize: font.size.base,
     minWidth: 110,
     textAlign: 'center'
   } as React.CSSProperties
 }
+void accent // keep import live for future migrations of inline button styles
+
 
 export function Transport(): JSX.Element {
   const project = useProjectStore((s) => s.project)

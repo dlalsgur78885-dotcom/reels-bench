@@ -1,0 +1,51 @@
+/*
+ * Global UI rules. Loaded once from `main.tsx` so every component inherits.
+ *
+ * Phase: a11y-focus-ring
+ *
+ * Why this file exists: audit `_audits/audit-electron-sweep-20260525.md` #6
+ * found that only 3 files (Login, CaptionEditor, Timeline) declared any
+ * focus styling. Every other `<button>` (76 in ClipContextMenu alone, plus
+ * topbar / Transport / dialogs) inherits the UA default outline — which the
+ * dark `#1f2937`-ish button backgrounds visually swallow. WCAG 2.4.7 Focus
+ * Visible fail.
+ *
+ * Approach: rely on `:focus-visible` (only fires on keyboard nav, not mouse
+ * clicks) so mouse users don't get the ring AT ALL — keeps the look clean —
+ * and keyboard users get a strong 2px blue ring on every focusable element.
+ * Components can still override per-element when needed.
+ */
+
+/* Default keyboard focus ring — every interactive element. */
+:focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+  /* Inputs with a custom border benefit from a hint inside too. */
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.35);
+  border-radius: inherit;
+}
+
+/*
+ * Mouse-click focus doesn't get the ring (the :focus-visible heuristic
+ * already handles this in modern browsers — this rule is the explicit
+ * safety net so older Chromium builds bundled with Electron stay correct).
+ */
+:focus:not(:focus-visible) {
+  outline: none;
+  box-shadow: none;
+}
+
+/*
+ * When the user prefers reduced motion, the focus ring itself doesn't
+ * animate — but components that respect the OS pref via the hook should
+ * also fall back to `transition: none`. This rule is a safety net for any
+ * component we haven't migrated yet.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

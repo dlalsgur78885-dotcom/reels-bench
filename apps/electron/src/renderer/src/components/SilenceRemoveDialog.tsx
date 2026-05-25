@@ -122,8 +122,14 @@ export function SilenceRemoveDialog(
 
   return (
     <div style={styles.scrim} onClick={onClose} data-testid="silence-dialog">
-      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={styles.title}>무음 자동 제거</div>
+      <div
+        style={styles.modal}
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="silence-dialog-title"
+      >
+        <div id="silence-dialog-title" style={styles.title}>무음 자동 제거</div>
         <div style={styles.row}>
           <span style={styles.label}>임계값 (dB)</span>
           <input

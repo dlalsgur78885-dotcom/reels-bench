@@ -7,6 +7,7 @@
  * mount this directly with the props you want to display.
  */
 import { useEffect } from 'react'
+import { accent, font, radius, shadow, space, surface, text } from '../theme/tokens'
 
 export type ToastVariant = 'info' | 'success' | 'error'
 
@@ -18,20 +19,23 @@ export interface ToastProps {
   onClose: () => void
 }
 
+// Backgrounds = soft tint of the variant accent; borders = stronger
+// related color; text = readable contrast on the tint. Pulled from the
+// shared token surface so future palette tweaks happen in one file.
 const VARIANT_BG: Record<ToastVariant, string> = {
-  info: '#1e293b',
-  success: '#064e3b',
-  error: '#3b0d0d'
+  info: surface[2],
+  success: accent.greenTint,
+  error: accent.redTint
 }
 const VARIANT_BORDER: Record<ToastVariant, string> = {
-  info: '#334155',
-  success: '#065f46',
-  error: '#4a1f1f'
+  info: surface.borderStrong,
+  success: '#065f46', // green-700, between greenTint and green
+  error: '#4a1f1f' // red-900, between redTint and red
 }
 const VARIANT_COLOR: Record<ToastVariant, string> = {
-  info: '#cbd5e1',
-  success: '#86efac',
-  error: '#fca5a5'
+  info: text.secondary,
+  success: '#86efac', // green-300 — readable on greenTint
+  error: '#fca5a5' // red-300 — readable on redTint
 }
 
 export function Toast({
@@ -68,20 +72,20 @@ export function Toast({
       data-toast-duration={effectiveDuration}
       style={{
         position: 'fixed',
-        top: 16,
-        right: 16,
+        top: space[4],
+        right: space[4],
         zIndex: 9999,
         minWidth: 240,
         maxWidth: 420,
-        padding: '12px 16px',
-        borderRadius: 8,
+        padding: `${space[3]}px ${space[4]}px`,
+        borderRadius: radius.lg,
         background: VARIANT_BG[variant],
         border: `1px solid ${VARIANT_BORDER[variant]}`,
         color: VARIANT_COLOR[variant],
-        fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
-        fontSize: 13,
+        fontFamily: font.family,
+        fontSize: font.size.md,
         lineHeight: 1.4,
-        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
+        boxShadow: shadow.toast,
         cursor: 'pointer',
         whiteSpace: 'pre-wrap'
       }}

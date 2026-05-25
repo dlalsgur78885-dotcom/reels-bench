@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import App from './App'
 import { installTestBridge } from './lib/testBridge'
 import { useAuthStore } from './store/auth'
+import './global.css'
 
 const container = document.getElementById('root')
 if (!container) throw new Error('root container missing')

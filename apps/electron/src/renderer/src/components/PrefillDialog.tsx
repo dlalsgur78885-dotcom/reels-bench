@@ -342,9 +342,15 @@ export function PrefillDialog({
       }}
       data-testid="prefill-dialog"
     >
-      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+      <div
+        style={styles.modal}
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="prefill-dialog-title"
+      >
         <div style={styles.header}>
-          <div style={styles.title}>분석 결과 가져오기</div>
+          <div id="prefill-dialog-title" style={styles.title}>분석 결과 가져오기</div>
           <input
             type="text"
             value={filter}

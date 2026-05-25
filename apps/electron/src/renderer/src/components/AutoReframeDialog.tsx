@@ -333,9 +333,12 @@ export function AutoReframeDialog({
         style={styles.modal}
         onClick={(e) => e.stopPropagation()}
         data-testid="autoreframe-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="autoreframe-dialog-title"
       >
         <div style={styles.header}>
-          <div style={styles.title}>🎯 자동 리프레임</div>
+          <div id="autoreframe-dialog-title" style={styles.title}>🎯 자동 리프레임</div>
           <button
             type="button"
             onClick={handleClose}

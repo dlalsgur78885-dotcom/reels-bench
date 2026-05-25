@@ -422,9 +422,15 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
   }
 
   return (
-    <div style={styles.panel} data-testid="caption-editor">
+    <div
+      style={styles.panel}
+      data-testid="caption-editor"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="caption-editor-title"
+    >
       <div style={styles.header}>
-        <div style={styles.title}>자막 편집</div>
+        <div id="caption-editor-title" style={styles.title}>자막 편집</div>
         <button
           style={styles.closeBtn}
           onClick={onClose}

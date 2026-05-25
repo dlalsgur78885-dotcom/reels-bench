@@ -467,9 +467,15 @@ export function AutoEditDialog({
       }}
       data-testid="autoedit-dialog"
     >
-      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+      <div
+        style={styles.modal}
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="autoedit-dialog-title"
+      >
         <div style={styles.header}>
-          <div style={styles.title}>AI 자동 편집</div>
+          <div id="autoedit-dialog-title" style={styles.title}>AI 자동 편집</div>
           <button
             type="button"
             onClick={handleClose}

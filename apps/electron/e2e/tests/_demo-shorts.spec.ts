@@ -15,24 +15,47 @@
  * Use `npx playwright test --grep "@demo-shorts"` to run.
  */
 import { expect, test } from '@playwright/test'
-import { existsSync, statSync, mkdirSync } from 'node:fs'
+import { existsSync, statSync, mkdirSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
 
 // ---------------------------------------------------------------------------
-// Mock script — what an LLM-generated TTS would yield, with rough timings.
-// Each entry [startMs, endMs, text] becomes a caption clip.
+// Real Korean script — mirrors what /my-scripts → "SRT 다운로드" produces.
+// SRT timestamps are HH:MM:SS,mmm. The captions render via PNG path which
+// embeds Pretendard + falls back to system Korean fonts, so Korean text just
+// works end-to-end (no drawtext fontfile workaround needed).
 // ---------------------------------------------------------------------------
-const MOCK_SCRIPT: Array<readonly [number, number, string]> = [
-  [200, 3200, 'Wait... watch this'],
-  [3300, 6300, 'We built this editor'],
-  [6400, 9400, 'Captions, transitions, zoom'],
-  [9500, 12500, 'Shorts in one shot'],
-  [12600, 14800, 'Subscribe with love']
-]
+const KOREAN_SRT = [
+  '1',
+  '00:00:00,200 --> 00:00:03,200',
+  '잠깐, 이거 보고 가세요',
+  '',
+  '2',
+  '00:00:03,300 --> 00:00:06,300',
+  '에디터 직접 만들었습니다',
+  '',
+  '3',
+  '00:00:06,400 --> 00:00:09,400',
+  '자동 자막, 트랜지션, 줌인까지',
+  '',
+  '4',
+  '00:00:09,500 --> 00:00:12,500',
+  '쇼츠 한 번에 끝',
+  '',
+  '5',
+  '00:00:12,600 --> 00:00:14,800',
+  '구독은 사랑입니다',
+  ''
+].join('\n')
 
 type AnyClip = { id: string; kind: string }
+type ParsedCaptionCue = {
+  startMs: number
+  endMs: number
+  words?: Array<{ text: string }>
+  text?: string
+}
 
 declare global {
   interface Window {
@@ -171,43 +194,61 @@ test.describe('@demo-shorts dogfood — assemble a 9:16 shorts mp4', () => {
       window.__reelsStore.setClipFade(ids[2], 0, 800)
     }, clipIds)
 
-    // ----- Stage 5: 5 caption clips ---------------------------------------
-    // ASCII-only text — bundled ffmpeg drawtext has no Korean glyph fallback
-    // on Windows, and Korean glyphs in drawtext cause hard ffmpeg failures.
-    // The captions are still meaningful as a dogfood demo of the editor.
-    await page.evaluate((rows: Array<[number, number, string]>) => {
-      const reels = window.__reelsStore
-      const captionTrack = reels
-        .state()
-        .project.tracks.find((t) => t.kind === 'caption')
-      if (!captionTrack) throw new Error('no caption track')
-      for (const [start, end, text] of rows) {
-        const cid = reels.newId()
-        reels.addCaption({
-          id: cid,
-          kind: 'caption',
-          trackId: captionTrack.id,
-          startMs: start,
-          endMs: end,
-          spans: text.split(/\s+/).map((w) => ({ text: w })),
-          style: {
-            preset: 'block-bold',
-            fontSize: 78,
-            align: 'center',
-            yPosition: 0.5,
-            background: 'none',
-            textStroke: { color: '#000000', width: 8 },
-            textShadow: { color: '#00e5ff', offsetX: 0, offsetY: 0, blur: 20 }
-          },
-          animation: {
-            entrance: 'pop',
-            exit: 'fade',
-            inMs: 300,
-            outMs: 300
-          }
-        })
-      }
-    }, MOCK_SCRIPT as unknown as Array<[number, number, string]>)
+    // ----- Stage 5: Korean captions via SRT import path ----------------------
+    // Write the SRT to disk (mirrors what /my-scripts SRT 다운로드 produces),
+    // allow + parse via the same IPC the editor's "자막 import" button uses,
+    // then push the cues onto the caption track with a styled preset +
+    // pop/fade animation. The captions render via the PNG path (Pretendard
+    // embed + system Korean font fallback), so 한글 just works.
+    const srtPath = path.join(
+      os.tmpdir(),
+      'reels-studio-e2e',
+      'demo-shorts',
+      `_demo-${Date.now()}.srt`
+    )
+    writeFileSync(srtPath, KOREAN_SRT, 'utf-8')
+
+    await page.evaluate(
+      async (filePath: string) => {
+        await window.electron.fs.allowPath(filePath)
+        const cues: ParsedCaptionCue[] = await window.electron.captions.importSrt(filePath)
+        if (!cues || cues.length === 0) throw new Error('SRT parsed 0 cues')
+        const reels = window.__reelsStore
+        const captionTrack = reels
+          .state()
+          .project.tracks.find((t) => t.kind === 'caption')
+        if (!captionTrack) throw new Error('no caption track')
+        for (const cue of cues) {
+          const text = (cue.text ?? cue.words?.map((w) => w.text).join(' ') ?? '').trim()
+          if (!text) continue
+          const cid = reels.newId()
+          reels.addCaption({
+            id: cid,
+            kind: 'caption',
+            trackId: captionTrack.id,
+            startMs: cue.startMs,
+            endMs: cue.endMs,
+            spans: text.split(/\s+/).map((w) => ({ text: w })),
+            style: {
+              preset: 'block-bold',
+              fontSize: 78,
+              align: 'center',
+              yPosition: 0.5,
+              background: 'none',
+              textStroke: { color: '#000000', width: 8 },
+              textShadow: { color: '#00e5ff', offsetX: 0, offsetY: 0, blur: 20 }
+            },
+            animation: {
+              entrance: 'pop',
+              exit: 'fade',
+              inMs: 300,
+              outMs: 300
+            }
+          })
+        }
+      },
+      srtPath
+    )
 
     // ----- Stage 6: export to mp4 -----------------------------------------
     const outDir = path.join(os.tmpdir(), 'reels-studio-e2e', 'demo-shorts')

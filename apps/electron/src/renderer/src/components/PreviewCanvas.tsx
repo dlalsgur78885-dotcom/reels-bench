@@ -37,6 +37,7 @@ import {
   getTrackPositionAt,
   getTransformAt,
   hasFreezeFrames,
+  CAPTION_FONT_FAMILIES,
   hasSpeedCurve,
   hasTranscriptDeletions,
   isCaptionClip,
@@ -697,6 +698,17 @@ function CaptionOverlay(props: {
   // composite. `textDecorationFor` returns `{}` when neither resolver fires —
   // the spread is then a no-op and the container CSS is byte-identical.
   const presetCss = presetExtras(style)
+  // User-picked font wins over preset's hardcoded font. Pretendard (the legacy
+  // default) is left implicit so byte-identical preview is preserved when no
+  // pick is made. Resolver mirrors main/captions/render.ts so preview matches
+  // the exported PNG: picked family leads, then Pretendard + system Korean
+  // fallbacks fill any missing glyphs.
+  if (style.fontFamilyId && style.fontFamilyId !== 'pretendard') {
+    const entry = CAPTION_FONT_FAMILIES.find((f) => f.id === style.fontFamilyId)
+    if (entry) {
+      presetCss.fontFamily = `${entry.stack},'Pretendard','Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',sans-serif`
+    }
+  }
   const presetShadowCss =
     typeof presetCss.textShadow === 'string' ? presetCss.textShadow : undefined
   const textDecoration = textDecorationFor(style, fittedHeight, presetShadowCss)

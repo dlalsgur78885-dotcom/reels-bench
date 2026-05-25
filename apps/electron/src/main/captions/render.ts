@@ -32,6 +32,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type {
   CaptionClip,
+  CaptionFontFamilyId,
   CaptionKaraoke,
   CaptionPreset,
   CaptionSpan,
@@ -40,12 +41,37 @@ import type {
   CaptionTextStroke
 } from '../../shared/project'
 import {
+  CAPTION_FONT_FAMILIES,
   KARAOKE_DIM_OPACITY,
   KARAOKE_POP_SCALE,
   getCaptionTextStroke,
   getCaptionTextShadow,
   getCaptionBackgroundSize
 } from '../../shared/project'
+
+/**
+ * Build the CSS font-family stack for an SVG <text>. The picked family's stack
+ * leads; Pretendard (embedded) and system Korean fonts follow so any Hangul
+ * glyph the picked family lacks is filled from the fallback chain. With no
+ * pick, the legacy default is byte-identical to pre-Phase output.
+ */
+function resolveFontFamily(
+  id: CaptionFontFamilyId | undefined,
+  hasEmbeddedPretendard: boolean
+): string {
+  const koFallback = "'Pretendard','Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',sans-serif"
+  const koFallbackNoEmbed = "'Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',Arial,sans-serif"
+  if (id == null) {
+    return hasEmbeddedPretendard ? koFallback : koFallbackNoEmbed
+  }
+  const entry = CAPTION_FONT_FAMILIES.find((f) => f.id === id)
+  if (!entry || entry.id === 'pretendard') {
+    return hasEmbeddedPretendard ? koFallback : koFallbackNoEmbed
+  }
+  return hasEmbeddedPretendard
+    ? `${entry.stack},${koFallback}`
+    : `${entry.stack},${koFallbackNoEmbed}`
+}
 
 // ---------------------------------------------------------------------------
 // Font discovery. The Korean Bold font is bundled under `build/fonts/`.
@@ -796,9 +822,7 @@ export function buildCaptionSvg(
   const fontFace = fontDataUri
     ? `@font-face{font-family:'Pretendard';src:url(${fontDataUri}) format('opentype');font-weight:bold;font-style:normal;}`
     : ''
-  const fontFamily = fontDataUri
-    ? "'Pretendard','Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',sans-serif"
-    : "'Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',Arial,sans-serif"
+  const fontFamily = resolveFontFamily(style.fontFamilyId, fontDataUri != null)
 
   const defaultFill = style.preset === 'youtube-yellow' ? '#ffd400' : '#ffffff'
 

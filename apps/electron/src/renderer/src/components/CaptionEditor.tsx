@@ -17,12 +17,14 @@ import {
   NO_CAPTION_KARAOKE,
   evenSplitWords,
   isCaptionClip,
+  CAPTION_FONT_FAMILIES,
   resolveCaptionWords,
   type CaptionAnimation,
   type CaptionClip,
   type CaptionEmphasis,
   type CaptionEntranceKind,
   type CaptionExitKind,
+  type CaptionFontFamilyId,
   type CaptionKaraoke,
   type CaptionKaraokeStyle,
   type CaptionPreset,
@@ -484,6 +486,30 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
             {ALL_PRESETS.map((p) => (
               <option key={p} value={p}>
                 {PRESET_LABELS[p]}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Font family */}
+        <div style={styles.group}>
+          <div style={styles.label}>폰트</div>
+          <select
+            style={styles.input}
+            value={caption.style.fontFamilyId ?? 'pretendard'}
+            onChange={(e) =>
+              updateCaption(captionId, {
+                style: {
+                  ...caption.style,
+                  fontFamilyId: e.target.value as CaptionFontFamilyId
+                }
+              })
+            }
+            data-testid="caption-fontfamily-select"
+          >
+            {CAPTION_FONT_FAMILIES.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.label}
               </option>
             ))}
           </select>

@@ -146,6 +146,8 @@ export function installTestBridge(): void {
         removeTracks: Store['removeTracks']
         addCaption: Store['addCaption']
         addCaptions: Store['addCaptions']
+        updateCaption: Store['updateCaption']
+        selectClip: Store['selectClip']
         // Phase 3.13 — motion-track project-store actions.
         setMotionTrack: Store['setMotionTrack']
         removeMotionTrack: Store['removeMotionTrack']
@@ -328,6 +330,9 @@ export function installTestBridge(): void {
       removeTracks: (tids) => useProjectStore.getState().removeTracks(tids),
       addCaption: (cap) => useProjectStore.getState().addCaption(cap),
       addCaptions: (caps) => useProjectStore.getState().addCaptions(caps),
+      updateCaption: (id, partial) =>
+        useProjectStore.getState().updateCaption(id, partial),
+      selectClip: (id) => useProjectStore.getState().selectClip(id),
       setMotionTrack: (clipId, track) =>
         useProjectStore.getState().setMotionTrack(clipId, track),
       removeMotionTrack: (clipId, trackId) =>

@@ -776,7 +776,35 @@ export interface CaptionStyle {
    * `backgroundHeightFrac`.
    */
   backgroundWidthFrac?: number
+  /**
+   * User-selected font family id from `CAPTION_FONT_FAMILIES`. Absent =
+   * Pretendard (legacy default — byte-identical). The id maps to a fully
+   * resolved CSS font-family stack at render time; the resolver always
+   * falls through to Pretendard + system Korean fallbacks so unknown ids
+   * never break a render.
+   */
+  fontFamilyId?: CaptionFontFamilyId
 }
+
+/**
+ * Caption font catalog. The id is what we persist on `CaptionStyle`; the
+ * resolver in main/captions/render.ts maps it to a CSS font-family stack
+ * that always ends with the embedded Pretendard so Korean glyphs survive
+ * even when the picked family lacks Hangul. Adding a new family is a
+ * 2-step change: extend this list + add a stack entry in the resolver.
+ */
+export const CAPTION_FONT_FAMILIES = [
+  { id: 'pretendard', label: 'Pretendard (기본)', stack: "'Pretendard'" },
+  { id: 'malgun', label: '맑은 고딕', stack: "'Malgun Gothic'" },
+  { id: 'apple-sd', label: 'Apple SD 고딕 Neo', stack: "'Apple SD Gothic Neo'" },
+  { id: 'noto-sans-kr', label: 'Noto Sans KR', stack: "'Noto Sans KR'" },
+  { id: 'arial', label: 'Arial', stack: 'Arial' },
+  { id: 'impact', label: 'Impact', stack: 'Impact' },
+  { id: 'georgia', label: 'Georgia', stack: 'Georgia' },
+  { id: 'courier', label: 'Courier New', stack: "'Courier New'" }
+] as const
+export type CaptionFontFamilyId =
+  (typeof CAPTION_FONT_FAMILIES)[number]['id']
 
 /** Per-word optional emphasis. */
 export type CaptionEmphasis = 'bold' | 'highlight' | 'pulse'

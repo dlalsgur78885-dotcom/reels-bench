@@ -471,12 +471,25 @@ export default function Mockup() {
   }, [device, aspect, deviceScale])
 
   return (
-    <div style={{ maxWidth: 1280, margin: '0 auto', padding: 24 }}>
-      <div style={{ marginBottom: 18, display: 'flex', alignItems: 'baseline', gap: 12 }}>
+    <div style={{ padding: 10, minHeight: 'calc(100vh - 20px)' }}>
+      {/* 상단 toolbar — shots.so 스타일 (얇은 한 줄) */}
+      <div style={{ marginBottom: 10, padding: '8px 12px', display: 'flex',
+                     alignItems: 'center', gap: 12,
+                     background: 'var(--bg-surface)',
+                     border: '1px solid var(--border)', borderRadius: 6 }}>
         <Link to="/" style={{ fontSize: 12, color: 'var(--text-muted)' }}>← 홈</Link>
-        <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>앱 목업 영상</h1>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          URL 녹화 OR 영상/이미지 업로드 → 디바이스 프레임에 합성
+        <span style={{ fontSize: 14, fontWeight: 700 }}>앱 목업</span>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          {device?.name || '...'} · {aspect}
+        </span>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 11,
+                       color: status === 'done' ? 'var(--success, #10b981)'
+                            : status === 'failed' ? 'var(--error)' : 'var(--text-muted)' }}>
+          {statusLabel[status]}
+          {(busy || status === 'done') && (
+            <span style={{ marginLeft: 6, fontFamily: 'monospace' }}>{elapsed}s</span>
+          )}
         </span>
       </div>
 
@@ -511,9 +524,10 @@ export default function Mockup() {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 1fr', gap: 18 }}>
-        {/* 좌: 입력 */}
-        <div style={cardSt}>
+      <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr 280px', gap: 10, alignItems: 'start' }}>
+        {/* 좌: 모든 입력 (shots.so 스타일 — 스크롤 가능 사이드패널) */}
+        <div style={{ ...cardSt, padding: 12, maxHeight: 'calc(100vh - 80px)',
+                       overflowY: 'auto', overflowX: 'hidden' }}>
           {/* 모드 */}
           <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
             {(['url', 'upload', 'sequence'] as const).map(m => (
@@ -938,8 +952,11 @@ export default function Mockup() {
             </div>
             )
           })()}
+        </div>
 
-          <div style={{ marginTop: 14 }}>
+        {/* 우: 상태 + 결과 */}
+        <div style={{ ...cardSt, padding: 12 }}>
+          <div>
             <Label>상태</Label>
             <div style={{
               padding: 12, borderRadius: 6, background: 'var(--bg-base)',

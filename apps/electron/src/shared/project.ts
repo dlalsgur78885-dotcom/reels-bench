@@ -289,6 +289,62 @@ export interface ColorAdjust {
   temperature: number
 }
 
+/**
+ * Chroma-key (green-/blue-screen removal) parameters. Stored per-clip.
+ *   - color: hex `#rrggbb` of the screen color to cut. UI offers a small
+ *     palette plus a freeform color picker.
+ *   - similarity: 0..1, how close a pixel's color must be to `color` to
+ *     become transparent. Lower = stricter (only very pure screen pixels
+ *     cut). Default 0.15 in the UI, clamped to [0.01, 1.0] at export.
+ *   - blend: 0..1, soft edge — pixels NEAR the threshold fade to alpha
+ *     instead of clipping hard. Higher = softer/smudgier edge. Default
+ *     0.10, clamped to [0, 1].
+ *
+ * Absent = no chroma key (byte-identical legacy). The `enabled` flag lets
+ * the UI toggle the effect without throwing away tuned values.
+ */
+export interface ChromaKey {
+  enabled: boolean
+  color: string
+  similarity: number
+  blend: number
+}
+
+/** Common chroma-key screen colors — UI shows these as 1-click swatches. */
+export const CHROMAKEY_PRESETS = [
+  { id: 'green', label: '그린스크린', color: '#00ff00' },
+  { id: 'blue', label: '블루스크린', color: '#0000ff' },
+  { id: 'magenta', label: '마젠타', color: '#ff00ff' },
+  { id: 'cyan', label: '시안', color: '#00ffff' }
+] as const
+export type ChromaKeyPresetId = (typeof CHROMAKEY_PRESETS)[number]['id']
+
+/** Convert a `#rrggbb` string to the `0xRRGGBB` form ffmpeg expects. */
+export function chromaKeyColorToFfmpeg(hex: string): string {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim())
+  if (!m) return '0x00ff00'
+  return `0x${m[1].toLowerCase()}`
+}
+
+/**
+ * Clamp + sanitize chroma-key values into the ranges ffmpeg accepts.
+ * Returns null for the disabled / absent / malformed cases so callers can
+ * short-circuit ("no chromakey fragment emitted = byte-identical legacy").
+ */
+export function getChromaKey(ck: ChromaKey | undefined): ChromaKey | null {
+  if (!ck || ck.enabled !== true) return null
+  const color = typeof ck.color === 'string' && /^#?[0-9a-fA-F]{6}$/.test(ck.color)
+    ? (ck.color.startsWith('#') ? ck.color : `#${ck.color}`).toLowerCase()
+    : '#00ff00'
+  const sim = Number.isFinite(ck.similarity)
+    ? Math.max(0.01, Math.min(1, ck.similarity))
+    : 0.15
+  const blend = Number.isFinite(ck.blend)
+    ? Math.max(0, Math.min(1, ck.blend))
+    : 0.1
+  return { enabled: true, color, similarity: sim, blend }
+}
+
 // -----------------------------------------------------------------------------
 // Phase 3.11 — static mosaic / blur regions. Hide faces / logos / sensitive
 // info by mosaicking or blurring a sub-rectangle of the FINAL CANVAS.
@@ -631,6 +687,17 @@ export interface VideoAudioClip {
    * layer; an unknown path falls back to "no LUT" with a console warning.
    */
   lutPath?: string
+  /**
+   * Chroma-key removal — picks a screen color (typically green `#00ff00`
+   * or blue `#0000ff`) and makes pixels near it transparent so the clip
+   * composites cleanly over the track below. Absent = no chroma key
+   * (byte-identical legacy). Export wraps it as `chromakey=color=...:
+   * similarity=...:blend=...` between scale and color/filter chains so
+   * the alpha cut runs against the source colors, not the graded look.
+   * Preview shows no chroma cut (CSS lacks a per-pixel color-key) — the
+   * exported MP4 is the source of truth.
+   */
+  chromaKey?: ChromaKey
   // -----------------------------------------------------------------
   // Phase 3 — static transform + layer compositing (optional, BC-safe).
   // -----------------------------------------------------------------

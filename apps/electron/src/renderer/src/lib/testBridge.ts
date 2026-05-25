@@ -148,6 +148,8 @@ export function installTestBridge(): void {
         addCaptions: Store['addCaptions']
         updateCaption: Store['updateCaption']
         selectClip: Store['selectClip']
+        setClipChromaKey: Store['setClipChromaKey']
+        addCountdownCaptions: Store['addCountdownCaptions']
         // Phase 3.13 — motion-track project-store actions.
         setMotionTrack: Store['setMotionTrack']
         removeMotionTrack: Store['removeMotionTrack']
@@ -333,6 +335,10 @@ export function installTestBridge(): void {
       updateCaption: (id, partial) =>
         useProjectStore.getState().updateCaption(id, partial),
       selectClip: (id) => useProjectStore.getState().selectClip(id),
+      setClipChromaKey: (id, ck) =>
+        useProjectStore.getState().setClipChromaKey(id, ck),
+      addCountdownCaptions: (opts) =>
+        useProjectStore.getState().addCountdownCaptions(opts),
       setMotionTrack: (clipId, track) =>
         useProjectStore.getState().setMotionTrack(clipId, track),
       removeMotionTrack: (clipId, trackId) =>

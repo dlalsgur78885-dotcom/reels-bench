@@ -55,6 +55,8 @@ import {
 import {
   DEFAULT_DUCKING_DB,
   DEFAULT_TRANSITION_MS,
+  chromaKeyColorToFfmpeg,
+  getChromaKey,
   isCaptionClip,
   isMediaClip,
   isOverlayClip,
@@ -2878,6 +2880,20 @@ function buildVideoSegmentChain(
   }
   if (Math.abs(speed - 1) > 1e-3) {
     parts.push(`setpts=PTS/${speed.toFixed(4)}`)
+  }
+  // 1.5. CHROMA KEY. Cuts the screen color to alpha BEFORE color grading so
+  //      the picked color is still its raw value (a graded green is still
+  //      "green-ish" but the similarity tolerance was calibrated against the
+  //      raw source). `format=yuva420p` first so chromakey has an alpha
+  //      channel to write into; downstream filters tolerate yuva420p and
+  //      the final encode reconverts to yuv420p anyway. Absent / disabled
+  //      → no-op (byte-identical legacy graph).
+  const ck = getChromaKey(seg.clip.chromaKey)
+  if (ck) {
+    parts.push('format=yuva420p')
+    parts.push(
+      `chromakey=color=${chromaKeyColorToFfmpeg(ck.color)}:similarity=${ck.similarity.toFixed(3)}:blend=${ck.blend.toFixed(3)}`
+    )
   }
   // 2. Filter preset (eq/hue chain).
   const fp = filterPresetToFfmpeg(seg.clip.filterPreset, seg.clip.filterIntensity ?? 1)

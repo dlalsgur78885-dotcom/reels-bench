@@ -82,7 +82,10 @@ import {
   type AdjustmentLayer,
   type AspectRatio,
   type BlurRegion,
+  type CaptionAnimation,
   type CaptionClip,
+  type CaptionStyle,
+  type ChromaKey,
   type Clip,
   type ClipTranscript,
   type ColorAdjust,
@@ -914,6 +917,40 @@ export interface ProjectStore {
    * are no-ops.
    */
   setClipLutPath(clipId: string, lutPath: string | null): void
+
+  /**
+   * Set or clear the chroma-key on a media clip. Passing `null` (or any
+   * non-object) clears the key (BC-clean: drops the field entirely instead
+   * of leaving an `enabled:false` shell). Caption / overlay clips are
+   * no-ops. The store accepts partial updates and back-fills with safe
+   * defaults (green, similarity 0.15, blend 0.10).
+   */
+  setClipChromaKey(clipId: string, chromaKey: Partial<ChromaKey> | null): void
+
+  /**
+   * Build a sequence of N caption clips that step a number down (count-down)
+   * or up (count-up), one clip per `intervalMs`. Each clip carries a static
+   * text label so it still renders via the PNG path — Korean glyphs and the
+   * user font picker keep working, and the live preview matches the export.
+   *
+   * Behavior:
+   *   - `from` and `to` are inclusive integers (e.g. 3 → 0 emits "3 2 1 0").
+   *   - `prefix` / `suffix` wrap each number (e.g. suffix "초" → "3초").
+   *   - Each clip's window is [startMs + i*intervalMs, +intervalMs]; clips
+   *     are appended to the (single) caption track in declaration order.
+   *   - No-op when intervalMs ≤ 0 or `from === to`.
+   * Returns the list of new clip ids so callers can select / animate them.
+   */
+  addCountdownCaptions(opts: {
+    startMs: number
+    intervalMs: number
+    from: number
+    to: number
+    prefix?: string
+    suffix?: string
+    style?: Partial<CaptionStyle>
+    animation?: CaptionAnimation
+  }): string[]
 
   // -----------------------------------------------------------------
   // Phase 3.57 — advanced trim modes (ripple / rolling / slip / slide).
@@ -3429,6 +3466,60 @@ export const useProjectStore = create<ProjectStore>()(
           return rest as typeof c
         }
         return { ...c, lutPath: next }
+      })
+      return { ...t, clips }
+    })
+    if (!changed) return
+    const nextProj = touch({ ...project, tracks })
+    set({ project: nextProj })
+    schedulePersist(nextProj)
+  },
+
+  setClipChromaKey(clipId, chromaKey): void {
+    const isObj = chromaKey != null && typeof chromaKey === 'object'
+    const next: ChromaKey | undefined = isObj
+      ? {
+          enabled: chromaKey.enabled !== false,
+          color:
+            typeof chromaKey.color === 'string' &&
+            /^#?[0-9a-fA-F]{6}$/.test(chromaKey.color)
+              ? chromaKey.color.startsWith('#')
+                ? chromaKey.color
+                : `#${chromaKey.color}`
+              : '#00ff00',
+          similarity:
+            typeof chromaKey.similarity === 'number' &&
+            Number.isFinite(chromaKey.similarity)
+              ? Math.max(0.01, Math.min(1, chromaKey.similarity))
+              : 0.15,
+          blend:
+            typeof chromaKey.blend === 'number' && Number.isFinite(chromaKey.blend)
+              ? Math.max(0, Math.min(1, chromaKey.blend))
+              : 0.1
+        }
+      : undefined
+    const project = get().project
+    let changed = false
+    const tracks = project.tracks.map((t) => {
+      const clips = t.clips.map((c) => {
+        if (c.id !== clipId) return c
+        if (!isMediaClip(c)) return c
+        const cur = c.chromaKey
+        if (
+          !!cur === !!next &&
+          cur?.enabled === next?.enabled &&
+          cur?.color === next?.color &&
+          cur?.similarity === next?.similarity &&
+          cur?.blend === next?.blend
+        ) {
+          return c
+        }
+        changed = true
+        if (next === undefined) {
+          const { chromaKey: _drop, ...rest } = c
+          return rest as typeof c
+        }
+        return { ...c, chromaKey: next }
       })
       return { ...t, clips }
     })
@@ -6104,6 +6195,51 @@ export const useProjectStore = create<ProjectStore>()(
   addCaption(caption: CaptionClip): void {
     // Delegate to addClip; addClip validates track-kind compatibility.
     get().addClip(caption)
+  },
+
+  addCountdownCaptions(opts): string[] {
+    const intervalMs = Math.max(0, Math.floor(opts?.intervalMs ?? 0))
+    if (intervalMs <= 0) return []
+    const from = Math.trunc(opts.from)
+    const to = Math.trunc(opts.to)
+    if (from === to) return []
+    const startMs = Math.max(0, Math.floor(opts.startMs))
+    const step = from > to ? -1 : 1
+    const count = Math.abs(from - to) + 1
+    if (count > 999) return []
+    const prefix = typeof opts.prefix === 'string' ? opts.prefix : ''
+    const suffix = typeof opts.suffix === 'string' ? opts.suffix : ''
+    // Style: caller may override font / color, defaults give a big centered
+    // number with a chunky preset that reads well over any clip background.
+    const baseStyle: CaptionStyle = {
+      preset: 'block-bold',
+      fontSize: 160,
+      align: 'center',
+      yPosition: 0.5,
+      background: 'none',
+      textStroke: { color: '#000000', width: 10 },
+      ...(opts.style ?? {})
+    }
+    const captions: CaptionClip[] = []
+    const ids: string[] = []
+    for (let i = 0; i < count; i++) {
+      const n = from + step * i
+      const text = `${prefix}${n}${suffix}`
+      const id = newId()
+      ids.push(id)
+      captions.push({
+        id,
+        kind: 'caption',
+        trackId: '', // back-filled by addCaptions to the caption track
+        startMs: startMs + i * intervalMs,
+        endMs: startMs + (i + 1) * intervalMs,
+        spans: [{ text }],
+        style: baseStyle,
+        animation: opts.animation
+      })
+    }
+    get().addCaptions(captions)
+    return ids
   },
 
   addCaptions(captions: CaptionClip[]): void {

@@ -7405,6 +7405,541 @@ def seedance_set_image_angle(cid: str, body: SeedanceCharImageAngle, request: Re
     return {"url": body.url, "angle": angle, "row": updated}
 
 
+# ── SFX (효과음) 라이브러리 — Phase 8 ──
+# - 자체 업로드 (admin)  + Freesound 임포트 (검색·메타 프록시)
+# - 모든 응답의 미디어 URL은 https + 화이트리스트 호스트만 (다운로드 IPC allowlist 대비)
+
+_SFX_BUCKET = "sfx"
+_SFX_ALLOWED_HOSTS = (
+    "freesound.org",
+    "cdn.freesound.org",
+    "supabase.co",
+)
+# Freesound 라이선스 — CC0 + Attribution 만 허용 (NC/Sampling+ 차단)
+_SFX_FREESOUND_ALLOWED_LICENSES = ("Creative Commons 0", "Attribution")
+
+
+def _freesound_key() -> str:
+    """Vault → env 순. 비어 있으면 빈 문자열 (호출부에서 503 처리)."""
+    try:
+        k = (secrets_svc.get_secret("FREESOUND_API_KEY") or "").strip()
+    except Exception:
+        k = ""
+    if not k:
+        k = (os.getenv("FREESOUND_API_KEY") or "").strip()
+    return k
+
+
+def _require_freesound_key() -> str:
+    k = _freesound_key()
+    if not k:
+        raise HTTPException(
+            503,
+            "FREESOUND_API_KEY 미설정 — https://freesound.org/help/developers/ 에서 키 발급 후 "
+            "관리자 페이지(Secrets)에 FREESOUND_API_KEY 추가",
+        )
+    return k
+
+
+def _sfx_safe_url(url: str | None) -> str | None:
+    """https + 화이트리스트 호스트만 통과. 그 외엔 None."""
+    if not url or not isinstance(url, str):
+        return None
+    if not url.startswith("https://"):
+        return None
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return None
+    if not host:
+        return None
+    for allowed in _SFX_ALLOWED_HOSTS:
+        if host == allowed or host.endswith("." + allowed):
+            return url
+    return None
+
+
+def _sfx_row_to_dict(row: dict) -> dict:
+    url = row.get("public_url")
+    if not url and row.get("storage_path"):
+        url = supabase.storage_public_url(_SFX_BUCKET, row["storage_path"])
+    return {
+        "id": row.get("id"),
+        "name": row.get("name"),
+        "tags": row.get("tags") or [],
+        "duration_ms": row.get("duration_ms"),
+        "url": _sfx_safe_url(url),
+        "license": row.get("license"),
+        "attribution": row.get("attribution"),
+        "source": row.get("source") or "builtin",
+        "mime": row.get("mime"),
+        "bytes": row.get("bytes"),
+        "created_at": row.get("created_at"),
+    }
+
+
+def _ffprobe_duration_ms(path: str) -> int | None:
+    """ffprobe로 audio duration(ms) 추출. 실패 시 None."""
+    try:
+        from services.pipeline import FFMPEG_PATH  # type: ignore
+    except Exception:
+        FFMPEG_PATH = "ffmpeg"
+    import subprocess as _sp
+    try:
+        # ffmpeg -i로 stderr에서 Duration 파싱 (ffprobe 별도 의존 회피)
+        proc = _sp.run([FFMPEG_PATH, "-i", path], capture_output=True, text=True, timeout=15)
+        import re as _re
+        m = _re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", proc.stderr or "")
+        if not m:
+            return None
+        h, mn, sec = int(m.group(1)), int(m.group(2)), float(m.group(3))
+        total = h * 3600 + mn * 60 + sec
+        return int(round(total * 1000))
+    except Exception:
+        return None
+
+
+@app.get("/api/sfx")
+def sfx_list(
+    request: Request,
+    q: str = "",
+    tag: str = "",
+    limit: int = 100,
+    offset: int = 0,
+):
+    """자체 SFX 목록/검색 (인증된 모든 사용자)."""
+    auth_svc.require_user(request)
+    limit = max(1, min(int(limit or 100), 500))
+    offset = max(0, int(offset or 0))
+
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _s = supabase.get_session()
+
+    params = [
+        "select=id,name,tags,duration_ms,storage_path,public_url,license,attribution,source,mime,bytes,created_at",
+        "order=created_at.desc",
+        f"limit={limit}",
+        f"offset={offset}",
+    ]
+    # 값은 quote_plus로 인코딩 — `&`/`=` 등으로 PostgREST 파라미터 분리·주입 차단.
+    # `*`는 ilike 와일드카드라 인코딩 밖에서 리터럴 유지.
+    from urllib.parse import quote_plus
+    if q.strip():
+        safe_q = q.strip().replace("%", "").replace(",", " ")
+        params.append(f"name=ilike.*{quote_plus(safe_q)}*")
+    if tag.strip():
+        safe_tag = tag.strip().replace("{", "").replace("}", "").replace(",", "")
+        # text[] contains
+        params.append(f"tags=cs.{{{quote_plus(safe_tag)}}}")
+
+    url = f"{SUPA}/rest/v1/sfx_assets?" + "&".join(params)
+    r = _s.get(url, headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=15)
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, r.text[:300])
+    rows = r.json() or []
+    return [_sfx_row_to_dict(row) for row in rows]
+
+
+@app.post("/api/sfx")
+async def sfx_upload(request: Request):
+    """admin 전용 — 자체 SFX 업로드.
+
+    multipart/form-data:
+      - file (필수): 오디오 파일
+      - name (필수): 표시 이름
+      - tags (선택): csv ("ding,bell,short")
+      - license (선택, 기본 CC0): 라이선스 표기
+      - attribution (선택, CC-BY 시 필수): 저작자 표기
+    """
+    auth_svc.require_admin(request)
+    form = await request.form()
+    file = form.get("file")
+    name = (form.get("name") or "").strip()
+    tags_csv = (form.get("tags") or "").strip()
+    license_ = (form.get("license") or "CC0").strip() or "CC0"
+    attribution = (form.get("attribution") or "").strip() or None
+
+    if not file or not hasattr(file, "read"):
+        raise HTTPException(400, "file 필수 (multipart)")
+    if not name:
+        raise HTTPException(400, "name 필수")
+    # CC-BY 계열은 attribution 필수
+    if license_.lower() in ("cc-by", "attribution", "cc by") and not attribution:
+        raise HTTPException(400, "Attribution 라이선스는 attribution 필드 필수")
+
+    tags = [t.strip() for t in tags_csv.split(",") if t.strip()] if tags_csv else []
+
+    # 파일 크기 캡 — 메모리 폭주 방지 (admin 전용이지만 50MB 상한).
+    _SFX_MAX_BYTES = 50 * 1024 * 1024
+    cl = request.headers.get("content-length")
+    if cl and cl.isdigit() and int(cl) > _SFX_MAX_BYTES:
+        raise HTTPException(413, f"파일 크기 초과 (max {_SFX_MAX_BYTES // (1024 * 1024)}MB)")
+
+    # 파일 읽기 + mime 추정
+    raw = await file.read()
+    if not raw or len(raw) < 64:
+        raise HTTPException(400, "file 비어 있음")
+    if len(raw) > _SFX_MAX_BYTES:
+        raise HTTPException(413, f"파일 크기 초과 (max {_SFX_MAX_BYTES // (1024 * 1024)}MB)")
+    mime = (getattr(file, "content_type", None) or "").strip() or "audio/mpeg"
+    orig_name = getattr(file, "filename", "sfx.mp3") or "sfx.mp3"
+    suffix = Path(orig_name).suffix.lower() or ".mp3"
+    if suffix not in (".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"):
+        raise HTTPException(400, f"지원하지 않는 오디오 확장자: {suffix}")
+
+    # ffprobe로 duration 추출
+    import tempfile
+    duration_ms: int | None = None
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tf:
+        tf.write(raw)
+        tmp_path = tf.name
+    try:
+        duration_ms = _ffprobe_duration_ms(tmp_path)
+    finally:
+        try: os.unlink(tmp_path)
+        except Exception: pass
+
+    # Storage 업로드
+    supabase.storage_create_bucket(_SFX_BUCKET, public=True)
+    sfx_id = str(uuid.uuid4())
+    storage_path = f"user/{sfx_id}{suffix}"
+    ok, err = supabase.storage_upload(
+        _SFX_BUCKET, storage_path, raw, content_type=mime, upsert=True,
+    )
+    if not ok:
+        raise HTTPException(500, f"Storage 업로드 실패: {err}")
+    public_url = supabase.storage_public_url(_SFX_BUCKET, storage_path)
+
+    # DB INSERT — service_role 직접 (admin 인증은 위에서 끝)
+    me = auth_svc.require_admin(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    row = {
+        "id": sfx_id,
+        "name": name,
+        "tags": tags,
+        "duration_ms": duration_ms,
+        "storage_path": storage_path,
+        "public_url": public_url,
+        "license": license_,
+        "attribution": attribution,
+        "source": "user",
+        "mime": mime,
+        "bytes": len(raw),
+        "created_by": me["id"],
+    }
+    _s = supabase.get_session()
+    ins = _s.post(
+        f"{SUPA}/rest/v1/sfx_assets",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Content-Type": "application/json", "Prefer": "return=representation"},
+        json=row, timeout=15,
+    )
+    if ins.status_code not in (200, 201):
+        # 업로드 롤백 — storage 객체 삭제
+        try:
+            _s.delete(
+                f"{SUPA}/storage/v1/object/{_SFX_BUCKET}/{storage_path}",
+                headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+            )
+        except Exception:
+            pass
+        raise HTTPException(ins.status_code, ins.text[:300])
+    out = ins.json()[0] if ins.json() else row
+    return _sfx_row_to_dict(out)
+
+
+@app.delete("/api/sfx/{sid}")
+def sfx_delete(sid: str, request: Request):
+    """admin 전용 — SFX 삭제 (storage + row)."""
+    auth_svc.require_admin(request)
+    SUPA = (os.getenv("SUPABASE_URL") or "").strip()
+    SK = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    _s = supabase.get_session()
+
+    # 먼저 storage_path 조회 (삭제 후엔 못 봄)
+    r = _s.get(
+        f"{SUPA}/rest/v1/sfx_assets?id=eq.{sid}&select=storage_path&limit=1",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}"}, timeout=10,
+    )
+    rows = r.json() if r.status_code == 200 else []
+    if not rows:
+        raise HTTPException(404, "SFX 없음")
+    storage_path = rows[0].get("storage_path")
+
+    # row 삭제
+    dr = _s.delete(
+        f"{SUPA}/rest/v1/sfx_assets?id=eq.{sid}",
+        headers={"apikey": SK, "Authorization": f"Bearer {SK}",
+                 "Prefer": "return=minimal"},
+        timeout=10,
+    )
+    if dr.status_code not in (200, 204):
+        raise HTTPException(dr.status_code, dr.text[:300])
+
+    # storage 파일 삭제 (실패해도 row는 지움 — best effort)
+    if storage_path:
+        try:
+            _s.delete(
+                f"{SUPA}/storage/v1/object/{_SFX_BUCKET}/{storage_path}",
+                headers={"apikey": SK, "Authorization": f"Bearer {SK}"},
+                timeout=10,
+            )
+        except Exception:
+            pass
+    return {"deleted": True}
+
+
+def _freesound_normalize(s: dict) -> dict:
+    """Freesound 응답 1건 → 정규화. preview_url은 https + 화이트리스트만."""
+    previews = s.get("previews") or {}
+    preview = (
+        previews.get("preview-hq-mp3")
+        or previews.get("preview-lq-mp3")
+        or previews.get("preview-hq-ogg")
+    )
+    duration_sec = s.get("duration")
+    try:
+        duration_ms = int(round(float(duration_sec) * 1000)) if duration_sec else None
+    except (TypeError, ValueError):
+        duration_ms = None
+    return {
+        "id": s.get("id"),
+        "name": s.get("name"),
+        "tags": s.get("tags") or [],
+        "duration_ms": duration_ms,
+        "preview_url": _sfx_safe_url(preview),
+        "freesound_url": _sfx_safe_url(s.get("url")),
+        "license": s.get("license"),
+        "attribution": s.get("username"),  # CC-BY 시 필수 표기
+        "username": s.get("username"),
+    }
+
+
+@app.get("/api/sfx/freesound/search")
+def sfx_freesound_search(
+    request: Request,
+    q: str = "",
+    page: int = 1,
+    license: str = "",
+    page_size: int = 24,
+):
+    """Freesound text search 프록시 — CC0/Attribution 만."""
+    auth_svc.require_user(request)
+    key = _require_freesound_key()
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or 24), 100))
+
+    # 라이선스 filter — 허용 목록 강제
+    if license and license not in _SFX_FREESOUND_ALLOWED_LICENSES:
+        raise HTTPException(400, f"허용된 라이선스: {_SFX_FREESOUND_ALLOWED_LICENSES}")
+    license_filter = (
+        f'license:"{license}"' if license
+        else ' OR '.join(f'license:"{lic}"' for lic in _SFX_FREESOUND_ALLOWED_LICENSES)
+    )
+
+    params = {
+        "query": q or "",
+        "page": page,
+        "page_size": page_size,
+        "filter": license_filter,
+        "fields": "id,name,tags,duration,license,username,previews,url",
+        "token": key,
+    }
+    try:
+        r = requests.get(
+            "https://freesound.org/apiv2/search/text/",
+            params=params, timeout=15,
+        )
+    except Exception as e:
+        raise HTTPException(502, f"Freesound 호출 실패: {e}")
+    if r.status_code == 429:
+        raise HTTPException(429, "Freesound rate limit — 잠시 후 재시도 (60req/min)")
+    if r.status_code == 401:
+        raise HTTPException(503, "FREESOUND_API_KEY 무효 — Secrets에서 갱신 필요")
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, f"Freesound: {r.text[:300]}")
+    data = r.json() or {}
+    return {
+        "count": data.get("count", 0),
+        "next": bool(data.get("next")),
+        "previous": bool(data.get("previous")),
+        "results": [_freesound_normalize(s) for s in (data.get("results") or [])],
+    }
+
+
+@app.get("/api/sfx/freesound/{sound_id}")
+def sfx_freesound_get(sound_id: int, request: Request):
+    """단일 sound 메타 — preview + 라이선스 + 저작자."""
+    auth_svc.require_user(request)
+    key = _require_freesound_key()
+    try:
+        r = requests.get(
+            f"https://freesound.org/apiv2/sounds/{int(sound_id)}/",
+            params={
+                "fields": "id,name,tags,duration,license,username,previews,url",
+                "token": key,
+            },
+            timeout=15,
+        )
+    except Exception as e:
+        raise HTTPException(502, f"Freesound 호출 실패: {e}")
+    if r.status_code == 429:
+        raise HTTPException(429, "Freesound rate limit — 잠시 후 재시도 (60req/min)")
+    if r.status_code == 401:
+        raise HTTPException(503, "FREESOUND_API_KEY 무효 — Secrets에서 갱신 필요")
+    if r.status_code == 404:
+        raise HTTPException(404, "해당 sound 없음")
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, f"Freesound: {r.text[:300]}")
+    s = r.json() or {}
+    lic = (s.get("license") or "")
+    # CC0/Attribution 외엔 거절 (사용자가 직접 URL로 호출해도 차단)
+    if not any(allowed in lic for allowed in _SFX_FREESOUND_ALLOWED_LICENSES):
+        raise HTTPException(403, f"허용되지 않은 라이선스: {lic}")
+    return _freesound_normalize(s)
+
+
+# ── Audio library — 인스타 릴스 BGM/SFX 시드 카탈로그 ──
+#
+# 분석 파이프라인이 뽑은 `bgm[].mood` / `sound_effects[].type` 에 매칭되는
+# stock 음원을 에디터가 1-클릭으로 끌어다 쓰게 하기 위한 정적 카탈로그.
+# Pixabay Music CDN 직접 hotlink (라이선스: Pixabay Content License — 상업
+# 사용 OK, attribution 권장이나 의무 아님). 새 트랙 추가는 이 리스트에
+# 한 줄 추가하면 끝. 시간이 지나면 Supabase 테이블 + admin UI로 옮길 예정.
+#
+# 키 필드 (`musicLibrary.ts` 의 `RawAudioLibraryItem` 와 1:1 매칭):
+#   id / category / title / artist / duration_sec / bpm / mood / genre /
+#   file_url / preview_url / ext
+_AUDIO_LIBRARY_SEED: list[dict] = [
+    # ── Music ──────────────────────────────────────────────────────────
+    {
+        "id": "px-upbeat-01",
+        "category": "music",
+        "title": "Upbeat Marketing",
+        "artist": "Pixabay",
+        "duration_sec": 124,
+        "bpm": 128,
+        "mood": "upbeat",
+        "genre": "pop",
+        "file_url": "https://cdn.pixabay.com/audio/2022/05/27/audio_1808fbf07a.mp3",
+        "ext": ".mp3",
+    },
+    {
+        "id": "px-corporate-01",
+        "category": "music",
+        "title": "Corporate Inspiring",
+        "artist": "Pixabay",
+        "duration_sec": 152,
+        "bpm": 110,
+        "mood": "inspiring",
+        "genre": "corporate",
+        "file_url": "https://cdn.pixabay.com/audio/2022/03/15/audio_5dc25f3b94.mp3",
+        "ext": ".mp3",
+    },
+    {
+        "id": "px-chill-01",
+        "category": "music",
+        "title": "Chill Lo-Fi",
+        "artist": "Pixabay",
+        "duration_sec": 138,
+        "bpm": 78,
+        "mood": "chill",
+        "genre": "lofi",
+        "file_url": "https://cdn.pixabay.com/audio/2022/10/30/audio_347111d654.mp3",
+        "ext": ".mp3",
+    },
+    {
+        "id": "px-energetic-01",
+        "category": "music",
+        "title": "Energetic Rock",
+        "artist": "Pixabay",
+        "duration_sec": 116,
+        "bpm": 140,
+        "mood": "energetic",
+        "genre": "rock",
+        "file_url": "https://cdn.pixabay.com/audio/2022/08/04/audio_2dde668d05.mp3",
+        "ext": ".mp3",
+    },
+    {
+        "id": "px-cinematic-01",
+        "category": "music",
+        "title": "Cinematic Trailer",
+        "artist": "Pixabay",
+        "duration_sec": 95,
+        "bpm": 90,
+        "mood": "dramatic",
+        "genre": "cinematic",
+        "file_url": "https://cdn.pixabay.com/audio/2022/12/05/audio_42dcfa6f73.mp3",
+        "ext": ".mp3",
+    },
+    # ── SFX ────────────────────────────────────────────────────────────
+    {
+        "id": "px-sfx-whoosh-01",
+        "category": "sfx",
+        "title": "Whoosh",
+        "artist": "Pixabay",
+        "duration_sec": 1,
+        "mood": "transition",
+        "file_url": "https://cdn.pixabay.com/audio/2022/03/10/audio_e7ddb9c1e6.mp3",
+        "ext": ".mp3",
+    },
+    {
+        "id": "px-sfx-ding-01",
+        "category": "sfx",
+        "title": "Notification Ding",
+        "artist": "Pixabay",
+        "duration_sec": 1,
+        "mood": "alert",
+        "file_url": "https://cdn.pixabay.com/audio/2022/03/10/audio_a8e603753c.mp3",
+        "ext": ".mp3",
+    },
+    {
+        "id": "px-sfx-pop-01",
+        "category": "sfx",
+        "title": "Pop",
+        "artist": "Pixabay",
+        "duration_sec": 1,
+        "mood": "click",
+        "file_url": "https://cdn.pixabay.com/audio/2022/03/15/audio_c8c8a73467.mp3",
+        "ext": ".mp3",
+    },
+]
+
+
+@app.get("/api/audio-library")
+def audio_library(
+    request: Request,
+    category: str | None = None,
+    q: str | None = None,
+    cursor: str | None = None,
+):
+    """음악 / 효과음 시드 카탈로그 — 정적 리스트.
+
+    Query:
+      - category: 'music' | 'sfx' | (생략 = 전체)
+      - q: 제목 / mood / genre / artist 부분 매칭 (대소문자 무시)
+      - cursor: 추후 페이징 — 현재 시드 데이터가 작아서 무시.
+    """
+    auth_svc.require_user(request)
+    items = list(_AUDIO_LIBRARY_SEED)
+    if category in ("music", "sfx"):
+        items = [it for it in items if it.get("category") == category]
+    if q:
+        needle = q.strip().lower()
+        if needle:
+            def _matches(it: dict) -> bool:
+                hay = " ".join(
+                    str(it.get(k) or "")
+                    for k in ("title", "mood", "genre", "artist")
+                ).lower()
+                return needle in hay
+            items = [it for it in items if _matches(it)]
+    return {"items": items, "next_cursor": None}
+
+
 # ── Serve built frontend (must be last: catches all non-API routes) ──
 _PUBLIC_DIR = Path(__file__).parent.parent / "web" / "dist"
 

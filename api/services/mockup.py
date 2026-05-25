@@ -875,8 +875,8 @@ def render_frame_preview(device_id: str, *, style: str | None = None,
                          shadow_angle: float | None = None,
                          dummy_bg_id: str = "sunset") -> bytes:
     """디바이스 frame + screen 영역에 procedural bg 합성된 PNG.
-    STYLE/SHADOW 카드 미리보기용 — 흰 카드 배경에 외곽 흑선만 보이는 문제 해결.
-    frame 의 alpha cutout 통해 bg 가 디바이스 화면처럼 보임.
+    STYLE/SHADOW 카드 미리보기용 — 카드 안에서 contain 으로 작게 보이니
+    사이즈는 작게 (~300px) 빠른 응답 위해.
     """
     frame_png_bytes = render_device_frame(device_id, style=style,
                                            radius_override=radius_override)
@@ -885,11 +885,18 @@ def render_frame_preview(device_id: str, *, style: str | None = None,
                                              opacity=shadow_opacity,
                                              angle_deg=shadow_angle)
     frame_img = Image.open(io.BytesIO(frame_png_bytes)).convert("RGBA")
-    W, H = frame_img.size
+    Wfull, Hfull = frame_img.size
+    # 카드 미리보기 사이즈 — frame 비율 유지, 짧은 변 ≈ 220px
+    target_short = 220
+    scale = target_short / min(Wfull, Hfull)
+    W = max(64, int(Wfull * scale))
+    H = max(64, int(Hfull * scale))
+    frame_small = frame_img.resize((W, H), Image.LANCZOS)
+    # bg 도 작은 사이즈로 — pixel-by-pixel gradient 가 W×H 만 처리 (16배 빠름)
     bg = render_bg_preset(dummy_bg_id, W, H).convert("RGBA")
     out = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     out.alpha_composite(bg)
-    out.alpha_composite(frame_img)
+    out.alpha_composite(frame_small)
     buf = io.BytesIO()
     out.save(buf, format="PNG", optimize=True)
     return buf.getvalue()

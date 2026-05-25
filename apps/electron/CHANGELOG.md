@@ -21,6 +21,15 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.4 (2026-05-26)
+
+### UX
+- 이모지 모두 제거 — IMPORT_TABS (music/sfx/brand) + Editor 좌측 rail
+  (media/overlay/text/transcript). icon 비면 span skip하도록 조건 렌더링,
+  layout 영향 없음. label 텍스트만 남음.
+
+---
+
 ## 0.2.3 (2026-05-26)
 
 ### UX

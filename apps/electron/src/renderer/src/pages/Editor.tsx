@@ -1658,10 +1658,10 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         <div style={styles.iconRail} data-testid="left-icon-rail" role="tablist">
           {(
             [
-              { key: 'media', icon: '📁', label: '미디어', testid: 'left-rail-media' },
-              { key: 'overlay', icon: '✨', label: '스티커', testid: 'left-rail-sticker' },
-              { key: 'text', icon: '🅣', label: '텍스트', testid: 'left-rail-text' },
-              { key: 'transcript', icon: '📝', label: '대본', testid: 'left-rail-transcript' }
+              { key: 'media', icon: '', label: '미디어', testid: 'left-rail-media' },
+              { key: 'overlay', icon: '', label: '스티커', testid: 'left-rail-sticker' },
+              { key: 'text', icon: '', label: '텍스트', testid: 'left-rail-text' },
+              { key: 'transcript', icon: '', label: '대본', testid: 'left-rail-transcript' }
             ] as const
           ).map((item) => {
             const isText = item.key === 'text'
@@ -1688,7 +1688,9 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
                   setLeftTab(item.key)
                 }}
               >
-                <span style={styles.iconRailIcon} aria-hidden="true">{item.icon}</span>
+                {item.icon && (
+                  <span style={styles.iconRailIcon} aria-hidden="true">{item.icon}</span>
+                )}
                 <span>{item.label}</span>
               </button>
             )

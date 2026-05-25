@@ -257,9 +257,9 @@ const IMPORT_TABS: { key: ImportTab; label: string }[] = [
   { key: 'tts', label: '③ TTS & SRT' },
   { key: 'ai', label: '④ AI 영상 생성' },
   { key: 'internal', label: '내부 영상' },
-  { key: 'music', label: '🎵 사운드 라이브러리' },
-  { key: 'sfx', label: '🔍 효과음 검색 (Freesound)' },
-  { key: 'brand', label: '🎨 브랜드 키트' }
+  { key: 'music', label: '사운드 라이브러리' },
+  { key: 'sfx', label: '효과음 검색 (Freesound)' },
+  { key: 'brand', label: '브랜드 키트' }
 ]
 
 // ---------------------------------------------------------------------------

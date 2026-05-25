@@ -50,6 +50,8 @@ services:
     envVars:
       - key: SUPABASE_URL
         sync: false
+      - key: SUPABASE_ANON_KEY     # verify_jwt 가 /auth/v1/user 호출 시 apikey 헤더
+        sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
       - key: SUPABASE_JWT_SECRET

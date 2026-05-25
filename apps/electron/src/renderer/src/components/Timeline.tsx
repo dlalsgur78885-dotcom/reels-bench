@@ -2927,13 +2927,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
                   </div>
                 )
               })}
-              <div
-                style={{
-                  ...styles.playhead,
-                  left: (playheadMs / 1000) * pps
-                }}
-                data-testid="playhead"
-              />
+              <SmoothPlayhead pps={pps} />
             </div>
           </div>
         ))}
@@ -3478,5 +3472,55 @@ export function Timeline(props: TimelineProps): JSX.Element {
         })()
       )}
     </div>
+  )
+}
+
+/**
+ * SmoothPlayhead — 60fps 부드러운 playhead.
+ *
+ * 이전엔 `style.left = (playheadMs/1000)*pps` 였는데, playheadMs가 zustand
+ * state라 매 rAF tick(16ms)마다 Timeline 전체(~3500 LoC)가 리렌더 + React
+ * reconciliation. 큰 프로젝트나 약한 디바이스에서 stutter 원인이었음.
+ *
+ * 우회: 이 컴포넌트만 useTimelineUi.subscribe로 store 직접 구독, 매 변경마다
+ * DOM element의 `style.transform`만 갱신 (React reconciliation 안 거침).
+ * transform은 GPU compositor에서 처리되어 left보다 부드럽고, will-change로
+ * 브라우저에 미리 컴포지트 레이어 promotion 힌트.
+ *
+ * pps(zoom 레벨)는 prop으로 받음 — zoom 변경 시 parent rerender의 자연스러운
+ * 영향을 받음(자주 안 바뀜). pps가 바뀌면 effect cleanup + 새 subscriber로
+ * 다시 wire.
+ */
+function SmoothPlayhead({ pps }: { pps: number }): JSX.Element {
+  const ref = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    // The store has no subscribeWithSelector middleware, so the subscribe
+    // callback fires on EVERY state change — guard with a local last-value
+    // cache so unrelated updates (selection, zoom, etc.) don't recompute
+    // the transform.
+    let last = -1
+    const apply = (ms: number): void => {
+      if (ms === last) return
+      last = ms
+      const x = Math.max(0, (ms / 1000) * pps)
+      el.style.transform = `translate3d(${x}px, 0, 0)`
+    }
+    apply(useTimelineUi.getState().playheadMs)
+    return useTimelineUi.subscribe((s) => {
+      apply(s.playheadMs)
+    })
+  }, [pps])
+  return (
+    <div
+      ref={ref}
+      data-testid="playhead"
+      style={{
+        ...styles.playhead,
+        left: 0,
+        willChange: 'transform'
+      }}
+    />
   )
 }

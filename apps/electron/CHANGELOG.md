@@ -21,6 +21,17 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.2 (2026-05-26)
+
+### 성능
+- Playhead(빨간 선) 부드러운 60fps. 이전엔 zustand `playheadMs`를 큰
+  Timeline(~3500 LoC) 전체가 구독해서 매 rAF tick(16ms)마다 React
+  reconciliation — stutter 원인. 새 `SmoothPlayhead` 컴포넌트가 zustand
+  subscribe로 DOM `style.transform`만 직접 갱신(reconciliation 우회) +
+  `translate3d` + `will-change: transform`으로 GPU compositor 레이어 promotion.
+
+---
+
 ## 0.2.1 (2026-05-26)
 
 인앱 자동 알람 실제 fire 확인용 patch — electron app 자체 동작 변경은 없음.

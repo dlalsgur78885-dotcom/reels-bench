@@ -80,6 +80,19 @@ type Device = {
   color: string; notch: boolean;
 }
 
+// 백엔드 DEVICES dict 와 동기 — fetch 완료 전 즉시 표시용 fallback.
+// 백엔드 응답 도착 시 갱신됨.
+const DEVICES_FALLBACK: Device[] = [
+  { id: 'iphone-16-pro',        name: 'iPhone 16 Pro',        body_w: 1320, body_h: 2670, screen_x: 50, screen_y: 50, screen_w: 1220, screen_h: 2570, screen_radius: 140, corner_radius: 180, color: '#0a0a0a', notch: true },
+  { id: 'iphone-16-pro-white',  name: 'iPhone 16 Pro (Silver)', body_w: 1320, body_h: 2670, screen_x: 50, screen_y: 50, screen_w: 1220, screen_h: 2570, screen_radius: 140, corner_radius: 180, color: '#e8e8ea', notch: true },
+  { id: 'pixel-9-pro',          name: 'Pixel 9 Pro',          body_w: 1280, body_h: 2730, screen_x: 40, screen_y: 40, screen_w: 1200, screen_h: 2650, screen_radius: 70,  corner_radius: 100, color: '#1f1f22', notch: false },
+  { id: 'iphone-16',            name: 'iPhone 16',            body_w: 1300, body_h: 2640, screen_x: 55, screen_y: 55, screen_w: 1190, screen_h: 2530, screen_radius: 120, corner_radius: 160, color: '#1a1a1c', notch: true },
+  { id: 'iphone-16-pro-max',    name: 'iPhone 16 Pro Max',    body_w: 1440, body_h: 2920, screen_x: 50, screen_y: 50, screen_w: 1340, screen_h: 2820, screen_radius: 150, corner_radius: 195, color: '#0a0a0a', notch: true },
+  { id: 'galaxy-s25',           name: 'Galaxy S25',           body_w: 1260, body_h: 2680, screen_x: 38, screen_y: 38, screen_w: 1184, screen_h: 2604, screen_radius: 60,  corner_radius: 90,  color: '#181a1c', notch: false },
+  { id: 'galaxy-s25-ultra',     name: 'Galaxy S25 Ultra',     body_w: 1420, body_h: 2980, screen_x: 40, screen_y: 40, screen_w: 1340, screen_h: 2900, screen_radius: 50,  corner_radius: 70,  color: '#1c1c20', notch: false },
+  { id: 'pixel-9',              name: 'Pixel 9',              body_w: 1230, body_h: 2670, screen_x: 42, screen_y: 42, screen_w: 1146, screen_h: 2586, screen_radius: 78,  corner_radius: 110, color: '#2a2a2c', notch: false },
+]
+
 const ASPECTS = ['9:16', '1:1', '4:5', '3:4', '16:9', '16:10', '4:3'] as const
 
 const BG_PRESETS = [
@@ -156,7 +169,7 @@ export default function Mockup() {
   const [seqSelectedUid, setSeqSelectedUid] = useState<string>('')
 
   // 공통
-  const [devices, setDevices] = useState<Device[]>([])
+  const [devices, setDevices] = useState<Device[]>(DEVICES_FALLBACK)
   const [deviceId, setDeviceId] = useState<string>('iphone-16-pro')
   const [aspect, setAspect] = useState<typeof ASPECTS[number]>('9:16')
   const [bgColor, setBgColor] = useState('#1a1a2e')
@@ -508,6 +521,7 @@ export default function Mockup() {
 
   return (
     <div style={{ padding: 10, minHeight: 'calc(100vh - 20px)' }}>
+      <style>{`@keyframes mockup-skel { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }`}</style>
       {/* 상단 toolbar — shots.so 스타일 (얇은 한 줄) */}
       <div style={{ marginBottom: 10, padding: '8px 12px', display: 'flex',
                      alignItems: 'center', gap: 12,
@@ -569,10 +583,18 @@ export default function Mockup() {
           </div>
 
           {/* ───── TEMPLATES (Media 탭) ───── */}
-          {activeLeftTab === 'media' && templates.length > 0 && (
+          {activeLeftTab === 'media' && (
             <div style={{ paddingBottom: 10 }}>
               <SectionHeader>Templates</SectionHeader>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
+                {templates.length === 0 && Array.from({ length: 8 }, (_, i) => (
+                  <div key={`skel-${i}`} style={{
+                    minHeight: 50, borderRadius: 6,
+                    background: 'linear-gradient(90deg, var(--bg-base) 25%, var(--bg-elevated) 50%, var(--bg-base) 75%)',
+                    backgroundSize: '200% 100%', animation: 'mockup-skel 1.4s ease-in-out infinite',
+                    border: '1px solid var(--border-subtle)',
+                  }} />
+                ))}
                 {templates.map(t => (
                   <button key={t.id} onClick={() => !busy && applyTemplate(t)} disabled={busy}
                     title={t.tagline}

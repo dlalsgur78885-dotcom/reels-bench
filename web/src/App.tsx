@@ -173,9 +173,12 @@ export default function App() {
 
   useEffect(() => {
     if (bootstrapping || !session) return
+    // 대시보드 사이드바 route prefetch — 1.2s → 5s 지연.
+    // 첫 페이지(특히 /mockup) 의 카탈로그 fetch 와 main thread 경합 회피.
+    // hover/focus prefetch 는 그대로 즉시 (사용자 의도 기반).
     const timer = window.setTimeout(() => {
       NAV_BY_PLATFORM[platform].slice(0, 4).forEach(n => prefetchRoute(n.to))
-    }, 1200)
+    }, 5000)
     return () => window.clearTimeout(timer)
   }, [bootstrapping, session, platform])
 

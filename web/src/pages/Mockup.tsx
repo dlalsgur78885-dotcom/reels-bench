@@ -862,16 +862,33 @@ export default function Mockup() {
               </span>
             )}
           </Label>
-          {previewBox && device && (
+          {previewBox && device && (() => {
+            // 배경 우선순위: bg_preset > bg_image > bg_color (백엔드와 동일)
+            let bgStyle: string
+            if (bgPresetId) {
+              bgStyle = `center/cover url(${MOCKUP_BASE_URL}/api/mockup/background/${bgPresetId}.png)`
+            } else if (bgPreview) {
+              bgStyle = `center/cover url(${bgPreview})`
+            } else {
+              bgStyle = bgColor
+            }
+            // tilt CSS perspective — 합성 결과와는 다르지만 시각 힌트
+            const tiltTransform = (tiltX !== 0 || tiltY !== 0)
+              ? `perspective(1200px) rotateY(${-tiltX}deg) rotateX(${tiltY}deg)`
+              : 'none'
+            return (
             <div style={{
               width: previewBox.canvasW, height: previewBox.canvasH,
               margin: '0 auto', position: 'relative',
-              background: bgPreview ? `center/cover url(${bgPreview})` : bgColor,
+              background: bgStyle,
               borderRadius: 6, overflow: 'hidden',
               border: '1px solid var(--border)',
+              transform: tiltTransform,
+              transformOrigin: 'center center',
+              transition: 'transform 0.2s',
             }}>
-              {/* screen 영역 (디바이스 frame 아래 레이어) — sequence 모드일 때 선택된 화면 표시 */}
-              {mode === 'sequence' && seqSelectedScene && (() => {
+              {/* screen 영역 — sequence(선택된 화면) 또는 upload(업로드 이미지) 미리보기 */}
+              {(() => {
                 const scale = previewBox.devH / device.body_h
                 const scrL = (previewBox.canvasW - previewBox.devW) / 2 + device.screen_x * scale
                 const scrT = (previewBox.canvasH - previewBox.devH) / 2 + device.screen_y * scale
@@ -882,9 +899,17 @@ export default function Mockup() {
                   objectFit: 'cover', borderRadius: device.screen_radius * scale,
                   pointerEvents: 'none', background: '#000',
                 }
-                return seqSelectedScene.isVideo
-                  ? <video src={seqSelectedScene.preview} muted autoPlay loop playsInline style={common} />
-                  : <img src={seqSelectedScene.preview} alt="" style={common} />
+                if (mode === 'sequence' && seqSelectedScene) {
+                  return seqSelectedScene.isVideo
+                    ? <video src={seqSelectedScene.preview} muted autoPlay loop playsInline style={common} />
+                    : <img src={seqSelectedScene.preview} alt="" style={common} />
+                }
+                if (mode === 'upload' && sourcePreview) {
+                  return sourceIsVideo
+                    ? <video src={sourcePreview} muted autoPlay loop playsInline style={common} />
+                    : <img src={sourcePreview} alt="" style={common} />
+                }
+                return null
               })()}
               {!hideMockup && (() => {
                 const params = new URLSearchParams()
@@ -911,7 +936,8 @@ export default function Mockup() {
                 )
               })()}
             </div>
-          )}
+            )
+          })()}
 
           <div style={{ marginTop: 14 }}>
             <Label>상태</Label>

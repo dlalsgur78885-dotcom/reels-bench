@@ -493,52 +493,51 @@ export default function Mockup() {
         </span>
       </div>
 
-      {/* 템플릿 카드 그리드 — 한 클릭에 디바이스/배경/스타일/그림자/모션/효과 일괄 set */}
-      {templates.length > 0 && (
-        <div style={{ marginBottom: 16, padding: 12, ...cardSt }}>
-          <Label>템플릿 (사전 콤보)</Label>
-          <div style={{ display: 'grid',
-                        gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
-                        gap: 8 }}>
-            {templates.map(t => (
-              <button key={t.id} onClick={() => !busy && applyTemplate(t)} disabled={busy}
-                title={t.tagline}
-                style={{
-                  textAlign: 'left', padding: 10, borderRadius: 8,
-                  background: 'var(--bg-base)',
-                  border: appliedTemplateId === t.id
-                    ? '2px solid var(--accent)' : '1px solid var(--border)',
-                  cursor: busy ? 'wait' : 'pointer',
-                  display: 'flex', flexDirection: 'column', gap: 4,
-                  minHeight: 70,
-                }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>
-                  {t.label}
-                </div>
-                <div style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.3 }}>
-                  {t.tagline}
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
       <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr 280px', gap: 10, alignItems: 'start' }}>
         {/* 좌: 모든 입력 (shots.so 스타일 — 스크롤 가능 사이드패널) */}
         <div style={{ ...cardSt, padding: 12, maxHeight: 'calc(100vh - 80px)',
                        overflowY: 'auto', overflowX: 'hidden' }}>
-          {/* 모드 */}
-          <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
-            {(['url', 'upload', 'sequence'] as const).map(m => (
-              <button key={m} onClick={() => !busy && setMode(m)} disabled={busy}
-                style={tabBtn(mode === m, busy)}>
-                {m === 'url' ? 'URL 녹화'
-                  : m === 'upload' ? '단일 화면 업로드'
-                  : '여러 화면 시퀀스'}
-              </button>
-            ))}
-          </div>
+
+          {/* ───── TEMPLATES (사전 콤보) ───── */}
+          {templates.length > 0 && (
+            <div style={{ paddingBottom: 10 }}>
+              <SectionHeader>Templates</SectionHeader>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
+                {templates.map(t => (
+                  <button key={t.id} onClick={() => !busy && applyTemplate(t)} disabled={busy}
+                    title={t.tagline}
+                    style={{
+                      textAlign: 'left', padding: 8, borderRadius: 6,
+                      background: 'var(--bg-base)',
+                      border: appliedTemplateId === t.id
+                        ? '2px solid var(--accent)' : '1px solid var(--border)',
+                      cursor: busy ? 'wait' : 'pointer',
+                      display: 'flex', flexDirection: 'column', gap: 2,
+                      minHeight: 50,
+                    }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)' }}>
+                      {t.label}
+                    </div>
+                    <div style={{ fontSize: 9, color: 'var(--text-muted)', lineHeight: 1.3 }}>
+                      {t.tagline}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ───── MEDIA (모드 + 입력) ───── */}
+          <div style={sectionSt}>
+            <SectionHeader>Media</SectionHeader>
+            <div style={{ display: 'flex', gap: 4, marginBottom: 10, flexWrap: 'wrap' }}>
+              {(['url', 'upload', 'sequence'] as const).map(m => (
+                <button key={m} onClick={() => !busy && setMode(m)} disabled={busy}
+                  style={{ ...tabBtn(mode === m, busy), fontSize: 11, padding: '6px 10px' }}>
+                  {m === 'url' ? 'URL' : m === 'upload' ? '단일' : '시퀀스'}
+                </button>
+              ))}
+            </div>
 
           {mode === 'sequence' ? (
             <SceneList
@@ -639,12 +638,11 @@ export default function Mockup() {
               )}
             </>
           )}
+          </div>
 
-          <hr style={{ border: 'none', borderTop: '1px solid var(--border-subtle)', margin: '18px 0' }} />
-
-          {/* ───── 디바이스 ───── */}
+          {/* ───── DEVICE ───── */}
           <div style={sectionSt}>
-            <Label>디바이스</Label>
+            <SectionHeader>Device</SectionHeader>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               {devices.map(d => (
                 <button key={d.id} onClick={() => !busy && setDeviceId(d.id)} disabled={busy}
@@ -653,10 +651,10 @@ export default function Mockup() {
             </div>
           </div>
 
-          {/* ───── 스타일 (디바이스 frame 시각 변종) ───── */}
+          {/* ───── STYLE ───── */}
           {deviceStyles.length > 0 && (
             <div style={sectionSt}>
-              <Label>스타일</Label>
+              <SectionHeader>Style</SectionHeader>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {deviceStyles.map(s => (
                   <button key={s.id} onClick={() => !busy && setDeviceStyleId(s.id)} disabled={busy}
@@ -668,10 +666,13 @@ export default function Mockup() {
             </div>
           )}
 
-          {/* ───── 그림자 ───── */}
+          {/* ───── SHADOW ───── */}
           {deviceShadows.length > 0 && (
             <div style={sectionSt}>
-              <Label>그림자</Label>
+              <SectionHeader hint={deviceShadowId !== 'none'
+                ? `${Math.round(deviceShadowOpacity * 100)}%` : undefined}>
+                Shadow
+              </SectionHeader>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
                 {deviceShadows.map(s => (
                   <button key={s.id} onClick={() => !busy && setDeviceShadowId(s.id)} disabled={busy}
@@ -681,33 +682,22 @@ export default function Mockup() {
                 ))}
               </div>
               {deviceShadowId !== 'none' && (
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 40 }}>강도</span>
-                  <input type="range" min={0} max={100} step={1}
-                    value={Math.round(deviceShadowOpacity * 100)} disabled={busy}
-                    onChange={e => setDeviceShadowOpacity(Number(e.target.value) / 100)}
-                    style={{ flex: 1 }} />
-                  <span style={{ fontSize: 11, color: 'var(--text-secondary)', width: 36 }}>
-                    {Math.round(deviceShadowOpacity * 100)}%
-                  </span>
-                </div>
+                <input type="range" min={0} max={100} step={1}
+                  value={Math.round(deviceShadowOpacity * 100)} disabled={busy}
+                  onChange={e => setDeviceShadowOpacity(Number(e.target.value) / 100)}
+                  style={{ width: '100%' }} />
               )}
             </div>
           )}
 
-          {/* hide mockup + radius override */}
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
-            <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12,
-                            color: 'var(--text-secondary)', cursor: busy ? 'wait' : 'pointer' }}>
-              <input type="checkbox" checked={hideMockup} disabled={busy}
-                onChange={e => setHideMockup(e.target.checked)} />
-              디바이스 숨기기 (콘텐츠만)
-            </label>
+          {/* ───── BORDER (radius) ───── */}
+          <div style={sectionSt}>
+            <SectionHeader>Border</SectionHeader>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>모서리</span>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Radius</span>
               <input type="number" min={0} max={500} step={10}
                 value={radiusOverride ?? ''} disabled={busy}
-                placeholder="기본"
+                placeholder="auto"
                 onChange={e => {
                   const v = e.target.value.trim()
                   if (!v) { setRadiusOverride(null); return }
@@ -721,12 +711,23 @@ export default function Mockup() {
             </div>
           </div>
 
+          {/* ───── VISIBILITY ───── */}
+          <div style={sectionSt}>
+            <SectionHeader>Visibility</SectionHeader>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12,
+                            color: 'var(--text-secondary)', cursor: busy ? 'wait' : 'pointer' }}>
+              <input type="checkbox" checked={hideMockup} disabled={busy}
+                onChange={e => setHideMockup(e.target.checked)} />
+              Hide Mockup (콘텐츠만 표시)
+            </label>
+          </div>
+
           {/* (Tilt / 비율 / 디바이스 크기 = LAYOUT preset — 우측 패널로 이동) */}
 
-          {/* Scene shapes */}
+          {/* ───── SCENE ───── */}
           {sceneShapesItems.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
-              <Label>씬 도형 (배경 위 추가)</Label>
+            <div style={sectionSt}>
+              <SectionHeader>Scene</SectionHeader>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {sceneShapesItems.map(s => (
                   <button key={s.id} onClick={() => !busy && setSceneShapeId(s.id)} disabled={busy}
@@ -740,19 +741,23 @@ export default function Mockup() {
 
           {/* (비율 + 디바이스 크기 = LAYOUT preset — 우측 패널로 이동) */}
 
-          {/* 배경 프리셋 카탈로그 (procedural — preset 선택 시 단색/이미지 위에 우선 적용) */}
-          {bgPresets.length > 0 && (
-            <>
-              <Label>배경 프리셋</Label>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 6, marginBottom: 10 }}>
+          {/* ───── BACKGROUND ───── */}
+          <div style={sectionSt}>
+            <SectionHeader hint={bgPresetId ? 'preset' : (bgFileId ? 'image' : 'color')}>
+              Background
+            </SectionHeader>
+            {/* preset 카탈로그 */}
+            {bgPresets.length > 0 && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)',
+                             gap: 6, marginBottom: 10 }}>
                 <button onClick={() => !busy && setBgPresetId('')} disabled={busy}
-                  title="단색/이미지 사용"
+                  title="solid / image"
                   style={{
-                    aspectRatio: '3/4', borderRadius: 6, fontSize: 10, fontWeight: 600,
+                    aspectRatio: '3/4', borderRadius: 6, fontSize: 9, fontWeight: 600,
                     background: 'var(--bg-base)', color: 'var(--text-muted)',
                     border: bgPresetId === '' ? '2px solid var(--accent)' : '1px solid var(--border)',
                     cursor: busy ? 'wait' : 'pointer',
-                  }}>없음</button>
+                  }}>None</button>
                 {bgPresets.map(p => (
                   <button key={p.id} onClick={() => !busy && setBgPresetId(p.id)} disabled={busy}
                     title={p.label}
@@ -772,62 +777,45 @@ export default function Mockup() {
                   </button>
                 ))}
               </div>
-            </>
-          )}
-
-          {/* 배경 색상 (preset 미선택 시 사용) */}
-          <Label>배경 색상</Label>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-            {BG_PRESETS.map(p => (
-              <button key={p.value} onClick={() => !busy && setBgColor(p.value)} disabled={busy}
-                title={p.label}
-                style={{
-                  width: 28, height: 28, borderRadius: 6,
-                  background: p.value,
-                  border: bgColor === p.value ? '2px solid var(--accent)' : '1px solid var(--border)',
-                  cursor: busy ? 'wait' : 'pointer',
-                  opacity: bgPresetId ? 0.4 : 1,
-                }} />
-            ))}
-            <input type="color" value={bgColor} onChange={e => setBgColor(e.target.value)}
-              disabled={busy}
-              style={{ width: 28, height: 28, padding: 0, border: '1px solid var(--border)',
-                borderRadius: 6, cursor: busy ? 'wait' : 'pointer', background: 'transparent',
-                opacity: bgPresetId ? 0.4 : 1 }} />
+            )}
+            {/* solid 컬러 (preset 미선택 시) */}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+              {BG_PRESETS.map(p => (
+                <button key={p.value} onClick={() => !busy && setBgColor(p.value)} disabled={busy}
+                  title={p.label}
+                  style={{
+                    width: 24, height: 24, borderRadius: 4,
+                    background: p.value,
+                    border: bgColor === p.value ? '2px solid var(--accent)' : '1px solid var(--border)',
+                    cursor: busy ? 'wait' : 'pointer',
+                    opacity: bgPresetId ? 0.4 : 1,
+                  }} />
+              ))}
+              <input type="color" value={bgColor} onChange={e => setBgColor(e.target.value)}
+                disabled={busy}
+                style={{ width: 24, height: 24, padding: 0, border: '1px solid var(--border)',
+                  borderRadius: 4, cursor: busy ? 'wait' : 'pointer', background: 'transparent',
+                  opacity: bgPresetId ? 0.4 : 1 }} />
+            </div>
+            {/* 이미지 업로드 */}
+            <FilePicker preview={bgPreview} previewKind="image"
+              onPick={onPickBg} disabled={busy} accept="image/*" compact />
           </div>
-          {bgPresetId && (
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 6 }}>
-              ※ 배경 프리셋 사용 중 — 단색/이미지는 무시됨
-            </div>
-          )}
 
-          <Label>배경 이미지 (선택)</Label>
-          <FilePicker preview={bgPreview} previewKind="image"
-            onPick={onPickBg} disabled={busy} accept="image/*" compact />
-          {bgFileId && (
-            <div style={{ marginTop: 4, fontSize: 11, color: 'var(--success, #10b981)' }}>
-              ✓ 배경 이미지 적용됨 (단색보다 우선)
-            </div>
-          )}
-
-          {/* 마감 효과 (영상 출력에만 적용) */}
+          {/* ───── EFFECTS (영상 마감 효과) ───── */}
           {overlayEffects.length > 0 && (
-            <>
-              <div style={{ height: 14 }} />
-              <Label>마감 효과 (영상)</Label>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+            <div style={sectionSt}>
+              <SectionHeader hint="video">Effects</SectionHeader>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {overlayEffects.map(e => (
                   <button key={e.id}
                     onClick={() => !busy && setOverlayEffectId(e.id)} disabled={busy}
-                    style={chipBtn(overlayEffectId === e.id, busy)}>
+                    style={{ ...chipBtn(overlayEffectId === e.id, busy), fontSize: 11 }}>
                     {e.label}
                   </button>
                 ))}
               </div>
-              <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 6 }}>
-                VHS·그레인·글리치 등 — mp4 출력에만 적용됨
-              </div>
-            </>
+            </div>
           )}
 
           <button onClick={submit} disabled={busy}
@@ -1110,6 +1098,21 @@ const tabBtn = (active: boolean, busy: boolean): React.CSSProperties => ({
 const sectionSt: React.CSSProperties = {
   padding: '10px 0 10px',
   borderTop: '1px solid var(--border-subtle)',
+}
+
+// shots.so 의 작은 caps section header
+function SectionHeader({ children, hint }: { children: React.ReactNode; hint?: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+                   marginBottom: 8 }}>
+      <div style={{ fontSize: 10, fontWeight: 700,
+                     color: 'var(--text-muted)',
+                     letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+        {children}
+      </div>
+      {hint && <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{hint}</div>}
+    </div>
+  )
 }
 
 const chipBtn = (active: boolean, busy: boolean): React.CSSProperties => ({

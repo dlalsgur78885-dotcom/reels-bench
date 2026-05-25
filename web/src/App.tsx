@@ -40,7 +40,6 @@ const DownloadEditor = lazy(() => import('./pages/DownloadEditor'))
 const SeedancePrompts = lazy(() => import('./pages/SeedancePrompts'))
 const SeedanceCharacters = lazy(() => import('./pages/SeedanceCharacters'))
 const Mockup = lazy(() => import('./pages/Mockup'))
-const FigmaMockup = lazy(() => import('./pages/FigmaMockup'))
 
 const routePrefetchers: Record<string, () => Promise<unknown>> = {
   '/': () => import('./pages/Home'),
@@ -306,7 +305,6 @@ export default function App() {
           <Route path="/seedance/prompts" element={<SeedancePrompts />} />
           <Route path="/seedance/characters" element={<SeedanceCharacters />} />
           <Route path="/mockup" element={<Mockup />} />
-          <Route path="/figma-mockup" element={<FigmaMockup />} />
           <Route path="/login" element={<Navigate to="/" replace />} />
           <Route path="/settings" element={
             meLoading ? <div style={{ padding: 40, color: 'var(--text-muted)' }}>로딩...</div>
@@ -373,7 +371,6 @@ function UserMenu({ me }: { me: UserProfile | null }) {
       <button onClick={() => navigate('/seedance/prompts')} style={{ ...btnSt, marginBottom: 6 }}>📝 프롬프트</button>
       <button onClick={() => navigate('/seedance/characters')} style={{ ...btnSt, marginBottom: 6 }}>🧑 인물</button>
       <button onClick={() => navigate('/mockup')} style={{ ...btnSt, marginBottom: 6 }}>📱 앱 목업</button>
-      <button onClick={() => navigate('/figma-mockup')} style={{ ...btnSt, marginBottom: 6 }}>🎨 Figma 목업</button>
       <button onClick={() => navigate('/editor')} style={{ ...btnSt, marginBottom: 6 }}>🎬 영상 편집기 다운로드</button>
       <button onClick={logout} style={btnSt}>로그아웃</button>
       {me?.role === 'admin' && (

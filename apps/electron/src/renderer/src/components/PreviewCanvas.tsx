@@ -769,6 +769,14 @@ function CaptionOverlay(props: {
       : baseTransform
     containerStyle.opacity = opacity
   }
+  // audit #10 — STT-flagged low-confidence captions get a dotted underline
+  // (color-blind safe: shape carries the signal, not hue) + a native tooltip
+  // explaining what it means. Manual / unflagged captions render unchanged.
+  if (caption.lowConfidence) {
+    containerStyle.textDecoration = 'underline dotted #fbbf24'
+    containerStyle.textDecorationThickness = 2
+    containerStyle.textUnderlineOffset = 4
+  }
   return (
     <div
       data-testid="caption-overlay"
@@ -784,6 +792,12 @@ function CaptionOverlay(props: {
       }
       data-text-stroke={getCaptionTextStroke(style) ? 'on' : undefined}
       data-text-shadow={getCaptionTextShadow(style) ? 'on' : undefined}
+      data-low-confidence={caption.lowConfidence ? 'true' : undefined}
+      title={
+        caption.lowConfidence
+          ? '낮은 신뢰도 — 검토 권장'
+          : undefined
+      }
       style={containerStyle}
     >
       <div style={{ display: 'inline' }}>

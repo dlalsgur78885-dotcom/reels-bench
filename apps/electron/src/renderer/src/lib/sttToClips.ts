@@ -11,7 +11,7 @@
  * The dialog then bulk-inserts via `useProjectStore.getState().addCaptions()`
  * — the atomic insert that coalesces to one undo step / one re-render.
  */
-import type { SttCue, SttWord } from '../../../shared/ipc'
+import { STT_LOW_CONFIDENCE_THRESHOLD, type SttCue, type SttWord } from '../../../shared/ipc'
 import type { CaptionClip } from '../../../shared/project'
 import { cuesToClips } from './captions'
 
@@ -29,5 +29,16 @@ export function sttCuesToClips(
 ): CaptionClip[] {
   if (!Array.isArray(cues) || cues.length === 0) return []
   // SttCue ⊆ ParsedCaptionCue (id optional) — safe widening for cuesToClips.
-  return cuesToClips(cues, words)
+  const clips = cuesToClips(cues, words)
+  // audit #10 — when the transcriber populated `confidence` on a cue and
+  // it dropped below the threshold, mark the resulting caption clip so the
+  // preview can warn the editor. cuesToClips builds clips in the same
+  // order as the input cues, so a positional zip is correct.
+  for (let i = 0; i < clips.length && i < cues.length; i++) {
+    const conf = cues[i]?.confidence
+    if (typeof conf === 'number' && conf < STT_LOW_CONFIDENCE_THRESHOLD) {
+      clips[i].lowConfidence = true
+    }
+  }
+  return clips
 }

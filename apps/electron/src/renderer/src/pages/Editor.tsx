@@ -20,6 +20,7 @@ import { SttDialog } from '../components/SttDialog'
 import { AutoEditDialog } from '../components/AutoEditDialog'
 import { AutoReframeDialog } from '../components/AutoReframeDialog'
 import { Toast, type ToastVariant } from '../components/Toast'
+import { Tooltip } from '../components/Tooltip'
 import type { PrefillResult } from '../lib/prefillFromReel'
 import type { AutoEditSummary } from '../lib/autoEdit'
 import { runBeatCut } from '../lib/beatCut'
@@ -509,18 +510,39 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
 
   // Phase 3.81 — propagate previewSpeed to every <video>/<audio> element on
   // the page. Pure UI accelerator — doesn't touch the project or export.
+  //
+  // audit #13: the previous implementation re-applied after a 250ms
+  // setTimeout to catch elements mounted right after the effect ran (e.g.
+  // PreviewCanvas re-renders on clip change). That race broke on slow
+  // disks where mount took longer. MutationObserver subscribes to the live
+  // DOM and applies the rate to every <video>/<audio> the moment it lands —
+  // no fixed deadline, no missed mounts.
   useEffect(() => {
-    const apply = (): void => {
-      const els = document.querySelectorAll<HTMLMediaElement>('video, audio')
-      els.forEach((el) => {
-        if (el.playbackRate !== previewSpeed) el.playbackRate = previewSpeed
-      })
+    const apply = (el: HTMLMediaElement): void => {
+      if (el.playbackRate !== previewSpeed) el.playbackRate = previewSpeed
     }
-    apply()
-    // Re-apply briefly later — media elements that mount after this tick
-    // (PreviewCanvas re-renders on clip change) miss the immediate set.
-    const t = window.setTimeout(apply, 250)
-    return () => window.clearTimeout(t)
+    // Pass 1 — every existing element.
+    document
+      .querySelectorAll<HTMLMediaElement>('video, audio')
+      .forEach(apply)
+    // Pass 2 — watch for new ones. We attach to <body> so any subtree
+    // change (PreviewCanvas / AudioMeter / future panels) is observed.
+    const obs = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        m.addedNodes.forEach((node) => {
+          if (!(node instanceof HTMLElement)) return
+          if (node instanceof HTMLMediaElement) {
+            apply(node)
+          } else {
+            node
+              .querySelectorAll<HTMLMediaElement>('video, audio')
+              .forEach(apply)
+          }
+        })
+      }
+    })
+    obs.observe(document.body, { childList: true, subtree: true })
+    return () => obs.disconnect()
   }, [previewSpeed])
 
   // Phase 3.72 — fullscreen preview. `F` key toggles the preview wrapper
@@ -1158,32 +1180,37 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
 
         <div style={styles.flex1} />
 
-        <button
-          type="button"
-          style={canUndo ? styles.undoBtn : styles.undoBtnDisabled}
-          onClick={() => undo()}
-          disabled={!canUndo}
-          aria-label="실행 취소"
-          title="실행 취소 (Ctrl+Z)"
-          data-testid="undo-button"
-          data-can-undo={canUndo ? 'true' : 'false'}
-        >
-          <span aria-hidden>↶</span>
-          {pastCount > 0 && <span style={styles.undoBadge}>{pastCount}</span>}
-        </button>
-        <button
-          type="button"
-          style={canRedo ? styles.undoBtn : styles.undoBtnDisabled}
-          onClick={() => redo()}
-          disabled={!canRedo}
-          aria-label="다시 실행"
-          title="다시 실행 (Ctrl+Shift+Z)"
-          data-testid="redo-button"
-          data-can-redo={canRedo ? 'true' : 'false'}
-        >
-          <span aria-hidden>↷</span>
-          {futureCount > 0 && <span style={styles.undoBadge}>{futureCount}</span>}
-        </button>
+        {/* audit #12 — undo/redo wrapped in <Tooltip>. The wrapper also
+            keeps the native `title=` so anything that doesn't see the
+            popover (screen readers, some ATs) still gets the hint. */}
+        <Tooltip label="실행 취소 (Ctrl+Z)">
+          <button
+            type="button"
+            style={canUndo ? styles.undoBtn : styles.undoBtnDisabled}
+            onClick={() => undo()}
+            disabled={!canUndo}
+            aria-label="실행 취소"
+            data-testid="undo-button"
+            data-can-undo={canUndo ? 'true' : 'false'}
+          >
+            <span aria-hidden>↶</span>
+            {pastCount > 0 && <span style={styles.undoBadge}>{pastCount}</span>}
+          </button>
+        </Tooltip>
+        <Tooltip label="다시 실행 (Ctrl+Shift+Z)">
+          <button
+            type="button"
+            style={canRedo ? styles.undoBtn : styles.undoBtnDisabled}
+            onClick={() => redo()}
+            disabled={!canRedo}
+            aria-label="다시 실행"
+            data-testid="redo-button"
+            data-can-redo={canRedo ? 'true' : 'false'}
+          >
+            <span aria-hidden>↷</span>
+            {futureCount > 0 && <span style={styles.undoBadge}>{futureCount}</span>}
+          </button>
+        </Tooltip>
 
         {/* Phase 3.46 — 자막 메뉴 popover: 자막 추가/SRT 가져오기/형식/내보내기 */}
         <ToolbarMenu label="자막" testId="topbar-menu-captions">

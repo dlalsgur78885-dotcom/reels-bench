@@ -1028,6 +1028,14 @@ export interface CaptionClip {
    * `getCaptionKaraoke` (null when inactive).
    */
   karaoke?: CaptionKaraoke
+  /**
+   * audit #10 — set by the STT pipeline when the transcriber's per-segment
+   * confidence drops below STT_LOW_CONFIDENCE_THRESHOLD. Preview renders a
+   * dotted underline + tooltip so editors know to re-check the text. Absent
+   * = no hint (byte-identical to manual / high-confidence captions). Export
+   * ignores the field entirely.
+   */
+  lowConfidence?: boolean
   /** Phase 3.33 — link-group id (move/delete/select together; export ignores). */
   groupId?: string
   /** Phase 3.41 — when true the clip is uneditable (UI + store guards). Export ignores. */

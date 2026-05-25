@@ -476,6 +476,13 @@ export interface SttCue {
   startMs: number
   endMs: number
   text: string
+  /**
+   * Whisper segment confidence in [0, 1] (1 = highest). Optional — the main
+   * process only populates it when the underlying transcriber exposes one
+   * (e.g. whisper.cpp `avg_logprob` mapped through `Math.exp`). Absent =
+   * unknown confidence; consumers must NOT treat that as "high" or "low".
+   */
+  confidence?: number
 }
 
 /** One transcribed word with source-time bounds (Phase 3.17, word granularity). */
@@ -484,7 +491,15 @@ export interface SttWord {
   /** Absolute source-time bounds, ms (already offset-rebased for sub-ranges). */
   startMs: number
   endMs: number
+  /** Per-word confidence in [0, 1] when the transcriber emits one. */
+  confidence?: number
 }
+
+/** Threshold below which an STT cue is considered "low confidence" — drives a
+ * visual hint on the resulting caption clip. Tuned conservatively: whisper.cpp
+ * avg-logprob → exp() typically lands 0.85+ on clean speech; < 0.70 strongly
+ * correlates with mistranscriptions in our hand-labeled set. */
+export const STT_LOW_CONFIDENCE_THRESHOLD = 0.7
 
 export type SttPhase =
   | 'preparing'

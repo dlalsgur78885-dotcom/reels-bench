@@ -342,11 +342,16 @@ export function AutoEditDialog({
   // -------------------------------------------------------------------------
   const primary = useMemo(
     () => (open ? resolvePrimaryTrack() : null),
+    // resolvePrimaryTrack reads the live project store on call — not from
+    // the closure — so eslint can't see the dep. We list `project` so the
+    // memo invalidates on any project change (clip add / remove / move).
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [open, project]
   )
   const tracksWithMedia = useMemo(
     () => (open ? countTracksWithMedia() : 0),
+    // Same reasoning as `primary` above — helper reads the live store,
+    // `project` is listed so we re-derive on every store mutation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [open, project]
   )

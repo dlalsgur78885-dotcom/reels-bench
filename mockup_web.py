@@ -68,6 +68,33 @@ def health():
     return {"ok": True, "service": "mockup-worker"}
 
 
+@app.on_event("startup")
+def warm_up_frame_preview_cache():
+    """프론트가 Mockup 탭 클릭 시 18+ 카드 동시 fetch — 직렬 cold 처리 시
+    20s+ 걸림. 서버 시작 시 모든 변형 미리 캐시 채워두면 그 후 모든 호출
+    캐시 hit (~0.2s)."""
+    def _warm():
+        try:
+            did = "iphone-16-pro"
+            # STYLE 9
+            for sid in mockup_svc.DEVICE_STYLES.keys():
+                mockup_svc.render_frame_preview(did, style=sid, dummy_bg_id="sunset")
+            # SHADOW 5
+            for sid in mockup_svc.DEVICE_SHADOWS.keys():
+                if sid == "none":
+                    mockup_svc.render_frame_preview(did, dummy_bg_id="mesh-cool")
+                else:
+                    mockup_svc.render_frame_preview(did, shadow=sid, dummy_bg_id="mesh-cool")
+            # BORDER 4
+            for r in (None, 0, 120, 240):
+                mockup_svc.render_frame_preview(did, radius_override=r, dummy_bg_id="ocean")
+            logger.info("[warmup] frame-preview cache populated")
+        except Exception as e:
+            logger.warning(f"[warmup] failed: {e}")
+    # background — startup 자체는 막지 않음
+    threading.Thread(target=_warm, daemon=True).start()
+
+
 # ── Static helpers (devices + frame PNG) — Vercel에도 있지만 worker 단독 동작 위해 복제 ──
 
 @app.get("/api/mockup/devices")

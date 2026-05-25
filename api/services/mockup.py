@@ -868,6 +868,73 @@ def render_bg_preset_thumbnail(preset_id: str) -> bytes:
     return buf.getvalue()
 
 
+import functools
+
+
+@functools.lru_cache(maxsize=256)
+def _cached_frame_preview(device_id: str, style: str | None, radius_override: int | None,
+                          shadow: str | None, shadow_opacity_int: int,
+                          shadow_angle_int: int | None,
+                          dummy_bg_id: str) -> bytes:
+    """frame_preview 결과를 (모든 변형 조합) memoize. shadow_opacity/angle 은
+    cache 키로 float 못 쓰니 정수화 (×100 / round)."""
+    return _render_frame_preview_uncached(
+        device_id, style=style, radius_override=radius_override,
+        shadow=shadow, shadow_opacity=shadow_opacity_int / 100.0,
+        shadow_angle=float(shadow_angle_int) if shadow_angle_int is not None else None,
+        dummy_bg_id=dummy_bg_id,
+    )
+
+
+@functools.lru_cache(maxsize=64)
+def _cached_bg_small(preset_id: str, w: int, h: int) -> Image.Image:
+    """bg gradient 도 (preset_id, w, h) 키로 memoize — 같은 카드 사이즈는 매번 같음."""
+    return render_bg_preset(preset_id, w, h).convert("RGBA")
+
+
+@functools.lru_cache(maxsize=64)
+def _cached_frame_small_rgba(device_id: str, style: str | None,
+                              radius_override: int | None,
+                              w: int, h: int) -> Image.Image:
+    """device frame 도 (device+style+radius+사이즈) 키로 memoize."""
+    frame_png_bytes = render_device_frame(device_id, style=style,
+                                           radius_override=radius_override)
+    img = Image.open(io.BytesIO(frame_png_bytes)).convert("RGBA")
+    return img.resize((w, h), Image.LANCZOS)
+
+
+def _render_frame_preview_uncached(device_id: str, *, style: str | None = None,
+                                   radius_override: int | None = None,
+                                   shadow: str | None = None,
+                                   shadow_opacity: float = 1.0,
+                                   shadow_angle: float | None = None,
+                                   dummy_bg_id: str = "sunset") -> bytes:
+    """uncached 본체. 사이즈는 짧은 변 220px."""
+    spec = DEVICES[device_id]
+    Wfull, Hfull = spec["body_w"], spec["body_h"]
+    target_short = 220
+    scale = target_short / min(Wfull, Hfull)
+    W = max(64, int(Wfull * scale))
+    H = max(64, int(Hfull * scale))
+    # shadow 가 있으면 매번 새로 (shadow_angle 변형 다양해서 cache 효율 낮음)
+    if shadow and shadow in DEVICE_SHADOWS and shadow != "none":
+        frame_png_bytes = render_device_frame(device_id, style=style,
+                                              radius_override=radius_override)
+        frame_png_bytes = add_device_shadow(frame_png_bytes, shadow,
+                                             opacity=shadow_opacity,
+                                             angle_deg=shadow_angle)
+        frame_small = Image.open(io.BytesIO(frame_png_bytes)).convert("RGBA").resize((W, H), Image.LANCZOS)
+    else:
+        frame_small = _cached_frame_small_rgba(device_id, style, radius_override, W, H)
+    bg = _cached_bg_small(dummy_bg_id, W, H)
+    out = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    out.alpha_composite(bg)
+    out.alpha_composite(frame_small)
+    buf = io.BytesIO()
+    out.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
 def render_frame_preview(device_id: str, *, style: str | None = None,
                          radius_override: int | None = None,
                          shadow: str | None = None,
@@ -875,31 +942,15 @@ def render_frame_preview(device_id: str, *, style: str | None = None,
                          shadow_angle: float | None = None,
                          dummy_bg_id: str = "sunset") -> bytes:
     """디바이스 frame + screen 영역에 procedural bg 합성된 PNG.
-    STYLE/SHADOW 카드 미리보기용 — 카드 안에서 contain 으로 작게 보이니
-    사이즈는 작게 (~300px) 빠른 응답 위해.
-    """
-    frame_png_bytes = render_device_frame(device_id, style=style,
-                                           radius_override=radius_override)
-    if shadow and shadow in DEVICE_SHADOWS and shadow != "none":
-        frame_png_bytes = add_device_shadow(frame_png_bytes, shadow,
-                                             opacity=shadow_opacity,
-                                             angle_deg=shadow_angle)
-    frame_img = Image.open(io.BytesIO(frame_png_bytes)).convert("RGBA")
-    Wfull, Hfull = frame_img.size
-    # 카드 미리보기 사이즈 — frame 비율 유지, 짧은 변 ≈ 220px
-    target_short = 220
-    scale = target_short / min(Wfull, Hfull)
-    W = max(64, int(Wfull * scale))
-    H = max(64, int(Hfull * scale))
-    frame_small = frame_img.resize((W, H), Image.LANCZOS)
-    # bg 도 작은 사이즈로 — pixel-by-pixel gradient 가 W×H 만 처리 (16배 빠름)
-    bg = render_bg_preset(dummy_bg_id, W, H).convert("RGBA")
-    out = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    out.alpha_composite(bg)
-    out.alpha_composite(frame_small)
-    buf = io.BytesIO()
-    out.save(buf, format="PNG", optimize=True)
-    return buf.getvalue()
+    lru_cache 로 같은 변형 조합은 즉시 반환."""
+    # shadow 없는 변형은 cache 효과 만점 (frame + bg 둘 다 캐시)
+    # shadow 있는 변형은 angle 다양해서 cache key 분리
+    opacity_int = int(round(max(0.0, min(1.0, shadow_opacity)) * 100))
+    angle_int = int(round(shadow_angle)) if shadow_angle is not None else None
+    return _cached_frame_preview(
+        device_id, style, radius_override,
+        shadow, opacity_int, angle_int, dummy_bg_id,
+    )
 
 
 def render_scene_shape_thumbnail(shape_id: str) -> bytes:

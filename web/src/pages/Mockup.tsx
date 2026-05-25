@@ -789,16 +789,19 @@ export default function Mockup() {
           </div>
           )}
 
-          {/* ───── DEVICE (Mockup 탭) ───── */}
+          {/* ───── DEVICE (Mockup 탭) ───── shots.so 스타일 컴팩트 select */}
           {activeLeftTab === 'mockup' && (
           <div style={sectionSt}>
             <SectionHeader>Device</SectionHeader>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <select value={deviceId} disabled={busy}
+              onChange={e => setDeviceId(e.target.value)}
+              style={{ width: '100%', padding: '6px 8px', fontSize: 12,
+                background: 'var(--bg-base)', color: 'var(--text-body)',
+                border: '1px solid var(--border)', borderRadius: 4 }}>
               {devices.map(d => (
-                <button key={d.id} onClick={() => !busy && setDeviceId(d.id)} disabled={busy}
-                  style={chipBtn(deviceId === d.id, busy)}>{d.name}</button>
+                <option key={d.id} value={d.id}>{d.name}</option>
               ))}
-            </div>
+            </select>
           </div>
           )}
 
@@ -806,7 +809,7 @@ export default function Mockup() {
           {activeLeftTab === 'mockup' && deviceStyles.length > 0 && (
             <div style={sectionSt}>
               <SectionHeader>Style</SectionHeader>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
                 {deviceStyles.map(s => {
                   const did = device?.id || 'iphone-16-pro'
                   const url = `${MOCKUP_BASE_URL}/api/mockup/frame/${did}.png?style=${encodeURIComponent(s.id)}`
@@ -824,9 +827,10 @@ export default function Mockup() {
                         style={{ position: 'absolute', inset: 0,
                                  width: '100%', height: '100%', objectFit: 'contain' }} />
                       <span style={{
-                        position: 'absolute', bottom: 2, left: 0, right: 0,
-                        fontSize: 9, fontWeight: 600, color: '#fff',
-                        textShadow: '0 1px 2px rgba(0,0,0,0.7)',
+                        position: 'absolute', bottom: 0, left: 0, right: 0,
+                        padding: '12px 4px 4px', fontSize: 10, fontWeight: 700,
+                        color: '#fff', textAlign: 'center',
+                        background: 'linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.7) 100%)',
                       }}>{s.label}</span>
                     </button>
                   )
@@ -863,9 +867,10 @@ export default function Mockup() {
                         style={{ position: 'absolute', inset: 0,
                                  width: '100%', height: '100%', objectFit: 'contain' }} />
                       <span style={{
-                        position: 'absolute', bottom: 2, left: 0, right: 0,
-                        fontSize: 9, fontWeight: 600, color: '#fff',
-                        textShadow: '0 1px 2px rgba(0,0,0,0.7)',
+                        position: 'absolute', bottom: 0, left: 0, right: 0,
+                        padding: '12px 4px 4px', fontSize: 10, fontWeight: 700,
+                        color: '#fff', textAlign: 'center',
+                        background: 'linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.7) 100%)',
                       }}>{s.label}</span>
                     </button>
                   )
@@ -929,9 +934,10 @@ export default function Mockup() {
                       style={{ position: 'absolute', inset: 0,
                                width: '100%', height: '100%', objectFit: 'contain' }} />
                     <span style={{
-                      position: 'absolute', bottom: 2, left: 0, right: 0,
-                      fontSize: 9, fontWeight: 600, color: '#fff',
-                      textShadow: '0 1px 2px rgba(0,0,0,0.7)',
+                      position: 'absolute', bottom: 0, left: 0, right: 0,
+                      padding: '12px 4px 4px', fontSize: 10, fontWeight: 700,
+                      color: '#fff', textAlign: 'center',
+                      background: 'linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.7) 100%)',
                     }}>{p.label}</span>
                   </button>
                 )
@@ -989,13 +995,45 @@ export default function Mockup() {
           </div>
           )}
 
+          {/* ───── ANIMATION (Mockup 탭, shots.so Static/Parallax + 우리 모션 6) ───── */}
+          {activeLeftTab === 'mockup' && (
+            <div style={sectionSt}>
+              <SectionHeader hint={mode === 'upload' && !sourceIsVideo ? undefined : 'upload+이미지만'}>
+                Animation
+              </SectionHeader>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)',
+                            gap: 6, opacity: (mode === 'upload' && !sourceIsVideo) ? 1 : 0.5 }}>
+                {MOTIONS.map(m => (
+                  <button key={m.value} disabled={busy || !(mode === 'upload' && !sourceIsVideo)}
+                    onClick={() => setUploadMotion(m.value)}
+                    style={{ ...chipBtn(uploadMotion === m.value, busy),
+                             fontSize: 11, padding: '6px 8px', justifyContent: 'center' }}>
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              {mode === 'upload' && !sourceIsVideo && uploadMotion !== 'none' && (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 40 }}>길이</span>
+                  <input type="range" min={1.5} max={10} step={0.1}
+                    value={uploadMotionDur} disabled={busy}
+                    onChange={e => setUploadMotionDur(Number(e.target.value))}
+                    style={{ flex: 1 }} />
+                  <span style={{ fontSize: 10, color: 'var(--text-secondary)', width: 32 }}>
+                    {uploadMotionDur.toFixed(1)}s
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* (Tilt / 비율 / 디바이스 크기 = LAYOUT preset — 우측 패널로 이동) */}
 
           {/* ───── SCENE — visual cards (Frame 탭) ───── */}
           {activeLeftTab === 'frame' && sceneShapesItems.length > 0 && (
             <div id="mockup-scene-anchor" style={sectionSt}>
               <SectionHeader>Scene</SectionHeader>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
                 {sceneShapesItems.map(s => {
                   const url = `${MOCKUP_BASE_URL}/api/mockup/scene-shape/${s.id}.png`
                   return (
@@ -1012,9 +1050,10 @@ export default function Mockup() {
                         style={{ position: 'absolute', inset: 0,
                                  width: '100%', height: '100%', objectFit: 'cover' }} />
                       <span style={{
-                        position: 'absolute', bottom: 2, left: 0, right: 0,
-                        fontSize: 9, fontWeight: 600, color: '#fff',
-                        textShadow: '0 1px 2px rgba(0,0,0,0.7)',
+                        position: 'absolute', bottom: 0, left: 0, right: 0,
+                        padding: '12px 4px 4px', fontSize: 10, fontWeight: 700,
+                        color: '#fff', textAlign: 'center',
+                        background: 'linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.7) 100%)',
                       }}>{s.label}</span>
                     </button>
                   )

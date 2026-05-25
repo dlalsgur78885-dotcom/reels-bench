@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { authedFetch, mockupAuthedFetch, BASE, MOCKUP_BASE as MOCKUP_BASE_URL } from '../api'
+import { mockupAuthedFetch, MOCKUP_BASE as MOCKUP_BASE_URL } from '../api'
 
 type Mode = 'url' | 'upload' | 'sequence'
 type Status = 'idle' | 'uploading' | 'submitting' | 'queued' | 'recording' | 'compositing' | 'done' | 'failed'
@@ -175,7 +175,7 @@ export default function Mockup() {
   const startedAtRef = useRef(0)
 
   useEffect(() => {
-    authedFetch('/api/mockup/devices')
+    mockupAuthedFetch('/api/mockup/devices')
       .then(r => r.ok ? r.json() : { devices: [] })
       .then(d => setDevices(d.devices || []))
       .catch(() => {})

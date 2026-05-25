@@ -121,7 +121,8 @@ def frame_png(device_id: str, request: Request,
               style: str | None = None,
               radius: int | None = None,
               shadow: str | None = None,
-              shadow_opacity: float = 1.0):
+              shadow_opacity: float = 1.0,
+              shadow_angle: float | None = None):
     auth_svc.require_user(request)
     if device_id not in mockup_svc.DEVICES:
         raise HTTPException(404, "unknown device")
@@ -130,7 +131,8 @@ def frame_png(device_id: str, request: Request,
                                           radius_override=radius)
     if shadow and shadow in mockup_svc.DEVICE_SHADOWS and shadow != "none":
         png = mockup_svc.add_device_shadow(png, shadow,
-                                            opacity=max(0.0, min(1.0, shadow_opacity)))
+                                            opacity=max(0.0, min(1.0, shadow_opacity)),
+                                            angle_deg=shadow_angle)
     return Response(content=png, media_type="image/png",
                     headers={"Cache-Control": "public, max-age=3600"})
 
@@ -169,6 +171,56 @@ def device_shadows(request: Request):
     auth_svc.require_user(request)
     return {"shadows": [{"id": sid, "label": spec["label"]}
                         for sid, spec in mockup_svc.DEVICE_SHADOWS.items()]}
+
+
+@app.get("/api/mockup/magic-bg/{file_id}.png")
+def magic_bg_png(file_id: str, request: Request, w: int = 540, h: int = 720):
+    """업로드된 미디어 → dominant color 2개 vertical gradient PNG. shots.so 'Magic' v1."""
+    me = auth_svc.require_user(request)
+    src = _resolve_upload(me["id"], file_id)
+    if not src:
+        raise HTTPException(404, "file not found")
+    try:
+        img = mockup_svc.magic_bg_from_image(src, max(64, min(2000, w)), max(64, min(2000, h)))
+        import io as _io
+        buf = _io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        return Response(content=buf.getvalue(), media_type="image/png",
+                        headers={"Cache-Control": "no-store"})
+    except Exception as e:
+        raise HTTPException(500, f"magic bg failed: {str(e)[:200]}")
+
+
+@app.get("/api/mockup/unsplash/search")
+def unsplash_search(q: str, request: Request, per_page: int = 12):
+    """Unsplash Search API 프록시. UNSPLASH_ACCESS_KEY 없으면 503."""
+    auth_svc.require_user(request)
+    key = (os.getenv("UNSPLASH_ACCESS_KEY") or "").strip()
+    if not key:
+        raise HTTPException(503, "UNSPLASH_ACCESS_KEY 미설정 — env 추가 필요")
+    import requests
+    try:
+        r = requests.get("https://api.unsplash.com/search/photos",
+                         params={"query": q, "per_page": max(1, min(30, per_page)),
+                                 "orientation": "landscape"},
+                         headers={"Authorization": f"Client-ID {key}"},
+                         timeout=12)
+        if r.status_code != 200:
+            raise HTTPException(r.status_code, f"unsplash: {r.text[:200]}")
+        data = r.json()
+        results = [{
+            "id": x.get("id"),
+            "thumb": x.get("urls", {}).get("thumb"),
+            "small": x.get("urls", {}).get("small"),
+            "regular": x.get("urls", {}).get("regular"),
+            "alt": x.get("alt_description") or x.get("description") or "",
+            "author": (x.get("user") or {}).get("name") or "",
+        } for x in data.get("results", []) if x.get("urls")]
+        return {"results": results, "total": data.get("total", 0)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"unsplash error: {str(e)[:200]}")
 
 
 @app.get("/api/mockup/scene-shapes")
@@ -239,6 +291,7 @@ class GenerateReq(BaseModel):
     # shots.so audit 추가분
     device_shadow: str | None = None
     device_shadow_opacity: float = 1.0
+    device_shadow_angle: float | None = None
     device_style: str | None = None
     hide_mockup: bool = False
     radius_override: int | None = None
@@ -297,6 +350,7 @@ def generate(body: GenerateReq, request: Request):
         overlay_effect=overlay_effect,
         device_shadow=device_shadow,
         device_shadow_opacity=max(0.0, min(1.0, body.device_shadow_opacity)),
+        device_shadow_angle=body.device_shadow_angle,
         device_style=device_style,
         hide_mockup=bool(body.hide_mockup),
         radius_override=body.radius_override,
@@ -334,6 +388,7 @@ class GenerateSequenceReq(BaseModel):
     overlay_effect: str | None = None
     device_shadow: str | None = None
     device_shadow_opacity: float = 1.0
+    device_shadow_angle: float | None = None
     device_style: str | None = None
     hide_mockup: bool = False
     radius_override: int | None = None
@@ -385,6 +440,7 @@ def generate_sequence(body: GenerateSequenceReq, request: Request):
         bg_preset=bg_preset, overlay_effect=overlay_effect,
         device_shadow=device_shadow,
         device_shadow_opacity=max(0.0, min(1.0, body.device_shadow_opacity)),
+        device_shadow_angle=body.device_shadow_angle,
         device_style=device_style,
         hide_mockup=bool(body.hide_mockup),
         radius_override=body.radius_override,

@@ -5,10 +5,11 @@ import { mockupAuthedFetch, MOCKUP_BASE as MOCKUP_BASE_URL } from '../api'
 type Mode = 'url' | 'upload' | 'sequence'
 type Status = 'idle' | 'uploading' | 'submitting' | 'queued' | 'recording' | 'compositing' | 'done' | 'failed'
 
-type MotionKind = 'none' | 'zoom-in' | 'zoom-out' | 'pan-tl-br' | 'pan-bl-tr' | 'pulse'
+type MotionKind = 'none' | 'zoom-in' | 'zoom-out' | 'pan-tl-br' | 'pan-bl-tr' | 'pulse' | 'parallax'
 
 const MOTIONS: { value: MotionKind; label: string }[] = [
-  { value: 'none',      label: '정지' },
+  { value: 'none',      label: 'Static 정지' },
+  { value: 'parallax',  label: '🌊 Parallax' },
   { value: 'zoom-in',   label: '🔍↗ 줌인' },
   { value: 'zoom-out',  label: '🔍↘ 줌아웃' },
   { value: 'pan-tl-br', label: '↘ 좌상→우하' },
@@ -106,6 +107,7 @@ const KF_COLORS: Record<MotionKind, string> = {
   'pan-tl-br': '#f59e0b',
   'pan-bl-tr': '#ec4899',
   'pulse':     '#a855f7',
+  'parallax':  '#14b8a6',
 }
 
 export default function Mockup() {
@@ -160,6 +162,12 @@ export default function Mockup() {
   // shots.so EFFECTS & WATERMARK 4 토글
   const [watermark, setWatermark] = useState<boolean>(false)
   const [overlayPickerOpen, setOverlayPickerOpen] = useState<boolean>(false)
+  // Phase B — SHADOW Adjust Light (광원 방향, °)
+  const [deviceShadowAngle, setDeviceShadowAngle] = useState<number>(180)
+  // Phase D — Unsplash 검색
+  const [unsplashQ, setUnsplashQ] = useState<string>('')
+  const [unsplashResults, setUnsplashResults] = useState<any[]>([])
+  const [unsplashLoading, setUnsplashLoading] = useState<boolean>(false)
   // Animations 타임라인 (upload+이미지일 때만 의미)
   const [timelineEnabled, setTimelineEnabled] = useState<boolean>(false)
   const [keyframes, setKeyframes] = useState<AnimKeyframe[]>([])
@@ -398,6 +406,7 @@ export default function Mockup() {
         overlay_effect: overlayEffectId === 'none' ? null : overlayEffectId,
         device_shadow: deviceShadowId === 'none' ? null : deviceShadowId,
         device_shadow_opacity: deviceShadowOpacity,
+        device_shadow_angle: deviceShadowId !== 'none' ? deviceShadowAngle : null,
         device_style: deviceStyleId === 'default' ? null : deviceStyleId,
         hide_mockup: hideMockup,
         radius_override: radiusOverride,
@@ -720,10 +729,28 @@ export default function Mockup() {
                 ))}
               </div>
               {deviceShadowId !== 'none' && (
-                <input type="range" min={0} max={100} step={1}
-                  value={Math.round(deviceShadowOpacity * 100)} disabled={busy}
-                  onChange={e => setDeviceShadowOpacity(Number(e.target.value) / 100)}
-                  style={{ width: '100%' }} />
+                <>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 4 }}>
+                    <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 60 }}>Opacity</span>
+                    <input type="range" min={0} max={100} step={1}
+                      value={Math.round(deviceShadowOpacity * 100)} disabled={busy}
+                      onChange={e => setDeviceShadowOpacity(Number(e.target.value) / 100)}
+                      style={{ flex: 1 }} />
+                    <span style={{ fontSize: 10, color: 'var(--text-secondary)', width: 32 }}>
+                      {Math.round(deviceShadowOpacity * 100)}%
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 60 }}>Light</span>
+                    <input type="range" min={0} max={360} step={5}
+                      value={deviceShadowAngle} disabled={busy}
+                      onChange={e => setDeviceShadowAngle(Number(e.target.value))}
+                      style={{ flex: 1 }} />
+                    <span style={{ fontSize: 10, color: 'var(--text-secondary)', width: 32 }}>
+                      {deviceShadowAngle}°
+                    </span>
+                  </div>
+                </>
               )}
             </div>
           )}
@@ -898,6 +925,66 @@ export default function Mockup() {
             {/* 이미지 업로드 */}
             <FilePicker preview={bgPreview} previewKind="image"
               onPick={onPickBg} disabled={busy} accept="image/*" compact />
+
+            {/* Unsplash 검색 */}
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>
+                Unsplash 검색 (UNSPLASH_ACCESS_KEY 필요)
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input type="text" value={unsplashQ}
+                  placeholder="nature, city, abstract…" disabled={busy || unsplashLoading}
+                  onChange={e => setUnsplashQ(e.target.value)}
+                  onKeyDown={async e => {
+                    if (e.key !== 'Enter' || !unsplashQ.trim()) return
+                    setUnsplashLoading(true); setUnsplashResults([])
+                    try {
+                      const r = await mockupAuthedFetch(`/api/mockup/unsplash/search?q=${encodeURIComponent(unsplashQ)}&per_page=12`)
+                      if (r.ok) {
+                        const d = await r.json()
+                        setUnsplashResults(d.results || [])
+                      } else if (r.status === 503) {
+                        setUnsplashResults([{ __err: 'UNSPLASH_ACCESS_KEY 미설정' }])
+                      }
+                    } catch {} finally { setUnsplashLoading(false) }
+                  }}
+                  style={{ flex: 1, padding: '4px 6px', fontSize: 11,
+                    background: 'var(--bg-base)', color: 'var(--text-body)',
+                    border: '1px solid var(--border)', borderRadius: 4 }} />
+              </div>
+              {unsplashResults.length > 0 && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
+                              gap: 4, marginTop: 6 }}>
+                  {unsplashResults.slice(0, 12).map((u: any, i: number) => u.__err ? (
+                    <div key={i} style={{ gridColumn: '1 / -1', fontSize: 10,
+                                          color: 'var(--error)' }}>{u.__err}</div>
+                  ) : (
+                    <button key={u.id} onClick={() => {
+                      setBgPreview(u.regular); setBgFileId('unsplash:' + u.id); setBgPresetId('')
+                    }} disabled={busy} title={u.alt}
+                      style={{ aspectRatio: '4/3', borderRadius: 4, padding: 0,
+                        backgroundImage: `url(${u.thumb})`, backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                        border: '1px solid var(--border)', cursor: busy ? 'wait' : 'pointer' }} />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Magic AI 배경 (단일 upload 이미지 dominant color) */}
+            {mode === 'upload' && sourceFileId && (
+              <button onClick={() => {
+                if (!sourceFileId) return
+                const url = `${MOCKUP_BASE_URL}/api/mockup/magic-bg/${sourceFileId}.png?w=540&h=720`
+                setBgPreview(url); setBgFileId('magic:' + sourceFileId); setBgPresetId('')
+              }} disabled={busy}
+                style={{ marginTop: 8, padding: '6px 10px', fontSize: 11, fontWeight: 600,
+                         background: 'var(--accent)', color: '#fff',
+                         border: 'none', borderRadius: 4,
+                         cursor: busy ? 'wait' : 'pointer', width: '100%' }}>
+                ✨ Magic — 미디어 색으로 배경 자동
+              </button>
+            )}
           </div>
 
           {/* ───── EFFECTS & WATERMARK ───── */}
@@ -1010,6 +1097,7 @@ export default function Mockup() {
                 if (deviceShadowId && deviceShadowId !== 'none') {
                   params.set('shadow', deviceShadowId)
                   params.set('shadow_opacity', deviceShadowOpacity.toFixed(2))
+                  params.set('shadow_angle', String(deviceShadowAngle))
                 }
                 if (radiusOverride != null) params.set('radius', String(radiusOverride))
                 const qs = params.toString()

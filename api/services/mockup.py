@@ -321,12 +321,17 @@ DEVICE_SHADOWS: dict[str, dict] = {
 
 def add_device_shadow(frame_png: bytes, shadow_id: str,
                       opacity: float = 1.0,
-                      color: tuple[int, int, int] = (0, 0, 0)) -> bytes:
+                      color: tuple[int, int, int] = (0, 0, 0),
+                      angle_deg: float | None = None) -> bytes:
     """frame_png(RGBA, alpha cutout 포함) → drop-shadow 합성된 PNG bytes.
 
     shadow_id == 'none' / 미지값 / opacity<=0 이면 입력 그대로 반환 (byte-identical).
     그림자 마스크는 디바이스 *body* 알파(투명한 screen cutout 제외)로부터 생성한다
     — screen cutout 안쪽으로 그림자가 새지 않게.
+
+    angle_deg: 광원 방향(°). None ⇒ spec default offset(x,y) 그대로. 지정 시
+      preset 의 offset 거리(=hypot(ox,oy))를 유지한 채 방향만 회전. 0°=위, 90°=오른쪽,
+      180°=아래, 270°=왼쪽 (CSS box-shadow 회전 컨벤션과 동일).
     """
     if not shadow_id or shadow_id == "none":
         return frame_png
@@ -338,6 +343,14 @@ def add_device_shadow(frame_png: bytes, shadow_id: str,
     W, H = src.size
     blur = int(spec["blur"])
     ox, oy = spec["offset"]
+    # angle_deg 지정 시 distance 보존 + 방향 회전
+    if angle_deg is not None and math.isfinite(angle_deg):
+        dist = math.hypot(ox, oy)
+        # 0° = down (south, +y); 90° = right; 180° = up; 270° = left
+        # CSS box-shadow 와 같은 컨벤션 — 아래쪽이 기본
+        rad = math.radians(angle_deg)
+        ox = int(round(dist * math.sin(rad)))
+        oy = int(round(dist * math.cos(rad)))
     spread = int(spec["spread"])
     alpha = int(max(0, min(255, spec["alpha"] * max(0.0, min(1.0, opacity)))))
     # preset 이 자체 color 를 들고 있으면 (glow 등) 우선
@@ -455,6 +468,7 @@ def composite_video(source: Path, device_id: str, aspect: str,
                     overlay_effect: Optional[str] = None,
                     device_shadow: Optional[str] = None,
                     device_shadow_opacity: float = 1.0,
+                    device_shadow_angle: Optional[float] = None,
                     device_style: Optional[str] = None,
                     hide_mockup: bool = False,
                     radius_override: Optional[int] = None,
@@ -467,6 +481,7 @@ def composite_video(source: Path, device_id: str, aspect: str,
                bg_preset=bg_preset, overlay_effect=overlay_effect,
                device_shadow=device_shadow,
                device_shadow_opacity=device_shadow_opacity,
+               device_shadow_angle=device_shadow_angle,
                device_style=device_style, hide_mockup=hide_mockup,
                radius_override=radius_override,
                tilt_x=tilt_x, tilt_y=tilt_y,
@@ -479,6 +494,7 @@ def composite_image(source: Path, device_id: str, aspect: str,
                     bg_preset: Optional[str] = None,
                     device_shadow: Optional[str] = None,
                     device_shadow_opacity: float = 1.0,
+                    device_shadow_angle: Optional[float] = None,
                     device_style: Optional[str] = None,
                     hide_mockup: bool = False,
                     radius_override: Optional[int] = None,
@@ -492,6 +508,7 @@ def composite_image(source: Path, device_id: str, aspect: str,
                bg_preset=bg_preset, overlay_effect=None,
                device_shadow=device_shadow,
                device_shadow_opacity=device_shadow_opacity,
+               device_shadow_angle=device_shadow_angle,
                device_style=device_style, hide_mockup=hide_mockup,
                radius_override=radius_override,
                tilt_x=tilt_x, tilt_y=tilt_y,
@@ -505,6 +522,7 @@ def _composite(source: Path, device_id: str, aspect: str,
                overlay_effect: Optional[str] = None,
                device_shadow: Optional[str] = None,
                device_shadow_opacity: float = 1.0,
+               device_shadow_angle: Optional[float] = None,
                device_style: Optional[str] = None,
                hide_mockup: bool = False,
                radius_override: Optional[int] = None,
@@ -536,7 +554,8 @@ def _composite(source: Path, device_id: str, aspect: str,
                                     radius_override=radius_override)
     if device_shadow and device_shadow != "none":
         frame_png = add_device_shadow(frame_png, device_shadow,
-                                      opacity=device_shadow_opacity)
+                                      opacity=device_shadow_opacity,
+                                      angle_deg=device_shadow_angle)
     tmp_frame.write_bytes(frame_png)
 
     # bg PNG (preset, uploaded image, solid color 우선순위 — preset > image > color)
@@ -800,6 +819,41 @@ BG_PRESETS: dict[str, dict] = {
 }
 
 
+def magic_bg_from_image(src_path: Path, w: int, h: int) -> Image.Image:
+    """업로드된 미디어에서 dominant color 두 개 추출 → vertical gradient.
+    shots.so 의 'Magic' 배경 v1 — AI 호출 없이 PIL 만으로.
+
+    영상이면 첫 프레임을 ffmpeg 로 추출 후 처리.
+    """
+    work_png = src_path
+    ext = src_path.suffix.lower()
+    cleanup: Optional[Path] = None
+    if ext in (".mp4", ".webm", ".mov"):
+        work_png = src_path.parent / f"_magic_first_{uuid.uuid4().hex[:6]}.png"
+        cleanup = work_png
+        _run_ffmpeg([
+            "-i", str(src_path), "-frames:v", "1", "-q:v", "5",
+            str(work_png),
+        ], timeout=20)
+    try:
+        img = Image.open(work_png).convert("RGB")
+        # 다운샘플 + 양자화 — 가장 빈도 높은 두 색
+        small = img.resize((64, 64), Image.LANCZOS).quantize(colors=8)
+        palette = small.getpalette()[:8 * 3]
+        counts = small.getcolors() or []
+        counts.sort(reverse=True)  # (count, color_index)
+        if len(counts) < 2:
+            return _vertical_gradient((40, 50, 80), (20, 25, 40), w, h)
+        idx_top, idx_2nd = counts[0][1], counts[1][1]
+        col_top = (palette[idx_top*3], palette[idx_top*3+1], palette[idx_top*3+2])
+        col_bot = (palette[idx_2nd*3], palette[idx_2nd*3+1], palette[idx_2nd*3+2])
+        return _vertical_gradient(col_top, col_bot, w, h)
+    finally:
+        if cleanup and cleanup.exists():
+            try: cleanup.unlink()
+            except: pass
+
+
 def render_bg_preset(preset_id: str, w: int, h: int) -> Image.Image:
     if preset_id not in BG_PRESETS:
         raise ValueError(f"unknown bg preset: {preset_id}")
@@ -991,6 +1045,7 @@ class GenerateRequest:
     # shots.so audit 추가분
     device_shadow: Optional[str] = None      # SCENE: Shadow (none/soft/hard/glow/diffused)
     device_shadow_opacity: float = 1.0       # 0.0..1.0
+    device_shadow_angle: Optional[float] = None  # Adjust Light (°). None=spec default
     device_style: Optional[str] = None       # frame 시각 변종 (default/outline/glass)
     hide_mockup: bool = False                # device frame 숨김 (screen 만)
     radius_override: Optional[int] = None    # corner_radius 사용자 override
@@ -1154,6 +1209,7 @@ MOTION_PRESETS: set[str] = {
     "pan-tl-br",     # 좌상 → 우하 대각 pan + 살짝 zoom
     "pan-bl-tr",     # 좌하 → 우상 대각 pan + 살짝 zoom
     "pulse",         # zoom in 했다가 살짝 out (Ken Burns 호흡)
+    "parallax",      # shots.so 'Parallax' — 살짝 zoom + 좌우 미세 swing (sin)
 }
 
 
@@ -1193,6 +1249,14 @@ def _zoompan_expr(motion_id: str, duration_frames: int) -> tuple[str, str, str]:
         return (
             f"if(lt(on,{half}), 1.0 + 0.36*on/{d-1}, 1.18 - 0.26*(on-{half})/{d-1})",
             "iw/2 - (iw/zoom/2)",
+            "ih/2 - (ih/zoom/2)",
+        )
+    if motion_id == "parallax":
+        # shots.so 'Parallax' — 살짝 zoom 고정 + 좌우 미세 sin swing
+        # 한 사이클 = duration 동안 1.5 회전 (=540°). 진폭은 iw 의 약 2.5%.
+        return (
+            "1.06",
+            f"iw/2 - (iw/zoom/2) + iw*0.025*sin(2*PI*1.5*on/{d-1})",
             "ih/2 - (ih/zoom/2)",
         )
     # 'none' 은 호출자가 zoompan 대신 그냥 loop+t 를 써야 함 — 도달하면 안 됨
@@ -1520,6 +1584,7 @@ class GenerateSequenceRequest:
     overlay_effect: Optional[str] = None
     device_shadow: Optional[str] = None
     device_shadow_opacity: float = 1.0
+    device_shadow_angle: Optional[float] = None
     device_style: Optional[str] = None
     hide_mockup: bool = False
     radius_override: Optional[int] = None
@@ -1651,6 +1716,7 @@ def _run_job(job: MockupJob, req: GenerateRequest, *, user_id: str,
                             overlay_effect=req.overlay_effect,
                             device_shadow=req.device_shadow,
                             device_shadow_opacity=req.device_shadow_opacity,
+                            device_shadow_angle=req.device_shadow_angle,
                             device_style=req.device_style,
                             hide_mockup=req.hide_mockup,
                             radius_override=req.radius_override,
@@ -1663,6 +1729,7 @@ def _run_job(job: MockupJob, req: GenerateRequest, *, user_id: str,
                             bg_preset=req.bg_preset,
                             device_shadow=req.device_shadow,
                             device_shadow_opacity=req.device_shadow_opacity,
+                            device_shadow_angle=req.device_shadow_angle,
                             device_style=req.device_style,
                             hide_mockup=req.hide_mockup,
                             radius_override=req.radius_override,

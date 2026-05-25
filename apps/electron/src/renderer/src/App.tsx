@@ -10,6 +10,7 @@ import Login from './pages/Login'
 import { initProjectStore } from './store/project'
 import { useAuthStore } from './store/auth'
 import { UpdateBanner } from './components/UpdateBanner'
+import { usePrefersReducedMotion } from './lib/usePrefersReducedMotion'
 
 const wrap: React.CSSProperties = {
   fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
@@ -79,14 +80,15 @@ const progressOuter: React.CSSProperties = {
   marginTop: 8
 }
 
-const progressInner = (pct: number): React.CSSProperties => ({
+const progressInner = (pct: number, reducedMotion: boolean): React.CSSProperties => ({
   width: `${Math.min(100, Math.max(0, pct))}%`,
   height: '100%',
   background: 'linear-gradient(90deg, #34d399, #10b981)',
-  transition: 'width 120ms linear'
+  transition: reducedMotion ? 'none' : 'width 120ms linear'
 })
 
 function FfmpegSmokeTest(): JSX.Element {
+  const reducedMotion = usePrefersReducedMotion()
   const [caps, setCaps] = useState<FfmpegCapabilities | null>(null)
   const [capsError, setCapsError] = useState<string | null>(null)
   const [pickedPath, setPickedPath] = useState<string | null>(null)
@@ -217,7 +219,7 @@ function FfmpegSmokeTest(): JSX.Element {
       {progress && (
         <>
           <div style={progressOuter}>
-            <div style={progressInner(progress.percent)} />
+            <div style={progressInner(progress.percent, reducedMotion)} />
           </div>
           <div style={{ fontSize: 12, color: '#9aa0a6', marginTop: 6 }}>
             {progress.percent.toFixed(1)}%

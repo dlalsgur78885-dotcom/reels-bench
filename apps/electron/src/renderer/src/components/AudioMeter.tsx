@@ -13,9 +13,14 @@
  */
 import { useEffect, useState } from 'react'
 import { getPreviewAudioGraph } from '../lib/audioGraph'
+import { usePrefersReducedMotion } from '../lib/usePrefersReducedMotion'
 
 const POLL_MS = 50 // 20 Hz — smooth enough for the eye, cheap for the CPU.
+// When the user prefers reduced motion we drop to 5 Hz — the numeric dB
+// readout is still accurate, just doesn't flicker every 50ms.
+const POLL_MS_REDUCED = 200
 const FLOOR_DB = -60 // bar scale floor
+const CLIP_THRESHOLD_DB = -3 // > this = ⚠ shape indicator + hatched fill
 
 function dbToBarPercent(db: number): number {
   if (!Number.isFinite(db)) return 0
@@ -26,9 +31,23 @@ function dbToBarPercent(db: number): number {
 
 function dbToColor(db: number): string {
   if (!Number.isFinite(db)) return '#22c55e'
-  if (db > -3) return '#ef4444' // red
+  if (db > CLIP_THRESHOLD_DB) return '#ef4444' // red
   if (db > -12) return '#fbbf24' // amber
   return '#22c55e' // green
+}
+
+/**
+ * Fill the meter bar with a diagonal hatched gradient ON TOP OF the base
+ * color when clipping. The hatch is what color-blind users perceive as
+ * "danger" — the red hue alone isn't enough (WCAG 1.4.1 forbids using
+ * color as the only channel of information).
+ */
+function dbToBarBackground(db: number): string {
+  const base = dbToColor(db)
+  if (Number.isFinite(db) && db > CLIP_THRESHOLD_DB) {
+    return `repeating-linear-gradient(45deg, ${base} 0 4px, #7f1d1d 4px 6px)`
+  }
+  return base
 }
 
 function formatDb(db: number): string {
@@ -61,6 +80,7 @@ const VALUE_STYLE: React.CSSProperties = {
 }
 
 export function AudioMeter(): JSX.Element {
+  const reducedMotion = usePrefersReducedMotion()
   const [levels, setLevels] = useState<{ peak: number; rms: number }>({
     peak: -Infinity,
     rms: -Infinity
@@ -69,18 +89,24 @@ export function AudioMeter(): JSX.Element {
   useEffect(() => {
     let cancelled = false
     let timer = 0
+    const pollMs = reducedMotion ? POLL_MS_REDUCED : POLL_MS
     const tick = (): void => {
       if (cancelled) return
       const l = getPreviewAudioGraph().getMasterLevels()
       setLevels(l)
-      timer = window.setTimeout(tick, POLL_MS)
+      timer = window.setTimeout(tick, pollMs)
     }
     tick()
     return () => {
       cancelled = true
       if (timer) window.clearTimeout(timer)
     }
-  }, [])
+  }, [reducedMotion])
+
+  // When reduced is on the bar snaps to its new width instead of sliding.
+  const barTransition = reducedMotion ? 'none' : 'width 50ms linear'
+  const peakClipping =
+    Number.isFinite(levels.peak) && levels.peak > CLIP_THRESHOLD_DB
 
   return (
     <div
@@ -100,32 +126,67 @@ export function AudioMeter(): JSX.Element {
       }}
     >
       <div style={ROW_STYLE}>
-        <span style={LABEL_STYLE}>PK</span>
-        <div style={TRACK_STYLE}>
+        <span style={LABEL_STYLE} aria-hidden="true">
+          PK
+        </span>
+        <div
+          style={TRACK_STYLE}
+          role="meter"
+          aria-label="피크 레벨 dBFS"
+          aria-valuemin={FLOOR_DB}
+          aria-valuemax={0}
+          aria-valuenow={Number.isFinite(levels.peak) ? Math.round(levels.peak) : FLOOR_DB}
+          aria-valuetext={`${formatDb(levels.peak)} dB${peakClipping ? ', 클리핑 위험' : ''}`}
+        >
           <div
             data-testid="audio-meter-peak-bar"
+            data-clipping={peakClipping ? 'true' : 'false'}
             style={{
               width: `${dbToBarPercent(levels.peak)}%`,
               height: '100%',
-              background: dbToColor(levels.peak),
-              transition: 'width 50ms linear'
+              background: dbToBarBackground(levels.peak),
+              transition: barTransition
             }}
           />
         </div>
-        <span style={VALUE_STYLE} data-testid="audio-meter-peak-db">
+        <span
+          style={{
+            ...VALUE_STYLE,
+            display: 'inline-flex',
+            justifyContent: 'flex-end',
+            alignItems: 'center',
+            gap: 2
+          }}
+          data-testid="audio-meter-peak-db"
+        >
+          {peakClipping && (
+            <span data-testid="audio-meter-clip-icon" aria-hidden="true">
+              ⚠
+            </span>
+          )}
           {formatDb(levels.peak)}
         </span>
       </div>
       <div style={ROW_STYLE}>
-        <span style={LABEL_STYLE}>RMS</span>
-        <div style={TRACK_STYLE}>
+        <span style={LABEL_STYLE} aria-hidden="true">
+          RMS
+        </span>
+        <div
+          style={TRACK_STYLE}
+          role="meter"
+          aria-label="RMS 레벨 dBFS"
+          aria-valuemin={FLOOR_DB}
+          aria-valuemax={0}
+          aria-valuenow={Number.isFinite(levels.rms) ? Math.round(levels.rms) : FLOOR_DB}
+          aria-valuetext={`${formatDb(levels.rms)} dB`}
+        >
           <div
             data-testid="audio-meter-rms-bar"
             style={{
               width: `${dbToBarPercent(levels.rms)}%`,
               height: '100%',
-              background: dbToColor(levels.rms),
-              transition: 'width 50ms linear'
+              background: dbToBarBackground(levels.rms),
+              transition: barTransition
             }}
           />
         </div>

@@ -22,6 +22,7 @@ import type {
   UpdateDownloadedPayload,
   UpdateDownloadProgressPayload
 } from '../../../shared/ipc'
+import { usePrefersReducedMotion } from '../lib/usePrefersReducedMotion'
 
 type BannerState =
   | { kind: 'idle' }
@@ -99,12 +100,12 @@ const progressOuterSt: React.CSSProperties = {
   overflow: 'hidden'
 }
 
-function progressInnerSt(pct: number): React.CSSProperties {
+function progressInnerSt(pct: number, reducedMotion: boolean): React.CSSProperties {
   return {
     width: `${Math.min(100, Math.max(0, pct))}%`,
     height: '100%',
     background: 'linear-gradient(90deg, #60a5fa, #2563eb)',
-    transition: 'width 200ms linear'
+    transition: reducedMotion ? 'none' : 'width 200ms linear'
   }
 }
 
@@ -126,6 +127,7 @@ export function UpdateBanner(): JSX.Element | null {
   const [state, setState] = useState<BannerState>({ kind: 'idle' })
   const [dismissed, setDismissed] = useState(false)
   const [installing, setInstalling] = useState(false)
+  const reducedMotion = usePrefersReducedMotion()
 
   useEffect(() => {
     const updater = window.electron?.updater
@@ -201,7 +203,7 @@ export function UpdateBanner(): JSX.Element | null {
         <div style={headlineSt}>새 버전 다운로드 중…</div>
         <div style={subSt}>{pct.toFixed(0)}% 완료</div>
         <div style={progressOuterSt}>
-          <div style={progressInnerSt(pct)} />
+          <div style={progressInnerSt(pct, reducedMotion)} />
         </div>
       </div>
     )

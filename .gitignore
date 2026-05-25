@@ -6,6 +6,7 @@ __pycache__/
 *.mp3
 새 폴더/
 .claude/
+!apps/electron/.claude/
 .agents/
 skills-lock.json
 design_review/

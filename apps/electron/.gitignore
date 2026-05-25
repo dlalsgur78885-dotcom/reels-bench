@@ -6,3 +6,5 @@ test-results/
 playwright-report/
 *.tsbuildinfo
 e2e/fixtures/
+_audits/
+_*.mjs

@@ -249,6 +249,26 @@ export default function Mockup() {
     if (tickerRef.current) { window.clearInterval(tickerRef.current); tickerRef.current = null }
     if (pollerRef.current) { window.clearInterval(pollerRef.current); pollerRef.current = null }
   }
+
+  // shots.so 의 "Start Over" — 모든 입력 + 상태 초기화
+  const startOver = () => {
+    reset()
+    setMode('url')
+    setUrl(''); setViewportW(390); setViewportH(844); setDurationSec(6)
+    if (sourcePreview) URL.revokeObjectURL(sourcePreview)
+    setSourceFileId(''); setSourceFileName(''); setSourceIsVideo(true); setSourcePreview('')
+    setUploadMotion('zoom-in'); setUploadMotionDur(4.0)
+    scenes.forEach(s => { if (s.preview) URL.revokeObjectURL(s.preview) })
+    setScenes([]); setSeqSelectedUid('')
+    if (bgPreview) URL.revokeObjectURL(bgPreview)
+    setBgFileId(''); setBgPreview('')
+    setBgColor('#1a1a2e'); setBgPresetId('')
+    setDeviceId('iphone-16-pro'); setAspect('9:16'); setDeviceScale(0.85)
+    setDeviceStyleId('default'); setDeviceShadowId('none'); setDeviceShadowOpacity(1.0)
+    setOverlayEffectId('none'); setHideMockup(false); setRadiusOverride(null)
+    setTiltX(0); setTiltY(0); setSceneShapeId('none')
+    setAppliedTemplateId(''); setTimelineEnabled(false); setKeyframes([])
+  }
   const startTicker = () => {
     startedAtRef.current = Date.now(); setElapsed(0)
     tickerRef.current = window.setInterval(() =>
@@ -483,7 +503,7 @@ export default function Mockup() {
           {device?.name || '...'} · {aspect}
         </span>
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 11,
+        <span style={{ fontSize: 11, marginRight: 8,
                        color: status === 'done' ? 'var(--success, #10b981)'
                             : status === 'failed' ? 'var(--error)' : 'var(--text-muted)' }}>
           {statusLabel[status]}
@@ -491,6 +511,21 @@ export default function Mockup() {
             <span style={{ marginLeft: 6, fontFamily: 'monospace' }}>{elapsed}s</span>
           )}
         </span>
+        <button onClick={startOver} disabled={busy}
+          style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600,
+                   background: 'transparent', color: 'var(--text-secondary)',
+                   border: '1px solid var(--border)', borderRadius: 4,
+                   cursor: busy ? 'wait' : 'pointer', opacity: busy ? 0.5 : 1 }}>
+          Start Over
+        </button>
+        <button onClick={submit} disabled={busy}
+          style={{ padding: '6px 16px', fontSize: 12, fontWeight: 700,
+                   background: busy ? 'var(--bg-elevated)' : 'var(--accent)',
+                   color: busy ? 'var(--text-muted)' : '#fff',
+                   border: 'none', borderRadius: 4,
+                   cursor: busy ? 'wait' : 'pointer', opacity: busy ? 0.7 : 1 }}>
+          {busy ? statusLabel[status] : 'Export'}
+        </button>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr 280px', gap: 10, alignItems: 'start' }}>
@@ -818,17 +853,7 @@ export default function Mockup() {
             </div>
           )}
 
-          <button onClick={submit} disabled={busy}
-            style={{
-              marginTop: 18, width: '100%', padding: '10px 14px',
-              fontSize: 14, fontWeight: 700,
-              background: busy ? 'var(--bg-elevated)' : 'var(--accent)',
-              color: busy ? 'var(--text-muted)' : '#fff',
-              border: 'none', borderRadius: 6,
-              cursor: busy ? 'wait' : 'pointer', opacity: busy ? 0.7 : 1,
-            }}>
-            {busy ? statusLabel[status] : '목업 생성'}
-          </button>
+          {/* Export 버튼은 상단 toolbar 로 이동 */}
         </div>
 
         {/* 우: 프리뷰 + 결과 */}
@@ -919,45 +944,83 @@ export default function Mockup() {
           })()}
         </div>
 
-        {/* 우: LAYOUT preset + 상태 + 결과 */}
-        <div style={{ ...cardSt, padding: 12, display: 'flex',
-                       flexDirection: 'column', gap: 12 }}>
-          {/* ───── LAYOUT (비율 / 디바이스 크기 / Tilt) ───── */}
-          <div>
-            <Label>LAYOUT · 비율</Label>
-            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 10 }}>
-              {ASPECTS.map(a => (
-                <button key={a} onClick={() => !busy && setAspect(a)} disabled={busy}
-                  style={{ ...chipBtn(aspect === a, busy), fontSize: 11, padding: '4px 8px' }}>
-                  {a}
-                </button>
-              ))}
+        {/* 우: BASE LAYOUT 미니 프리뷰 카드 + Zoom/Tilt + 상태/결과 */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+
+          {/* ───── BASE LAYOUT 카드 (작은 미니 미리보기) ───── */}
+          {previewBox && device && (
+            <div style={{ ...cardSt, padding: 12 }}>
+              <SectionHeader>Base Layout</SectionHeader>
+              {/* 미니 캔버스 — 비율 그대로 축소 */}
+              {(() => {
+                const W = 220
+                const [aw, ah] = aspect.split(':').map(Number)
+                const H = Math.round((W * ah) / aw)
+                const devH = H * deviceScale
+                const ratio = device.body_w / device.body_h
+                const devW = devH * ratio
+                let bg: string
+                if (bgPresetId) bg = `center/cover url(${MOCKUP_BASE_URL}/api/mockup/background/${bgPresetId}.png)`
+                else if (bgPreview) bg = `center/cover url(${bgPreview})`
+                else bg = bgColor
+                return (
+                  <div style={{ width: W, height: H, margin: '0 auto',
+                                position: 'relative', background: bg,
+                                borderRadius: 4, overflow: 'hidden',
+                                border: '1px solid var(--border)' }}>
+                    {!hideMockup && (
+                      <div style={{ position: 'absolute',
+                                    left: (W - devW) / 2, top: (H - devH) / 2,
+                                    width: devW, height: devH,
+                                    background: '#222', borderRadius: 8,
+                                    border: '1px solid #444' }} />
+                    )}
+                  </div>
+                )
+              })()}
+              {/* 비율 chip */}
+              <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginTop: 10 }}>
+                {ASPECTS.map(a => (
+                  <button key={a} onClick={() => !busy && setAspect(a)} disabled={busy}
+                    style={{ ...chipBtn(aspect === a, busy),
+                             fontSize: 10, padding: '3px 6px' }}>
+                    {a}
+                  </button>
+                ))}
+              </div>
             </div>
-            <Label>LAYOUT · 디바이스 크기 ({Math.round(deviceScale * 100)}%)</Label>
+          )}
+
+          {/* ───── ZOOM (디바이스 크기) ───── */}
+          <div style={{ ...cardSt, padding: 12 }}>
+            <SectionHeader hint={`${Math.round(deviceScale * 100)}%`}>Zoom</SectionHeader>
             <input type="range" min={50} max={95} value={Math.round(deviceScale * 100)}
               onChange={e => setDeviceScale(Number(e.target.value) / 100)}
-              disabled={busy} style={{ width: '100%', marginBottom: 10 }} />
-            <Label>LAYOUT · 3D 기울기</Label>
+              disabled={busy} style={{ width: '100%' }} />
+          </div>
+
+          {/* ───── TILT (3D perspective) ───── */}
+          <div style={{ ...cardSt, padding: 12 }}>
+            <SectionHeader hint={`${tiltX}° / ${tiltY}°`}>Tilt</SectionHeader>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 4 }}>
-              <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 40 }}>좌우</span>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 28 }}>X</span>
               <input type="range" min={-30} max={30} step={1}
                 value={tiltX} disabled={busy}
                 onChange={e => setTiltX(Number(e.target.value))}
                 style={{ flex: 1 }} />
-              <span style={{ fontSize: 10, color: 'var(--text-secondary)', width: 28 }}>{tiltX}°</span>
             </div>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 40 }}>상하</span>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 28 }}>Y</span>
               <input type="range" min={-30} max={30} step={1}
                 value={tiltY} disabled={busy}
                 onChange={e => setTiltY(Number(e.target.value))}
                 style={{ flex: 1 }} />
-              <span style={{ fontSize: 10, color: 'var(--text-secondary)', width: 28 }}>{tiltY}°</span>
             </div>
           </div>
 
-          <div>
-            <Label>상태</Label>
+          {/* ───── STATUS + RESULT ───── */}
+          <div style={{ ...cardSt, padding: 12 }}>
+            <SectionHeader>Status</SectionHeader>
             <div style={{
               padding: 12, borderRadius: 6, background: 'var(--bg-base)',
               border: '1px solid var(--border)', fontSize: 13,
@@ -1001,8 +1064,83 @@ export default function Mockup() {
               </div>
             </div>
           )}
+          </div>
         </div>
       </div>
+
+      {/* ═══════════ 하단 풀너비 timeline (sequence 또는 timeline 모드일 때) ═══════════ */}
+      {(mode === 'sequence' && scenes.length > 0)
+        || (mode === 'upload' && !sourceIsVideo && timelineEnabled && keyframes.length > 0) ? (
+        <div style={{ ...cardSt, marginTop: 10, padding: 12 }}>
+          <SectionHeader
+            hint={mode === 'sequence'
+              ? `${scenes.length}개 화면 · ${seqTotalSec.toFixed(1)}s`
+              : `${keyframes.length}개 키프레임 · ${uploadMotionDur.toFixed(1)}s`}>
+            {mode === 'sequence' ? 'Sequence Track' : 'Animations Timeline'}
+          </SectionHeader>
+          <div style={{ position: 'relative', height: 36, background: '#111',
+                         borderRadius: 4, border: '1px solid var(--border)',
+                         overflow: 'hidden' }}>
+            {mode === 'sequence' ? (() => {
+              const total = seqTotalSec || 1
+              let cursor = 0
+              return scenes.map((s, idx) => {
+                const left = `${(cursor / total) * 100}%`
+                const width = `${(s.durationSec / total) * 100}%`
+                const segDur = s.durationSec
+                const xf = (idx > 0 && s.transition !== 'cut') ? s.transitionMs / 1000 : 0
+                cursor += segDur - xf
+                const hue = (idx * 53) % 360
+                return (
+                  <div key={s.uid} title={`#${idx + 1} ${s.fileName}`}
+                    onClick={() => setSeqSelectedUid(s.uid)}
+                    style={{ position: 'absolute', top: 0, bottom: 0, left, width,
+                             background: s.uid === seqSelectedUid
+                               ? `hsl(${hue}, 70%, 55%)` : `hsl(${hue}, 50%, 40%)`,
+                             borderRight: '1px solid #000', fontSize: 9,
+                             color: '#fff', display: 'flex', alignItems: 'center',
+                             justifyContent: 'center', cursor: 'pointer',
+                             overflow: 'hidden', whiteSpace: 'nowrap', padding: '0 4px' }}>
+                    #{idx + 1}
+                  </div>
+                )
+              })
+            })() : (() => {
+              const total = uploadMotionDur || 1
+              const sorted = [...keyframes].sort((a, b) => a.startSec - b.startSec)
+              return sorted.map(k => {
+                const left = `${(k.startSec / total) * 100}%`
+                const width = `${((k.endSec - k.startSec) / total) * 100}%`
+                return (
+                  <div key={k.uid} title={`${k.motion} ${k.startSec.toFixed(1)}~${k.endSec.toFixed(1)}s`}
+                    style={{ position: 'absolute', top: 0, bottom: 0, left, width,
+                             background: KF_COLORS[k.motion] || '#374151', opacity: 0.85,
+                             borderRight: '1px solid #000', fontSize: 9, color: '#fff',
+                             display: 'flex', alignItems: 'center', justifyContent: 'center',
+                             overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                    {k.motion}
+                  </div>
+                )
+              })
+            })()}
+            {/* 1초 단위 눈금 */}
+            {(() => {
+              const total = mode === 'sequence' ? seqTotalSec : uploadMotionDur
+              const n = Math.floor(total) + 1
+              return Array.from({ length: n }, (_, i) => (
+                <div key={i} style={{ position: 'absolute', top: 0, bottom: 0,
+                                       left: `${(i / Math.max(0.1, total)) * 100}%`,
+                                       width: 1, background: 'rgba(255,255,255,0.18)' }} />
+              ))
+            })()}
+          </div>
+          <div style={{ marginTop: 6, fontSize: 10, color: 'var(--text-muted)',
+                         display: 'flex', justifyContent: 'space-between' }}>
+            <span>0:00</span>
+            <span>{(mode === 'sequence' ? seqTotalSec : uploadMotionDur).toFixed(1)}s</span>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

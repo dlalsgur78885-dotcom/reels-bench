@@ -823,7 +823,7 @@ export default function Mockup() {
                         cursor: busy ? 'wait' : 'pointer',
                         position: 'relative', overflow: 'hidden',
                       }}>
-                      <img src={url} loading="lazy" alt={s.label}
+                      <img src={url} alt={s.label}
                         style={{ position: 'absolute', inset: 0,
                                  width: '100%', height: '100%', objectFit: 'contain' }} />
                       <span style={{
@@ -863,7 +863,7 @@ export default function Mockup() {
                         cursor: busy ? 'wait' : 'pointer',
                         position: 'relative', overflow: 'hidden',
                       }}>
-                      <img src={url} loading="lazy" alt={s.label}
+                      <img src={url} alt={s.label}
                         style={{ position: 'absolute', inset: 0,
                                  width: '100%', height: '100%', objectFit: 'contain' }} />
                       <span style={{
@@ -930,7 +930,7 @@ export default function Mockup() {
                       cursor: busy ? 'wait' : 'pointer',
                       position: 'relative', overflow: 'hidden',
                     }}>
-                    <img src={url} loading="lazy" alt={p.label}
+                    <img src={url} alt={p.label}
                       style={{ position: 'absolute', inset: 0,
                                width: '100%', height: '100%', objectFit: 'contain' }} />
                     <span style={{
@@ -1046,7 +1046,7 @@ export default function Mockup() {
                         cursor: busy ? 'wait' : 'pointer',
                         position: 'relative', overflow: 'hidden',
                       }}>
-                      <img src={url} loading="lazy" alt={s.label}
+                      <img src={url} alt={s.label}
                         style={{ position: 'absolute', inset: 0,
                                  width: '100%', height: '100%', objectFit: 'cover' }} />
                       <span style={{

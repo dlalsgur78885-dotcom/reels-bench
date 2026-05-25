@@ -36,11 +36,16 @@ _OUR_DOMAINS = ("reels-bench.vercel.app", "reels-bench-dev.vercel.app", "localho
 # Vercel 프리뷰 (reels-bench-<hash>-<team>.vercel.app) 도 허용
 _OUR_HOST_PREFIXES = ("reels-bench-",)
 _OUR_HOST_SUFFIX = ".vercel.app"
+# Electron renderer는 scheme이 app:// (packaged) 또는 file:// (dev). 두 scheme
+# origin은 우리 데스크탑 앱이라 신뢰.
+_ELECTRON_ORIGIN_PREFIXES = ("app://", "file://")
 
 
 def _is_our_origin(value: str) -> bool:
     if not value:
         return False
+    if any(value.startswith(p) for p in _ELECTRON_ORIGIN_PREFIXES):
+        return True
     if any(d in value for d in _OUR_DOMAINS):
         return True
     # 프리뷰 URL: scheme 떼고 host만 검사
@@ -60,6 +65,11 @@ async def api_key_middleware(request, call_next):
     # /api/* 외 (정적 자원, SPA route)는 무관
     if not path.startswith("/api/"):
         return await call_next(request)
+    # CORS preflight — CORSMiddleware가 처리하게 그대로 통과.
+    # 이 가드 없으면 OPTIONS도 401로 떨어져 브라우저가 ACAO 헤더 못 받고
+    # 실제 요청을 차단함 (electron renderer origin='app://.' 등에서 보임).
+    if request.method == "OPTIONS":
+        return await call_next(request)
     # 공개 endpoint
     if path in _PUBLIC_API_PATHS:
         return await call_next(request)
@@ -68,7 +78,7 @@ async def api_key_middleware(request, call_next):
     if path.startswith("/api/thumb-proxy/"):
         return await call_next(request)
 
-    # same-origin (자체 사이트 + Vercel 프리뷰) → skip
+    # same-origin (자체 사이트 + Vercel 프리뷰 + Electron app://) → skip
     if _is_our_origin(request.headers.get("origin", "")) or _is_our_origin(request.headers.get("referer", "")):
         return await call_next(request)
 

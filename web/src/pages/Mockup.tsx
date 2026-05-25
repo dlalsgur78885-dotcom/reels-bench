@@ -157,6 +157,9 @@ export default function Mockup() {
   const [tiltY, setTiltY] = useState<number>(0)
   const [sceneShapesItems, setSceneShapesItems] = useState<SceneShapeItem[]>([])
   const [sceneShapeId, setSceneShapeId] = useState<string>('none')
+  // shots.so EFFECTS & WATERMARK 4 토글
+  const [watermark, setWatermark] = useState<boolean>(false)
+  const [overlayPickerOpen, setOverlayPickerOpen] = useState<boolean>(false)
   // Animations 타임라인 (upload+이미지일 때만 의미)
   const [timelineEnabled, setTimelineEnabled] = useState<boolean>(false)
   const [keyframes, setKeyframes] = useState<AnimKeyframe[]>([])
@@ -725,11 +728,29 @@ export default function Mockup() {
             </div>
           )}
 
-          {/* ───── BORDER (radius) ───── */}
+          {/* ───── BORDER (radius preset + custom) ───── */}
           <div style={sectionSt}>
             <SectionHeader>Border</SectionHeader>
+            {/* Sharp / Curved / Round preset chip — radius_override 매핑 */}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+              {[
+                { label: 'Sharp', v: 0 },
+                { label: 'Curved', v: 120 },
+                { label: 'Round', v: 240 },
+              ].map(p => (
+                <button key={p.label}
+                  onClick={() => !busy && setRadiusOverride(p.v)} disabled={busy}
+                  style={{ ...chipBtn(radiusOverride === p.v, busy), fontSize: 11 }}>
+                  {p.label}
+                </button>
+              ))}
+              <button onClick={() => !busy && setRadiusOverride(null)} disabled={busy}
+                style={{ ...chipBtn(radiusOverride === null, busy), fontSize: 11 }}>
+                Auto
+              </button>
+            </div>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Radius</span>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Radius</span>
               <input type="number" min={0} max={500} step={10}
                 value={radiusOverride ?? ''} disabled={busy}
                 placeholder="auto"
@@ -739,12 +760,32 @@ export default function Mockup() {
                   const n = parseInt(v, 10)
                   setRadiusOverride(Number.isFinite(n) ? n : null)
                 }}
-                style={{ width: 70, fontSize: 12, padding: '4px 6px',
+                style={{ width: 70, fontSize: 12, padding: '3px 6px',
                   border: '1px solid var(--border)', borderRadius: 4,
                   background: 'var(--bg-base)', color: 'var(--text-body)' }} />
               <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>px</span>
             </div>
           </div>
+
+          {/* ───── DETAILS (디바이스 메타 readout) ───── */}
+          {device && (
+            <div style={sectionSt}>
+              <SectionHeader>Details</SectionHeader>
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)',
+                             display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 4 }}>
+                <span style={{ color: 'var(--text-muted)' }}>Device</span>
+                <span>{device.name}</span>
+                <span style={{ color: 'var(--text-muted)' }}>Screen px</span>
+                <span>{device.screen_w}×{device.screen_h}</span>
+                <span style={{ color: 'var(--text-muted)' }}>Body px</span>
+                <span>{device.body_w}×{device.body_h}</span>
+                <span style={{ color: 'var(--text-muted)' }}>Notch</span>
+                <span>{device.notch ? 'Dynamic Island' : 'Punch hole'}</span>
+                <span style={{ color: 'var(--text-muted)' }}>Adapts to media</span>
+                <span style={{ color: 'var(--success, #10b981)' }}>✓ auto-fit</span>
+              </div>
+            </div>
+          )}
 
           {/* ───── VISIBILITY ───── */}
           <div style={sectionSt}>
@@ -761,7 +802,7 @@ export default function Mockup() {
 
           {/* ───── SCENE ───── */}
           {sceneShapesItems.length > 0 && (
-            <div style={sectionSt}>
+            <div id="mockup-scene-anchor" style={sectionSt}>
               <SectionHeader>Scene</SectionHeader>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {sceneShapesItems.map(s => (
@@ -778,9 +819,31 @@ export default function Mockup() {
 
           {/* ───── BACKGROUND ───── */}
           <div style={sectionSt}>
-            <SectionHeader hint={bgPresetId ? 'preset' : (bgFileId ? 'image' : 'color')}>
+            <SectionHeader hint={
+              bgColor === 'transparent' ? 'transparent'
+                : bgPresetId ? 'preset' : (bgFileId ? 'image' : 'color')}>
               Background
             </SectionHeader>
+            {/* source toggle: Transparent / Color / Preset / Image */}
+            <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
+              <button onClick={() => !busy && setBgColor('transparent')} disabled={busy}
+                style={{ ...chipBtn(bgColor === 'transparent', busy), fontSize: 11 }}>
+                Transparent
+              </button>
+              <button onClick={() => !busy && setBgColor('#1a1a2e')} disabled={busy}
+                style={{ ...chipBtn(bgColor !== 'transparent' && !bgPresetId && !bgFileId, busy), fontSize: 11 }}>
+                Color
+              </button>
+              <button onClick={() => !busy && (bgPresets[0] && setBgPresetId(bgPresets[0].id))} disabled={busy || bgPresets.length === 0}
+                style={{ ...chipBtn(!!bgPresetId, busy), fontSize: 11 }}>
+                Preset
+              </button>
+              <button onClick={() => !busy && document.getElementById('mockup-file-image/')?.click()}
+                disabled={busy}
+                style={{ ...chipBtn(!!bgFileId, busy), fontSize: 11 }}>
+                Image
+              </button>
+            </div>
             {/* preset 카탈로그 */}
             {bgPresets.length > 0 && (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)',
@@ -837,21 +900,47 @@ export default function Mockup() {
               onPick={onPickBg} disabled={busy} accept="image/*" compact />
           </div>
 
-          {/* ───── EFFECTS (영상 마감 효과) ───── */}
-          {overlayEffects.length > 0 && (
-            <div style={sectionSt}>
-              <SectionHeader hint="video">Effects</SectionHeader>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {overlayEffects.map(e => (
-                  <button key={e.id}
-                    onClick={() => !busy && setOverlayEffectId(e.id)} disabled={busy}
-                    style={{ ...chipBtn(overlayEffectId === e.id, busy), fontSize: 11 }}>
-                    {e.label}
-                  </button>
-                ))}
-              </div>
+          {/* ───── EFFECTS & WATERMARK ───── */}
+          <div style={sectionSt}>
+            <SectionHeader>Effects & Watermark</SectionHeader>
+            {/* shots.so 4-toggle row: Portrait / Watermark / Bg Effects / VFX */}
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 10 }}>
+              <button disabled title="Coming soon — 얼굴/인물 보정"
+                style={{ ...chipBtn(false, false), fontSize: 11, opacity: 0.4, cursor: 'not-allowed' }}>
+                Portrait
+              </button>
+              <button onClick={() => !busy && setWatermark(!watermark)} disabled={busy}
+                title="우하단에 'Made with reels-bench' stamp"
+                style={{ ...chipBtn(watermark, busy), fontSize: 11 }}>
+                Watermark
+              </button>
+              <button onClick={() => !busy && document.getElementById('mockup-scene-anchor')?.scrollIntoView({block:'center'})}
+                style={{ ...chipBtn(sceneShapeId !== 'none', busy), fontSize: 11 }}>
+                Bg Effects {sceneShapeId !== 'none' && '●'}
+              </button>
+              <button onClick={() => !busy && setOverlayPickerOpen(!overlayPickerOpen)}
+                style={{ ...chipBtn(overlayEffectId !== 'none', busy), fontSize: 11 }}>
+                VFX {overlayEffectId !== 'none' && '●'}
+              </button>
             </div>
-          )}
+            {/* VFX 카탈로그 (마감 효과) */}
+            {overlayEffects.length > 0 && overlayPickerOpen && (
+              <div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>
+                  VFX · 영상 마감 효과
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {overlayEffects.map(e => (
+                    <button key={e.id}
+                      onClick={() => !busy && setOverlayEffectId(e.id)} disabled={busy}
+                      style={{ ...chipBtn(overlayEffectId === e.id, busy), fontSize: 11 }}>
+                      {e.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* Export 버튼은 상단 toolbar 로 이동 */}
         </div>

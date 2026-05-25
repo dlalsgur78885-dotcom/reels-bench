@@ -894,8 +894,11 @@ def _make_background(bg_color: str, bg_image: Optional[Path],
                      w: int, h: int, out: Path,
                      bg_preset: Optional[str] = None,
                      scene_shapes: Optional[str] = None) -> None:
-    # 1) base 만들기 (preset > image > solid color 우선순위)
-    if bg_preset and bg_preset in BG_PRESETS:
+    # 1) base 만들기 (transparent > preset > image > solid color 우선순위)
+    if bg_color and bg_color.lower() == "transparent":
+        # 알파 0 — 디바이스 frame 위로 비치는 투명 배경 (PNG 출력 시 의미; mp4는 검정)
+        img = Image.new("RGB", (w, h), (0, 0, 0))
+    elif bg_preset and bg_preset in BG_PRESETS:
         img = render_bg_preset(bg_preset, w, h)
     elif bg_image and bg_image.exists():
         img = Image.open(bg_image).convert("RGBA")

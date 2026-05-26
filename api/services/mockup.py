@@ -876,7 +876,7 @@ def render_bg_preset_thumbnail(preset_id: str) -> bytes:
 import functools
 
 
-@functools.lru_cache(maxsize=256)
+@functools.lru_cache(maxsize=64)
 def _cached_frame_preview(device_id: str, style: str | None, radius_override: int | None,
                           shadow: str | None, shadow_opacity_int: int,
                           shadow_angle_int: int | None,
@@ -897,7 +897,7 @@ def _cached_bg_small(preset_id: str, w: int, h: int) -> Image.Image:
     return render_bg_preset(preset_id, w, h).convert("RGBA")
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=24)
 def _cached_frame_small_rgba(device_id: str, style: str | None,
                               radius_override: int | None,
                               w: int, h: int) -> Image.Image:
@@ -926,10 +926,10 @@ def _render_frame_preview_uncached(device_id: str, *, style: str | None = None,
     spec = DEVICES[device_id]
     Wfull, Hfull = spec["body_w"], spec["body_h"]
     if crop_mode == "corner":
-        # 디바이스를 카드 크기의 4배로 렌더 → 좌상단 220x220 crop.
-        # 디바이스 폭의 약 1/4 영역만 보여서 코너 라운드 + 베젤만 가득 차고
-        # Dynamic Island/노치는 카드 밖으로 빠짐 → 잘림 없는 깔끔한 모서리 view.
-        target_short = 880
+        # 디바이스를 카드 크기의 ~3배로 렌더 → 좌상단 220x220 crop.
+        # 폭의 ~33% 영역만 보여서 코너 라운드 + 베젤만 가득 차고
+        # Dynamic Island/노치는 카드 밖으로 빠짐. 880은 Render 메모리 한계로 OOM.
+        target_short = 660
         out_size = 220
     else:
         target_short = 220

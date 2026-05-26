@@ -24,9 +24,11 @@ compare_quality_data.json
 config.json
 _debug_*.txt
 
-# Screenshots / dev artifacts
-*.png
-!web/public/mockup-cards/*.png
+# Screenshots / dev artifacts — narrow rules (web/public 은 deploy에 포함되어야 함)
+/*.png
+/_pw_screens/**/*.png
+/thumbs/**/*.png
+/frames/**/*.png
 *.jpg
 screenshot_*
 ss_*

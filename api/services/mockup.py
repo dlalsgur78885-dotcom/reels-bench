@@ -914,7 +914,11 @@ def _render_frame_preview_uncached(device_id: str, *, style: str | None = None,
                                    shadow_opacity: float = 1.0,
                                    shadow_angle: float | None = None,
                                    dummy_bg_id: str = "sunset") -> bytes:
-    """uncached 본체. 사이즈는 짧은 변 220px."""
+    """uncached 본체. 사이즈는 짧은 변 220px.
+
+    dummy_bg_id == 'none' 이면 BG 없이 transparent PNG — shots.so 처럼 카드의
+    흰색 배경 위에 frame STYLE 효과만 강조 표시.
+    """
     spec = DEVICES[device_id]
     Wfull, Hfull = spec["body_w"], spec["body_h"]
     target_short = 220
@@ -931,9 +935,10 @@ def _render_frame_preview_uncached(device_id: str, *, style: str | None = None,
         frame_small = Image.open(io.BytesIO(frame_png_bytes)).convert("RGBA").resize((W, H), Image.LANCZOS)
     else:
         frame_small = _cached_frame_small_rgba(device_id, style, radius_override, W, H)
-    bg = _cached_bg_small(dummy_bg_id, W, H)
     out = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    out.alpha_composite(bg)
+    if dummy_bg_id and dummy_bg_id != "none":
+        bg = _cached_bg_small(dummy_bg_id, W, H)
+        out.alpha_composite(bg)
     out.alpha_composite(frame_small)
     buf = io.BytesIO()
     out.save(buf, format="PNG", optimize=True)

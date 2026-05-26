@@ -809,30 +809,37 @@ export default function Mockup() {
           {activeLeftTab === 'mockup' && deviceStyles.length > 0 && (
             <div style={sectionSt}>
               <SectionHeader>Style</SectionHeader>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
                 {deviceStyles.map(s => {
                   const did = device?.id || 'iphone-16-pro'
-                  const url = `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?style=${encodeURIComponent(s.id)}&bg=sunset`
+                  // bg=none → 카드의 흰 배경 위에 STYLE frame 효과만 강조 (shots.so 패턴)
+                  const url = `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?style=${encodeURIComponent(s.id)}&bg=none`
+                  const selected = deviceStyleId === s.id
                   return (
-                    <button key={s.id} onClick={() => !busy && setDeviceStyleId(s.id)} disabled={busy}
-                      title={s.label}
-                      style={{
-                        aspectRatio: '1/1.4', borderRadius: 6, padding: 0,
-                        background: '#f5f5f5',
-                        border: deviceStyleId === s.id ? '2px solid var(--accent)' : '1px solid var(--border)',
-                        cursor: busy ? 'wait' : 'pointer',
-                        position: 'relative', overflow: 'hidden',
-                      }}>
-                      <img src={url} alt={s.label}
-                        style={{ position: 'absolute', inset: 0,
-                                 width: '100%', height: '100%', objectFit: 'contain' }} />
+                    <div key={s.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <button onClick={() => !busy && setDeviceStyleId(s.id)} disabled={busy}
+                        title={s.label}
+                        style={{
+                          aspectRatio: '1/1', borderRadius: 8, padding: 4,
+                          background: '#fff',
+                          border: selected ? '1.5px solid var(--text-body, #111)' : '1px solid #e6e6e6',
+                          boxShadow: selected ? '0 0 0 3px rgba(0,0,0,0.06)' : 'none',
+                          cursor: busy ? 'wait' : 'pointer',
+                          position: 'relative', overflow: 'hidden',
+                          transition: 'border 0.12s, box-shadow 0.12s',
+                        }}>
+                        <img src={url} alt={s.label}
+                          style={{ position: 'absolute', inset: 4,
+                                   width: 'calc(100% - 8px)', height: 'calc(100% - 8px)',
+                                   objectFit: 'contain' }} />
+                      </button>
                       <span style={{
-                        position: 'absolute', bottom: 0, left: 0, right: 0,
-                        padding: '12px 4px 4px', fontSize: 10, fontWeight: 700,
-                        color: '#fff', textAlign: 'center',
-                        background: 'linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.7) 100%)',
+                        fontSize: 10, fontWeight: 500, lineHeight: 1.2,
+                        color: selected ? 'var(--text-body, #111)' : 'var(--text-secondary, #555)',
+                        textAlign: 'center',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                       }}>{s.label}</span>
-                    </button>
+                    </div>
                   )
                 })}
               </div>
@@ -847,32 +854,39 @@ export default function Mockup() {
                 Shadow
               </SectionHeader>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
-                            gap: 6, marginBottom: 6 }}>
+                            gap: 10, marginBottom: 8 }}>
                 {deviceShadows.map(s => {
                   const did = device?.id || 'iphone-16-pro'
+                  // SHADOW 는 카드 흰 배경 위에 그림자 직접 떨어지도록 bg=none
                   const url = s.id === 'none'
-                    ? `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?bg=mesh-cool`
-                    : `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?shadow=${encodeURIComponent(s.id)}&shadow_opacity=1&bg=mesh-cool`
+                    ? `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?bg=none`
+                    : `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?shadow=${encodeURIComponent(s.id)}&shadow_opacity=1&bg=none`
+                  const selected = deviceShadowId === s.id
                   return (
-                    <button key={s.id} onClick={() => !busy && setDeviceShadowId(s.id)} disabled={busy}
-                      title={s.label}
-                      style={{
-                        aspectRatio: '1/1.4', borderRadius: 6, padding: 0,
-                        background: '#f0f0f0',
-                        border: deviceShadowId === s.id ? '2px solid var(--accent)' : '1px solid var(--border)',
-                        cursor: busy ? 'wait' : 'pointer',
-                        position: 'relative', overflow: 'hidden',
-                      }}>
-                      <img src={url} alt={s.label}
-                        style={{ position: 'absolute', inset: 0,
-                                 width: '100%', height: '100%', objectFit: 'contain' }} />
+                    <div key={s.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <button onClick={() => !busy && setDeviceShadowId(s.id)} disabled={busy}
+                        title={s.label}
+                        style={{
+                          aspectRatio: '1/1', borderRadius: 8, padding: 4,
+                          background: '#fff',
+                          border: selected ? '1.5px solid var(--text-body, #111)' : '1px solid #e6e6e6',
+                          boxShadow: selected ? '0 0 0 3px rgba(0,0,0,0.06)' : 'none',
+                          cursor: busy ? 'wait' : 'pointer',
+                          position: 'relative', overflow: 'hidden',
+                          transition: 'border 0.12s, box-shadow 0.12s',
+                        }}>
+                        <img src={url} alt={s.label}
+                          style={{ position: 'absolute', inset: 4,
+                                   width: 'calc(100% - 8px)', height: 'calc(100% - 8px)',
+                                   objectFit: 'contain' }} />
+                      </button>
                       <span style={{
-                        position: 'absolute', bottom: 0, left: 0, right: 0,
-                        padding: '12px 4px 4px', fontSize: 10, fontWeight: 700,
-                        color: '#fff', textAlign: 'center',
-                        background: 'linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.7) 100%)',
+                        fontSize: 10, fontWeight: 500, lineHeight: 1.2,
+                        color: selected ? 'var(--text-body, #111)' : 'var(--text-secondary, #555)',
+                        textAlign: 'center',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                       }}>{s.label}</span>
-                    </button>
+                    </div>
                   )
                 })}
               </div>
@@ -903,61 +917,60 @@ export default function Mockup() {
             </div>
           )}
 
-          {/* ───── BORDER — visual cards (Mockup 탭) ───── */}
+          {/* ───── BORDER — visual cards (Mockup 탭) — shots.so 패턴 (3 chip + slider) ───── */}
           {activeLeftTab === 'mockup' && (
           <div style={sectionSt}>
-            <SectionHeader>Border</SectionHeader>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
-                          gap: 6, marginBottom: 8 }}>
+            <SectionHeader hint={radiusOverride != null ? `${radiusOverride}` : 'auto'}>
+              Border
+            </SectionHeader>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
+                          gap: 10, marginBottom: 10 }}>
               {[
                 { label: 'Sharp', v: 0 },
                 { label: 'Curved', v: 120 },
                 { label: 'Round', v: 240 },
-                { label: 'Auto', v: null as number | null },
               ].map(p => {
                 const did = device?.id || 'iphone-16-pro'
-                const url = p.v == null
-                  ? `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?bg=ocean`
-                  : `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?radius=${p.v}&bg=ocean`
+                // BORDER 도 흰 카드 배경 위에 radius 차이 강조
+                const url = `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?radius=${p.v}&bg=none`
+                const selected = radiusOverride === p.v
                 return (
-                  <button key={p.label}
-                    onClick={() => !busy && setRadiusOverride(p.v)} disabled={busy}
-                    title={p.label}
-                    style={{
-                      aspectRatio: '1/1.4', borderRadius: 6, padding: 0,
-                      background: '#f0f0f0',
-                      border: radiusOverride === p.v ? '2px solid var(--accent)' : '1px solid var(--border)',
-                      cursor: busy ? 'wait' : 'pointer',
-                      position: 'relative', overflow: 'hidden',
-                    }}>
-                    <img src={url} alt={p.label}
-                      style={{ position: 'absolute', inset: 0,
-                               width: '100%', height: '100%', objectFit: 'contain' }} />
+                  <div key={p.label} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <button
+                      onClick={() => !busy && setRadiusOverride(p.v)} disabled={busy}
+                      title={p.label}
+                      style={{
+                        aspectRatio: '1/1', borderRadius: 8, padding: 4,
+                        background: '#fff',
+                        border: selected ? '1.5px solid var(--text-body, #111)' : '1px solid #e6e6e6',
+                        boxShadow: selected ? '0 0 0 3px rgba(0,0,0,0.06)' : 'none',
+                        cursor: busy ? 'wait' : 'pointer',
+                        position: 'relative', overflow: 'hidden',
+                        transition: 'border 0.12s, box-shadow 0.12s',
+                      }}>
+                      <img src={url} alt={p.label}
+                        style={{ position: 'absolute', inset: 4,
+                                 width: 'calc(100% - 8px)', height: 'calc(100% - 8px)',
+                                 objectFit: 'contain' }} />
+                    </button>
                     <span style={{
-                      position: 'absolute', bottom: 0, left: 0, right: 0,
-                      padding: '12px 4px 4px', fontSize: 10, fontWeight: 700,
-                      color: '#fff', textAlign: 'center',
-                      background: 'linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.7) 100%)',
+                      fontSize: 10, fontWeight: 500, lineHeight: 1.2,
+                      color: selected ? 'var(--text-body, #111)' : 'var(--text-secondary, #555)',
+                      textAlign: 'center',
                     }}>{p.label}</span>
-                  </button>
+                  </div>
                 )
               })}
             </div>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Radius</span>
-              <input type="number" min={0} max={500} step={10}
-                value={radiusOverride ?? ''} disabled={busy}
-                placeholder="auto"
-                onChange={e => {
-                  const v = e.target.value.trim()
-                  if (!v) { setRadiusOverride(null); return }
-                  const n = parseInt(v, 10)
-                  setRadiusOverride(Number.isFinite(n) ? n : null)
-                }}
-                style={{ width: 70, fontSize: 12, padding: '3px 6px',
-                  border: '1px solid var(--border)', borderRadius: 4,
-                  background: 'var(--bg-base)', color: 'var(--text-body)' }} />
-              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>px</span>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 44 }}>Radius</span>
+              <input type="range" min={0} max={300} step={5}
+                value={radiusOverride ?? 0} disabled={busy}
+                onChange={e => setRadiusOverride(Number(e.target.value))}
+                style={{ flex: 1 }} />
+              <span style={{ fontSize: 10, color: 'var(--text-secondary)', width: 28, textAlign: 'right' }}>
+                {radiusOverride ?? 0}
+              </span>
             </div>
           </div>
           )}

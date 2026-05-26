@@ -199,7 +199,11 @@ def frame_preview_png(device_id: str, request: Request,
     if device_id not in mockup_svc.DEVICES:
         raise HTTPException(404, "unknown device")
     use_style = style if (style and style in mockup_svc.DEVICE_STYLES) else None
-    use_bg = bg if bg in mockup_svc.BG_PRESETS else "sunset"
+    # bg=none → BG 없이 transparent PNG (카드의 흰 배경 위에 STYLE 효과만 강조)
+    if bg == "none":
+        use_bg = "none"
+    else:
+        use_bg = bg if bg in mockup_svc.BG_PRESETS else "sunset"
     png = mockup_svc.render_frame_preview(
         device_id, style=use_style, radius_override=radius,
         shadow=shadow, shadow_opacity=max(0.0, min(1.0, shadow_opacity)),

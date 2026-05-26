@@ -1,7 +1,7 @@
 import { app, ipcMain } from 'electron'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, unlink } from 'node:fs/promises'
+import { mkdir, readFile, unlink, copyFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import {
   IPC_CHANNELS,
@@ -497,4 +497,39 @@ export function registerMediaHandlers(): void {
       return null
     }
   })
+
+  // 0.2.9 — `srcPath` 의 파일을 userData/imports/<mediaId>.<ext> 로 복사.
+  // 같은 mediaId 로 재호출되면 idempotent (이미 있으면 그대로 반환). 이로써
+  // 사용자가 원본 파일을 어디 두든(특히 install 폴더 안 `새 폴더/`)
+  // reinstall 사이클이 파일을 지워도 import는 user-data dir 안 안전 사본을
+  // reference 함.
+  ipcMain.handle(
+    IPC_CHANNELS.media.copyToImports,
+    async (_event, srcPath: unknown, mediaId: unknown): Promise<string> => {
+      if (typeof srcPath !== 'string' || !srcPath) throw new Error('srcPath required')
+      if (typeof mediaId !== 'string' || !mediaId) throw new Error('mediaId required')
+      if (!/^[a-zA-Z0-9_-]+$/.test(mediaId)) throw new Error('mediaId invalid')
+      const safeSrc = assertPathAllowed(srcPath, 'input')
+      const dir = path.join(app.getPath('userData'), 'imports')
+      if (!existsSync(dir)) await mkdir(dir, { recursive: true })
+      const ext = path.extname(safeSrc) || ''
+      const destPath = path.join(dir, `${mediaId}${ext}`)
+      // 사본이 이미 있고 source size 와 같으면 skip (idempotent).
+      try {
+        const sStat = await stat(safeSrc)
+        if (existsSync(destPath)) {
+          const dStat = await stat(destPath)
+          if (dStat.size === sStat.size) {
+            allowPath(destPath)
+            return destPath
+          }
+        }
+      } catch {
+        /* fall through to copy */
+      }
+      await copyFile(safeSrc, destPath)
+      allowPath(destPath)
+      return destPath
+    }
+  )
 }

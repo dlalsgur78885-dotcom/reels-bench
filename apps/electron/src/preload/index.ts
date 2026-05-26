@@ -93,7 +93,9 @@ const api: ElectronApi = {
     ): Promise<WaveformResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.media.generateWaveform, filePath, options),
     readWaveform: (waveformPath: string): Promise<string | null> =>
-      ipcRenderer.invoke(IPC_CHANNELS.media.readWaveform, waveformPath)
+      ipcRenderer.invoke(IPC_CHANNELS.media.readWaveform, waveformPath),
+    copyToImports: (srcPath: string, mediaId: string): Promise<string> =>
+      ipcRenderer.invoke(IPC_CHANNELS.media.copyToImports, srcPath, mediaId)
   },
   audio: {
     detectSilence: (

@@ -109,40 +109,57 @@ function reinstallLocal() {
     return
   }
   // Step 3 — verify by reading the installed app.asar's package.json.
+  // CRITICAL: extract-file writes to CWD, and we previously followed up
+  // with `del package.json` — which clobbered our own apps/electron/package.json
+  // when cwd === apps/electron. Run the probe inside an isolated temp dir
+  // so neither the extract nor the delete touches the repo.
+  const asarPath = path.join(
+    localApp,
+    'Programs',
+    'Reels Studio',
+    'resources',
+    'app.asar'
+  )
+  if (!existsSync(asarPath)) {
+    console.warn('[publish] installed app.asar not found — install may have failed')
+    return
+  }
+  const probeDir = path.join(
+    process.env.TEMP || process.env.TMP || 'C:/Windows/Temp',
+    `reels-publish-verify-${Date.now()}`
+  )
+  try {
+    const fs2 = await import('node:fs')
+    fs2.mkdirSync(probeDir, { recursive: true })
+  } catch (e) {
+    console.warn('[publish] cannot create probe dir:', e?.message ?? e)
+    return
+  }
   const probe = spawnSync(
     'npx',
-    [
-      '--yes',
-      '@electron/asar',
-      'extract-file',
-      path.join(
-        localApp,
-        'Programs',
-        'Reels Studio',
-        'resources',
-        'app.asar'
-      ),
-      'package.json'
-    ],
-    { stdio: 'pipe', shell: true }
+    ['--yes', '@electron/asar', 'extract-file', asarPath, 'package.json'],
+    { stdio: 'pipe', shell: true, cwd: probeDir }
   )
   if (probe.status === 0) {
     try {
-      const pkgInstalled = JSON.parse(readFileSync('package.json', 'utf-8'))
+      const pkgInstalled = JSON.parse(
+        readFileSync(path.join(probeDir, 'package.json'), 'utf-8')
+      )
       console.log(
         `[publish] verified installed version: ${pkgInstalled.version} (target ${version})`
       )
-    } catch {
-      /* ignore */
-    }
-    // cleanup the extracted file
-    try {
-      execFileSync('cmd', ['/c', 'del', 'package.json'], { stdio: 'ignore' })
-    } catch {
-      /* ignore */
+    } catch (e) {
+      console.warn('[publish] verify read failed:', e?.message ?? e)
     }
   } else {
     console.warn('[publish] could not verify installed version (asar probe failed)')
+  }
+  // Cleanup probe dir — entire scoped temp, never touches the repo.
+  try {
+    const fs2 = await import('node:fs')
+    fs2.rmSync(probeDir, { recursive: true, force: true })
+  } catch {
+    /* ignore */
   }
 }
 

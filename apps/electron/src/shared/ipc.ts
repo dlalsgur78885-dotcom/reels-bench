@@ -27,7 +27,8 @@ export const IPC_CHANNELS = {
     generateThumbnail: 'media:generateThumbnail',
     readThumbnail: 'media:readThumbnail',
     generateWaveform: 'media:generateWaveform',
-    readWaveform: 'media:readWaveform'
+    readWaveform: 'media:readWaveform',
+    copyToImports: 'media:copyToImports'
   },
   auth: {
     startDeeplinkFlow: 'auth:startDeeplinkFlow',
@@ -610,6 +611,15 @@ export interface ElectronApi {
       options?: WaveformOptions
     ): Promise<WaveformResult>
     readWaveform(waveformPath: string): Promise<string | null>
+    /**
+     * 0.2.9 — `srcPath` 의 파일을 `%APPDATA%/Reels Studio/imports/` 아래로
+     * 복사하고 새 path를 반환. 원본은 그대로 둠. 이 안전 path가 우리
+     * uninstall/install 사이클의 영향권 밖이라 publish hook이 install 폴더를
+     * 통째 삭제해도 import한 video가 살아남음. 사용자가 install 폴더 안
+     * `새 폴더/` 같은 곳에 둔 파일이 reinstall 시 lost 되던 문제(슬라이드 6
+     * 추가 진단) 해결.
+     */
+    copyToImports(srcPath: string, mediaId: string): Promise<string>
   }
   audio: {
     detectSilence(

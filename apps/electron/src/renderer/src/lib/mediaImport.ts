@@ -30,6 +30,17 @@ export async function ingestLocalFile(
   const id = newId()
   const fileName = opts?.displayName ?? basename(filePath)
 
+  // 0.2.9 — 사용자 원본 path를 그대로 reference하던 옛 동작은 install 폴더
+  // 안 사용자 파일이 reinstall로 사라지면 같이 깨졌음(슬라이드 6 추가 진단).
+  // userData/imports/<mediaId><ext> 로 자동 복사 → 그 path 사용. 실패해도
+  // (디스크 풀 / 권한 등) 원본 path로 graceful fallback.
+  let safePath = filePath
+  try {
+    safePath = await window.electron.media.copyToImports(filePath, id)
+  } catch (err) {
+    console.warn('[import] copyToImports failed, using original path:', err)
+  }
+
   const atMs =
     probe.kind === 'image' || probe.kind === 'audio'
       ? 0
@@ -39,20 +50,20 @@ export async function ingestLocalFile(
   let dataUri: string | undefined
   if (probe.kind !== 'audio') {
     try {
-      const thumb = await window.electron.media.generateThumbnail(filePath, {
+      const thumb = await window.electron.media.generateThumbnail(safePath, {
         atMs,
         mediaId: id
       })
       thumbnailPath = thumb.path
       dataUri = thumb.dataUri
     } catch (err) {
-      console.warn('[import] thumbnail failed', filePath, err)
+      console.warn('[import] thumbnail failed', safePath, err)
     }
   }
 
   const asset: MediaAsset = {
     id,
-    path: filePath,
+    path: safePath,
     kind: probe.kind,
     durationMs: probe.durationMs,
     width: probe.width,
@@ -68,7 +79,7 @@ export async function ingestLocalFile(
   // Fire-and-forget waveform for anything carrying audio.
   if (probe.kind === 'audio' || probe.kind === 'video') {
     void window.electron.media
-      .generateWaveform(filePath, { mediaId: id })
+      .generateWaveform(safePath, { mediaId: id })
       .then((wf) => {
         useProjectStore.getState().updateMediaWaveform(id, wf.path)
         useTimelineUi.getState().setWaveformUri(id, wf.dataUri)

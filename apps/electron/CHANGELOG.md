@@ -21,6 +21,25 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.9 (2026-05-26)
+
+### 버그 (슬라이드 6 진단 종결)
+- import한 video file을 사용자 원본 path가 아닌 `%APPDATA%/Reels Studio/
+  imports/<mediaId>.<ext>` 로 **자동 복사** 후 그 경로 사용. uninstall/
+  reinstall 사이클이 install 폴더를 통째 지워도 import는 user-data dir
+  안 안전한 사본을 reference 함 (이전 0.2.7→0.2.8 reinstall 시 사용자가
+  install 폴더 안 `새 폴더/`에 둔 video file이 사라져 재생 불가했던 실제
+  사고). main IPC `media.copyToImports` 신규 + ingestLocalFile에서 호출.
+  copy 실패는 graceful — 원본 path fallback.
+
+### 인프라
+- `publish-github.mjs` verify step이 CWD에서 `extract-file package.json` +
+  `del package.json` 실행해 우리 repo의 진짜 package.json을 한 번 삭제
+  하는 자체 사고 발생. 격리된 temp dir에서 probe 수행하도록 fix —
+  scoped `mkdirSync(probeDir)` + `cwd: probeDir` + `rmSync(probeDir)`.
+
+---
+
 ## 0.2.8 (2026-05-26)
 
 ### 버그 (슬라이드 6 추가 후속)

@@ -1010,33 +1010,21 @@ export default function Mockup() {
               <SectionHeader hint={mode === 'upload' && !sourceIsVideo ? undefined : 'upload+이미지만'}>
                 Animation
               </SectionHeader>
-              {/* shots.so 패턴: Static / Parallax 2-chip 메인 토글 */}
+              {/* shots.so 정확 매칭: Static / Parallax 2-chip 만 */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)',
-                            gap: 6, marginBottom: 8 }}>
+                            gap: 6 }}>
                 <button disabled={busy || !(mode === 'upload' && !sourceIsVideo)}
                   onClick={() => setUploadMotion('none')}
                   style={{ ...chipBtn(uploadMotion === 'none', busy),
-                           fontSize: 11, padding: '8px 10px', justifyContent: 'center', fontWeight: 600 }}>
+                           fontSize: 12, padding: '10px 12px', justifyContent: 'center', fontWeight: 600 }}>
                   Static
                 </button>
                 <button disabled={busy || !(mode === 'upload' && !sourceIsVideo)}
                   onClick={() => setUploadMotion('parallax')}
                   style={{ ...chipBtn(uploadMotion === 'parallax', busy),
-                           fontSize: 11, padding: '8px 10px', justifyContent: 'center', fontWeight: 600 }}>
+                           fontSize: 12, padding: '10px 12px', justifyContent: 'center', fontWeight: 600 }}>
                   Parallax
                 </button>
-              </div>
-              {/* 우리 추가 모션 (zoom/pan/pulse) — 작은 chip row */}
-              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap',
-                            opacity: (mode === 'upload' && !sourceIsVideo) ? 1 : 0.5 }}>
-                {MOTIONS.filter(m => m.value !== 'none' && m.value !== 'parallax').map(m => (
-                  <button key={m.value} disabled={busy || !(mode === 'upload' && !sourceIsVideo)}
-                    onClick={() => setUploadMotion(m.value)}
-                    style={{ ...chipBtn(uploadMotion === m.value, busy),
-                             fontSize: 10, padding: '4px 8px' }}>
-                    {m.label}
-                  </button>
-                ))}
               </div>
               {mode === 'upload' && !sourceIsVideo && uploadMotion !== 'none' && (
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
@@ -1055,41 +1043,94 @@ export default function Mockup() {
 
           {/* (Tilt / 비율 / 디바이스 크기 = LAYOUT preset — 우측 패널로 이동) */}
 
-          {/* ───── SCENE — 3-col 정사각 카드 (shots.so 패턴) ───── */}
+          {/* ───── SCENE — shots.so 3-card (None / Shadow / Shapes) ───── */}
           {activeLeftTab === 'frame' && sceneShapesItems.length > 0 && (
             <div id="mockup-scene-anchor" style={sectionSt}>
               <SectionHeader>Scene</SectionHeader>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-                {sceneShapesItems.map(s => {
-                  const url = `${MOCKUP_BASE_URL}/api/mockup/scene-shape/${s.id}.png`
-                  const selected = sceneShapeId === s.id
-                  return (
-                    <div key={s.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      <button onClick={() => !busy && setSceneShapeId(s.id)} disabled={busy}
-                        title={s.label}
-                        style={{
-                          aspectRatio: '1/1', borderRadius: 8, padding: 0,
-                          background: '#1a1a2e',
-                          border: selected ? '1.5px solid var(--text-body, #111)' : '1px solid #e6e6e6',
-                          boxShadow: selected ? '0 0 0 3px rgba(0,0,0,0.06)' : 'none',
-                          cursor: busy ? 'wait' : 'pointer',
-                          position: 'relative', overflow: 'hidden',
-                          transition: 'border 0.12s, box-shadow 0.12s',
-                        }}>
-                        <img src={url} alt={s.label}
-                          style={{ position: 'absolute', inset: 0,
-                                   width: '100%', height: '100%', objectFit: 'cover' }} />
-                      </button>
-                      <span style={{
-                        fontSize: 10, fontWeight: 500, lineHeight: 1.2,
-                        color: selected ? 'var(--text-body, #111)' : 'var(--text-secondary, #555)',
-                        textAlign: 'center',
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      }}>{s.label}</span>
+              {(() => {
+                // shape thumbnail PNG 첫 항목으로 Shapes 카드 미리보기
+                const firstShape = sceneShapesItems.find(s => s.id !== 'none')
+                const shadowDemo = sceneShapesItems.find(s => s.id === 'none')
+                const sceneActive: 'none' | 'shadow' | 'shapes' =
+                  sceneShapeId !== 'none' ? 'shapes'
+                    : (deviceShadowId !== 'none' ? 'shadow' : 'none')
+                const cards = [
+                  { id: 'none' as const, label: 'None',
+                    active: sceneActive === 'none',
+                    onClick: () => { setSceneShapeId('none'); setDeviceShadowId('none'); },
+                    bg: '#f5f5f5', icon: '⊘' },
+                  { id: 'shadow' as const, label: 'Shadow',
+                    active: sceneActive === 'shadow',
+                    onClick: () => {
+                      setSceneShapeId('none');
+                      if (deviceShadowId === 'none') setDeviceShadowId('soft');
+                    },
+                    bg: 'radial-gradient(ellipse at 50% 40%, #2a2a3e 0%, #0a0a14 80%)',
+                    icon: null },
+                  { id: 'shapes' as const, label: 'Shapes',
+                    active: sceneActive === 'shapes',
+                    onClick: () => {
+                      setDeviceShadowId('none');
+                      if (sceneShapeId === 'none' && firstShape) setSceneShapeId(firstShape.id);
+                    },
+                    bg: '#1a1a2e',
+                    previewUrl: firstShape ? `${MOCKUP_BASE_URL}/api/mockup/scene-shape/${firstShape.id}.png` : null,
+                    icon: null },
+                ]
+                return (
+                  <>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                      {cards.map(c => (
+                        <div key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <button onClick={() => !busy && c.onClick()} disabled={busy}
+                            title={c.label}
+                            style={{
+                              aspectRatio: '1/1', borderRadius: 8, padding: 0,
+                              background: c.bg,
+                              backgroundImage: (c as any).previewUrl ? `url(${(c as any).previewUrl})` : undefined,
+                              backgroundSize: 'cover', backgroundPosition: 'center',
+                              border: c.active ? '1.5px solid var(--text-body, #111)' : '1px solid #e6e6e6',
+                              boxShadow: c.active ? '0 0 0 3px rgba(0,0,0,0.06)' : 'none',
+                              cursor: busy ? 'wait' : 'pointer',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              color: c.id === 'none' ? '#999' : '#fff',
+                              fontSize: 24,
+                              transition: 'border 0.12s, box-shadow 0.12s',
+                            }}>
+                            {c.icon}
+                          </button>
+                          <span style={{
+                            fontSize: 10, fontWeight: 500, lineHeight: 1.2,
+                            color: c.active ? 'var(--text-body, #111)' : 'var(--text-secondary, #555)',
+                            textAlign: 'center',
+                          }}>{c.label}</span>
+                        </div>
+                      ))}
                     </div>
-                  )
-                })}
-              </div>
+                    {/* Shapes 카드 active 시 6 shape thumbnail expanded */}
+                    {sceneActive === 'shapes' && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)',
+                                    gap: 6, marginTop: 8 }}>
+                        {sceneShapesItems.filter(s => s.id !== 'none').map(s => {
+                          const url = `${MOCKUP_BASE_URL}/api/mockup/scene-shape/${s.id}.png`
+                          const sel = sceneShapeId === s.id
+                          return (
+                            <button key={s.id} onClick={() => !busy && setSceneShapeId(s.id)}
+                              disabled={busy} title={s.label}
+                              style={{
+                                aspectRatio: '1/1', borderRadius: 6, padding: 0,
+                                backgroundImage: `url(${url})`,
+                                backgroundSize: 'cover', backgroundPosition: 'center',
+                                border: sel ? '2px solid var(--accent)' : '1px solid var(--border)',
+                                cursor: busy ? 'wait' : 'pointer',
+                              }} />
+                          )
+                        })}
+                      </div>
+                    )}
+                  </>
+                )
+              })()}
             </div>
           )}
 
@@ -1105,6 +1146,9 @@ export default function Mockup() {
             </SectionHeader>
             {/* shots.so 패턴: 4-card source 선택 (Trans / Color / Image / Preset) */}
             {(() => {
+              // bgFileId가 unsplash:로 시작하면 Unsplash, 아니면 Image
+              const isUnsplash = bgFileId.startsWith('unsplash:')
+              const isImageFile = !!bgFileId && !isUnsplash
               const sources = [
                 { id: 'transparent', label: 'Trans...',
                   active: bgColor === 'transparent',
@@ -1113,169 +1157,206 @@ export default function Mockup() {
                     setBgColor('transparent'); setBgPresetId(''); setBgFileId('');
                   } },
                 { id: 'color', label: 'Color',
-                  active: bgColor !== 'transparent' && !bgPresetId && !bgFileId,
-                  preview: bgColor !== 'transparent' ? bgColor : '#1a1a2e',
-                  onPick: () => {
-                    setBgColor(bgColor === 'transparent' ? '#1a1a2e' : bgColor);
-                    setBgPresetId(''); setBgFileId('');
-                  } },
-                { id: 'preset', label: 'Preset',
-                  active: !!bgPresetId,
+                  active: bgColor !== 'transparent' && !bgFileId,
+                  // bgPresetId 있으면 그라데이션 preview, 없으면 단색
                   previewUrl: bgPresetId
-                    ? `${MOCKUP_BASE_URL}/api/mockup/background/${bgPresetId}.png`
-                    : (bgPresets[0] ? `${MOCKUP_BASE_URL}/api/mockup/background/${bgPresets[0].id}.png` : null),
+                    ? `${MOCKUP_BASE_URL}/api/mockup/background/${bgPresetId}.png` : null,
+                  preview: bgPresetId ? null : (bgColor !== 'transparent' ? bgColor : '#1a1a2e'),
                   onPick: () => {
-                    if (bgPresets[0]) setBgPresetId(bgPresets[0].id);
+                    if (bgColor === 'transparent') setBgColor('#1a1a2e');
                     setBgFileId('');
                   } },
                 { id: 'image', label: 'Image',
-                  active: !!bgFileId,
-                  previewUrl: bgPreview,
+                  active: isImageFile,
+                  previewUrl: isImageFile ? bgPreview : null,
+                  preview: '#e8e8e8',
+                  icon: '🖼️',
                   onPick: () => {
                     setBgPresetId('');
                     document.getElementById('mockup-file-image/')?.click();
+                  } },
+                { id: 'unsplash', label: 'Unsplash',
+                  active: isUnsplash,
+                  previewUrl: isUnsplash ? bgPreview : null,
+                  preview: '#0a0a0a',
+                  icon: 'U',
+                  onPick: () => {
+                    setBgPresetId('');
+                    // 사용자가 Unsplash 카드 클릭 → 검색 input focus
+                    setTimeout(() => document.querySelector<HTMLInputElement>('input[placeholder*="nature"]')?.focus(), 50);
                   } },
               ]
               return (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
                               gap: 8, marginBottom: 10 }}>
-                  {sources.map(s => (
-                    <div key={s.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      <button onClick={() => !busy && s.onPick()} disabled={busy}
-                        title={s.label}
-                        style={{
-                          aspectRatio: '1/1', borderRadius: 8, padding: 0,
-                          background: s.preview === 'checker'
-                            ? 'repeating-conic-gradient(#ccc 0deg 90deg, #fff 90deg 180deg) 0 0/12px 12px'
-                            : (typeof s.preview === 'string' ? s.preview : '#f5f5f5'),
-                          backgroundImage: (s as any).previewUrl ? `url(${(s as any).previewUrl})` : undefined,
-                          backgroundSize: 'cover', backgroundPosition: 'center',
-                          border: s.active ? '1.5px solid var(--text-body, #111)' : '1px solid #e6e6e6',
-                          boxShadow: s.active ? '0 0 0 3px rgba(0,0,0,0.06)' : 'none',
-                          cursor: busy ? 'wait' : 'pointer',
-                          transition: 'border 0.12s, box-shadow 0.12s',
-                        }} />
-                      <span style={{
-                        fontSize: 10, fontWeight: 500, lineHeight: 1.2,
-                        color: s.active ? 'var(--text-body, #111)' : 'var(--text-secondary, #555)',
-                        textAlign: 'center',
-                      }}>{s.label}</span>
-                    </div>
-                  ))}
+                  {sources.map(s => {
+                    const hasPreview = !!(s as any).previewUrl
+                    const icon = (s as any).icon
+                    return (
+                      <div key={s.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <button onClick={() => !busy && s.onPick()} disabled={busy}
+                          title={s.label}
+                          style={{
+                            aspectRatio: '1/1', borderRadius: 8, padding: 0,
+                            background: s.preview === 'checker'
+                              ? 'repeating-conic-gradient(#ccc 0deg 90deg, #fff 90deg 180deg) 0 0/12px 12px'
+                              : (typeof s.preview === 'string' ? s.preview : '#f5f5f5'),
+                            backgroundImage: hasPreview ? `url(${(s as any).previewUrl})` : undefined,
+                            backgroundSize: 'cover', backgroundPosition: 'center',
+                            border: s.active ? '1.5px solid var(--text-body, #111)' : '1px solid #e6e6e6',
+                            boxShadow: s.active ? '0 0 0 3px rgba(0,0,0,0.06)' : 'none',
+                            cursor: busy ? 'wait' : 'pointer',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontSize: 22, fontWeight: 700,
+                            color: s.id === 'unsplash' ? '#fff' : '#666',
+                            transition: 'border 0.12s, box-shadow 0.12s',
+                          }}>
+                          {!hasPreview && icon ? icon : null}
+                        </button>
+                        <span style={{
+                          fontSize: 10, fontWeight: 500, lineHeight: 1.2,
+                          color: s.active ? 'var(--text-body, #111)' : 'var(--text-secondary, #555)',
+                          textAlign: 'center',
+                        }}>{s.label}</span>
+                      </div>
+                    )
+                  })}
                 </div>
               )
             })()}
-            {/* ───── source-specific expanded panel (shots.so: 선택된 카드만 노출) ───── */}
-            {/* PRESET: 6-col 그리드 */}
-            {!!bgPresetId && bgPresets.length > 0 && (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)',
-                             gap: 6, marginBottom: 4 }}>
-                {bgPresets.map(p => (
-                  <button key={p.id} onClick={() => !busy && setBgPresetId(p.id)} disabled={busy}
-                    title={p.label}
-                    style={{
-                      aspectRatio: '3/4', borderRadius: 6, padding: 0,
-                      backgroundImage: `url(${MOCKUP_BASE_URL}/api/mockup/background/${p.id}.png)`,
-                      backgroundSize: 'cover', backgroundPosition: 'center',
-                      border: bgPresetId === p.id ? '2px solid var(--accent)' : '1px solid var(--border)',
-                      cursor: busy ? 'wait' : 'pointer',
-                      position: 'relative', overflow: 'hidden',
-                    }}>
-                    <span style={{
-                      position: 'absolute', bottom: 2, left: 0, right: 0,
-                      fontSize: 9, fontWeight: 600, color: '#fff',
-                      textShadow: '0 1px 2px rgba(0,0,0,0.6)',
-                    }}>{p.label}</span>
-                  </button>
-                ))}
-              </div>
-            )}
+            {/* ───── source-specific expanded panel ───── */}
+            {(() => {
+              const isUnsplash = bgFileId.startsWith('unsplash:')
+              const isImageFile = !!bgFileId && !isUnsplash
+              const colorActive = bgColor !== 'transparent' && !bgFileId
+              return (
+                <>
+                  {/* COLOR: solid chip + 그라데이션 그리드 + color picker */}
+                  {colorActive && (
+                    <>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+                        {BG_PRESETS.map(p => (
+                          <button key={p.value} onClick={() => { if (busy) return; setBgColor(p.value); setBgPresetId(''); }} disabled={busy}
+                            title={p.label}
+                            style={{
+                              width: 28, height: 28, borderRadius: 4,
+                              background: p.value,
+                              border: bgColor === p.value && !bgPresetId ? '2px solid var(--accent)' : '1px solid var(--border)',
+                              cursor: busy ? 'wait' : 'pointer',
+                            }} />
+                        ))}
+                        <input type="color" value={bgColor !== 'transparent' ? bgColor : '#1a1a2e'}
+                          onChange={e => { setBgColor(e.target.value); setBgPresetId(''); }}
+                          disabled={busy}
+                          style={{ width: 28, height: 28, padding: 0, border: '1px solid var(--border)',
+                            borderRadius: 4, cursor: busy ? 'wait' : 'pointer', background: 'transparent' }} />
+                      </div>
+                      {bgPresets.length > 0 && (
+                        <>
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>
+                            Gradient · Mesh
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 6 }}>
+                            {bgPresets.map(p => (
+                              <button key={p.id} onClick={() => !busy && setBgPresetId(p.id)} disabled={busy}
+                                title={p.label}
+                                style={{
+                                  aspectRatio: '3/4', borderRadius: 6, padding: 0,
+                                  backgroundImage: `url(${MOCKUP_BASE_URL}/api/mockup/background/${p.id}.png)`,
+                                  backgroundSize: 'cover', backgroundPosition: 'center',
+                                  border: bgPresetId === p.id ? '2px solid var(--accent)' : '1px solid var(--border)',
+                                  cursor: busy ? 'wait' : 'pointer',
+                                }} />
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </>
+                  )}
 
-            {/* COLOR: solid 컬러 chip + color picker */}
-            {bgColor !== 'transparent' && !bgPresetId && !bgFileId && (
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {BG_PRESETS.map(p => (
-                  <button key={p.value} onClick={() => !busy && setBgColor(p.value)} disabled={busy}
-                    title={p.label}
-                    style={{
-                      width: 28, height: 28, borderRadius: 4,
-                      background: p.value,
-                      border: bgColor === p.value ? '2px solid var(--accent)' : '1px solid var(--border)',
-                      cursor: busy ? 'wait' : 'pointer',
-                    }} />
-                ))}
-                <input type="color" value={bgColor} onChange={e => setBgColor(e.target.value)}
-                  disabled={busy}
-                  style={{ width: 28, height: 28, padding: 0, border: '1px solid var(--border)',
-                    borderRadius: 4, cursor: busy ? 'wait' : 'pointer', background: 'transparent' }} />
-              </div>
-            )}
+                  {/* IMAGE: 파일 picker만 */}
+                  {isImageFile && (
+                    <FilePicker preview={bgPreview} previewKind="image"
+                      onPick={onPickBg} disabled={busy} accept="image/*" compact />
+                  )}
 
-            {/* IMAGE: 파일 picker + Unsplash 검색 + Magic */}
-            {!!bgFileId && (
-              <>
-                <FilePicker preview={bgPreview} previewKind="image"
-                  onPick={onPickBg} disabled={busy} accept="image/*" compact />
-                <div style={{ marginTop: 10 }}>
-                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>
-                    Unsplash 검색 (UNSPLASH_ACCESS_KEY 필요)
-                  </div>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <input type="text" value={unsplashQ}
-                      placeholder="nature, city, abstract…" disabled={busy || unsplashLoading}
-                      onChange={e => setUnsplashQ(e.target.value)}
-                      onKeyDown={async e => {
-                        if (e.key !== 'Enter' || !unsplashQ.trim()) return
-                        setUnsplashLoading(true); setUnsplashResults([])
-                        try {
-                          const r = await mockupAuthedFetch(`/api/mockup/unsplash/search?q=${encodeURIComponent(unsplashQ)}&per_page=12`)
-                          if (r.ok) {
-                            const d = await r.json()
-                            setUnsplashResults(d.results || [])
-                          } else if (r.status === 503) {
-                            setUnsplashResults([{ __err: 'UNSPLASH_ACCESS_KEY 미설정' }])
-                          }
-                        } catch {} finally { setUnsplashLoading(false) }
-                      }}
-                      style={{ flex: 1, padding: '4px 6px', fontSize: 11,
-                        background: 'var(--bg-base)', color: 'var(--text-body)',
-                        border: '1px solid var(--border)', borderRadius: 4 }} />
-                  </div>
-                  {unsplashResults.length > 0 && (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
-                                  gap: 4, marginTop: 6 }}>
-                      {unsplashResults.slice(0, 12).map((u: any, i: number) => u.__err ? (
-                        <div key={i} style={{ gridColumn: '1 / -1', fontSize: 10,
-                                              color: 'var(--error)' }}>{u.__err}</div>
-                      ) : (
-                        <button key={u.id} onClick={() => {
-                          setBgPreview(u.regular); setBgFileId('unsplash:' + u.id); setBgPresetId('')
-                        }} disabled={busy} title={u.alt}
-                          style={{ aspectRatio: '4/3', borderRadius: 4, padding: 0,
-                            backgroundImage: `url(${u.thumb})`, backgroundSize: 'cover',
-                            backgroundPosition: 'center',
-                            border: '1px solid var(--border)', cursor: busy ? 'wait' : 'pointer' }} />
-                      ))}
+                  {/* UNSPLASH: 검색 + 결과 그리드 */}
+                  {isUnsplash && (
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>
+                        Unsplash 검색 (UNSPLASH_ACCESS_KEY 필요)
+                      </div>
+                      <input type="text" value={unsplashQ}
+                        placeholder="nature, city, abstract…" disabled={busy || unsplashLoading}
+                        onChange={e => setUnsplashQ(e.target.value)}
+                        onKeyDown={async e => {
+                          if (e.key !== 'Enter' || !unsplashQ.trim()) return
+                          setUnsplashLoading(true); setUnsplashResults([])
+                          try {
+                            const r = await mockupAuthedFetch(`/api/mockup/unsplash/search?q=${encodeURIComponent(unsplashQ)}&per_page=12`)
+                            if (r.ok) {
+                              const d = await r.json()
+                              setUnsplashResults(d.results || [])
+                            } else if (r.status === 503) {
+                              setUnsplashResults([{ __err: 'UNSPLASH_ACCESS_KEY 미설정' }])
+                            }
+                          } catch {} finally { setUnsplashLoading(false) }
+                        }}
+                        style={{ width: '100%', padding: '6px 8px', fontSize: 11,
+                          background: 'var(--bg-base)', color: 'var(--text-body)',
+                          border: '1px solid var(--border)', borderRadius: 4 }} />
+                      {unsplashResults.length > 0 && (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
+                                      gap: 4, marginTop: 6 }}>
+                          {unsplashResults.slice(0, 12).map((u: any, i: number) => u.__err ? (
+                            <div key={i} style={{ gridColumn: '1 / -1', fontSize: 10,
+                                                  color: 'var(--error)' }}>{u.__err}</div>
+                          ) : (
+                            <button key={u.id} onClick={() => {
+                              setBgPreview(u.regular); setBgFileId('unsplash:' + u.id); setBgPresetId('')
+                            }} disabled={busy} title={u.alt}
+                              style={{ aspectRatio: '4/3', borderRadius: 4, padding: 0,
+                                backgroundImage: `url(${u.thumb})`, backgroundSize: 'cover',
+                                backgroundPosition: 'center',
+                                border: '1px solid var(--border)', cursor: busy ? 'wait' : 'pointer' }} />
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
-                </div>
-                {/* Magic AI (이미지 source 안에 노출 — shots.so 처럼) */}
-                {mode === 'upload' && sourceFileId && (
-                  <button onClick={() => {
-                    if (!sourceFileId) return
-                    const url = `${MOCKUP_BASE_URL}/api/mockup/magic-bg/${sourceFileId}.png?w=540&h=720`
-                    setBgPreview(url); setBgFileId('magic:' + sourceFileId); setBgPresetId('')
-                  }} disabled={busy}
-                    style={{ marginTop: 8, padding: '6px 10px', fontSize: 11, fontWeight: 600,
-                             background: 'var(--accent)', color: '#fff',
-                             border: 'none', borderRadius: 4,
-                             cursor: busy ? 'wait' : 'pointer', width: '100%' }}>
-                    ✨ Magic — 미디어 색으로 배경 자동
-                  </button>
-                )}
-              </>
-            )}
+                </>
+              )
+            })()}
           </div>
+          )}
+
+          {/* ───── Magic ✨ — shots.so 별도 큰 row (BACKGROUND 아래) ───── */}
+          {activeLeftTab === 'frame' && mode === 'upload' && sourceFileId && (
+            <div style={{ ...sectionSt, padding: '10px 12px',
+                          background: '#fef3f8', borderRadius: 8, border: '1px solid #f9d4e1' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>
+                    Magic ✨
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--text-secondary, #555)' }}>
+                    Uses media in your mockup to generate magic backgrounds
+                  </div>
+                </div>
+                <button onClick={() => {
+                  if (!sourceFileId) return
+                  const url = `${MOCKUP_BASE_URL}/api/mockup/magic-bg/${sourceFileId}.png?w=540&h=720`
+                  setBgPreview(url); setBgFileId('magic:' + sourceFileId); setBgPresetId('')
+                }} disabled={busy}
+                  style={{
+                    width: 54, height: 54, borderRadius: 8, padding: 0,
+                    background: 'linear-gradient(135deg, #ec4899, #8b5cf6)',
+                    border: 'none', cursor: busy ? 'wait' : 'pointer',
+                    color: '#fff', fontSize: 22, fontWeight: 700,
+                    boxShadow: '0 2px 8px rgba(236, 72, 153, 0.4)',
+                  }}>✨</button>
+              </div>
+            </div>
           )}
 
           {/* ───── EFFECTS & WATERMARK — shots.so 4-card thumbnail ───── */}

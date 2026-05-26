@@ -840,9 +840,10 @@ export default function Mockup() {
                   const url = `/mockup-cards/style-${encodeURIComponent(s.id)}.png`
                   const selected = deviceStyleId === s.id
                   return (
-                    <div key={s.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      <button onClick={() => !busy && setDeviceStyleId(s.id)} disabled={busy}
-                        title={s.label}
+                    <div key={s.id} onClick={() => !busy && setDeviceStyleId(s.id)}
+                      style={{ display: 'flex', flexDirection: 'column', gap: 4,
+                               cursor: busy ? 'wait' : 'pointer' }}>
+                      <button disabled={busy} title={s.label} tabIndex={-1}
                         style={{
                           aspectRatio: '1/1', borderRadius: 8, padding: 4,
                           background: '#fff',
@@ -851,6 +852,7 @@ export default function Mockup() {
                           cursor: busy ? 'wait' : 'pointer',
                           position: 'relative', overflow: 'hidden',
                           transition: 'border 0.12s, box-shadow 0.12s',
+                          pointerEvents: 'none',
                         }}>
                         <img src={url} alt={s.label}
                           style={{ position: 'absolute', inset: 4,
@@ -884,9 +886,10 @@ export default function Mockup() {
                   const url = `/mockup-cards/shadow-${encodeURIComponent(s.id)}.png`
                   const selected = deviceShadowId === s.id
                   return (
-                    <div key={s.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      <button onClick={() => !busy && setDeviceShadowId(s.id)} disabled={busy}
-                        title={s.label}
+                    <div key={s.id} onClick={() => !busy && setDeviceShadowId(s.id)}
+                      style={{ display: 'flex', flexDirection: 'column', gap: 4,
+                               cursor: busy ? 'wait' : 'pointer' }}>
+                      <button disabled={busy} title={s.label} tabIndex={-1}
                         style={{
                           aspectRatio: '1/1', borderRadius: 8, padding: 4,
                           background: '#fff',
@@ -895,6 +898,7 @@ export default function Mockup() {
                           cursor: busy ? 'wait' : 'pointer',
                           position: 'relative', overflow: 'hidden',
                           transition: 'border 0.12s, box-shadow 0.12s',
+                          pointerEvents: 'none',
                         }}>
                         <img src={url} alt={s.label}
                           style={{ position: 'absolute', inset: 4,
@@ -955,10 +959,10 @@ export default function Mockup() {
                 const url = `/mockup-cards/border-${p.slug}.png`
                 const selected = radiusOverride === p.v
                 return (
-                  <div key={p.label} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    <button
-                      onClick={() => !busy && setRadiusOverride(p.v)} disabled={busy}
-                      title={p.label}
+                  <div key={p.label} onClick={() => !busy && setRadiusOverride(p.v)}
+                    style={{ display: 'flex', flexDirection: 'column', gap: 4,
+                             cursor: busy ? 'wait' : 'pointer' }}>
+                    <button disabled={busy} title={p.label} tabIndex={-1}
                       style={{
                         aspectRatio: '1/1', borderRadius: 8, padding: 4,
                         background: '#fff',
@@ -967,6 +971,7 @@ export default function Mockup() {
                         cursor: busy ? 'wait' : 'pointer',
                         position: 'relative', overflow: 'hidden',
                         transition: 'border 0.12s, box-shadow 0.12s',
+                        pointerEvents: 'none',
                       }}>
                       <img src={url} alt={p.label}
                         style={{ position: 'absolute', inset: 4,
@@ -1090,21 +1095,23 @@ export default function Mockup() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
                               gap: 8, marginBottom: 10 }}>
                   {items.map(it => (
-                    <div key={it.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      <button onClick={() => !busy && !it.disabled && it.onClick()}
-                        disabled={busy || it.disabled}
-                        title={it.label}
+                    <div key={it.id}
+                      onClick={() => !busy && !it.disabled && it.onClick()}
+                      style={{ display: 'flex', flexDirection: 'column', gap: 4,
+                               cursor: (busy || it.disabled) ? 'not-allowed' : 'pointer',
+                               opacity: it.disabled ? 0.4 : 1 }}>
+                      <button disabled={busy || it.disabled} title={it.label} tabIndex={-1}
                         style={{
                           aspectRatio: '1/1', borderRadius: 8, padding: 0,
                           background: '#fff',
                           border: it.active ? '1.5px solid var(--text-body, #111)' : '1px solid #e6e6e6',
                           boxShadow: it.active ? '0 0 0 3px rgba(0,0,0,0.06)' : 'none',
                           cursor: (busy || it.disabled) ? 'not-allowed' : 'pointer',
-                          opacity: it.disabled ? 0.4 : 1,
                           fontSize: 24, lineHeight: 1,
                           display: 'flex', alignItems: 'center', justifyContent: 'center',
                           position: 'relative',
                           transition: 'border 0.12s, box-shadow 0.12s',
+                          pointerEvents: 'none',
                         }}>
                         <span>{it.emoji}</span>
                         {it.active && (
@@ -1183,9 +1190,10 @@ export default function Mockup() {
                   <>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
                       {cards.map(c => (
-                        <div key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                          <button onClick={() => !busy && c.onClick()} disabled={busy}
-                            title={c.label}
+                        <div key={c.id} onClick={() => !busy && c.onClick()}
+                          style={{ display: 'flex', flexDirection: 'column', gap: 4,
+                                   cursor: busy ? 'wait' : 'pointer' }}>
+                          <button disabled={busy} title={c.label} tabIndex={-1}
                             style={{
                               aspectRatio: '1/1', borderRadius: 8, padding: 0,
                               background: c.bg,
@@ -1198,6 +1206,7 @@ export default function Mockup() {
                               color: c.id === 'none' ? '#999' : '#fff',
                               fontSize: 24,
                               transition: 'border 0.12s, box-shadow 0.12s',
+                              pointerEvents: 'none',
                             }}>
                             {c.icon}
                           </button>
@@ -1295,9 +1304,10 @@ export default function Mockup() {
                     const hasPreview = !!(s as any).previewUrl
                     const icon = (s as any).icon
                     return (
-                      <div key={s.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                        <button onClick={() => !busy && s.onPick()} disabled={busy}
-                          title={s.label}
+                      <div key={s.id} onClick={() => !busy && s.onPick()}
+                        style={{ display: 'flex', flexDirection: 'column', gap: 4,
+                                 cursor: busy ? 'wait' : 'pointer' }}>
+                        <button disabled={busy} title={s.label} tabIndex={-1}
                           style={{
                             aspectRatio: '1/1', borderRadius: 8, padding: 0,
                             background: s.preview === 'checker'
@@ -1312,6 +1322,7 @@ export default function Mockup() {
                             fontSize: 22, fontWeight: 700,
                             color: s.id === 'unsplash' ? '#fff' : '#666',
                             transition: 'border 0.12s, box-shadow 0.12s',
+                            pointerEvents: 'none',
                           }}>
                           {!hasPreview && icon ? icon : null}
                         </button>

@@ -21,6 +21,18 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.7 (2026-05-26)
+
+### 버그 (슬라이드 6 후속)
+- 두 번째 클립으로 스왑은 되는데 "스페이스를 눌러야 재생됨" 증상 해결.
+  원인: src 교체 + `v.load()`가 <video>를 paused로 reset. play/pause
+  useEffect의 deps는 `[playing, audioTracks, videoTracks]` 뿐이라 src
+  교체만으로 re-fire 안 됨. swap useEffect에서 src 교체 직후 `playing`이
+  true면 새 <video>에 `play()` 직접 호출 + swap effect deps에 `playing`
+  추가(closure-stale 방지).
+
+---
+
 ## 0.2.6 (2026-05-26)
 
 ### 버그

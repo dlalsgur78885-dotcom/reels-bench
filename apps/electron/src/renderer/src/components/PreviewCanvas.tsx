@@ -1405,6 +1405,17 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               } catch {
                 /* ignore */
               }
+              // 0.2.7 — src 교체 + load()는 <video>를 paused 상태로 reset.
+              // play/pause useEffect는 deps([playing, audioTracks, videoTracks])
+              // 변경에만 fire → src 교체만으론 re-trigger 안 됨. 재생 중이면
+              // 새 src에 직접 play() — slide 6 추가 증상 "스페이스 눌러야
+              // 두 번째 영상이 재생됨" 해결.
+              if (playing) {
+                v.play().catch(() => {
+                  /* autoplay rejection / src not ready — silently ignored;
+                     load() 완료 후 next tick에서 다시 시도 가능 */
+                })
+              }
             }
             if (media.kind !== 'image') {
               const target = clipSourceTimeSec(activeVideo, playheadMs)
@@ -1596,7 +1607,10 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
     audioTracks,
     hitByTrackId,
     voiceOn,
-    soloMode
+    soloMode,
+    // playing — swap 시 새 src에 자동 play() 호출하려면 effect closure가
+    // 최신 playing 값을 봐야 함. closure-stale 방지.
+    playing
   ])
 
   // -----------------------------------------------------------------------

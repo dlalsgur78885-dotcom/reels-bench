@@ -926,8 +926,10 @@ def _render_frame_preview_uncached(device_id: str, *, style: str | None = None,
     spec = DEVICES[device_id]
     Wfull, Hfull = spec["body_w"], spec["body_h"]
     if crop_mode == "corner":
-        # 디바이스를 카드 크기의 약 2배로 렌더 → 좌상단 220x220 crop
-        target_short = 440
+        # 디바이스를 카드 크기의 4배로 렌더 → 좌상단 220x220 crop.
+        # 디바이스 폭의 약 1/4 영역만 보여서 코너 라운드 + 베젤만 가득 차고
+        # Dynamic Island/노치는 카드 밖으로 빠짐 → 잘림 없는 깔끔한 모서리 view.
+        target_short = 880
         out_size = 220
     else:
         target_short = 220

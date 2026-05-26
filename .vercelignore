@@ -26,6 +26,7 @@ _debug_*.txt
 
 # Screenshots / dev artifacts
 *.png
+!web/public/mockup-cards/*.png
 *.jpg
 screenshot_*
 ss_*
@@ -40,6 +41,7 @@ test_frame*
 .github/
 .streamlit/
 agents/
+apps/
 dashboard/
 design_review/
 docs/

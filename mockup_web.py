@@ -76,19 +76,22 @@ def warm_up_frame_preview_cache():
     def _warm():
         try:
             did = "iphone-16-pro"
-            # STYLE 9
+            # STYLE 9 (corner crop + bg=none — 실제 UI 패턴)
             for sid in mockup_svc.DEVICE_STYLES.keys():
-                mockup_svc.render_frame_preview(did, style=sid, dummy_bg_id="sunset")
+                mockup_svc.render_frame_preview(did, style=sid,
+                                                 dummy_bg_id="none", crop_mode="corner")
             # SHADOW 5
             for sid in mockup_svc.DEVICE_SHADOWS.keys():
                 if sid == "none":
-                    mockup_svc.render_frame_preview(did, dummy_bg_id="mesh-cool")
+                    mockup_svc.render_frame_preview(did, dummy_bg_id="none", crop_mode="corner")
                 else:
-                    mockup_svc.render_frame_preview(did, shadow=sid, dummy_bg_id="mesh-cool")
-            # BORDER 4
-            for r in (None, 0, 120, 240):
-                mockup_svc.render_frame_preview(did, radius_override=r, dummy_bg_id="ocean")
-            logger.info("[warmup] frame-preview cache populated")
+                    mockup_svc.render_frame_preview(did, shadow=sid,
+                                                     dummy_bg_id="none", crop_mode="corner")
+            # BORDER 3 (Sharp/Curved/Round)
+            for r in (0, 120, 240):
+                mockup_svc.render_frame_preview(did, radius_override=r,
+                                                 dummy_bg_id="none", crop_mode="corner")
+            logger.info("[warmup] frame-preview corner cache populated")
         except Exception as e:
             logger.warning(f"[warmup] failed: {e}")
     # background — startup 자체는 막지 않음
@@ -194,20 +197,24 @@ def frame_preview_png(device_id: str, request: Request,
                       shadow: str | None = None,
                       shadow_opacity: float = 1.0,
                       shadow_angle: float | None = None,
-                      bg: str = "sunset"):
-    """STYLE/SHADOW 카드용 frame + 더미 screen content 합성 미리보기 PNG. public."""
+                      bg: str = "sunset",
+                      crop: str = "full"):
+    """STYLE/SHADOW 카드용 frame + 더미 screen content 합성 미리보기 PNG. public.
+
+    crop=corner → 좌상단 모서리만 cropped 정사각 view (shots.so 카드 패턴).
+    """
     if device_id not in mockup_svc.DEVICES:
         raise HTTPException(404, "unknown device")
     use_style = style if (style and style in mockup_svc.DEVICE_STYLES) else None
-    # bg=none → BG 없이 transparent PNG (카드의 흰 배경 위에 STYLE 효과만 강조)
     if bg == "none":
         use_bg = "none"
     else:
         use_bg = bg if bg in mockup_svc.BG_PRESETS else "sunset"
+    use_crop = crop if crop in ("full", "corner") else "full"
     png = mockup_svc.render_frame_preview(
         device_id, style=use_style, radius_override=radius,
         shadow=shadow, shadow_opacity=max(0.0, min(1.0, shadow_opacity)),
-        shadow_angle=shadow_angle, dummy_bg_id=use_bg,
+        shadow_angle=shadow_angle, dummy_bg_id=use_bg, crop_mode=use_crop,
     )
     return Response(content=png, media_type="image/png",
                     headers={"Cache-Control": "public, max-age=3600"})

@@ -880,14 +880,14 @@ import functools
 def _cached_frame_preview(device_id: str, style: str | None, radius_override: int | None,
                           shadow: str | None, shadow_opacity_int: int,
                           shadow_angle_int: int | None,
-                          dummy_bg_id: str) -> bytes:
+                          dummy_bg_id: str, crop_mode: str) -> bytes:
     """frame_preview 결과를 (모든 변형 조합) memoize. shadow_opacity/angle 은
     cache 키로 float 못 쓰니 정수화 (×100 / round)."""
     return _render_frame_preview_uncached(
         device_id, style=style, radius_override=radius_override,
         shadow=shadow, shadow_opacity=shadow_opacity_int / 100.0,
         shadow_angle=float(shadow_angle_int) if shadow_angle_int is not None else None,
-        dummy_bg_id=dummy_bg_id,
+        dummy_bg_id=dummy_bg_id, crop_mode=crop_mode,
     )
 
 
@@ -913,19 +913,28 @@ def _render_frame_preview_uncached(device_id: str, *, style: str | None = None,
                                    shadow: str | None = None,
                                    shadow_opacity: float = 1.0,
                                    shadow_angle: float | None = None,
-                                   dummy_bg_id: str = "sunset") -> bytes:
-    """uncached 본체. 사이즈는 짧은 변 220px.
+                                   dummy_bg_id: str = "sunset",
+                                   crop_mode: str = "full") -> bytes:
+    """uncached 본체.
 
     dummy_bg_id == 'none' 이면 BG 없이 transparent PNG — shots.so 처럼 카드의
     흰색 배경 위에 frame STYLE 효과만 강조 표시.
+
+    crop_mode='corner' 이면 디바이스를 큰 사이즈로 렌더 후 좌상단 정사각 crop.
+    카드에 모서리만 가득 차서 STYLE/SHADOW/BORDER 특징이 즉시 식별됨 (shots.so 패턴).
     """
     spec = DEVICES[device_id]
     Wfull, Hfull = spec["body_w"], spec["body_h"]
-    target_short = 220
+    if crop_mode == "corner":
+        # 디바이스를 카드 크기의 약 2배로 렌더 → 좌상단 220x220 crop
+        target_short = 440
+        out_size = 220
+    else:
+        target_short = 220
+        out_size = None
     scale = target_short / min(Wfull, Hfull)
     W = max(64, int(Wfull * scale))
     H = max(64, int(Hfull * scale))
-    # shadow 가 있으면 매번 새로 (shadow_angle 변형 다양해서 cache 효율 낮음)
     if shadow and shadow in DEVICE_SHADOWS and shadow != "none":
         frame_png_bytes = render_device_frame(device_id, style=style,
                                               radius_override=radius_override)
@@ -935,13 +944,21 @@ def _render_frame_preview_uncached(device_id: str, *, style: str | None = None,
         frame_small = Image.open(io.BytesIO(frame_png_bytes)).convert("RGBA").resize((W, H), Image.LANCZOS)
     else:
         frame_small = _cached_frame_small_rgba(device_id, style, radius_override, W, H)
-    out = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     if dummy_bg_id and dummy_bg_id != "none":
         bg = _cached_bg_small(dummy_bg_id, W, H)
-        out.alpha_composite(bg)
-    out.alpha_composite(frame_small)
+        canvas.alpha_composite(bg)
+    canvas.alpha_composite(frame_small)
+    if crop_mode == "corner" and out_size is not None:
+        # 좌상단을 가운데로 살짝 inset 두고 crop — 디바이스 좌상단 모서리가 카드 중앙에 위치
+        # 약간 inset 후 정사각 crop (오프셋 = 디바이스 베젤 여백 보존)
+        crop_x = 0
+        crop_y = 0
+        crop_w = min(out_size, W)
+        crop_h = min(out_size, H)
+        canvas = canvas.crop((crop_x, crop_y, crop_x + crop_w, crop_y + crop_h))
     buf = io.BytesIO()
-    out.save(buf, format="PNG", optimize=True)
+    canvas.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
 
 
@@ -950,16 +967,18 @@ def render_frame_preview(device_id: str, *, style: str | None = None,
                          shadow: str | None = None,
                          shadow_opacity: float = 1.0,
                          shadow_angle: float | None = None,
-                         dummy_bg_id: str = "sunset") -> bytes:
+                         dummy_bg_id: str = "sunset",
+                         crop_mode: str = "full") -> bytes:
     """디바이스 frame + screen 영역에 procedural bg 합성된 PNG.
-    lru_cache 로 같은 변형 조합은 즉시 반환."""
-    # shadow 없는 변형은 cache 효과 만점 (frame + bg 둘 다 캐시)
-    # shadow 있는 변형은 angle 다양해서 cache key 분리
+    lru_cache 로 같은 변형 조합은 즉시 반환.
+
+    crop_mode='corner' → 좌상단 모서리 cropped view (shots.so 카드 패턴).
+    """
     opacity_int = int(round(max(0.0, min(1.0, shadow_opacity)) * 100))
     angle_int = int(round(shadow_angle)) if shadow_angle is not None else None
     return _cached_frame_preview(
         device_id, style, radius_override,
-        shadow, opacity_int, angle_int, dummy_bg_id,
+        shadow, opacity_int, angle_int, dummy_bg_id, crop_mode,
     )
 
 

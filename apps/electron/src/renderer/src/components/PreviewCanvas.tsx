@@ -1990,6 +1990,19 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               // preload="metadata"는 frame 데이터를 첫 재생 시점에야 받기
               // 시작 → 그 buffering 동안 이전 frame 화면 freeze.
               preload="auto"
+              // 0.2.8 — `loadeddata` (frame data 첫 도달) + `canplay`
+              // (재생 가능 상태) 두 이벤트 모두에 자동 play() 시도. swap
+              // useEffect의 즉시 play()가 src 교체 직후엔 readyState=HAVE_
+              // NOTHING 이라 reject되는 케이스를 capture. playing이 false
+              // 면 (사용자가 pause 했음) 자동 재생 안 함.
+              onLoadedData={(e) => {
+                if (playing) (e.currentTarget as HTMLVideoElement).play().catch(() => {})
+              }}
+              onCanPlay={(e) => {
+                if (playing && (e.currentTarget as HTMLVideoElement).paused) {
+                  ;(e.currentTarget as HTMLVideoElement).play().catch(() => {})
+                }
+              }}
               style={
                 cr
                   ? {

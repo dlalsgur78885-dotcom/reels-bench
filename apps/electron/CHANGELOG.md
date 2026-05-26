@@ -21,6 +21,19 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.8 (2026-05-26)
+
+### 버그 (슬라이드 6 추가 후속)
+- 재생 중 자연스럽게 boundary 통과 시점 — playhead가 rAF로 진행되며 두
+  번째 클립으로 swap되는 순간 — 새 src의 load가 아직 안 끝나서 swap
+  effect의 즉시 `play()`가 reject되고 그 후 영원히 paused. (0.2.7의
+  swap-내 play()는 spec에선 PASS 했지만 실제 사용자 환경의 cold src
+  load엔 부족했음.) `<video>`에 `onLoadedData` + `onCanPlay` 두 이벤트
+  핸들러 추가 — load 완료 시 `playing` true면 자동 play() 호출. 첫
+  reject돼도 곧 두 이벤트 중 하나가 fire되어 따라잡음.
+
+---
+
 ## 0.2.7 (2026-05-26)
 
 ### 버그 (슬라이드 6 후속)

@@ -1548,45 +1548,48 @@ export default function Mockup() {
                 return null
               })()}
               {!hideMockup && (() => {
-                const params = new URLSearchParams()
-                if (deviceStyleId && deviceStyleId !== 'default') params.set('style', deviceStyleId)
-                if (deviceShadowId && deviceShadowId !== 'none') {
-                  params.set('shadow', deviceShadowId)
-                  params.set('shadow_opacity', deviceShadowOpacity.toFixed(2))
-                  params.set('shadow_angle', String(deviceShadowAngle))
-                }
-                if (radiusOverride != null) params.set('radius', String(radiusOverride))
-                const qs = params.toString()
-                // 사전 생성된 PNG 사용 — 카드 클릭 즉시 메인 preview 변화.
-                // 지원: STYLE / SHADOW / RADIUS / STYLE×SHADOW
-                // opacity / angle 미세 차이는 시각 거의 동일 — static 매칭에 허용 (Render fallback 피함)
+                // ── 클라이언트 합성 (shots.so 패턴): device frame PNG + CSS drop-shadow ──
+                // STYLE / RADIUS 는 frame PNG 변형 (디바이스 외형 변경)
+                // SHADOW 는 CSS filter — opacity/angle 즉시 반영, server PIL 불필요.
                 const STATIC_DEVICES = new Set(['iphone-16-pro', 'galaxy-s25-ultra', 'pixel-9-pro'])
                 const isStaticDev = STATIC_DEVICES.has(device.id)
-                const styleOnly = deviceStyleId !== 'default'
-                  && deviceShadowId === 'none' && radiusOverride == null
-                const shadowOnly = deviceShadowId !== 'none'
-                  && deviceStyleId === 'default' && radiusOverride == null
-                const radiusOnly = radiusOverride != null
-                  && deviceStyleId === 'default' && deviceShadowId === 'none'
-                const styleAndShadow = deviceStyleId !== 'default'
-                  && deviceShadowId !== 'none' && radiusOverride == null
-                let url: string
-                if (!qs) {
-                  url = `/mockup-devices/${device.id}.png`
-                } else if (isStaticDev && styleAndShadow) {
-                  url = `/mockup-frames/${device.id}-style-${deviceStyleId}-shadow-${deviceShadowId}.png`
-                } else if (isStaticDev && styleOnly) {
-                  url = `/mockup-frames/${device.id}-style-${deviceStyleId}.png`
-                } else if (isStaticDev && shadowOnly) {
-                  url = `/mockup-frames/${device.id}-shadow-${deviceShadowId}.png`
-                } else if (isStaticDev && radiusOnly) {
-                  url = `/mockup-frames/${device.id}-radius-${radiusOverride}.png`
+                let frameUrl: string
+                if (radiusOverride != null && isStaticDev) {
+                  frameUrl = `/mockup-frames/${device.id}-radius-${radiusOverride}.png`
+                } else if (deviceStyleId !== 'default' && isStaticDev) {
+                  frameUrl = `/mockup-frames/${device.id}-style-${deviceStyleId}.png`
+                } else if (deviceStyleId !== 'default' || radiusOverride != null) {
+                  // 비-static 디바이스: Render API fallback
+                  const params = new URLSearchParams()
+                  if (deviceStyleId !== 'default') params.set('style', deviceStyleId)
+                  if (radiusOverride != null) params.set('radius', String(radiusOverride))
+                  frameUrl = `${MOCKUP_BASE_URL}/api/mockup/frame/${device.id}.png?${params.toString()}`
                 } else {
-                  url = `${MOCKUP_BASE_URL}/api/mockup/frame/${device.id}.png?${qs}`
+                  frameUrl = `/mockup-devices/${device.id}.png`
+                }
+                // SHADOW → CSS drop-shadow 매핑 (PIL DEVICE_SHADOWS 와 시각 일치)
+                // PIL: soft blur=30, hard blur=8, glow blur=40 color, diffused blur=60
+                let cssFilter: string | undefined
+                if (deviceShadowId !== 'none') {
+                  const op = Math.max(0, Math.min(1, deviceShadowOpacity))
+                  // angle: 180=아래(default), 90=오른쪽. CSS offset(x, y) — y는 sin 기준, x는 cos
+                  const rad = (deviceShadowAngle * Math.PI) / 180
+                  const dirX = Math.sin(rad)
+                  const dirY = -Math.cos(rad)  // CSS 좌표계: y+가 아래
+                  const params: Record<string, [number, number, number, string]> = {
+                    // [offsetMag, blur, alpha, color]
+                    soft:     [20, 30, 0.51 * op, '0,0,0'],
+                    hard:     [14, 8,  0.71 * op, '0,0,0'],
+                    glow:     [0,  40, 0.63 * op, '255,200,120'],
+                    diffused: [30, 60, 0.39 * op, '0,0,0'],
+                  }
+                  const p = params[deviceShadowId] || params.soft
+                  const ox = p[0] * dirX, oy = p[0] * dirY
+                  cssFilter = `drop-shadow(${ox.toFixed(0)}px ${oy.toFixed(0)}px ${p[1]}px rgba(${p[3]},${p[2].toFixed(2)}))`
                 }
                 return (
                   <img
-                    src={url}
+                    src={frameUrl}
                     alt={device.name}
                     style={{
                       position: 'absolute',
@@ -1594,6 +1597,8 @@ export default function Mockup() {
                       left: (previewBox.canvasW - previewBox.devW) / 2,
                       top: (previewBox.canvasH - previewBox.devH) / 2,
                       pointerEvents: 'none',
+                      filter: cssFilter,
+                      transition: 'filter 0.15s ease',
                     }}
                   />
                 )

@@ -1,7 +1,7 @@
 {
   "version": 2,
   "regions": ["icn1"],
-  "buildCommand": "echo cb-2026-05-27-34 && cd web && rm -rf dist node_modules/.vite && npm install && npm run build",
+  "buildCommand": "echo cb-2026-05-27-35 && cd web && rm -rf dist node_modules/.vite && npm install && npm run build",
   "builds": [
     { "src": "web/dist/mockup-catalog/**", "use": "@vercel/static" },
     { "src": "web/dist/mockup-devices/**", "use": "@vercel/static" },

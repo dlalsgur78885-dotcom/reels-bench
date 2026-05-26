@@ -1,4 +1,4 @@
-@import url('/pretendard.css');
+@import 'pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css';
 
 :root {
   --primary-500: #307df0;

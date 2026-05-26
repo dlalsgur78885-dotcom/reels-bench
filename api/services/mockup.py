@@ -876,7 +876,7 @@ def render_bg_preset_thumbnail(preset_id: str) -> bytes:
 import functools
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=24)
 def _cached_frame_preview(device_id: str, style: str | None, radius_override: int | None,
                           shadow: str | None, shadow_opacity_int: int,
                           shadow_angle_int: int | None,
@@ -897,7 +897,7 @@ def _cached_bg_small(preset_id: str, w: int, h: int) -> Image.Image:
     return render_bg_preset(preset_id, w, h).convert("RGBA")
 
 
-@functools.lru_cache(maxsize=24)
+@functools.lru_cache(maxsize=8)
 def _cached_frame_small_rgba(device_id: str, style: str | None,
                               radius_override: int | None,
                               w: int, h: int) -> Image.Image:

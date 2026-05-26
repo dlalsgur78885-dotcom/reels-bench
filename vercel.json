@@ -1,12 +1,18 @@
 {
   "version": 2,
   "regions": ["icn1"],
-  "buildCommand": "echo cb-2026-05-26-26 && cd web && rm -rf dist node_modules/.vite && npm install && npm run build",
+  "buildCommand": "echo cb-2026-05-26-27 && cd web && rm -rf dist node_modules/.vite && npm install && npm run build",
   "builds": [
     { "src": "api/index.py", "use": "@vercel/python", "config": { "maxDuration": 800, "includeFiles": "web/dist/**" } },
     { "src": "api/cron/fb-scrape.ts", "use": "@vercel/node", "config": { "maxDuration": 60 } }
   ],
   "routes": [
+    { "src": "/mockup-catalog/(.*\\.json)$", "dest": "/web/dist/mockup-catalog/$1",
+      "headers": { "Cache-Control": "public, max-age=3600" } },
+    { "src": "/mockup-devices/(.*\\.png)$", "dest": "/web/dist/mockup-devices/$1",
+      "headers": { "Cache-Control": "public, max-age=86400" } },
+    { "src": "/mockup-cards/(.*\\.png)$", "dest": "/web/dist/mockup-cards/$1",
+      "headers": { "Cache-Control": "public, max-age=86400" } },
     { "src": "/api/cron/fb-scrape", "dest": "/api/cron/fb-scrape.ts" },
     { "src": "/(.*)", "dest": "/api/index.py" }
   ],

@@ -1,0 +1,28 @@
+{
+"effects": [
+{
+"id": "none",
+"label": "효과 없음"
+},
+{
+"id": "vhs",
+"label": "VHS"
+},
+{
+"id": "glitch",
+"label": "글리치"
+},
+{
+"id": "grain",
+"label": "필름 그레인"
+},
+{
+"id": "scanlines",
+"label": "스캔라인"
+},
+{
+"id": "vintage",
+"label": "빈티지"
+}
+]
+}

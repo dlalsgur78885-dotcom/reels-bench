@@ -1,0 +1,48 @@
+{
+"backgrounds": [
+{
+"id": "sunset",
+"label": "선셋"
+},
+{
+"id": "ocean",
+"label": "오션"
+},
+{
+"id": "mint",
+"label": "민트"
+},
+{
+"id": "violet",
+"label": "바이올렛"
+},
+{
+"id": "mesh-warm",
+"label": "메시 웜"
+},
+{
+"id": "mesh-cool",
+"label": "메시 쿨"
+},
+{
+"id": "cosmic",
+"label": "코스믹"
+},
+{
+"id": "radiant",
+"label": "래디언트"
+},
+{
+"id": "paper",
+"label": "페이퍼"
+},
+{
+"id": "glass",
+"label": "글래스"
+},
+{
+"id": "grain-bw",
+"label": "그레인 블랙"
+}
+]
+}

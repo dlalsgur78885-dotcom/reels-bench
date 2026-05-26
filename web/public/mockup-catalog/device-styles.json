@@ -1,0 +1,40 @@
+{
+"styles": [
+{
+"id": "default",
+"label": "기본"
+},
+{
+"id": "outline",
+"label": "아웃라인"
+},
+{
+"id": "border",
+"label": "보더"
+},
+{
+"id": "glass",
+"label": "글래스"
+},
+{
+"id": "glass-light",
+"label": "글래스 라이트"
+},
+{
+"id": "glass-dark",
+"label": "글래스 다크"
+},
+{
+"id": "liquid-glass",
+"label": "리퀴드 글래스"
+},
+{
+"id": "inset-light",
+"label": "인셋 라이트"
+},
+{
+"id": "inset-dark",
+"label": "인셋 다크"
+}
+]
+}

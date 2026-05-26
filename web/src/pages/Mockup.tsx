@@ -2,27 +2,51 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { mockupAuthedFetch, MOCKUP_BASE as MOCKUP_BASE_URL } from '../api'
 
-// 카탈로그 endpoint 응답 5분 sessionStorage 캐시 — 재진입 즉시 반영
+// 카탈로그 endpoint 응답 5분 sessionStorage 캐시 — 재진입 즉시 반영.
+// Vercel static JSON 우선 (0ms) → 실패 시 Render API fallback.
 const CATALOG_TTL_MS = 5 * 60 * 1000
+const CATALOG_STATIC_MAP: Record<string, string> = {
+  '/api/mockup/devices':        '/mockup-catalog/devices.json',
+  '/api/mockup/backgrounds':    '/mockup-catalog/backgrounds.json',
+  '/api/mockup/effects':        '/mockup-catalog/effects.json',
+  '/api/mockup/device-styles':  '/mockup-catalog/device-styles.json',
+  '/api/mockup/device-shadows': '/mockup-catalog/device-shadows.json',
+  '/api/mockup/templates':      '/mockup-catalog/templates.json',
+  '/api/mockup/scene-shapes':   '/mockup-catalog/scene-shapes.json',
+}
 function cachedCatalog<T>(path: string, setter: (v: T) => void) {
   const key = `mockup_cat_${path}`
+  // 1. sessionStorage 캐시
   try {
     const raw = sessionStorage.getItem(key)
     if (raw) {
       const { t, v } = JSON.parse(raw)
       if (Date.now() - t < CATALOG_TTL_MS) {
         setter(v as T)
+        return  // cache hit — 굳이 network 안 가도 됨
       }
     }
   } catch {}
-  mockupAuthedFetch(path)
-    .then(r => r.ok ? r.json() : null)
-    .then(d => {
-      if (!d) return
+  // 2. Vercel static JSON 우선 (0ms, Render 우회)
+  const staticPath = CATALOG_STATIC_MAP[path]
+  const tryStatic = staticPath
+    ? fetch(staticPath).then(r => r.ok ? r.json() : null)
+    : Promise.resolve(null)
+  tryStatic.then(d => {
+    if (d) {
       setter(d as T)
       try { sessionStorage.setItem(key, JSON.stringify({ t: Date.now(), v: d })) } catch {}
-    })
-    .catch(() => {})
+      return
+    }
+    // 3. Fallback: Render API (인증 필요)
+    return mockupAuthedFetch(path)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return
+        setter(d as T)
+        try { sessionStorage.setItem(key, JSON.stringify({ t: Date.now(), v: d })) } catch {}
+      })
+  }).catch(() => {})
 }
 
 type Mode = 'url' | 'upload' | 'sequence'
@@ -1509,7 +1533,10 @@ export default function Mockup() {
                 }
                 if (radiusOverride != null) params.set('radius', String(radiusOverride))
                 const qs = params.toString()
-                const url = `${MOCKUP_BASE_URL}/api/mockup/frame/${device.id}.png${qs ? '?' + qs : ''}`
+                // qs 없는 default 는 Vercel static (cold 1.7s 회피)
+                const url = qs
+                  ? `${MOCKUP_BASE_URL}/api/mockup/frame/${device.id}.png?${qs}`
+                  : `/mockup-devices/${device.id}.png`
                 return (
                   <img
                     src={url}

@@ -1,0 +1,100 @@
+{
+"devices": [
+{
+"id": "iphone-16-pro",
+"name": "iPhone 16 Pro",
+"label": "iphone-16-pro",
+"body_w": 1320,
+"body_h": 2670,
+"screen_w": null,
+"screen_h": null,
+"has_notch": null,
+"notch_type": null,
+"label_short": null
+},
+{
+"id": "iphone-16-pro-white",
+"name": "iPhone 16 Pro (Silver)",
+"label": "iphone-16-pro-white",
+"body_w": 1320,
+"body_h": 2670,
+"screen_w": null,
+"screen_h": null,
+"has_notch": null,
+"notch_type": null,
+"label_short": null
+},
+{
+"id": "pixel-9-pro",
+"name": "Pixel 9 Pro",
+"label": "pixel-9-pro",
+"body_w": 1280,
+"body_h": 2730,
+"screen_w": null,
+"screen_h": null,
+"has_notch": null,
+"notch_type": null,
+"label_short": null
+},
+{
+"id": "iphone-16",
+"name": "iPhone 16",
+"label": "iphone-16",
+"body_w": 1300,
+"body_h": 2640,
+"screen_w": null,
+"screen_h": null,
+"has_notch": null,
+"notch_type": null,
+"label_short": null
+},
+{
+"id": "iphone-16-pro-max",
+"name": "iPhone 16 Pro Max",
+"label": "iphone-16-pro-max",
+"body_w": 1440,
+"body_h": 2920,
+"screen_w": null,
+"screen_h": null,
+"has_notch": null,
+"notch_type": null,
+"label_short": null
+},
+{
+"id": "galaxy-s25",
+"name": "Galaxy S25",
+"label": "galaxy-s25",
+"body_w": 1260,
+"body_h": 2680,
+"screen_w": null,
+"screen_h": null,
+"has_notch": null,
+"notch_type": null,
+"label_short": null
+},
+{
+"id": "galaxy-s25-ultra",
+"name": "Galaxy S25 Ultra",
+"label": "galaxy-s25-ultra",
+"body_w": 1420,
+"body_h": 2980,
+"screen_w": null,
+"screen_h": null,
+"has_notch": null,
+"notch_type": null,
+"label_short": null
+},
+{
+"id": "pixel-9",
+"name": "Pixel 9",
+"label": "pixel-9",
+"body_w": 1230,
+"body_h": 2670,
+"screen_w": null,
+"screen_h": null,
+"has_notch": null,
+"notch_type": null,
+"label_short": null
+}
+]
+}

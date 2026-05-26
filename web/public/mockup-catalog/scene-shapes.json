@@ -1,0 +1,28 @@
+{
+"shapes": [
+{
+"id": "none",
+"label": "없음"
+},
+{
+"id": "circles",
+"label": "원형"
+},
+{
+"id": "blobs",
+"label": "블롭"
+},
+{
+"id": "triangles",
+"label": "삼각형"
+},
+{
+"id": "grid-dots",
+"label": "도트 격자"
+},
+{
+"id": "rings",
+"label": "링"
+}
+]
+}

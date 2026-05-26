@@ -42,7 +42,7 @@ def main() -> int:
             continue
         # render_device_frame + add_device_shadow
         frame = svc.render_device_frame(DEVICE)
-        png = svc.add_device_shadow(frame, sid, opacity=1.0, angle_deg=135)
+        png = svc.add_device_shadow(frame, sid, opacity=1.0, angle_deg=180)
         save(f"{DEVICE}-shadow-{sid}", png)
 
     # RADIUS 변형

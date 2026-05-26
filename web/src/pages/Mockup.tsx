@@ -1565,7 +1565,7 @@ export default function Mockup() {
                 const shadowOnly = deviceShadowId !== 'none'
                   && deviceStyleId === 'default' && radiusOverride == null
                   && Math.abs(deviceShadowOpacity - 1.0) < 0.01
-                  && deviceShadowAngle === 135
+                  && deviceShadowAngle === 180
                 const radiusOnly = radiusOverride != null
                   && deviceStyleId === 'default' && deviceShadowId === 'none'
                 let url: string

@@ -1109,21 +1109,32 @@ export default function Mockup() {
                 { id: 'transparent', label: 'Trans...',
                   active: bgColor === 'transparent',
                   preview: 'checker' as const,
-                  onPick: () => setBgColor('transparent') },
+                  onPick: () => {
+                    setBgColor('transparent'); setBgPresetId(''); setBgFileId('');
+                  } },
                 { id: 'color', label: 'Color',
                   active: bgColor !== 'transparent' && !bgPresetId && !bgFileId,
                   preview: bgColor !== 'transparent' ? bgColor : '#1a1a2e',
-                  onPick: () => { setBgColor(bgColor === 'transparent' ? '#1a1a2e' : bgColor); setBgPresetId(''); } },
+                  onPick: () => {
+                    setBgColor(bgColor === 'transparent' ? '#1a1a2e' : bgColor);
+                    setBgPresetId(''); setBgFileId('');
+                  } },
                 { id: 'preset', label: 'Preset',
                   active: !!bgPresetId,
                   previewUrl: bgPresetId
                     ? `${MOCKUP_BASE_URL}/api/mockup/background/${bgPresetId}.png`
                     : (bgPresets[0] ? `${MOCKUP_BASE_URL}/api/mockup/background/${bgPresets[0].id}.png` : null),
-                  onPick: () => { if (bgPresets[0]) setBgPresetId(bgPresets[0].id) } },
+                  onPick: () => {
+                    if (bgPresets[0]) setBgPresetId(bgPresets[0].id);
+                    setBgFileId('');
+                  } },
                 { id: 'image', label: 'Image',
                   active: !!bgFileId,
                   previewUrl: bgPreview,
-                  onPick: () => document.getElementById('mockup-file-image/')?.click() },
+                  onPick: () => {
+                    setBgPresetId('');
+                    document.getElementById('mockup-file-image/')?.click();
+                  } },
               ]
               return (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
@@ -1154,18 +1165,11 @@ export default function Mockup() {
                 </div>
               )
             })()}
-            {/* preset 카탈로그 */}
-            {bgPresets.length > 0 && (
+            {/* ───── source-specific expanded panel (shots.so: 선택된 카드만 노출) ───── */}
+            {/* PRESET: 6-col 그리드 */}
+            {!!bgPresetId && bgPresets.length > 0 && (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)',
-                             gap: 6, marginBottom: 10 }}>
-                <button onClick={() => !busy && setBgPresetId('')} disabled={busy}
-                  title="solid / image"
-                  style={{
-                    aspectRatio: '3/4', borderRadius: 6, fontSize: 9, fontWeight: 600,
-                    background: 'var(--bg-base)', color: 'var(--text-muted)',
-                    border: bgPresetId === '' ? '2px solid var(--accent)' : '1px solid var(--border)',
-                    cursor: busy ? 'wait' : 'pointer',
-                  }}>None</button>
+                             gap: 6, marginBottom: 4 }}>
                 {bgPresets.map(p => (
                   <button key={p.id} onClick={() => !busy && setBgPresetId(p.id)} disabled={busy}
                     title={p.label}
@@ -1186,87 +1190,90 @@ export default function Mockup() {
                 ))}
               </div>
             )}
-            {/* solid 컬러 (preset 미선택 시) */}
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
-              {BG_PRESETS.map(p => (
-                <button key={p.value} onClick={() => !busy && setBgColor(p.value)} disabled={busy}
-                  title={p.label}
-                  style={{
-                    width: 24, height: 24, borderRadius: 4,
-                    background: p.value,
-                    border: bgColor === p.value ? '2px solid var(--accent)' : '1px solid var(--border)',
-                    cursor: busy ? 'wait' : 'pointer',
-                    opacity: bgPresetId ? 0.4 : 1,
-                  }} />
-              ))}
-              <input type="color" value={bgColor} onChange={e => setBgColor(e.target.value)}
-                disabled={busy}
-                style={{ width: 24, height: 24, padding: 0, border: '1px solid var(--border)',
-                  borderRadius: 4, cursor: busy ? 'wait' : 'pointer', background: 'transparent',
-                  opacity: bgPresetId ? 0.4 : 1 }} />
-            </div>
-            {/* 이미지 업로드 */}
-            <FilePicker preview={bgPreview} previewKind="image"
-              onPick={onPickBg} disabled={busy} accept="image/*" compact />
 
-            {/* Unsplash 검색 */}
-            <div style={{ marginTop: 10 }}>
-              <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>
-                Unsplash 검색 (UNSPLASH_ACCESS_KEY 필요)
+            {/* COLOR: solid 컬러 chip + color picker */}
+            {bgColor !== 'transparent' && !bgPresetId && !bgFileId && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {BG_PRESETS.map(p => (
+                  <button key={p.value} onClick={() => !busy && setBgColor(p.value)} disabled={busy}
+                    title={p.label}
+                    style={{
+                      width: 28, height: 28, borderRadius: 4,
+                      background: p.value,
+                      border: bgColor === p.value ? '2px solid var(--accent)' : '1px solid var(--border)',
+                      cursor: busy ? 'wait' : 'pointer',
+                    }} />
+                ))}
+                <input type="color" value={bgColor} onChange={e => setBgColor(e.target.value)}
+                  disabled={busy}
+                  style={{ width: 28, height: 28, padding: 0, border: '1px solid var(--border)',
+                    borderRadius: 4, cursor: busy ? 'wait' : 'pointer', background: 'transparent' }} />
               </div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <input type="text" value={unsplashQ}
-                  placeholder="nature, city, abstract…" disabled={busy || unsplashLoading}
-                  onChange={e => setUnsplashQ(e.target.value)}
-                  onKeyDown={async e => {
-                    if (e.key !== 'Enter' || !unsplashQ.trim()) return
-                    setUnsplashLoading(true); setUnsplashResults([])
-                    try {
-                      const r = await mockupAuthedFetch(`/api/mockup/unsplash/search?q=${encodeURIComponent(unsplashQ)}&per_page=12`)
-                      if (r.ok) {
-                        const d = await r.json()
-                        setUnsplashResults(d.results || [])
-                      } else if (r.status === 503) {
-                        setUnsplashResults([{ __err: 'UNSPLASH_ACCESS_KEY 미설정' }])
-                      }
-                    } catch {} finally { setUnsplashLoading(false) }
-                  }}
-                  style={{ flex: 1, padding: '4px 6px', fontSize: 11,
-                    background: 'var(--bg-base)', color: 'var(--text-body)',
-                    border: '1px solid var(--border)', borderRadius: 4 }} />
-              </div>
-              {unsplashResults.length > 0 && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
-                              gap: 4, marginTop: 6 }}>
-                  {unsplashResults.slice(0, 12).map((u: any, i: number) => u.__err ? (
-                    <div key={i} style={{ gridColumn: '1 / -1', fontSize: 10,
-                                          color: 'var(--error)' }}>{u.__err}</div>
-                  ) : (
-                    <button key={u.id} onClick={() => {
-                      setBgPreview(u.regular); setBgFileId('unsplash:' + u.id); setBgPresetId('')
-                    }} disabled={busy} title={u.alt}
-                      style={{ aspectRatio: '4/3', borderRadius: 4, padding: 0,
-                        backgroundImage: `url(${u.thumb})`, backgroundSize: 'cover',
-                        backgroundPosition: 'center',
-                        border: '1px solid var(--border)', cursor: busy ? 'wait' : 'pointer' }} />
-                  ))}
+            )}
+
+            {/* IMAGE: 파일 picker + Unsplash 검색 + Magic */}
+            {!!bgFileId && (
+              <>
+                <FilePicker preview={bgPreview} previewKind="image"
+                  onPick={onPickBg} disabled={busy} accept="image/*" compact />
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>
+                    Unsplash 검색 (UNSPLASH_ACCESS_KEY 필요)
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input type="text" value={unsplashQ}
+                      placeholder="nature, city, abstract…" disabled={busy || unsplashLoading}
+                      onChange={e => setUnsplashQ(e.target.value)}
+                      onKeyDown={async e => {
+                        if (e.key !== 'Enter' || !unsplashQ.trim()) return
+                        setUnsplashLoading(true); setUnsplashResults([])
+                        try {
+                          const r = await mockupAuthedFetch(`/api/mockup/unsplash/search?q=${encodeURIComponent(unsplashQ)}&per_page=12`)
+                          if (r.ok) {
+                            const d = await r.json()
+                            setUnsplashResults(d.results || [])
+                          } else if (r.status === 503) {
+                            setUnsplashResults([{ __err: 'UNSPLASH_ACCESS_KEY 미설정' }])
+                          }
+                        } catch {} finally { setUnsplashLoading(false) }
+                      }}
+                      style={{ flex: 1, padding: '4px 6px', fontSize: 11,
+                        background: 'var(--bg-base)', color: 'var(--text-body)',
+                        border: '1px solid var(--border)', borderRadius: 4 }} />
+                  </div>
+                  {unsplashResults.length > 0 && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
+                                  gap: 4, marginTop: 6 }}>
+                      {unsplashResults.slice(0, 12).map((u: any, i: number) => u.__err ? (
+                        <div key={i} style={{ gridColumn: '1 / -1', fontSize: 10,
+                                              color: 'var(--error)' }}>{u.__err}</div>
+                      ) : (
+                        <button key={u.id} onClick={() => {
+                          setBgPreview(u.regular); setBgFileId('unsplash:' + u.id); setBgPresetId('')
+                        }} disabled={busy} title={u.alt}
+                          style={{ aspectRatio: '4/3', borderRadius: 4, padding: 0,
+                            backgroundImage: `url(${u.thumb})`, backgroundSize: 'cover',
+                            backgroundPosition: 'center',
+                            border: '1px solid var(--border)', cursor: busy ? 'wait' : 'pointer' }} />
+                      ))}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-
-            {/* Magic AI 배경 (단일 upload 이미지 dominant color) */}
-            {mode === 'upload' && sourceFileId && (
-              <button onClick={() => {
-                if (!sourceFileId) return
-                const url = `${MOCKUP_BASE_URL}/api/mockup/magic-bg/${sourceFileId}.png?w=540&h=720`
-                setBgPreview(url); setBgFileId('magic:' + sourceFileId); setBgPresetId('')
-              }} disabled={busy}
-                style={{ marginTop: 8, padding: '6px 10px', fontSize: 11, fontWeight: 600,
-                         background: 'var(--accent)', color: '#fff',
-                         border: 'none', borderRadius: 4,
-                         cursor: busy ? 'wait' : 'pointer', width: '100%' }}>
-                ✨ Magic — 미디어 색으로 배경 자동
-              </button>
+                {/* Magic AI (이미지 source 안에 노출 — shots.so 처럼) */}
+                {mode === 'upload' && sourceFileId && (
+                  <button onClick={() => {
+                    if (!sourceFileId) return
+                    const url = `${MOCKUP_BASE_URL}/api/mockup/magic-bg/${sourceFileId}.png?w=540&h=720`
+                    setBgPreview(url); setBgFileId('magic:' + sourceFileId); setBgPresetId('')
+                  }} disabled={busy}
+                    style={{ marginTop: 8, padding: '6px 10px', fontSize: 11, fontWeight: 600,
+                             background: 'var(--accent)', color: '#fff',
+                             border: 'none', borderRadius: 4,
+                             cursor: busy ? 'wait' : 'pointer', width: '100%' }}>
+                    ✨ Magic — 미디어 색으로 배경 자동
+                  </button>
+                )}
+              </>
             )}
           </div>
           )}

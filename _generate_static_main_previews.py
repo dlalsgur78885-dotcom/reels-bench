@@ -51,6 +51,16 @@ def main() -> int:
         png = svc.render_device_frame(DEVICE, radius_override=r)
         save(f"{DEVICE}-radius-{r}", png)
 
+    # STYLE × SHADOW 복합 (9 × 4 = 36)
+    print("=== STYLE × SHADOW (36 combos) ===")
+    for style_id in svc.DEVICE_STYLES.keys():
+        for shadow_id in svc.DEVICE_SHADOWS.keys():
+            if shadow_id == "none":
+                continue
+            frame = svc.render_device_frame(DEVICE, style=style_id)
+            png = svc.add_device_shadow(frame, shadow_id, opacity=1.0, angle_deg=180)
+            save(f"{DEVICE}-style-{style_id}-shadow-{shadow_id}", png)
+
     total = len(list(OUT_DIR.glob("*.png")))
     print(f"\n총 {total}개")
     return 0

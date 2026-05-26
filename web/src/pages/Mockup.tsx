@@ -1557,20 +1557,28 @@ export default function Mockup() {
                 }
                 if (radiusOverride != null) params.set('radius', String(radiusOverride))
                 const qs = params.toString()
-                // 단일 변형(STYLE only / SHADOW only / RADIUS only) + iPhone 16 Pro 는
-                // 사전 생성된 PNG 사용 → 카드 클릭 즉시 메인 preview 변화 (Render 1.7s 회피).
+                // 사전 생성된 PNG 사용 — 카드 클릭 즉시 메인 preview 변화.
+                // 지원 조합 (iPhone 16 Pro + default opacity/angle):
+                //   - 단일: STYLE / SHADOW / RADIUS
+                //   - 복합: STYLE × SHADOW
+                // 그 외 (다른 디바이스, RADIUS+다른 것 등): Render API fallback
                 const isIp16Pro = device.id === 'iphone-16-pro'
+                const shadowDefaults = deviceShadowId === 'none' || (
+                  Math.abs(deviceShadowOpacity - 1.0) < 0.01 && deviceShadowAngle === 180)
                 const styleOnly = deviceStyleId !== 'default'
                   && deviceShadowId === 'none' && radiusOverride == null
-                const shadowOnly = deviceShadowId !== 'none'
+                const shadowOnly = deviceShadowId !== 'none' && shadowDefaults
                   && deviceStyleId === 'default' && radiusOverride == null
-                  && Math.abs(deviceShadowOpacity - 1.0) < 0.01
-                  && deviceShadowAngle === 180
                 const radiusOnly = radiusOverride != null
                   && deviceStyleId === 'default' && deviceShadowId === 'none'
+                const styleAndShadow = deviceStyleId !== 'default'
+                  && deviceShadowId !== 'none' && shadowDefaults
+                  && radiusOverride == null
                 let url: string
                 if (!qs) {
                   url = `/mockup-devices/${device.id}.png`
+                } else if (isIp16Pro && styleAndShadow) {
+                  url = `/mockup-frames/iphone-16-pro-style-${deviceStyleId}-shadow-${deviceShadowId}.png`
                 } else if (isIp16Pro && styleOnly) {
                   url = `/mockup-frames/iphone-16-pro-style-${deviceStyleId}.png`
                 } else if (isIp16Pro && shadowOnly) {

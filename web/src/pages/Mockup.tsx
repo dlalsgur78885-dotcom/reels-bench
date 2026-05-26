@@ -1004,19 +1004,36 @@ export default function Mockup() {
           </div>
           )}
 
-          {/* ───── ANIMATION (Mockup 탭, shots.so Static/Parallax + 우리 모션 6) ───── */}
-          {activeLeftTab === 'mockup' && (
+          {/* ───── ANIMATION (Frame 탭 — shots.so: Static / Parallax 2-chip) ───── */}
+          {activeLeftTab === 'frame' && (
             <div style={sectionSt}>
               <SectionHeader hint={mode === 'upload' && !sourceIsVideo ? undefined : 'upload+이미지만'}>
                 Animation
               </SectionHeader>
+              {/* shots.so 패턴: Static / Parallax 2-chip 메인 토글 */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)',
-                            gap: 6, opacity: (mode === 'upload' && !sourceIsVideo) ? 1 : 0.5 }}>
-                {MOTIONS.map(m => (
+                            gap: 6, marginBottom: 8 }}>
+                <button disabled={busy || !(mode === 'upload' && !sourceIsVideo)}
+                  onClick={() => setUploadMotion('none')}
+                  style={{ ...chipBtn(uploadMotion === 'none', busy),
+                           fontSize: 11, padding: '8px 10px', justifyContent: 'center', fontWeight: 600 }}>
+                  Static
+                </button>
+                <button disabled={busy || !(mode === 'upload' && !sourceIsVideo)}
+                  onClick={() => setUploadMotion('parallax')}
+                  style={{ ...chipBtn(uploadMotion === 'parallax', busy),
+                           fontSize: 11, padding: '8px 10px', justifyContent: 'center', fontWeight: 600 }}>
+                  Parallax
+                </button>
+              </div>
+              {/* 우리 추가 모션 (zoom/pan/pulse) — 작은 chip row */}
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap',
+                            opacity: (mode === 'upload' && !sourceIsVideo) ? 1 : 0.5 }}>
+                {MOTIONS.filter(m => m.value !== 'none' && m.value !== 'parallax').map(m => (
                   <button key={m.value} disabled={busy || !(mode === 'upload' && !sourceIsVideo)}
                     onClick={() => setUploadMotion(m.value)}
                     style={{ ...chipBtn(uploadMotion === m.value, busy),
-                             fontSize: 11, padding: '6px 8px', justifyContent: 'center' }}>
+                             fontSize: 10, padding: '4px 8px' }}>
                     {m.label}
                   </button>
                 ))}
@@ -1038,33 +1055,38 @@ export default function Mockup() {
 
           {/* (Tilt / 비율 / 디바이스 크기 = LAYOUT preset — 우측 패널로 이동) */}
 
-          {/* ───── SCENE — visual cards (Frame 탭) ───── */}
+          {/* ───── SCENE — 3-col 정사각 카드 (shots.so 패턴) ───── */}
           {activeLeftTab === 'frame' && sceneShapesItems.length > 0 && (
             <div id="mockup-scene-anchor" style={sectionSt}>
               <SectionHeader>Scene</SectionHeader>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
                 {sceneShapesItems.map(s => {
                   const url = `${MOCKUP_BASE_URL}/api/mockup/scene-shape/${s.id}.png`
+                  const selected = sceneShapeId === s.id
                   return (
-                    <button key={s.id} onClick={() => !busy && setSceneShapeId(s.id)} disabled={busy}
-                      title={s.label}
-                      style={{
-                        aspectRatio: '8/5', borderRadius: 6, padding: 0,
-                        background: '#222',
-                        border: sceneShapeId === s.id ? '2px solid var(--accent)' : '1px solid var(--border)',
-                        cursor: busy ? 'wait' : 'pointer',
-                        position: 'relative', overflow: 'hidden',
-                      }}>
-                      <img src={url} alt={s.label}
-                        style={{ position: 'absolute', inset: 0,
-                                 width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <div key={s.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <button onClick={() => !busy && setSceneShapeId(s.id)} disabled={busy}
+                        title={s.label}
+                        style={{
+                          aspectRatio: '1/1', borderRadius: 8, padding: 0,
+                          background: '#1a1a2e',
+                          border: selected ? '1.5px solid var(--text-body, #111)' : '1px solid #e6e6e6',
+                          boxShadow: selected ? '0 0 0 3px rgba(0,0,0,0.06)' : 'none',
+                          cursor: busy ? 'wait' : 'pointer',
+                          position: 'relative', overflow: 'hidden',
+                          transition: 'border 0.12s, box-shadow 0.12s',
+                        }}>
+                        <img src={url} alt={s.label}
+                          style={{ position: 'absolute', inset: 0,
+                                   width: '100%', height: '100%', objectFit: 'cover' }} />
+                      </button>
                       <span style={{
-                        position: 'absolute', bottom: 0, left: 0, right: 0,
-                        padding: '12px 4px 4px', fontSize: 10, fontWeight: 700,
-                        color: '#fff', textAlign: 'center',
-                        background: 'linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.7) 100%)',
+                        fontSize: 10, fontWeight: 500, lineHeight: 1.2,
+                        color: selected ? 'var(--text-body, #111)' : 'var(--text-secondary, #555)',
+                        textAlign: 'center',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                       }}>{s.label}</span>
-                    </button>
+                    </div>
                   )
                 })}
               </div>
@@ -1073,7 +1095,7 @@ export default function Mockup() {
 
           {/* (비율 + 디바이스 크기 = LAYOUT preset — 우측 패널로 이동) */}
 
-          {/* ───── BACKGROUND (Frame 탭) ───── */}
+          {/* ───── BACKGROUND — shots.so 4-source 카드 ───── */}
           {activeLeftTab === 'frame' && (
           <div style={sectionSt}>
             <SectionHeader hint={
@@ -1081,26 +1103,57 @@ export default function Mockup() {
                 : bgPresetId ? 'preset' : (bgFileId ? 'image' : 'color')}>
               Background
             </SectionHeader>
-            {/* source toggle: Transparent / Color / Preset / Image */}
-            <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
-              <button onClick={() => !busy && setBgColor('transparent')} disabled={busy}
-                style={{ ...chipBtn(bgColor === 'transparent', busy), fontSize: 11 }}>
-                Transparent
-              </button>
-              <button onClick={() => !busy && setBgColor('#1a1a2e')} disabled={busy}
-                style={{ ...chipBtn(bgColor !== 'transparent' && !bgPresetId && !bgFileId, busy), fontSize: 11 }}>
-                Color
-              </button>
-              <button onClick={() => !busy && (bgPresets[0] && setBgPresetId(bgPresets[0].id))} disabled={busy || bgPresets.length === 0}
-                style={{ ...chipBtn(!!bgPresetId, busy), fontSize: 11 }}>
-                Preset
-              </button>
-              <button onClick={() => !busy && document.getElementById('mockup-file-image/')?.click()}
-                disabled={busy}
-                style={{ ...chipBtn(!!bgFileId, busy), fontSize: 11 }}>
-                Image
-              </button>
-            </div>
+            {/* shots.so 패턴: 4-card source 선택 (Trans / Color / Image / Preset) */}
+            {(() => {
+              const sources = [
+                { id: 'transparent', label: 'Trans...',
+                  active: bgColor === 'transparent',
+                  preview: 'checker' as const,
+                  onPick: () => setBgColor('transparent') },
+                { id: 'color', label: 'Color',
+                  active: bgColor !== 'transparent' && !bgPresetId && !bgFileId,
+                  preview: bgColor !== 'transparent' ? bgColor : '#1a1a2e',
+                  onPick: () => { setBgColor(bgColor === 'transparent' ? '#1a1a2e' : bgColor); setBgPresetId(''); } },
+                { id: 'preset', label: 'Preset',
+                  active: !!bgPresetId,
+                  previewUrl: bgPresetId
+                    ? `${MOCKUP_BASE_URL}/api/mockup/background/${bgPresetId}.png`
+                    : (bgPresets[0] ? `${MOCKUP_BASE_URL}/api/mockup/background/${bgPresets[0].id}.png` : null),
+                  onPick: () => { if (bgPresets[0]) setBgPresetId(bgPresets[0].id) } },
+                { id: 'image', label: 'Image',
+                  active: !!bgFileId,
+                  previewUrl: bgPreview,
+                  onPick: () => document.getElementById('mockup-file-image/')?.click() },
+              ]
+              return (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
+                              gap: 8, marginBottom: 10 }}>
+                  {sources.map(s => (
+                    <div key={s.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <button onClick={() => !busy && s.onPick()} disabled={busy}
+                        title={s.label}
+                        style={{
+                          aspectRatio: '1/1', borderRadius: 8, padding: 0,
+                          background: s.preview === 'checker'
+                            ? 'repeating-conic-gradient(#ccc 0deg 90deg, #fff 90deg 180deg) 0 0/12px 12px'
+                            : (typeof s.preview === 'string' ? s.preview : '#f5f5f5'),
+                          backgroundImage: (s as any).previewUrl ? `url(${(s as any).previewUrl})` : undefined,
+                          backgroundSize: 'cover', backgroundPosition: 'center',
+                          border: s.active ? '1.5px solid var(--text-body, #111)' : '1px solid #e6e6e6',
+                          boxShadow: s.active ? '0 0 0 3px rgba(0,0,0,0.06)' : 'none',
+                          cursor: busy ? 'wait' : 'pointer',
+                          transition: 'border 0.12s, box-shadow 0.12s',
+                        }} />
+                      <span style={{
+                        fontSize: 10, fontWeight: 500, lineHeight: 1.2,
+                        color: s.active ? 'var(--text-body, #111)' : 'var(--text-secondary, #555)',
+                        textAlign: 'center',
+                      }}>{s.label}</span>
+                    </div>
+                  ))}
+                </div>
+              )
+            })()}
             {/* preset 카탈로그 */}
             {bgPresets.length > 0 && (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)',
@@ -1218,30 +1271,64 @@ export default function Mockup() {
           </div>
           )}
 
-          {/* ───── EFFECTS & WATERMARK (Frame 탭) ───── */}
+          {/* ───── EFFECTS & WATERMARK — shots.so 4-card thumbnail ───── */}
           {activeLeftTab === 'frame' && (
           <div style={sectionSt}>
             <SectionHeader>Effects & Watermark</SectionHeader>
-            {/* shots.so 4-toggle row: Portrait / Watermark / Bg Effects / VFX */}
-            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 10 }}>
-              <button disabled title="Coming soon — 얼굴/인물 보정"
-                style={{ ...chipBtn(false, false), fontSize: 11, opacity: 0.4, cursor: 'not-allowed' }}>
-                Portrait
-              </button>
-              <button onClick={() => !busy && setWatermark(!watermark)} disabled={busy}
-                title="우하단에 'Made with reels-bench' stamp"
-                style={{ ...chipBtn(watermark, busy), fontSize: 11 }}>
-                Watermark
-              </button>
-              <button onClick={() => !busy && document.getElementById('mockup-scene-anchor')?.scrollIntoView({block:'center'})}
-                style={{ ...chipBtn(sceneShapeId !== 'none', busy), fontSize: 11 }}>
-                Bg Effects {sceneShapeId !== 'none' && '●'}
-              </button>
-              <button onClick={() => !busy && setOverlayPickerOpen(!overlayPickerOpen)}
-                style={{ ...chipBtn(overlayEffectId !== 'none', busy), fontSize: 11 }}>
-                VFX {overlayEffectId !== 'none' && '●'}
-              </button>
-            </div>
+            {(() => {
+              const items = [
+                { id: 'portrait', label: 'Portrait', emoji: '👤',
+                  active: false, disabled: true,
+                  onClick: () => {} },
+                { id: 'watermark', label: 'Watermark', emoji: '💧',
+                  active: watermark, disabled: false,
+                  onClick: () => setWatermark(!watermark) },
+                { id: 'bg-effects', label: 'Bg Effects', emoji: '✨',
+                  active: sceneShapeId !== 'none', disabled: false,
+                  onClick: () => document.getElementById('mockup-scene-anchor')?.scrollIntoView({block:'center'}) },
+                { id: 'vfx', label: 'VFX', emoji: '🎞️',
+                  active: overlayEffectId !== 'none', disabled: false,
+                  onClick: () => setOverlayPickerOpen(!overlayPickerOpen) },
+              ]
+              return (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
+                              gap: 8, marginBottom: 10 }}>
+                  {items.map(it => (
+                    <div key={it.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <button onClick={() => !busy && !it.disabled && it.onClick()}
+                        disabled={busy || it.disabled}
+                        title={it.label}
+                        style={{
+                          aspectRatio: '1/1', borderRadius: 8, padding: 0,
+                          background: '#fff',
+                          border: it.active ? '1.5px solid var(--text-body, #111)' : '1px solid #e6e6e6',
+                          boxShadow: it.active ? '0 0 0 3px rgba(0,0,0,0.06)' : 'none',
+                          cursor: (busy || it.disabled) ? 'not-allowed' : 'pointer',
+                          opacity: it.disabled ? 0.4 : 1,
+                          fontSize: 24, lineHeight: 1,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          position: 'relative',
+                          transition: 'border 0.12s, box-shadow 0.12s',
+                        }}>
+                        <span>{it.emoji}</span>
+                        {it.active && (
+                          <span style={{
+                            position: 'absolute', top: 4, right: 4,
+                            width: 8, height: 8, borderRadius: 4,
+                            background: 'var(--accent, #3b82f6)',
+                          }} />
+                        )}
+                      </button>
+                      <span style={{
+                        fontSize: 10, fontWeight: 500, lineHeight: 1.2,
+                        color: it.active ? 'var(--text-body, #111)' : 'var(--text-secondary, #555)',
+                        textAlign: 'center',
+                      }}>{it.label}</span>
+                    </div>
+                  ))}
+                </div>
+              )
+            })()}
             {/* VFX 카탈로그 (마감 효과) */}
             {overlayEffects.length > 0 && overlayPickerOpen && (
               <div>

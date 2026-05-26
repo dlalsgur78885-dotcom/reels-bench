@@ -1067,6 +1067,84 @@ export default function Mockup() {
 
           {/* (Tilt / 비율 / 디바이스 크기 = LAYOUT preset — 우측 패널로 이동) */}
 
+          {/* ───── EFFECTS & WATERMARK — shots.so 순서: ANIMATION 다음 ───── */}
+          {activeLeftTab === 'frame' && (
+          <div style={sectionSt}>
+            <SectionHeader>Effects & Watermark</SectionHeader>
+            {(() => {
+              const items = [
+                { id: 'portrait', label: 'Portrait', emoji: '👤',
+                  active: false, disabled: true,
+                  onClick: () => {} },
+                { id: 'watermark', label: 'Watermark', emoji: '💧',
+                  active: watermark, disabled: false,
+                  onClick: () => setWatermark(!watermark) },
+                { id: 'bg-effects', label: 'Bg Effects', emoji: '✨',
+                  active: sceneShapeId !== 'none', disabled: false,
+                  onClick: () => document.getElementById('mockup-scene-anchor')?.scrollIntoView({block:'center'}) },
+                { id: 'vfx', label: 'VFX', emoji: '🎞️',
+                  active: overlayEffectId !== 'none', disabled: false,
+                  onClick: () => setOverlayPickerOpen(!overlayPickerOpen) },
+              ]
+              return (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
+                              gap: 8, marginBottom: 10 }}>
+                  {items.map(it => (
+                    <div key={it.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <button onClick={() => !busy && !it.disabled && it.onClick()}
+                        disabled={busy || it.disabled}
+                        title={it.label}
+                        style={{
+                          aspectRatio: '1/1', borderRadius: 8, padding: 0,
+                          background: '#fff',
+                          border: it.active ? '1.5px solid var(--text-body, #111)' : '1px solid #e6e6e6',
+                          boxShadow: it.active ? '0 0 0 3px rgba(0,0,0,0.06)' : 'none',
+                          cursor: (busy || it.disabled) ? 'not-allowed' : 'pointer',
+                          opacity: it.disabled ? 0.4 : 1,
+                          fontSize: 24, lineHeight: 1,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          position: 'relative',
+                          transition: 'border 0.12s, box-shadow 0.12s',
+                        }}>
+                        <span>{it.emoji}</span>
+                        {it.active && (
+                          <span style={{
+                            position: 'absolute', top: 4, right: 4,
+                            width: 8, height: 8, borderRadius: 4,
+                            background: 'var(--accent, #3b82f6)',
+                          }} />
+                        )}
+                      </button>
+                      <span style={{
+                        fontSize: 10, fontWeight: 500, lineHeight: 1.2,
+                        color: it.active ? 'var(--text-body, #111)' : 'var(--text-secondary, #555)',
+                        textAlign: 'center',
+                      }}>{it.label}</span>
+                    </div>
+                  ))}
+                </div>
+              )
+            })()}
+            {/* VFX 카탈로그 (마감 효과) */}
+            {overlayEffects.length > 0 && overlayPickerOpen && (
+              <div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>
+                  VFX · 영상 마감 효과
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {overlayEffects.map(e => (
+                    <button key={e.id}
+                      onClick={() => !busy && setOverlayEffectId(e.id)} disabled={busy}
+                      style={{ ...chipBtn(overlayEffectId === e.id, busy), fontSize: 11 }}>
+                      {e.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          )}
+
           {/* ───── SCENE — shots.so 3-card (None / Shadow / Shapes) ───── */}
           {activeLeftTab === 'frame' && sceneShapesItems.length > 0 && (
             <div id="mockup-scene-anchor" style={sectionSt}>
@@ -1184,7 +1262,7 @@ export default function Mockup() {
                   active: bgColor !== 'transparent' && !bgFileId,
                   // bgPresetId 있으면 그라데이션 preview, 없으면 단색
                   previewUrl: bgPresetId
-                    ? `${MOCKUP_BASE_URL}/api/mockup/background/${bgPresetId}.png` : null,
+                    ? `/mockup-bg-thumbs/${bgPresetId}.png` : null,
                   preview: bgPresetId ? null : (bgColor !== 'transparent' ? bgColor : '#1a1a2e'),
                   onPick: () => {
                     if (bgColor === 'transparent') setBgColor('#1a1a2e');
@@ -1286,7 +1364,7 @@ export default function Mockup() {
                                 title={p.label}
                                 style={{
                                   aspectRatio: '3/4', borderRadius: 6, padding: 0,
-                                  backgroundImage: `url(${MOCKUP_BASE_URL}/api/mockup/background/${p.id}.png)`,
+                                  backgroundImage: `url(/mockup-bg-thumbs/${p.id}.png)`,
                                   backgroundSize: 'cover', backgroundPosition: 'center',
                                   border: bgPresetId === p.id ? '2px solid var(--accent)' : '1px solid var(--border)',
                                   cursor: busy ? 'wait' : 'pointer',
@@ -1354,112 +1432,47 @@ export default function Mockup() {
           </div>
           )}
 
-          {/* ───── Magic ✨ — shots.so 별도 큰 row (BACKGROUND 아래) ───── */}
-          {activeLeftTab === 'frame' && mode === 'upload' && sourceFileId && (
-            <div style={{ ...sectionSt, padding: '10px 12px',
-                          background: '#fef3f8', borderRadius: 8, border: '1px solid #f9d4e1' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>
-                    Magic ✨
-                  </div>
-                  <div style={{ fontSize: 10, color: 'var(--text-secondary, #555)' }}>
-                    Uses media in your mockup to generate magic backgrounds
-                  </div>
-                </div>
-                <button onClick={() => {
-                  if (!sourceFileId) return
-                  const url = `${MOCKUP_BASE_URL}/api/mockup/magic-bg/${sourceFileId}.png?w=540&h=720`
-                  setBgPreview(url); setBgFileId('magic:' + sourceFileId); setBgPresetId('')
-                }} disabled={busy}
-                  style={{
-                    width: 54, height: 54, borderRadius: 8, padding: 0,
-                    background: 'linear-gradient(135deg, #ec4899, #8b5cf6)',
-                    border: 'none', cursor: busy ? 'wait' : 'pointer',
-                    color: '#fff', fontSize: 22, fontWeight: 700,
-                    boxShadow: '0 2px 8px rgba(236, 72, 153, 0.4)',
-                  }}>✨</button>
-              </div>
-            </div>
-          )}
-
-          {/* ───── EFFECTS & WATERMARK — shots.so 4-card thumbnail ───── */}
-          {activeLeftTab === 'frame' && (
-          <div style={sectionSt}>
-            <SectionHeader>Effects & Watermark</SectionHeader>
-            {(() => {
-              const items = [
-                { id: 'portrait', label: 'Portrait', emoji: '👤',
-                  active: false, disabled: true,
-                  onClick: () => {} },
-                { id: 'watermark', label: 'Watermark', emoji: '💧',
-                  active: watermark, disabled: false,
-                  onClick: () => setWatermark(!watermark) },
-                { id: 'bg-effects', label: 'Bg Effects', emoji: '✨',
-                  active: sceneShapeId !== 'none', disabled: false,
-                  onClick: () => document.getElementById('mockup-scene-anchor')?.scrollIntoView({block:'center'}) },
-                { id: 'vfx', label: 'VFX', emoji: '🎞️',
-                  active: overlayEffectId !== 'none', disabled: false,
-                  onClick: () => setOverlayPickerOpen(!overlayPickerOpen) },
-              ]
-              return (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
-                              gap: 8, marginBottom: 10 }}>
-                  {items.map(it => (
-                    <div key={it.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      <button onClick={() => !busy && !it.disabled && it.onClick()}
-                        disabled={busy || it.disabled}
-                        title={it.label}
-                        style={{
-                          aspectRatio: '1/1', borderRadius: 8, padding: 0,
-                          background: '#fff',
-                          border: it.active ? '1.5px solid var(--text-body, #111)' : '1px solid #e6e6e6',
-                          boxShadow: it.active ? '0 0 0 3px rgba(0,0,0,0.06)' : 'none',
-                          cursor: (busy || it.disabled) ? 'not-allowed' : 'pointer',
-                          opacity: it.disabled ? 0.4 : 1,
-                          fontSize: 24, lineHeight: 1,
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          position: 'relative',
-                          transition: 'border 0.12s, box-shadow 0.12s',
-                        }}>
-                        <span>{it.emoji}</span>
-                        {it.active && (
-                          <span style={{
-                            position: 'absolute', top: 4, right: 4,
-                            width: 8, height: 8, borderRadius: 4,
-                            background: 'var(--accent, #3b82f6)',
-                          }} />
-                        )}
-                      </button>
-                      <span style={{
-                        fontSize: 10, fontWeight: 500, lineHeight: 1.2,
-                        color: it.active ? 'var(--text-body, #111)' : 'var(--text-secondary, #555)',
-                        textAlign: 'center',
-                      }}>{it.label}</span>
+          {/* ───── Magic ✨ — shots.so 별도 큰 row (항상 노출, 미디어 없으면 disabled) ───── */}
+          {activeLeftTab === 'frame' && (() => {
+            const magicReady = mode === 'upload' && !!sourceFileId
+            return (
+              <div style={{ ...sectionSt, padding: '10px 12px',
+                            background: magicReady ? '#fef3f8' : '#f5f5f5',
+                            borderRadius: 8,
+                            border: magicReady ? '1px solid #f9d4e1' : '1px solid #e6e6e6',
+                            opacity: magicReady ? 1 : 0.65,
+                            transition: 'opacity 0.12s' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>
+                      Magic ✨
                     </div>
-                  ))}
-                </div>
-              )
-            })()}
-            {/* VFX 카탈로그 (마감 효과) */}
-            {overlayEffects.length > 0 && overlayPickerOpen && (
-              <div>
-                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>
-                  VFX · 영상 마감 효과
-                </div>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {overlayEffects.map(e => (
-                    <button key={e.id}
-                      onClick={() => !busy && setOverlayEffectId(e.id)} disabled={busy}
-                      style={{ ...chipBtn(overlayEffectId === e.id, busy), fontSize: 11 }}>
-                      {e.label}
-                    </button>
-                  ))}
+                    <div style={{ fontSize: 10, color: 'var(--text-secondary, #555)' }}>
+                      {magicReady
+                        ? 'Uses media in your mockup to generate magic backgrounds'
+                        : '미디어 업로드 후 사용 가능'}
+                    </div>
+                  </div>
+                  <button onClick={() => {
+                    if (!magicReady || !sourceFileId) return
+                    const url = `${MOCKUP_BASE_URL}/api/mockup/magic-bg/${sourceFileId}.png?w=540&h=720`
+                    setBgPreview(url); setBgFileId('magic:' + sourceFileId); setBgPresetId('')
+                  }} disabled={busy || !magicReady}
+                    title={magicReady ? 'Magic AI 배경' : '미디어 업로드 필요'}
+                    style={{
+                      width: 54, height: 54, borderRadius: 8, padding: 0,
+                      background: magicReady
+                        ? 'linear-gradient(135deg, #ec4899, #8b5cf6)'
+                        : '#d0d0d0',
+                      border: 'none',
+                      cursor: (busy || !magicReady) ? 'not-allowed' : 'pointer',
+                      color: '#fff', fontSize: 22, fontWeight: 700,
+                      boxShadow: magicReady ? '0 2px 8px rgba(236, 72, 153, 0.4)' : 'none',
+                    }}>✨</button>
                 </div>
               </div>
-            )}
-          </div>
-          )}
+            )
+          })()}
 
           {/* Export 버튼은 상단 toolbar 로 이동 */}
         </div>
@@ -1478,7 +1491,7 @@ export default function Mockup() {
             // 배경 우선순위: bg_preset > bg_image > bg_color (백엔드와 동일)
             let bgStyle: string
             if (bgPresetId) {
-              bgStyle = `center/cover url(${MOCKUP_BASE_URL}/api/mockup/background/${bgPresetId}.png)`
+              bgStyle = `center/cover url(/mockup-bg-thumbs/${bgPresetId}.png)`
             } else if (bgPreview) {
               bgStyle = `center/cover url(${bgPreview})`
             } else {
@@ -1572,7 +1585,7 @@ export default function Mockup() {
                 const ratio = device.body_w / device.body_h
                 const devW = devH * ratio
                 let bg: string
-                if (bgPresetId) bg = `center/cover url(${MOCKUP_BASE_URL}/api/mockup/background/${bgPresetId}.png)`
+                if (bgPresetId) bg = `center/cover url(/mockup-bg-thumbs/${bgPresetId}.png)`
                 else if (bgPreview) bg = `center/cover url(${bgPreview})`
                 else bg = bgColor
                 return (

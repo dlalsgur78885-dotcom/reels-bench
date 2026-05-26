@@ -1,11 +1,12 @@
 {
   "version": 2,
   "regions": ["icn1"],
-  "buildCommand": "echo cb-2026-05-26-28 && cd web && rm -rf dist node_modules/.vite && npm install && npm run build",
+  "buildCommand": "echo cb-2026-05-26-29 && cd web && rm -rf dist node_modules/.vite && npm install && npm run build",
   "builds": [
     { "src": "web/dist/mockup-catalog/**", "use": "@vercel/static" },
     { "src": "web/dist/mockup-devices/**", "use": "@vercel/static" },
     { "src": "web/dist/mockup-cards/**", "use": "@vercel/static" },
+    { "src": "web/dist/mockup-bg-thumbs/**", "use": "@vercel/static" },
     { "src": "api/index.py", "use": "@vercel/python", "config": { "maxDuration": 800, "includeFiles": "web/dist/**" } },
     { "src": "api/cron/fb-scrape.ts", "use": "@vercel/node", "config": { "maxDuration": 60 } }
   ],
@@ -15,6 +16,8 @@
     { "src": "/mockup-devices/(.*)", "dest": "/web/dist/mockup-devices/$1",
       "headers": { "Cache-Control": "public, max-age=86400" } },
     { "src": "/mockup-cards/(.*)", "dest": "/web/dist/mockup-cards/$1",
+      "headers": { "Cache-Control": "public, max-age=86400" } },
+    { "src": "/mockup-bg-thumbs/(.*)", "dest": "/web/dist/mockup-bg-thumbs/$1",
       "headers": { "Cache-Control": "public, max-age=86400" } },
     { "src": "/api/cron/fb-scrape", "dest": "/api/cron/fb-scrape.ts" },
     { "src": "/(.*)", "dest": "/api/index.py" }

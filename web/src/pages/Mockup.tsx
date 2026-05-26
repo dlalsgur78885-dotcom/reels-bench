@@ -1558,33 +1558,29 @@ export default function Mockup() {
                 if (radiusOverride != null) params.set('radius', String(radiusOverride))
                 const qs = params.toString()
                 // 사전 생성된 PNG 사용 — 카드 클릭 즉시 메인 preview 변화.
-                // 지원 조합 (iPhone 16 Pro + default opacity/angle):
-                //   - 단일: STYLE / SHADOW / RADIUS
-                //   - 복합: STYLE × SHADOW
-                // 그 외 (다른 디바이스, RADIUS+다른 것 등): Render API fallback
-                const isIp16Pro = device.id === 'iphone-16-pro'
-                const shadowDefaults = deviceShadowId === 'none' || (
-                  Math.abs(deviceShadowOpacity - 1.0) < 0.01 && deviceShadowAngle === 180)
+                // 지원: STYLE / SHADOW / RADIUS / STYLE×SHADOW
+                // opacity / angle 미세 차이는 시각 거의 동일 — static 매칭에 허용 (Render fallback 피함)
+                const STATIC_DEVICES = new Set(['iphone-16-pro', 'galaxy-s25-ultra', 'pixel-9-pro'])
+                const isStaticDev = STATIC_DEVICES.has(device.id)
                 const styleOnly = deviceStyleId !== 'default'
                   && deviceShadowId === 'none' && radiusOverride == null
-                const shadowOnly = deviceShadowId !== 'none' && shadowDefaults
+                const shadowOnly = deviceShadowId !== 'none'
                   && deviceStyleId === 'default' && radiusOverride == null
                 const radiusOnly = radiusOverride != null
                   && deviceStyleId === 'default' && deviceShadowId === 'none'
                 const styleAndShadow = deviceStyleId !== 'default'
-                  && deviceShadowId !== 'none' && shadowDefaults
-                  && radiusOverride == null
+                  && deviceShadowId !== 'none' && radiusOverride == null
                 let url: string
                 if (!qs) {
                   url = `/mockup-devices/${device.id}.png`
-                } else if (isIp16Pro && styleAndShadow) {
-                  url = `/mockup-frames/iphone-16-pro-style-${deviceStyleId}-shadow-${deviceShadowId}.png`
-                } else if (isIp16Pro && styleOnly) {
-                  url = `/mockup-frames/iphone-16-pro-style-${deviceStyleId}.png`
-                } else if (isIp16Pro && shadowOnly) {
-                  url = `/mockup-frames/iphone-16-pro-shadow-${deviceShadowId}.png`
-                } else if (isIp16Pro && radiusOnly) {
-                  url = `/mockup-frames/iphone-16-pro-radius-${radiusOverride}.png`
+                } else if (isStaticDev && styleAndShadow) {
+                  url = `/mockup-frames/${device.id}-style-${deviceStyleId}-shadow-${deviceShadowId}.png`
+                } else if (isStaticDev && styleOnly) {
+                  url = `/mockup-frames/${device.id}-style-${deviceStyleId}.png`
+                } else if (isStaticDev && shadowOnly) {
+                  url = `/mockup-frames/${device.id}-shadow-${deviceShadowId}.png`
+                } else if (isStaticDev && radiusOnly) {
+                  url = `/mockup-frames/${device.id}-radius-${radiusOverride}.png`
                 } else {
                   url = `${MOCKUP_BASE_URL}/api/mockup/frame/${device.id}.png?${qs}`
                 }

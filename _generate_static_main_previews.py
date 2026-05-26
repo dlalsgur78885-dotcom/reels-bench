@@ -19,7 +19,7 @@ from api.services import mockup as svc
 OUT_DIR = ROOT / "web" / "public" / "mockup-frames"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-DEVICE = "iphone-16-pro"
+DEVICES_TO_GENERATE = ["iphone-16-pro", "galaxy-s25-ultra", "pixel-9-pro"]
 
 
 def save(name: str, data: bytes) -> None:
@@ -29,37 +29,39 @@ def save(name: str, data: bytes) -> None:
 
 
 def main() -> int:
-    # STYLE 변형 9
-    print("=== STYLE ===")
-    for sid in svc.DEVICE_STYLES.keys():
-        png = svc.render_device_frame(DEVICE, style=sid)
-        save(f"{DEVICE}-style-{sid}", png)
+    for device in DEVICES_TO_GENERATE:
+        print(f"\n### {device} ###")
 
-    # SHADOW 변형 (shadow_opacity=1, shadow_angle=135 default)
-    print("=== SHADOW ===")
-    for sid in svc.DEVICE_SHADOWS.keys():
-        if sid == "none":
-            continue
-        # render_device_frame + add_device_shadow
-        frame = svc.render_device_frame(DEVICE)
-        png = svc.add_device_shadow(frame, sid, opacity=1.0, angle_deg=180)
-        save(f"{DEVICE}-shadow-{sid}", png)
+        # STYLE 변형 9
+        print("[STYLE]")
+        for sid in svc.DEVICE_STYLES.keys():
+            png = svc.render_device_frame(device, style=sid)
+            save(f"{device}-style-{sid}", png)
 
-    # RADIUS 변형
-    print("=== RADIUS ===")
-    for r in (0, 120, 240):
-        png = svc.render_device_frame(DEVICE, radius_override=r)
-        save(f"{DEVICE}-radius-{r}", png)
-
-    # STYLE × SHADOW 복합 (9 × 4 = 36)
-    print("=== STYLE × SHADOW (36 combos) ===")
-    for style_id in svc.DEVICE_STYLES.keys():
-        for shadow_id in svc.DEVICE_SHADOWS.keys():
-            if shadow_id == "none":
+        # SHADOW 변형 4 (none 제외, default opacity/angle)
+        print("[SHADOW]")
+        for sid in svc.DEVICE_SHADOWS.keys():
+            if sid == "none":
                 continue
-            frame = svc.render_device_frame(DEVICE, style=style_id)
-            png = svc.add_device_shadow(frame, shadow_id, opacity=1.0, angle_deg=180)
-            save(f"{DEVICE}-style-{style_id}-shadow-{shadow_id}", png)
+            frame = svc.render_device_frame(device)
+            png = svc.add_device_shadow(frame, sid, opacity=1.0, angle_deg=180)
+            save(f"{device}-shadow-{sid}", png)
+
+        # RADIUS 변형 3
+        print("[RADIUS]")
+        for r in (0, 120, 240):
+            png = svc.render_device_frame(device, radius_override=r)
+            save(f"{device}-radius-{r}", png)
+
+        # STYLE × SHADOW 36
+        print("[STYLE × SHADOW]")
+        for style_id in svc.DEVICE_STYLES.keys():
+            for shadow_id in svc.DEVICE_SHADOWS.keys():
+                if shadow_id == "none":
+                    continue
+                frame = svc.render_device_frame(device, style=style_id)
+                png = svc.add_device_shadow(frame, shadow_id, opacity=1.0, angle_deg=180)
+                save(f"{device}-style-{style_id}-shadow-{shadow_id}", png)
 
     total = len(list(OUT_DIR.glob("*.png")))
     print(f"\n총 {total}개")

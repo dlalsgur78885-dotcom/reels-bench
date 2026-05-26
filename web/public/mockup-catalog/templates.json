@@ -1,12 +1,108 @@
 {
 "templates": [
-"saas-cosmic",
-"warm-sunset",
-"studio-paper",
-"ocean-clean",
-"android-mesh",
-"retro-vhs",
-"minimal-glass",
-"radiant-burst"
+{
+"id": "saas-cosmic",
+"label": "SaaS 코스믹",
+"tagline": "어두운 우주 + 글래스 디바이스",
+"device_id": "iphone-16-pro",
+"aspect": "9:16",
+"bg_preset": "cosmic",
+"device_style": "glass",
+"device_shadow": "glow",
+"device_shadow_opacity": 0.9,
+"overlay_effect": "none",
+"motion": "zoom-in"
+},
+{
+"id": "warm-sunset",
+"label": "웜 선셋",
+"tagline": "오렌지·핑크 + 부드러운 그림자",
+"device_id": "iphone-16-pro",
+"aspect": "9:16",
+"bg_preset": "sunset",
+"device_style": "default",
+"device_shadow": "soft",
+"device_shadow_opacity": 0.8,
+"overlay_effect": "none",
+"motion": "pan-tl-br"
+},
+{
+"id": "studio-paper",
+"label": "스튜디오 페이퍼",
+"tagline": "베이지 + 하드 섀도우",
+"device_id": "iphone-16-pro",
+"aspect": "1:1",
+"bg_preset": "paper",
+"device_style": "default",
+"device_shadow": "hard",
+"device_shadow_opacity": 1.0,
+"overlay_effect": "none",
+"motion": "none"
+},
+{
+"id": "ocean-clean",
+"label": "오션 클린",
+"tagline": "청량한 그라데이션 + 디퓨즈 섀도우",
+"device_id": "iphone-16-pro",
+"aspect": "4:5",
+"bg_preset": "ocean",
+"device_style": "default",
+"device_shadow": "diffused",
+"device_shadow_opacity": 0.7,
+"overlay_effect": "none",
+"motion": "zoom-in"
+},
+{
+"id": "android-mesh",
+"label": "안드로이드 메시",
+"tagline": "Galaxy + 메시 그라데이션",
+"device_id": "galaxy-s25-ultra",
+"aspect": "9:16",
+"bg_preset": "mesh-cool",
+"device_style": "default",
+"device_shadow": "soft",
+"device_shadow_opacity": 0.85,
+"overlay_effect": "none",
+"motion": "zoom-in"
+},
+{
+"id": "retro-vhs",
+"label": "레트로 VHS",
+"tagline": "VHS 효과 + 그레인",
+"device_id": "iphone-16-pro",
+"aspect": "9:16",
+"bg_preset": "grain-bw",
+"device_style": "outline",
+"device_shadow": "none",
+"device_shadow_opacity": 0.0,
+"overlay_effect": "vhs",
+"motion": "pulse"
+},
+{
+"id": "minimal-glass",
+"label": "미니멀 글래스",
+"tagline": "글래스 디바이스 + 흰 배경",
+"device_id": "iphone-16-pro",
+"aspect": "4:5",
+"bg_preset": "glass",
+"device_style": "glass",
+"device_shadow": "soft",
+"device_shadow_opacity": 0.6,
+"overlay_effect": "none",
+"motion": "none"
+},
+{
+"id": "radiant-burst",
+"label": "래디언트 버스트",
+"tagline": "Pixel + 중앙 burst + 글로우",
+"device_id": "pixel-9-pro",
+"aspect": "9:16",
+"bg_preset": "radiant",
+"device_style": "default",
+"device_shadow": "glow",
+"device_shadow_opacity": 1.0,
+"overlay_effect": "none",
+"motion": "zoom-out"
+}
 ]
 }

@@ -66,8 +66,23 @@ def main() -> int:
         for eid, spec in svc.OVERLAY_EFFECTS.items()
     ]})
 
-    # TEMPLATES — 그 자체로 list
-    save("templates", {"templates": list(svc.TEMPLATES)})
+    # TEMPLATES — mockup_web.py /api/mockup/templates 응답 형태 그대로 재현
+    templates_list = []
+    for tid, spec in svc.TEMPLATES.items():
+        templates_list.append({
+            "id": tid,
+            "label": spec["label"],
+            "tagline": spec.get("tagline", ""),
+            "device_id": spec["device_id"],
+            "aspect": spec["aspect"],
+            "bg_preset": spec["bg_preset"],
+            "device_style": spec["device_style"],
+            "device_shadow": spec["device_shadow"],
+            "device_shadow_opacity": spec["device_shadow_opacity"],
+            "overlay_effect": spec["overlay_effect"],
+            "motion": spec["motion"],
+        })
+    save("templates", {"templates": templates_list})
 
     total = len(list(OUT_DIR.glob("*.json")))
     print(f"\n총 {total} 카탈로그 JSON")

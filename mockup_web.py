@@ -74,26 +74,11 @@ def warm_up_frame_preview_cache():
     20s+ 걸림. 서버 시작 시 모든 변형 미리 캐시 채워두면 그 후 모든 호출
     캐시 hit (~0.2s)."""
     def _warm():
-        try:
-            did = "iphone-16-pro"
-            # STYLE 9 (corner crop + bg=none — 실제 UI 패턴)
-            for sid in mockup_svc.DEVICE_STYLES.keys():
-                mockup_svc.render_frame_preview(did, style=sid,
-                                                 dummy_bg_id="none", crop_mode="corner")
-            # SHADOW 5
-            for sid in mockup_svc.DEVICE_SHADOWS.keys():
-                if sid == "none":
-                    mockup_svc.render_frame_preview(did, dummy_bg_id="none", crop_mode="corner")
-                else:
-                    mockup_svc.render_frame_preview(did, shadow=sid,
-                                                     dummy_bg_id="none", crop_mode="corner")
-            # BORDER 3 (Sharp/Curved/Round)
-            for r in (0, 120, 240):
-                mockup_svc.render_frame_preview(did, radius_override=r,
-                                                 dummy_bg_id="none", crop_mode="corner")
-            logger.info("[warmup] frame-preview corner cache populated")
-        except Exception as e:
-            logger.warning(f"[warmup] failed: {e}")
+        # NOTE: warm-up 비활성화 — Render starter (512MB) 에서 18 변형 메모리 점거
+        # 시 OOM 으로 worker crashing. 매 요청마다 새로 PIL render (~0.5s 단일).
+        # lru_cache(maxsize=8) 으로 최근 변형만 캐시.
+        logger.info("[warmup] disabled (memory-safe mode)")
+        return
     # background — startup 자체는 막지 않음
     threading.Thread(target=_warm, daemon=True).start()
 

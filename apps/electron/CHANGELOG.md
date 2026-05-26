@@ -21,6 +21,18 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.6 (2026-05-26)
+
+### 버그
+- 두 클립이 연속된 타임라인에서 재생이 두 번째 클립으로 넘어가도 프리뷰
+  가 첫 번째 클립의 마지막 프레임에서 멈추는 문제(PPT 슬라이드 6) 해결.
+  원인: PreviewCanvas의 `<video>`가 `preload` 미지정이라 browser 기본값
+  `metadata`만 받음 → src 교체 후 frame data buffering 동안 이전 frame
+  freeze. `preload="auto"` + src 변경 직후 명시 `v.load()` 호출로 frame
+  data 즉시 fetch 시작.
+
+---
+
 ## 0.2.5 (2026-05-26)
 
 ### UX

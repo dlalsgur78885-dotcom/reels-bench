@@ -1397,6 +1397,14 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
             if (loadedVideoId.current.get(track.id) !== media.id) {
               v.src = toMediaUrl(media.path)
               loadedVideoId.current.set(track.id, media.id)
+              // 명시 load() — preload="auto"와 함께 browser가 frame data를
+              // 즉시 fetch 시작. 슬라이드 6 (두 번째 클립으로 넘어가도
+              // 첫 클립 마지막 프레임 freeze) 해결 보강.
+              try {
+                v.load()
+              } catch {
+                /* ignore */
+              }
             }
             if (media.kind !== 'image') {
               const target = clipSourceTimeSec(activeVideo, playheadMs)
@@ -1962,6 +1970,12 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               }
               playsInline
               muted={false}
+              // 0.2.6 — 두 번째 클립으로 넘어갈 때 첫 클립 마지막 프레임
+              // 에서 멈추는 버그(슬라이드 6) 해결: preload="auto"로 새 src
+              // 가 metadata만이 아닌 video data까지 적극 prefetch. 기본값
+              // preload="metadata"는 frame 데이터를 첫 재생 시점에야 받기
+              // 시작 → 그 buffering 동안 이전 frame 화면 freeze.
+              preload="auto"
               style={
                 cr
                   ? {

@@ -811,10 +811,9 @@ export default function Mockup() {
               <SectionHeader>Style</SectionHeader>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
                 {deviceStyles.map(s => {
-                  const did = device?.id || 'iphone-16-pro'
-                  // shots.so 패턴: 좌상단 모서리만 cropped view + bg=none transparent
-                  // → STYLE 차이(베젤 두께/색/모서리 라운드)가 카드 가득 차게 보임
-                  const url = `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?style=${encodeURIComponent(s.id)}&bg=none&crop=corner`
+                  // Vercel static — 빌드 시 미리 생성된 iPhone 16 Pro corner crop PNG.
+                  // Render API 호출 X (메모리/응답시간 문제 회피).
+                  const url = `/mockup-cards/style-${encodeURIComponent(s.id)}.png`
                   const selected = deviceStyleId === s.id
                   return (
                     <div key={s.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -857,11 +856,8 @@ export default function Mockup() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
                             gap: 10, marginBottom: 8 }}>
                 {deviceShadows.map(s => {
-                  const did = device?.id || 'iphone-16-pro'
-                  // SHADOW: 모서리 cropped → 그림자 떨어지는 정도가 카드 가득 보임
-                  const url = s.id === 'none'
-                    ? `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?bg=none&crop=corner`
-                    : `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?shadow=${encodeURIComponent(s.id)}&shadow_opacity=1&bg=none&crop=corner`
+                  // Vercel static
+                  const url = `/mockup-cards/shadow-${encodeURIComponent(s.id)}.png`
                   const selected = deviceShadowId === s.id
                   return (
                     <div key={s.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -927,13 +923,12 @@ export default function Mockup() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
                           gap: 10, marginBottom: 10 }}>
               {[
-                { label: 'Sharp', v: 0 },
-                { label: 'Curved', v: 120 },
-                { label: 'Round', v: 240 },
+                { label: 'Sharp', v: 0, slug: 'sharp' },
+                { label: 'Curved', v: 120, slug: 'curved' },
+                { label: 'Round', v: 240, slug: 'round' },
               ].map(p => {
-                const did = device?.id || 'iphone-16-pro'
-                // BORDER: 모서리 cropped → radius 차이가 카드 가득 보임 (Sharp/Curved/Round)
-                const url = `${MOCKUP_BASE_URL}/api/mockup/frame-preview/${did}.png?radius=${p.v}&bg=none&crop=corner`
+                // Vercel static
+                const url = `/mockup-cards/border-${p.slug}.png`
                 const selected = radiusOverride === p.v
                 return (
                   <div key={p.label} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>

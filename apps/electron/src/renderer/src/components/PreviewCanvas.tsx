@@ -1376,10 +1376,14 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   // Per-track gains are routed through the WebAudio graph using a 20ms
   // linear ramp (click-free) rather than `el.volume` mutation.
   // -----------------------------------------------------------------------
+  // 0.2.10 — rAF wrap 제거. 이전엔 매 tick(playheadMs 변경) effect fire →
+  // cleanup에서 cancelAnimationFrame 호출 → 다음 fire에서 또 cancel → 영원히
+  // rAF callback 실행 안 됨. 결과: clip A가 자기 endMs 지나도 src 교체 안
+  // 되고 video element가 원본 끝까지 자연 재생. clip B 화면 안 나옴(슬라이드
+  // 6 사용자 진단). 매 tick fire는 React batching이 이미 throttle하니 inline
+  // 실행이 안전. swapRaf ref + cleanup 제거.
   useEffect(() => {
-    if (swapRaf.current !== null) cancelAnimationFrame(swapRaf.current)
-    swapRaf.current = requestAnimationFrame(() => {
-      swapRaf.current = null
+    {
       const graph = getPreviewAudioGraph()
 
       // ----- VIDEO TRACKS — one <video> element per track (layer stack) -----
@@ -1591,13 +1595,8 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           }
         }
       }
-    })
-    return () => {
-      if (swapRaf.current !== null) {
-        cancelAnimationFrame(swapRaf.current)
-        swapRaf.current = null
-      }
     }
+    // (no cleanup — inline run, see 0.2.10 comment above)
   }, [
     project,
     playheadMs,

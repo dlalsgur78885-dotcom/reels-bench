@@ -21,6 +21,23 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.10 (2026-05-26)
+
+### 버그 (슬라이드 6 진짜 root)
+- 사용자 진단 정확히 맞춤: clip A가 endMs(trimOut) 지나도 원본 끝까지
+  자연 재생 + clip B로 swap 안 됨. 원인 = PreviewCanvas swap useEffect가
+  매 playheadMs 변경(매 16ms)마다 fire되는데 cleanup의 `cancelAnimation
+  Frame(swapRaf.current)` 가 매번 직전 schedule을 cancel → 영원히 rAF
+  callback 실행 안 됨 → src 교체 / currentTime 동기화 / play() 다 안
+  일어남. video element는 그냥 src의 native duration까지 자연 재생.
+- 수정: rAF wrap 통째 제거. swap work를 effect에서 inline 실행. React
+  batching이 이미 충분한 throttle. swapRaf ref + cleanup 제거.
+- 이전 0.2.6/0.2.7/0.2.8의 fix들(preload="auto", swap-내 play(),
+  onLoadedData/onCanPlay)도 모두 동작 안 했던 이유 = 같은 root.
+  rAF callback 자체가 fire 안 됐으니 그 안의 어떤 코드도 실행 X.
+
+---
+
 ## 0.2.9 (2026-05-26)
 
 ### 버그 (슬라이드 6 진단 종결)

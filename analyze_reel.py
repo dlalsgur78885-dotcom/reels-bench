@@ -52,9 +52,55 @@ def run(script, label):
     print(r.stdout[-2000:])
 
 
+def ensure_video_file():
+    """`_<sc>.mp4` 파일 보장 — 없으면 reels_metadata.video_url로 download,
+    그것도 fail이면 pipeline._get_video_url로 fresh URL 재발급 후 retry.
+
+    `_full_analysis_oneshot.py`가 video 파일을 사전 가정으로 두기 때문에 이
+    단계가 없으면 인스타 URL 만료 시 무조건 "video missing"으로 fail함
+    (pipeline.run 진입점에만 있던 retry 흐름을 analyze_reel.py에도 옮김).
+    """
+    video_path = ROOT / f"_{SHORTCODE}.mp4"
+    if video_path.exists() and video_path.stat().st_size > 1024:
+        print(f"[video] reuse {video_path.name} ({video_path.stat().st_size // 1024} KB)")
+        return
+    sys.path.insert(0, str(ROOT))
+    from api.services import pipeline, supabase as _sb
+    print(f"[video] download {SHORTCODE} → {video_path.name}")
+    meta = _sb.sb_get("reels_metadata", f"shortcode=eq.{SHORTCODE}&limit=1")
+    video_url = (meta[0] or {}).get("video_url") if meta else None
+    last_err = None
+    for attempt in range(2):
+        # 1차: DB의 video_url로 시도. fail 시 2차에서 fresh URL.
+        if attempt == 1 or not video_url:
+            fresh = pipeline._get_video_url(SHORTCODE)
+            if not fresh:
+                last_err = "no fresh URL"
+                break
+            video_url = fresh
+            # DB도 갱신해서 다음 호출 시 첫 시도가 통과.
+            try:
+                _sb.sb_post("reels_metadata", {"shortcode": SHORTCODE, "video_url": video_url})
+            except Exception as e:
+                print(f"[video] DB update warn: {e}")
+        try:
+            pipeline._download_video(video_url, str(video_path))
+            if video_path.exists() and video_path.stat().st_size > 1024:
+                print(f"[video] saved {video_path.stat().st_size // 1024} KB on attempt {attempt + 1}")
+                return
+            last_err = f"empty file on attempt {attempt + 1}"
+        except Exception as e:
+            last_err = str(e)
+            print(f"[video] attempt {attempt + 1} fail: {e}")
+    sys.exit(f"[FAIL] video download — {last_err}")
+
+
 def main():
     t_total = time.time()
     print(f"\n>>> analyze_reel_fast.py {SHORTCODE}  (db={'OFF' if NO_DB else 'ON'}, html={'OFF' if NO_HTML else 'ON'})")
+
+    # Stage 0 — video file 보장. 인스타 URL 만료 시 fresh URL 재발급.
+    ensure_video_file()
 
     # 병렬: audio (TTS+emotion+events 통합) ∥ video ∥ comments
     print("\n=== Stage 1: Audio + Video + Comments 병렬 실행 ===")

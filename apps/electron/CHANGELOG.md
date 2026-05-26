@@ -21,6 +21,19 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.5 (2026-05-26)
+
+### UX
+- "📱 플랫폼 미리보기" picker(SocialPreviewSelector) 위치 우상단 → 좌상단.
+  우상단은 AudioMeter / ColorScopes / 풀스크린 / 1× preview-speed가 같은
+  absolute slot을 차지해 picker가 시각적으로 가려졌음. 좌상단으로 옮기니
+  발견성 100%. SocialPreviewOverlay 기능 자체는 0.1.x부터 이미 구현돼
+  있던 Phase 6 — 이번엔 위치만 fix.
+  (PPT 슬라이드 17 — "프리뷰 화면에서 SNS 플랫폼 선택하면 왼쪽 사진처럼"
+   매칭 작업.)
+
+---
+
 ## 0.2.4 (2026-05-26)
 
 ### UX

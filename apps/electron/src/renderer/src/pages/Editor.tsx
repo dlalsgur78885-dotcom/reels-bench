@@ -1709,14 +1709,17 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         </div>
         <div style={styles.right}>
           <div style={styles.previewArea}>
-            {/* Phase 6 — SNS 플랫폼 미리보기 selector. Pinned to the preview
-                area's top-right; picking a platform overlays its UI chrome
-                onto the preview (purely visual — no effect on export). */}
+            {/* Phase 6 — SNS 플랫폼 미리보기 selector.
+                Moved to top-LEFT in 0.2.5 because the top-right cluster
+                (AudioMeter / ColorScopes / 풀스크린 / preview-speed) shared
+                the same absolute slot and visually hid the picker. Picking a
+                platform overlays its UI chrome onto the preview (purely
+                visual — no effect on export). */}
             <div
               style={{
                 position: 'absolute',
                 top: 8,
-                right: 8,
+                left: 8,
                 zIndex: 5
               }}
             >

@@ -1188,3 +1188,47 @@ export function visualEffectToFfmpeg(
       return ''
   }
 }
+
+/**
+ * Cheap live-preview approximation for visual effects. Export remains the
+ * source of truth for exact ffmpeg recipes; this keeps PreviewCanvas moving
+ * and visibly responsive after users apply an effect.
+ */
+export function visualEffectToCss(
+  id: VisualEffectId | null | undefined
+): string {
+  if (!id || id === 'none') return ''
+  switch (id) {
+    case 'glitch':
+      return 'saturate(1.25) hue-rotate(8deg) contrast(1.08)'
+    case 'vhs':
+      return 'sepia(0.18) saturate(0.88) contrast(0.94)'
+    case 'dream':
+      return 'blur(1.2px) brightness(1.05) contrast(0.92) saturate(1.18)'
+    case 'dual-tone':
+      return 'hue-rotate(18deg) saturate(1.35) contrast(1.06)'
+    case 'negative':
+      return 'invert(1)'
+    case 'sketch':
+      return 'grayscale(1) contrast(1.75) brightness(1.08)'
+    case 'infrared':
+      return 'hue-rotate(180deg) saturate(1.3) contrast(1.08)'
+    case 'pixelate':
+      return 'contrast(1.08) saturate(1.05)'
+    case 'old-film':
+      return 'sepia(0.32) saturate(0.62) contrast(0.92) brightness(0.98)'
+    case 'blur-bg':
+      return 'blur(4px)'
+    case 'cartoon':
+      return 'saturate(1.45) contrast(1.18)'
+    case 'thermal':
+      return 'hue-rotate(300deg) saturate(2) contrast(1.25)'
+    case 'chromatic':
+      return 'saturate(1.2) hue-rotate(12deg) contrast(1.06)'
+    case 'mirror-h':
+    case 'mirror-v':
+      return ''
+    default:
+      return ''
+  }
+}

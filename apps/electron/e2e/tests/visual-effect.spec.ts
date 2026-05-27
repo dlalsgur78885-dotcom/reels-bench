@@ -98,6 +98,8 @@ declare global {
     __reelsTimelineUi: {
       getState: () => {
         selectClip: (id: string) => void
+        setPlayheadMs: (ms: number) => void
+        setPlaying: (playing: boolean) => void
       }
     }
     __reelsUndoRedo: {
@@ -347,6 +349,52 @@ test.describe('@phase-3-51-visual-effect visual effect presets', () => {
     await page.waitForTimeout(80)
     const afterNone = (await getClipFromState(cid))?.visualEffect
     expect(afterNone === undefined || afterNone === 'none').toBe(true)
+  })
+
+  test('(2b) applying a visual effect keeps live preview playing', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    await openEditor()
+    const { mediaId, durationMs } = await addFixtureMedia()
+    const cid = await addVideoClip(mediaId, durationMs)
+    await page.evaluate(() => {
+      window.__reelsTimelineUi.getState().setPlayheadMs(250)
+    })
+    await page.waitForFunction(
+      () => {
+        const v = document.querySelector('[data-testid="preview-video"]') as HTMLVideoElement | null
+        return Boolean(v?.src)
+      },
+      null,
+      { timeout: 5_000 }
+    )
+    await page.locator('[data-testid="transport-play"]').click()
+    await page.waitForTimeout(350)
+    const before = await page.locator('[data-testid="preview-video"]').evaluate((el) => {
+      const v = el as HTMLVideoElement
+      return { currentTime: v.currentTime, paused: v.paused }
+    })
+    expect(before.paused).toBe(false)
+
+    await page.evaluate((id) => {
+      window.__PROJECT_STORE_FOR_TEST__.getState().setClipVisualEffect(id, 'glitch')
+    }, cid)
+    await expect(page.locator('[data-testid="preview-video"]')).toHaveAttribute(
+      'data-visual-effect',
+      'glitch'
+    )
+    await page.waitForTimeout(450)
+    const after = await page.locator('[data-testid="preview-video"]').evaluate((el) => {
+      const v = el as HTMLVideoElement
+      return {
+        currentTime: v.currentTime,
+        paused: v.paused,
+        filter: getComputedStyle(v).filter
+      }
+    })
+    expect(after.paused).toBe(false)
+    expect(after.currentTime).toBeGreaterThan(before.currentTime)
+    expect(after.filter).not.toBe('none')
   })
 
   // =========================================================================

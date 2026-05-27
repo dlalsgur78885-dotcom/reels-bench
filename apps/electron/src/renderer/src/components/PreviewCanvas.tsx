@@ -23,6 +23,7 @@ import {
   getClipCurves,
   getClipRetouch,
   getClipStabilize,
+  getVisualEffect,
   getFilmLook,
   getOverlayBaseSize,
   getOverlayShadow,
@@ -63,7 +64,8 @@ import {
   colorAdjustToCss,
   filmToneToCss,
   filterPresetToCss,
-  sampleCurveTable
+  sampleCurveTable,
+  visualEffectToCss
 } from '../../../shared/filterPresets'
 import { useProjectStore } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
@@ -1967,8 +1969,15 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           // keyframed clips animate during scrub/playback. For a static clip
           // getTransformAt falls back to the Phase 3 getClipTransform path.
           const t = clip ? getTransformAt(clip, playheadMs) : null
+          const visualEffect = clip ? getVisualEffect(clip) : null
+          const visualEffectTransform =
+            visualEffect === 'mirror-h'
+              ? ' scaleX(-1)'
+              : visualEffect === 'mirror-v'
+                ? ' scaleY(-1)'
+                : ''
           const cssTransform = t
-            ? `translate(${t.x * 100}%, ${t.y * 100}%) scale(${t.scale}) rotate(${t.rotation}deg)`
+            ? `translate(${t.x * 100}%, ${t.y * 100}%) scale(${t.scale}) rotate(${t.rotation}deg)${visualEffectTransform}`
             : undefined
           // Phase 3.6 — a non-null crop rect means we must show ONLY the
           // sub-region. cr is null for un-cropped clips (identity/absent) →
@@ -2009,7 +2018,8 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                 colorAdjustToCss(getClipColorAdjust(clip)),
                 clipCurves ? `url(#curve-${clip.id})` : '',
                 rt !== null ? `blur(${((rt / 100) * 1.8).toFixed(2)}px)` : '',
-                filmToneToCss(filmLook?.toneId)
+                filmToneToCss(filmLook?.toneId),
+                visualEffectToCss(visualEffect)
               ]
                 .filter((s) => s.length > 0)
                 .join(' ') || 'none'
@@ -2072,6 +2082,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                 clip && getClipColorAdjust(clip) ? 'true' : 'false'
               }
               data-film-look={filmLook ? 'true' : 'false'}
+              data-visual-effect={visualEffect ?? 'none'}
               data-stabilize={
                 clip && getClipStabilize(clip) ? 'true' : 'false'
               }

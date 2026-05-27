@@ -1012,6 +1012,28 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         return
       }
 
+      // Ctrl/Cmd+A → 모든 클립 선택. pptx11 슬라이드 15 — Electron 메뉴
+      // accelerator 만으로는 focus 위치에 따라 OS/browser 가 Ctrl+A 를 먼저
+      // 가로채는 일이 있어 메뉴 click 이 fire 안 됨. renderer keydown 도
+      // 같이 잡아 fallback. Ctrl+D, Ctrl+B 가 이미 동일 패턴 사용.
+      // Ctrl+Shift+A 는 위에서 이미 분기 처리 후 return 했으므로 여기 안 들어옴.
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        (e.key === 'a' || e.key === 'A' || e.key === 'ㅁ')
+      ) {
+        e.preventDefault()
+        const proj = useProjectStore.getState().project
+        const ids: string[] = []
+        for (const t of proj.tracks) for (const c of t.clips) ids.push(c.id)
+        useTimelineUi.setState({
+          selectedClipIds: new Set(ids),
+          selectedAdjustmentLayerId: null
+        })
+        return
+      }
+
       const store = useProjectStore.getState()
       const ui = useTimelineUi.getState()
       const fps = store.project.fps || 30

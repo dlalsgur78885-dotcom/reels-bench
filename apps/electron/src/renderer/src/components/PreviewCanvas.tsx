@@ -1533,6 +1533,17 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
             if (loadedAudioIds.current.get(track.id) !== media.id) {
               a.src = toMediaUrl(media.path)
               loadedAudioIds.current.set(track.id, media.id)
+              // pptx11 슬라이드 4 — src 교체 직후 HTMLMediaElement spec 에 따라
+              // paused=true 로 reset. play/pause sync effect 는 audioTracks/
+              // playing deps 안 바뀌면 fire 안 함 → 트랙 이동 시 새 src 가
+              // 재생 안 되고 이전 트랙 stale 버퍼와 충돌 (BGM 4→BGM 3 이동
+              // 시 TTS 들림). playing 이면 명시적 play() + <audio> 의
+              // onCanPlay 핸들러로 cold src 자동 재생 보장.
+              if (playing) {
+                a.play().catch(() => {
+                  /* src not ready — onCanPlay will retry */
+                })
+              }
             }
             const target = clipSourceTimeSec(clip, playheadMs)
             if (Math.abs((a.currentTime || 0) - target) > 0.05) {
@@ -2320,6 +2331,18 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               data-track-role={t.role ?? 'none'}
               data-track-audible={isAudible ? 'true' : 'false'}
               data-ducking={ducking}
+              // pptx11 슬라이드 4 — <video>와 동일하게 cold src 자동 재생.
+              // swap effect 즉시 play() 가 readyState=HAVE_NOTHING 으로
+              // reject 되는 케이스를 capture (트랙 이동 시 stale 버퍼 충돌
+              // 방지).
+              onLoadedData={(e) => {
+                if (playing) (e.currentTarget as HTMLAudioElement).play().catch(() => {})
+              }}
+              onCanPlay={(e) => {
+                if (playing && (e.currentTarget as HTMLAudioElement).paused) {
+                  ;(e.currentTarget as HTMLAudioElement).play().catch(() => {})
+                }
+              }}
             />
           )
         })}

@@ -939,8 +939,18 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     const onKey = (e: KeyboardEvent): void => {
       const target = e.target as HTMLElement | null
       const tag = target?.tagName?.toLowerCase()
+      const inputType = (target as HTMLInputElement | null)?.type ?? ''
+      // pptx11 슬라이드 22 — 색보정/필터 슬라이더(input[type=range])에 focus
+      // 가 있는 상태로 Ctrl+Z 를 누르면 keydown 핸들러가 input 이라는 이유로
+      // early-return 해서 undo 가 안 먹힘. range/number/checkbox/radio/button
+      // 같이 텍스트 편집과 무관한 input 은 native cut/copy/paste/undo 행동이
+      // 없으므로 우리 단축키가 동작해도 안전. textarea / 텍스트 input /
+      // contenteditable 은 그대로 가드.
+      const isNonTextInput =
+        tag === 'input' &&
+        ['range', 'number', 'checkbox', 'radio', 'button', 'submit', 'reset'].includes(inputType)
       if (
-        tag === 'input' ||
+        (tag === 'input' && !isNonTextInput) ||
         tag === 'textarea' ||
         tag === 'select' ||
         target?.isContentEditable

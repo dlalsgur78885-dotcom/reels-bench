@@ -811,6 +811,12 @@ export interface ProjectStore {
    */
   rippleRemoveGap(trackId: string, startMs: number, endMs: number): void
   /**
+   * pptx11 슬라이드 10 — 트랙 stack 내 위치 변경. `newIndex` 가 음수면 0,
+   * tracks.length 이상이면 마지막으로 clamp. 불명 trackId / 동일 인덱스 면
+   * no-op. 자막을 맨 위로(0) 옮기는 게 핵심 use case.
+   */
+  moveTrack(trackId: string, newIndex: number): void
+  /**
    * Phase 3.40 — move a single clip onto a different track. Validates
    * compatibility via `canPlaceClipOnTrack`; no-op if source==target,
    * target missing, or kinds incompatible. Preserves every other field on
@@ -2688,6 +2694,25 @@ export const useProjectStore = create<ProjectStore>()(
     const next = touch({ ...project, tracks })
     set({ project: next })
     schedulePersist(next)
+  },
+
+  // pptx11 슬라이드 10 — 트랙 stack 임의 인덱스로 이동.
+  moveTrack(trackId, newIndex): void {
+    if (typeof trackId !== 'string' || !trackId) return
+    if (!Number.isFinite(newIndex)) return
+    const project = get().project
+    const tracks = project.tracks
+    const currentIdx = tracks.findIndex((t) => t.id === trackId)
+    if (currentIdx === -1) return
+    const max = tracks.length - 1
+    const clamped = Math.max(0, Math.min(max, Math.round(newIndex)))
+    if (clamped === currentIdx) return
+    const next = tracks.slice()
+    const [moved] = next.splice(currentIdx, 1)
+    next.splice(clamped, 0, moved)
+    const np = touch({ ...project, tracks: next })
+    set({ project: np })
+    schedulePersist(np)
   },
 
   // pptx11 슬라이드 9 — 트랙의 갭 [startMs, endMs) 를 삭제 + 뒷 클립 ripple

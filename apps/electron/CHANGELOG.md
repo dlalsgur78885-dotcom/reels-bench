@@ -21,6 +21,27 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.39 (2026-05-27)
+
+### 추가 (pptx11 슬라이드 10 — 사용자 보고 "자막칸 맨 상단으로 이동이 안됨")
+캡션 트랙을 stack 맨 위로 옮길 방법이 없던 문제. bench2 가 e2e + 우클릭
+메뉴 UI 까지 작성했지만 store `moveTrack` 액션과 Timeline 의 onMove /
+trackIndex / trackCount 전달부가 corruption 으로 손실되어 메뉴 항목이
+조건부 렌더 안 됨.
+
+- **store/project.ts**: `moveTrack(trackId, newIndex)` — newIndex 가
+  [0, tracks.length-1] 로 clamp, 불명 trackId / 동일 인덱스 면 no-op.
+- **Timeline.tsx**: TrackContextMenu 에 `onMove` / `trackIndex` /
+  `trackCount` prop 전달. 'top' → 0, 'bottom' → 마지막, 'up'/'down' →
+  ±1. 우클릭 메뉴의 "맨 위로 이동 / 위로 이동 / 아래로 이동 / 맨 아래로
+  이동" 4개 행이 이제 노출 + 동작.
+
+### e2e
+- track-reorder.spec.ts 4 tests 통과 (caption 0 이동 / clamp / no-op /
+  UI 메뉴 클릭).
+
+---
+
 ## 0.2.38 (2026-05-27)
 
 ### 추가 (pptx11 슬라이드 9 — 사용자 보고 "개선")

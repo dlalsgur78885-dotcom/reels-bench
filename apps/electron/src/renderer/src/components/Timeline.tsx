@@ -737,6 +737,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const moveClipsByDelta = useProjectStore((s) => s.moveClipsByDelta)
   // Phase 3.40 — cross-track clip drag.
   const moveClipToTrack = useProjectStore((s) => s.moveClipToTrack)
+  // pptx11 슬라이드 10 — 트랙 stack 이동.
+  const moveTrack = useProjectStore((s) => s.moveTrack)
   const { undo, redo, canUndo, canRedo } = useUndoRedo()
 
   // Phase 3.32 — adjustment layers (range color-grades over the composite).
@@ -3639,6 +3641,22 @@ export function Timeline(props: TimelineProps): JSX.Element {
               onSetDucking={(target, db) =>
                 setTrackDucking(t.id, target, db)
               }
+              onMove={(direction) => {
+                // pptx11 슬라이드 10 — 트랙 stack 이동. 'top'/'bottom' 은 끝
+                // 인덱스로, 'up'/'down' 은 ±1. moveTrack 의 clamp 가 음수/오버
+                // 한계는 알아서 처리.
+                const idx = project.tracks.findIndex((tr) => tr.id === t.id)
+                if (idx === -1) return
+                const last = project.tracks.length - 1
+                let newIdx = idx
+                if (direction === 'top') newIdx = 0
+                else if (direction === 'bottom') newIdx = last
+                else if (direction === 'up') newIdx = Math.max(0, idx - 1)
+                else if (direction === 'down') newIdx = Math.min(last, idx + 1)
+                moveTrack(t.id, newIdx)
+              }}
+              trackIndex={project.tracks.findIndex((tr) => tr.id === t.id)}
+              trackCount={project.tracks.length}
               onClose={() => setTrackCtx(null)}
             />
           )

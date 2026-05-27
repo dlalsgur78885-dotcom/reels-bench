@@ -764,6 +764,9 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const splitAdjustmentLayerAt = useProjectStore(
     (s) => s.splitAdjustmentLayerAt
   )
+  const setAdjustmentLayerProperties = useProjectStore(
+    (s) => s.setAdjustmentLayerProperties
+  )
   const selectedAdjustmentLayerId = useTimelineUi(
     (s) => s.selectedAdjustmentLayerId
   )
@@ -785,6 +788,21 @@ export function Timeline(props: TimelineProps): JSX.Element {
     x: number
     y: number
   } | null>(null)
+  const adjustmentPropertiesClipboardRef = useRef<
+    Partial<
+      Pick<
+        AdjustmentLayer,
+        | 'colorAdjust'
+        | 'curves'
+        | 'hsl'
+        | 'filterPreset'
+        | 'filterIntensity'
+        | 'transform'
+        | 'fadeInMs'
+        | 'fadeOutMs'
+      >
+    > | null
+  >(null)
   // Phase 3 — track header context menu (slide 11).
   const [trackCtx, setTrackCtx] = useState<{
     trackId: string
@@ -3205,6 +3223,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
             x={adjCtx.x}
             y={adjCtx.y}
             playheadMs={playheadMs}
+            canPasteProperties={adjustmentPropertiesClipboardRef.current !== null}
             onAction={(key) => {
               if (key === 'toggle-lock') {
                 setAdjustmentLayerLocked(layer.id, !(layer.locked ?? false))
@@ -3213,6 +3232,26 @@ export function Timeline(props: TimelineProps): JSX.Element {
               } else if (key === 'duplicate') {
                 const newId = duplicateAdjustmentLayer(layer.id)
                 if (newId) setSelectedAdjustmentLayerId(newId)
+              } else if (key === 'copy-properties') {
+                adjustmentPropertiesClipboardRef.current = {
+                  colorAdjust: layer.colorAdjust
+                    ? JSON.parse(JSON.stringify(layer.colorAdjust))
+                    : undefined,
+                  curves: layer.curves
+                    ? JSON.parse(JSON.stringify(layer.curves))
+                    : undefined,
+                  hsl: layer.hsl ? JSON.parse(JSON.stringify(layer.hsl)) : undefined,
+                  filterPreset: layer.filterPreset,
+                  filterIntensity: layer.filterIntensity,
+                  transform: layer.transform
+                    ? JSON.parse(JSON.stringify(layer.transform))
+                    : undefined,
+                  fadeInMs: layer.fadeInMs,
+                  fadeOutMs: layer.fadeOutMs
+                }
+              } else if (key === 'paste-properties') {
+                const copied = adjustmentPropertiesClipboardRef.current
+                if (copied) setAdjustmentLayerProperties(layer.id, copied)
               } else if (key === 'delete') {
                 removeAdjustmentLayer(layer.id)
                 setSelectedAdjustmentLayerId(null)

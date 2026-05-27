@@ -1311,6 +1311,13 @@ export interface AdjustmentLayer {
   /** Preset intensity 0..1. Default 1. */
   filterIntensity?: number
   /**
+   * pptx12 slide 18 — adjustment layers can be resized/moved like visual
+   * layers. Identity/absent means the grade covers the full composited frame.
+   * When non-identity, preview/export apply the grade only inside the
+   * transformed layer rectangle.
+   */
+  transform?: ClipTransform
+  /**
    * pptx11 슬라이드 24 — 일반 클립과 동일한 잠금 동작. true 면 모든
    * mutation (move/trim/grade/split/duplicate/delete) 가 no-op. 잠금 토글
    * 자체는 항상 허용. Absent === false (기본 unlocked).
@@ -1331,6 +1338,19 @@ export interface AdjustmentLayer {
 /** Adjustment layer 의 locked 검사 helper — undefined/false 둘 다 unlocked. */
 export function isAdjustmentLayerLocked(l: AdjustmentLayer): boolean {
   return l.locked === true
+}
+
+/** Resolve an adjustment layer transform, filling identity for absent fields. */
+export function getAdjustmentLayerTransform(layer: AdjustmentLayer): ClipTransform {
+  const t = layer.transform
+  if (!t) return { ...IDENTITY_TRANSFORM }
+  return {
+    x: Number.isFinite(t.x) ? t.x : 0,
+    y: Number.isFinite(t.y) ? t.y : 0,
+    scale: Number.isFinite(t.scale) ? t.scale : 1,
+    rotation: Number.isFinite(t.rotation) ? t.rotation : 0,
+    opacity: Number.isFinite(t.opacity) ? t.opacity : 1
+  }
 }
 
 /**
@@ -1532,7 +1552,8 @@ export function getAdjustmentLayers(project: Project): AdjustmentLayer[] {
       curves: l.curves,
       hsl: l.hsl,
       filterPreset: l.filterPreset,
-      filterIntensity: l.filterIntensity
+      filterIntensity: l.filterIntensity,
+      transform: l.transform
     }
     // pptx11 슬라이드 23/24 — 새 필드들 (fade / lock) 보존.
     if (Number.isFinite(l.fadeInMs) && (l.fadeInMs ?? 0) > 0) {

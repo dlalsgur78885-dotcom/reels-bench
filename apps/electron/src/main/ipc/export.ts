@@ -87,6 +87,7 @@ import {
   isClipReversed,
   getClipTimelineDuration,
   getAdjustmentLayers,
+  getAdjustmentLayerTransform,
   MAX_TRANSFORM_OFFSET,
   MAX_TRANSFORM_ROTATION,
   MAX_TRANSFORM_SCALE,
@@ -3987,7 +3988,9 @@ function stitchOverlays(
 function stitchAdjustments(
   inputLabel: string,
   layers: AdjustmentLayer[],
-  hueSatAvailable: boolean
+  hueSatAvailable: boolean,
+  canvasWidth: number,
+  canvasHeight: number
 ): { graph: string; finalLabel: string } {
   const fragments: string[] = []
   let prevLabel = inputLabel
@@ -4000,7 +4003,52 @@ function stitchAdjustments(
     if (frag === '') continue // neutral layer — skip
     const newLabel = `vadj${adjCount}`
     adjCount++
-    fragments.push(`[${prevLabel}]${frag}[${newLabel}]`)
+    const transform = getAdjustmentLayerTransform(layer)
+    if (isIdentityTransform(transform)) {
+      fragments.push(`[${prevLabel}]${frag}[${newLabel}]`)
+      prevLabel = newLabel
+      continue
+    }
+    const scale = Math.max(
+      MIN_TRANSFORM_SCALE,
+      Math.min(1, Number.isFinite(transform.scale) ? transform.scale : 1)
+    )
+    const w = Math.max(2, Math.round(canvasWidth * scale))
+    const h = Math.max(2, Math.round(canvasHeight * scale))
+    const rawX = Math.round((canvasWidth - w) / 2 + transform.x * canvasWidth)
+    const rawY = Math.round((canvasHeight - h) / 2 + transform.y * canvasHeight)
+    const x = Math.max(0, Math.min(Math.max(0, canvasWidth - w), rawX))
+    const y = Math.max(0, Math.min(Math.max(0, canvasHeight - h), rawY))
+    const opacity = Math.max(
+      0,
+      Math.min(1, Number.isFinite(transform.opacity) ? transform.opacity : 1)
+    )
+    const baseLabel = `vadj${adjCount}base`
+    const srcLabel = `vadj${adjCount}src`
+    const gradeLabel = `vadj${adjCount}grade`
+    const cropLabel = `vadj${adjCount}crop`
+    const alphaLabel = `vadj${adjCount}alpha`
+    const cropChain = `crop=${w}:${h}:${x}:${y}`
+    const alphaChain =
+      opacity < 0.999
+        ? `[${cropLabel}]format=rgba,colorchannelmixer=aa=${opacity.toFixed(
+            3
+          )}[${alphaLabel}]`
+        : ''
+    const overlayInput = opacity < 0.999 ? alphaLabel : cropLabel
+    fragments.push(
+      [
+        `[${prevLabel}]split=2[${baseLabel}][${srcLabel}]`,
+        `[${srcLabel}]${frag}[${gradeLabel}]`,
+        `[${gradeLabel}]${cropChain}[${cropLabel}]`,
+        alphaChain,
+        `[${baseLabel}][${overlayInput}]overlay=${x}:${y}:enable='between(t,${startSec.toFixed(
+          3
+        )},${endSec.toFixed(3)})'[${newLabel}]`
+      ]
+        .filter(Boolean)
+        .join(';')
+    )
     prevLabel = newLabel
   }
 
@@ -4270,7 +4318,13 @@ function buildExportPlan(
   const adjustmentLayers = getAdjustmentLayers(project)
   const { graph: adjustGraph, finalLabel: afterAdjustLabel } =
     adjustmentLayers.length > 0
-      ? stitchAdjustments(afterOverlayLabel, adjustmentLayers, hueSatAvailable)
+      ? stitchAdjustments(
+          afterOverlayLabel,
+          adjustmentLayers,
+          hueSatAvailable,
+          preset.width,
+          preset.height
+        )
       : { graph: '', finalLabel: afterOverlayLabel }
 
   // Composite caption PNGs onto the stitched video. No-op when captionPngs

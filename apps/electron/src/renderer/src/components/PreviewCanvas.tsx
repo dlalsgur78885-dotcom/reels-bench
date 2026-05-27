@@ -16,6 +16,7 @@ import {
   getCaptionTextStroke,
   getAdjustmentLayerFadeFactor,
   getAdjustmentLayers,
+  getAdjustmentLayerTransform,
   getCanvasBackground,
   getClipBlurRegions,
   getClipColorAdjust,
@@ -44,6 +45,7 @@ import {
   hasTranscriptDeletions,
   isCaptionClip,
   isClipReversed,
+  isIdentityTransform,
   isMediaClip,
   isOverlayClip,
   MIN_TRACK_SOURCE_SIZE,
@@ -54,6 +56,7 @@ import {
   type CaptionSpan,
   type CaptionStyle,
   type Clip,
+  type ClipTransform,
   type OverlayClip,
   type Project,
   type ShapeStyle,
@@ -197,6 +200,12 @@ interface PreviewCanvasProps {
   project: Project
   /** Playhead position (ms). Captions visible when startMs <= playheadMs < endMs. */
   playheadMs: number
+}
+
+interface ScopedAdjustmentRegion {
+  id: string
+  filter: string
+  transform: ClipTransform
 }
 
 // ---------------------------------------------------------------------------
@@ -1314,9 +1323,9 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
     [project, playheadMs]
   )
 
-  // Phase 3.32 — adjustment-layer preview grade. When the playhead falls
-  // within a layer's [startMs, endMs], that layer's grade is composed as a
-  // CSS `filter` on the WHOLE composited frame (the preview-fitted-rect).
+  // Phase 3.32/slide 18 — adjustment-layer preview grade. Identity layers
+  // still apply to the whole fitted rect. Resized/moved layers emit a scoped
+  // backdrop-filter rectangle so the grade only affects that region.
   // Multiple overlapping layers concatenate in startMs order (getAdjustment-
   // Layers already sorts + drops neutral layers). Outside every layer the
   // result is empty → the `filter` property is omitted → byte-identical
@@ -1326,16 +1335,23 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
       (l) => playheadMs >= l.startMs && playheadMs < l.endMs
     )
     if (layers.length === 0) {
-      return { filter: '', curveSvgs: [] as JSX.Element[], count: 0 }
+      return {
+        filter: '',
+        curveSvgs: [] as JSX.Element[],
+        count: 0,
+        regions: [] as ScopedAdjustmentRegion[]
+      }
     }
     const parts: string[] = []
     const curveSvgs: JSX.Element[] = []
+    const regions: ScopedAdjustmentRegion[] = []
     const CURVE_STEPS = 33
     const curveTable = (pts: { x: number; y: number }[]): string =>
       sampleCurveTable(pts, CURVE_STEPS)
         .map((v) => v.toFixed(4))
         .join(' ')
     for (const layer of layers) {
+      const layerParts: string[] = []
       // pptx11 슬라이드 23 — fade 영역에선 filterIntensity / colorAdjust 를
       // 0..1 factor 로 곱해 점진 적용. fadeIn/Out 둘 다 0 이면 factor=1.
       // curves / HSL 은 비선형 보간 비용 때문에 full strength 유지 (export
@@ -1345,7 +1361,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
         layer.filterPreset,
         (layer.filterIntensity ?? 1) * fadeFactor
       )
-      if (preset) parts.push(preset)
+      if (preset) layerParts.push(preset)
       const rawCa = resolveColorAdjust(layer.colorAdjust)
       const scaledCa = rawCa
         ? {
@@ -1356,11 +1372,11 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           }
         : null
       const ca = colorAdjustToCss(scaledCa)
-      if (ca) parts.push(ca)
+      if (ca) layerParts.push(ca)
       const curves = resolveClipCurves(layer.curves)
       if (curves) {
         const filterId = `adj-curve-${layer.id}`
-        parts.push(`url(#${filterId})`)
+        layerParts.push(`url(#${filterId})`)
         curveSvgs.push(
           <svg
             key={filterId}
@@ -1400,11 +1416,22 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           </svg>
         )
       }
+      const transform = getAdjustmentLayerTransform(layer)
+      if (!isIdentityTransform(transform)) {
+        regions.push({
+          id: layer.id,
+          filter: layerParts.join(' '),
+          transform
+        })
+      } else {
+        parts.push(...layerParts)
+      }
     }
     return {
       filter: parts.join(' '),
       curveSvgs,
-      count: layers.length
+      count: layers.length,
+      regions
     }
   }, [project, playheadMs])
 
@@ -2547,6 +2574,32 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
             />
           ))}
         </div>
+
+        {adjustmentGrade.regions.map((region) => (
+          <div
+            key={region.id}
+            data-testid="preview-adjustment-region"
+            data-layer-id={region.id}
+            data-transform-active="true"
+            aria-hidden="true"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              pointerEvents: 'none',
+              zIndex: captionZIndex - 1,
+              transformOrigin: 'center center',
+              transform: `translate(${region.transform.x * 100}%, ${
+                region.transform.y * 100
+              }%) scale(${region.transform.scale}) rotate(${
+                region.transform.rotation
+              }deg)`,
+              opacity: region.transform.opacity,
+              backdropFilter: region.filter || 'none',
+              WebkitBackdropFilter: region.filter || 'none',
+              background: 'rgba(0,0,0,0.001)'
+            }}
+          />
+        ))}
 
         {/* Placeholder when no video clip is at the playhead on ANY layer. */}
         {videoLayers.length === 0 && (

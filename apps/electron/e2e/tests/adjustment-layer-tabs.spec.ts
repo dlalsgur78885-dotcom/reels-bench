@@ -5,8 +5,9 @@
  * Contract:
  *  (1) 6개 탭 버튼 모두 존재.
  *  (2) 기본 활성 탭 = '조정' (필터/색보정/곡선/HSL UI).
- *  (3) 변형/속도/애니메이션/레이아웃 탭은 "조정 레이어에 무관" 안내 텍스트.
- *  (4) 전환 탭은 fade in/out 슬라이더 (pptx11 슬라이드 23 유지).
+ *  (3) 변형 탭은 영역 X/Y/크기/투명도 컨트롤을 저장.
+ *  (4) 속도/애니메이션/레이아웃 탭은 안내 텍스트.
+ *  (5) 전환 탭은 fade in/out 슬라이더 (pptx11 슬라이드 23 유지).
  */
 import { expect, test } from '@playwright/test'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
@@ -101,10 +102,62 @@ test.describe('@phase-adjustment-layer-tabs 조정 레이어 6탭 구조', () =>
     ).toHaveCount(0)
   })
 
-  test('변형/속도/애니메이션/레이아웃 탭은 안내문 노출', async () => {
+  test('변형 탭은 조정 레이어 영역 크기/위치/투명도 저장', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
-    for (const tab of ['transform', 'speed', 'animation', 'layout']) {
+    await page.locator('[data-testid="adjustment-effects-tab-transform"]').click()
+    await page.waitForTimeout(80)
+    await expect(page.locator('[data-testid="adjustment-tab-transform"]')).toBeVisible()
+    await expect(
+      page.locator('[data-testid="adjustment-transform-scale-slider"]')
+    ).toBeVisible()
+
+    await page.locator('[data-testid="adjustment-transform-scale-input"]').fill('50')
+    await page.locator('[data-testid="adjustment-transform-y-input"]').fill('-25')
+    await page.locator('[data-testid="adjustment-transform-opacity-input"]').fill('70')
+    await page.waitForTimeout(120)
+
+    const saved = await page.evaluate(() => {
+      const project = window.__reelsStore.state().project as {
+        adjustmentLayers?: Array<{
+          transform?: { scale?: number; y?: number; opacity?: number }
+        }>
+      }
+      return project.adjustmentLayers?.[0]?.transform
+    })
+    expect(saved?.scale).toBeCloseTo(0.5, 4)
+    expect(saved?.y).toBeCloseTo(-0.25, 4)
+    expect(saved?.opacity).toBeCloseTo(0.7, 4)
+
+    await page.evaluate(() => {
+      const project = window.__reelsStore.state().project as {
+        adjustmentLayers?: Array<{ id: string }>
+      }
+      const id = project.adjustmentLayers?.[0]?.id
+      if (!id) throw new Error('missing adjustment layer')
+      window.__reelsStore.setAdjustmentLayerColorAdjust(id, { brightness: 35 })
+    })
+    await expect(page.locator('[data-testid="preview-adjustment-region"]')).toBeVisible()
+    await expect(page.locator('[data-testid="preview-fitted-rect"]')).toHaveAttribute(
+      'data-adjustment-active',
+      'true'
+    )
+
+    await page.locator('[data-testid="adjustment-transform-reset"]').click()
+    await page.waitForTimeout(120)
+    const reset = await page.evaluate(() => {
+      const project = window.__reelsStore.state().project as {
+        adjustmentLayers?: Array<{ transform?: unknown }>
+      }
+      return project.adjustmentLayers?.[0]?.transform ?? null
+    })
+    expect(reset).toBeNull()
+  })
+
+  test('속도/애니메이션/레이아웃 탭은 안내문 노출', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    for (const tab of ['speed', 'animation', 'layout']) {
       await page.locator(`[data-testid="adjustment-effects-tab-${tab}"]`).click()
       await page.waitForTimeout(80)
       await expect(

@@ -6,9 +6,10 @@
  *  (2) 잠금 토글 — locked=true 면 후속 grade 변경 / 이동 차단
  *  (3) 복제 — 원본 직후 같은 길이로 새 레이어 추가
  *  (4) 자르기 — playhead 지점에서 둘로 split
- *  (5) 삭제 — 메뉴에서 삭제 시 layers 에서 제거
- *  (6) playhead 가 layer 범위 밖이면 자르기 비활성
- *  (7) locked 면 split/duplicate/delete 비활성
+ *  (5) 특성 복사/붙여넣기 — grade/transform/fade 를 대상 layer 로 복사
+ *  (6) 삭제 — 메뉴에서 삭제 시 layers 에서 제거
+ *  (7) playhead 가 layer 범위 밖이면 자르기 비활성
+ *  (8) locked 면 split/duplicate/delete/paste 비활성
  */
 
 import { expect, test } from '@playwright/test'
@@ -78,6 +79,9 @@ test.describe('@phase-adjustment-layer-ctx adjustment layer right-click menu', (
       endMs: number
       locked?: boolean
       filterPreset?: string
+      colorAdjust?: { brightness?: number }
+      transform?: { scale?: number; y?: number }
+      fadeInMs?: number
     }>
   > {
     if (!launched) throw new Error('launch failed')
@@ -93,6 +97,9 @@ test.describe('@phase-adjustment-layer-ctx adjustment layer right-click menu', (
                   endMs: number
                   locked?: boolean
                   filterPreset?: string
+                  colorAdjust?: { brightness?: number }
+                  transform?: { scale?: number; y?: number }
+                  fadeInMs?: number
                 }>
               }
             }
@@ -128,7 +135,14 @@ test.describe('@phase-adjustment-layer-ctx adjustment layer right-click menu', (
     await expect(
       launched.page.locator('[data-testid="adjustment-layer-context-menu"]')
     ).toBeVisible()
-    for (const key of ['toggle-lock', 'split', 'duplicate', 'delete']) {
+    for (const key of [
+      'toggle-lock',
+      'split',
+      'duplicate',
+      'copy-properties',
+      'paste-properties',
+      'delete'
+    ]) {
       await expect(
         launched.page.locator(`[data-testid="adjustment-ctx-${key}"]`)
       ).toBeVisible()
@@ -243,6 +257,55 @@ test.describe('@phase-adjustment-layer-ctx adjustment layer right-click menu', (
     expect(right.endMs).toBe(4000)
   })
 
+  test('copy/paste properties copies grade, transform and fade without timing', async () => {
+    if (!launched) throw new Error('launch failed')
+    const sourceId = await openEditorAndAddLayer(3000)
+    const targetId = await launched.page.evaluate((srcId) => {
+      const reels = (
+        window as unknown as {
+          __reelsStore: {
+            addAdjustmentLayer: (a: number, b: number) => string | null
+            setAdjustmentLayerColorAdjust: (id: string, p: { brightness: number }) => void
+            setAdjustmentLayerTransform: (
+              id: string,
+              p: { scale: number; y: number }
+            ) => void
+            setAdjustmentLayerFade: (id: string, fadeInMs: number, fadeOutMs: number) => void
+          }
+        }
+      ).__reelsStore
+      reels.setAdjustmentLayerColorAdjust(srcId, { brightness: 42 })
+      reels.setAdjustmentLayerTransform(srcId, { scale: 0.5, y: -0.25 })
+      reels.setAdjustmentLayerFade(srcId, 600, 0)
+      const id = reels.addAdjustmentLayer(5000, 8000)
+      if (!id) throw new Error('second adjustment layer failed')
+      return id
+    }, sourceId)
+
+    await launched.page
+      .locator(`[data-testid="adjustment-layer-${sourceId}"]`)
+      .click({ button: 'right' })
+    await launched.page.locator('[data-testid="adjustment-ctx-copy-properties"]').click()
+    await launched.page.waitForTimeout(100)
+    await launched.page
+      .locator(`[data-testid="adjustment-layer-${targetId}"]`)
+      .click({ button: 'right' })
+    await expect(
+      launched.page.locator('[data-testid="adjustment-ctx-paste-properties"]')
+    ).toHaveAttribute('data-enabled', 'true')
+    await launched.page.locator('[data-testid="adjustment-ctx-paste-properties"]').click()
+    await launched.page.waitForTimeout(150)
+
+    const after = await getLayers()
+    const target = after.find((l) => l.id === targetId)!
+    expect(target.startMs).toBe(5000)
+    expect(target.endMs).toBe(8000)
+    expect(target.colorAdjust?.brightness).toBe(42)
+    expect(target.transform?.scale).toBeCloseTo(0.5, 4)
+    expect(target.transform?.y).toBeCloseTo(-0.25, 4)
+    expect(target.fadeInMs).toBe(600)
+  })
+
   test('delete via context-menu Delete row removes the layer', async () => {
     if (!launched) throw new Error('launch failed')
     const layerId = await openEditorAndAddLayer()
@@ -298,7 +361,7 @@ test.describe('@phase-adjustment-layer-ctx adjustment layer right-click menu', (
       .click({ button: 'right' })
     await launched.page.waitForTimeout(100)
 
-    for (const key of ['split', 'duplicate', 'delete']) {
+    for (const key of ['split', 'duplicate', 'paste-properties', 'delete']) {
       const enabled = await launched.page.getAttribute(
         `[data-testid="adjustment-ctx-${key}"]`,
         'data-enabled'

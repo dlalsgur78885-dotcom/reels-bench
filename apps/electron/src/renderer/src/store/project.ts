@@ -127,6 +127,7 @@ import {
   getClipDeletedRanges,
   getClipFreezeFrames,
   getClipTimelineDuration,
+  getAdjustmentLayerTransform,
   getClipTransform,
   getSpeedAt,
   getTransformAt,
@@ -708,6 +709,36 @@ export interface ProjectStore {
     id: string,
     preset: FilterPreset,
     intensity?: number
+  ): void
+  /**
+   * Merge a static transform onto an adjustment layer. Identity collapses the
+   * field to undefined so full-frame grade remains the default.
+   */
+  setAdjustmentLayerTransform(
+    id: string,
+    partial: Partial<ClipTransform>
+  ): void
+  /** Reset an adjustment layer transform back to full-frame identity. */
+  resetAdjustmentLayerTransform(id: string): void
+  /**
+   * Paste copied adjustment-layer properties onto a target layer. Timing/id and
+   * locked state are intentionally preserved.
+   */
+  setAdjustmentLayerProperties(
+    id: string,
+    properties: Partial<
+      Pick<
+        AdjustmentLayer,
+        | 'colorAdjust'
+        | 'curves'
+        | 'hsl'
+        | 'filterPreset'
+        | 'filterIntensity'
+        | 'transform'
+        | 'fadeInMs'
+        | 'fadeOutMs'
+      >
+    >
   ): void
   /**
    * pptx11 슬라이드 24 — adjustment layer 잠금 토글. locked=true 면 grade
@@ -2104,6 +2135,85 @@ export const useProjectStore = create<ProjectStore>()(
       return preset === 'none'
         ? { ...l, filterPreset: 'none' as FilterPreset, filterIntensity: 1 }
         : { ...l, filterPreset: preset, filterIntensity: clamped }
+    })
+    if (!changed) return
+    const next = touch({ ...project, adjustmentLayers: nextLayers })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  setAdjustmentLayerTransform(id, partial): void {
+    if (!partial || typeof partial !== 'object') return
+    for (const v of Object.values(partial)) {
+      if (v !== undefined && !Number.isFinite(v)) return
+    }
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    let changed = false
+    const nextLayers = layers.map((l) => {
+      if (l.id !== id) return l
+      if (isAdjustmentLayerLocked(l)) return l
+      const merged = clampClipTransform({
+        ...getAdjustmentLayerTransform(l),
+        ...partial
+      })
+      changed = true
+      if (isIdentityTransform(merged)) {
+        const copy: AdjustmentLayer = { ...l }
+        delete copy.transform
+        return copy
+      }
+      return { ...l, transform: merged }
+    })
+    if (!changed) return
+    const next = touch({ ...project, adjustmentLayers: nextLayers })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  resetAdjustmentLayerTransform(id): void {
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    let changed = false
+    const nextLayers = layers.map((l) => {
+      if (l.id !== id) return l
+      if (isAdjustmentLayerLocked(l) || l.transform === undefined) return l
+      changed = true
+      const copy: AdjustmentLayer = { ...l }
+      delete copy.transform
+      return copy
+    })
+    if (!changed) return
+    const next = touch({ ...project, adjustmentLayers: nextLayers })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  setAdjustmentLayerProperties(id, properties): void {
+    if (!properties || typeof properties !== 'object') return
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    const clone = <T,>(value: T | undefined): T | undefined => {
+      if (value === undefined) return undefined
+      return JSON.parse(JSON.stringify(value)) as T
+    }
+    let changed = false
+    const nextLayers = layers.map((l) => {
+      if (l.id !== id) return l
+      if (isAdjustmentLayerLocked(l)) return l
+      changed = true
+      const next: AdjustmentLayer = {
+        ...l,
+        colorAdjust: clone(properties.colorAdjust),
+        curves: clone(properties.curves),
+        hsl: clone(properties.hsl),
+        filterPreset: properties.filterPreset,
+        filterIntensity: properties.filterIntensity,
+        transform: clone(properties.transform),
+        fadeInMs: properties.fadeInMs,
+        fadeOutMs: properties.fadeOutMs
+      }
+      return next
     })
     if (!changed) return
     const next = touch({ ...project, adjustmentLayers: nextLayers })

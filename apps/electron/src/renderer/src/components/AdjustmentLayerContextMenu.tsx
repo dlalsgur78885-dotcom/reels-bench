@@ -9,6 +9,7 @@ import { isAdjustmentLayerLocked, MIN_CLIP_MS } from '../../../shared/project'
  *   - 🔒 잠금 / 🔓 잠금 해제
  *   - 여기서 자르기 (S) — playhead 가 layer 안에 있을 때만 활성화
  *   - 복제 (Ctrl+D)
+ *   - 특성 복사 / 특성 붙여넣기
  *   - 삭제 (Delete)
  *
  * 일반 클립 메뉴와 동일한 fixed-positioning + outside-click + Esc 닫기 패턴.
@@ -20,6 +21,7 @@ interface AdjustmentLayerContextMenuProps {
   y: number
   /** 현재 playhead (ms) — 자르기 활성화 게이트. */
   playheadMs: number
+  canPasteProperties?: boolean
   onAction: (key: string) => void
   onClose: () => void
 }
@@ -77,7 +79,7 @@ interface Row {
 export function AdjustmentLayerContextMenu(
   props: AdjustmentLayerContextMenuProps
 ): JSX.Element {
-  const { layer, x, y, playheadMs, onAction, onClose } = props
+  const { layer, x, y, playheadMs, canPasteProperties, onAction, onClose } = props
   const ref = useRef<HTMLDivElement>(null)
 
   // Outside click + Esc 닫기 — TrackContextMenu / ClipContextMenu 동일.
@@ -123,6 +125,13 @@ export function AdjustmentLayerContextMenu(
   const otherRows: Row[] = [
     { key: 'split', label: '여기서 자르기', shortcut: 'S', enabled: splittable },
     { key: 'duplicate', label: '복제', shortcut: 'Ctrl+D', enabled: !locked },
+    { key: 'copy-properties', label: '특성 복사', shortcut: 'Alt+C', enabled: true },
+    {
+      key: 'paste-properties',
+      label: '특성 붙여넣기',
+      shortcut: 'Alt+V',
+      enabled: !locked && canPasteProperties === true
+    },
     {
       key: 'delete',
       label: '삭제',

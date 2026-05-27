@@ -185,6 +185,9 @@ export function installTestBridge(): void {
         setAdjustmentLayerCurvePoint: Store['setAdjustmentLayerCurvePoint']
         setAdjustmentLayerHslBand: Store['setAdjustmentLayerHslBand']
         setAdjustmentLayerFilterPreset: Store['setAdjustmentLayerFilterPreset']
+        setAdjustmentLayerTransform: Store['setAdjustmentLayerTransform']
+        resetAdjustmentLayerTransform: Store['resetAdjustmentLayerTransform']
+        setAdjustmentLayerProperties: Store['setAdjustmentLayerProperties']
         // pptx11 슬라이드 23/24.
         setAdjustmentLayerLocked: Store['setAdjustmentLayerLocked']
         duplicateAdjustmentLayer: Store['duplicateAdjustmentLayer']
@@ -412,6 +415,12 @@ export function installTestBridge(): void {
         useProjectStore
           .getState()
           .setAdjustmentLayerFilterPreset(id, preset, intensity),
+      setAdjustmentLayerTransform: (id, partial) =>
+        useProjectStore.getState().setAdjustmentLayerTransform(id, partial),
+      resetAdjustmentLayerTransform: (id) =>
+        useProjectStore.getState().resetAdjustmentLayerTransform(id),
+      setAdjustmentLayerProperties: (id, properties) =>
+        useProjectStore.getState().setAdjustmentLayerProperties(id, properties),
       // pptx11 슬라이드 23/24.
       setAdjustmentLayerLocked: (id, locked) =>
         useProjectStore.getState().setAdjustmentLayerLocked(id, locked),

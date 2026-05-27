@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type {
   AdjustmentLayer,
   ClipHsl,
+  ClipTransform,
   ColorAdjust,
   FilterPreset,
   HslBandAdjust,
@@ -9,9 +10,11 @@ import type {
 } from '../../../shared/project'
 import {
   FILTER_PRESETS,
+  getAdjustmentLayerTransform,
   HSL_BAND_KEYS,
   MAX_COLOR_ADJUST,
   MAX_HSL_ADJUST,
+  MIN_TRANSFORM_SCALE,
   MIN_COLOR_ADJUST,
   MIN_HSL_ADJUST,
   NEUTRAL_CLIP_HSL,
@@ -210,6 +213,12 @@ export function AdjustmentLayerEditor(
   const setAdjustmentLayerFade = useProjectStore(
     (s) => s.setAdjustmentLayerFade
   )
+  const setAdjustmentLayerTransform = useProjectStore(
+    (s) => s.setAdjustmentLayerTransform
+  )
+  const resetAdjustmentLayerTransform = useProjectStore(
+    (s) => s.resetAdjustmentLayerTransform
+  )
   const removeAdjustmentLayer = useProjectStore((s) => s.removeAdjustmentLayer)
   const setSelectedAdjustmentLayerId = useTimelineUi(
     (s) => s.setSelectedAdjustmentLayerId
@@ -227,6 +236,7 @@ export function AdjustmentLayerEditor(
   const hslBandAdjust: HslBandAdjust = hsl[hslBand]
   const filterPreset: FilterPreset = layer.filterPreset ?? 'none'
   const filterIntensity = layer.filterIntensity ?? 1
+  const transform: ClipTransform = getAdjustmentLayerTransform(layer)
 
   /** A labelled range + number-input pair (mirrors EffectsPanel's sliderRow). */
   const sliderRow = (
@@ -272,14 +282,56 @@ export function AdjustmentLayerEditor(
     </div>
   )
 
-  // pptx12 슬라이드 18 — 변형/속도/레이아웃은 조정 레이어 의미상 무관
-  // (조정 레이어는 visual 요소가 아니라 프레임 전체 grade 합성). 사용자가
-  // 일반 효과 패널과 동일한 탭 구조를 요청해서 노출만 하고, 컨텐츠는
-  // 명시적 안내문으로 처리.
+  // pptx12 slide 18 — scaled adjustment layers need a real region transform:
+  // the grade applies only inside the resized/moved rectangle.
   const transformPanel = (
-    <div data-testid="adjustment-tab-transform" style={styles.emptyHint}>
-      조정 레이어는 영상 위에 색 보정만 합성하는 time-range grade 입니다.
-      위치 / 크기 / 회전 변경은 개별 영상 / 오버레이 클립에서 가능합니다.
+    <div data-testid="adjustment-tab-transform">
+      <p style={styles.sectionLabel}>위치 / 크기</p>
+      <div style={{ height: 6 }} />
+      {sliderRow(
+        'X',
+        Math.round(transform.x * 100),
+        -200,
+        200,
+        (v) => setAdjustmentLayerTransform(layer.id, { x: v / 100 }),
+        'adjustment-transform-x'
+      )}
+      {sliderRow(
+        'Y',
+        Math.round(transform.y * 100),
+        -200,
+        200,
+        (v) => setAdjustmentLayerTransform(layer.id, { y: v / 100 }),
+        'adjustment-transform-y'
+      )}
+      {sliderRow(
+        '크기',
+        Math.round(transform.scale * 100),
+        Math.round(MIN_TRANSFORM_SCALE * 100),
+        100,
+        (v) => setAdjustmentLayerTransform(layer.id, { scale: v / 100 }),
+        'adjustment-transform-scale'
+      )}
+      {sliderRow(
+        '투명도',
+        Math.round(transform.opacity * 100),
+        0,
+        100,
+        (v) => setAdjustmentLayerTransform(layer.id, { opacity: v / 100 }),
+        'adjustment-transform-opacity'
+      )}
+      <div style={{ height: 8 }} />
+      <button
+        type="button"
+        style={styles.resetBtn}
+        onClick={() => resetAdjustmentLayerTransform(layer.id)}
+        data-testid="adjustment-transform-reset"
+      >
+        변형 초기화
+      </button>
+      <p style={{ ...styles.hint, marginTop: 6 }}>
+        크기를 줄이면 조정 효과가 해당 사각 영역 안에만 적용됩니다.
+      </p>
     </div>
   )
   const speedPanel = (

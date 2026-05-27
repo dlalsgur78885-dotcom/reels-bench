@@ -412,7 +412,7 @@ export function AutoEditDialog({
         }
         const ranges = await window.electron.audio.detectSilence(path, {
           noiseDb,
-          minSilenceMs: minMs
+          minMs
         })
         if (cancelled) return
         const totalMs = ranges.reduce((acc, r) => acc + r.durationMs, 0)

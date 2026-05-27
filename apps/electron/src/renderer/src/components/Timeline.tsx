@@ -2592,6 +2592,18 @@ export function Timeline(props: TimelineProps): JSX.Element {
                         : 'false'
                     }
                     data-muted={audioMuted ? 'true' : 'false'}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (toolMode === 'split') {
+                        handleSplitToolClick(e, clip)
+                        return
+                      }
+                      if (e.ctrlKey || e.metaKey) {
+                        handleToggleSelect(clip.id)
+                        return
+                      }
+                      handleSelect(clip.id)
+                    }}
                     onContextMenu={(e) => handleContext(e, clip)}
                   >
                     {/* Phase 3.77 — color label accent strip. Sits at the

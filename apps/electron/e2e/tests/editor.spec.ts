@@ -49,6 +49,7 @@ test.describe('@phase-2-smoke editor view + media library', () => {
       return Object.keys(m).sort()
     })
     expect(keys).toEqual([
+      'copyToImports',
       'generateThumbnail',
       'generateWaveform',
       'probe',
@@ -80,13 +81,45 @@ test.describe('@phase-2-smoke editor view + media library', () => {
     const roundTrip = await page.evaluate(async () => {
       const now = Date.now()
       const sample = {
-        id: 'test-project-id',
+        id: '01HX0000000000000000000000',
         name: 'persistence smoke',
         aspectRatio: '9:16' as const,
         width: 1080,
         height: 1920,
         fps: 30,
-        tracks: [],
+        tracks: [
+          {
+            id: 'track-video-1',
+            kind: 'video' as const,
+            name: 'V1',
+            height: 120,
+            locked: false,
+            muted: false,
+            solo: false,
+            clips: []
+          },
+          {
+            id: 'track-audio-1',
+            kind: 'audio' as const,
+            role: 'voice' as const,
+            name: 'Voice',
+            height: 72,
+            locked: false,
+            muted: false,
+            solo: false,
+            clips: []
+          },
+          {
+            id: 'track-caption-1',
+            kind: 'caption' as const,
+            name: 'Captions',
+            height: 72,
+            locked: false,
+            muted: false,
+            solo: false,
+            clips: []
+          }
+        ],
         media: {
           'media-1': {
             id: 'media-1',

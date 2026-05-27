@@ -769,6 +769,7 @@ export interface ProjectStore {
 
   addMedia(asset: MediaAsset): void
   removeMedia(mediaId: string): void
+  renameMedia(mediaId: string, fileName: string): void
   updateMediaThumbnail(mediaId: string, thumbnailPath: string): void
   /** Attach a generated waveform PNG to a media asset (Phase 2.5). */
   updateMediaWaveform(mediaId: string, waveformPath: string): void
@@ -2344,6 +2345,22 @@ export const useProjectStore = create<ProjectStore>()(
     const next = touch({
       ...project,
       media: { ...project.media, [asset.id]: asset }
+    })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  renameMedia(mediaId: string, fileName: string): void {
+    const project = get().project
+    const existing = project.media[mediaId]
+    const trimmed = String(fileName ?? '').trim().slice(0, 240)
+    if (!existing || !trimmed || existing.fileName === trimmed) return
+    const next = touch({
+      ...project,
+      media: {
+        ...project.media,
+        [mediaId]: { ...existing, fileName: trimmed }
+      }
     })
     set({ project: next })
     schedulePersist(next)

@@ -203,8 +203,8 @@ async function resetProject(launched: LaunchedApp): Promise<void> {
  * path.  Uses the same pattern as prefill.spec.ts.
  */
 async function mockDownloadSuccess(launched: LaunchedApp): Promise<void> {
-  const fixturePath = process.env.E2E_FIXTURE_MP4
-  if (!fixturePath) throw new Error('E2E_FIXTURE_MP4 not set — globalSetup failed')
+  const fixturePath = process.env.E2E_FIXTURE_MP3
+  if (!fixturePath) throw new Error('E2E_FIXTURE_MP3 not set — globalSetup failed')
   await launched.app.evaluate(async ({ ipcMain }, fixture) => {
     ipcMain.removeHandler('download:downloadVideoToTemp')
     ipcMain.handle('download:downloadVideoToTemp', async () => ({

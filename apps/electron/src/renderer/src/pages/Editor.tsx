@@ -1026,12 +1026,6 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     (s) => s.selectedAdjustmentLayerId
   )
 
-  // pptx10 slide 24 — 타임라인에서 미디어/오버레이 클립을 선택하면 우측 인스펙터 패널이
-  // 자동으로 열린다. 사용자가 X 로 닫은 후 다른 클립 선택 시 다시 열린다.
-  useEffect(() => {
-    setEffectsOpen(!!effectsClipId)
-  }, [effectsClipId])
-
   // The 효과 panel is shown when the user has toggled it on AND an effect-
   // eligible clip is selected, OR whenever an adjustment layer is selected.
   // The caption editor takes the same 360px right slot, so it wins when a

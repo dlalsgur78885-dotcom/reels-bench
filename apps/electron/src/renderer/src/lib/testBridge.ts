@@ -193,12 +193,6 @@ export function installTestBridge(): void {
         duplicateAdjustmentLayer: Store['duplicateAdjustmentLayer']
         splitAdjustmentLayerAt: Store['splitAdjustmentLayerAt']
         setAdjustmentLayerFade: Store['setAdjustmentLayerFade']
-        // pptx11 슬라이드 8 — 다중 선택 일괄 이동.
-        moveClipsByDelta: Store['moveClipsByDelta']
-        // pptx11 슬라이드 9 — 갭 ripple 삭제.
-        rippleRemoveGap: Store['rippleRemoveGap']
-        // pptx11 슬라이드 10 — 트랙 stack 이동.
-        moveTrack: Store['moveTrack']
         // Phase 3.32 — adjustment-layer selection (timeline-UI store).
         setSelectedAdjustmentLayerId: (layerId: string | null) => void
         // Phase 3.33 — clip grouping / linking.
@@ -430,16 +424,6 @@ export function installTestBridge(): void {
         useProjectStore.getState().splitAdjustmentLayerAt(id, atMs),
       setAdjustmentLayerFade: (id, fadeInMs, fadeOutMs) =>
         useProjectStore.getState().setAdjustmentLayerFade(id, fadeInMs, fadeOutMs),
-      // pptx11 슬라이드 8.
-      moveClipsByDelta: (ids, anchorId, desiredAnchorStart) =>
-        useProjectStore
-          .getState()
-          .moveClipsByDelta(ids, anchorId, desiredAnchorStart),
-      // pptx11 슬라이드 9.
-      rippleRemoveGap: (tid, s, e) =>
-        useProjectStore.getState().rippleRemoveGap(tid, s, e),
-      // pptx11 슬라이드 10.
-      moveTrack: (tid, idx) => useProjectStore.getState().moveTrack(tid, idx),
       setSelectedAdjustmentLayerId: (layerId) =>
         useTimelineUi.getState().setSelectedAdjustmentLayerId(layerId),
       // Phase 3.33 — clip grouping / linking.

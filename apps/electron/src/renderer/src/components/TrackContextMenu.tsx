@@ -57,6 +57,8 @@ const styles = {
   wrap: {
     position: 'fixed' as const,
     minWidth: 210,
+    maxHeight: 'calc(100vh - 16px)',
+    overflowY: 'auto' as const,
     background: '#1a1a1a',
     border: '1px solid #2a2a2a',
     borderRadius: 8,
@@ -229,8 +231,9 @@ export function TrackContextMenu(props: TrackContextMenuProps): JSX.Element {
   // Clamp the menu into the viewport.
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1000
   const vh = typeof window !== 'undefined' ? window.innerHeight : 800
-  const left = Math.min(x, Math.max(0, vw - 240))
-  const top = Math.min(y, Math.max(0, vh - 320))
+  const left = Math.min(x, Math.max(8, vw - 240))
+  const estimatedMenuHeight = 520
+  const top = Math.max(8, Math.min(y, Math.max(8, vh - estimatedMenuHeight - 8)))
 
   const kindLabel = KIND_LABEL[track.kind] ?? '트랙'
 

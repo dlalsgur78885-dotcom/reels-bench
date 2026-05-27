@@ -151,6 +151,33 @@ test.describe('@phase-detach-audio audio detach — 오디오 분리', () => {
     }, fixture)
   }
 
+  async function addAudioFixtureMedia(): Promise<{ mediaId: string; durationMs: number }> {
+    if (!launched) throw new Error('launch failed')
+    const fixture = process.env.E2E_FIXTURE_MP3
+    if (!fixture) throw new Error('E2E_FIXTURE_MP3 not set')
+    const { page } = launched
+    return page.evaluate(async (filePath: string) => {
+      await window.electron.fs.allowPath(filePath)
+      const probe = await window.electron.media.probe(filePath)
+      const fileName = filePath.split(/[/\\]/).pop() ?? filePath
+      const reels = window.__reelsStore
+      const id = reels.newId()
+      reels.addMedia({
+        id,
+        path: filePath,
+        kind: probe.kind,
+        durationMs: probe.durationMs,
+        width: probe.width,
+        height: probe.height,
+        codec: probe.codec,
+        importedAt: Date.now(),
+        fileName,
+        fileSizeBytes: 0
+      })
+      return { mediaId: id, durationMs: probe.durationMs }
+    }, fixture)
+  }
+
   /** Add a media clip on the first video track and return its clip id. */
   async function addVideoClip(mediaId: string, durationMs: number, startMs = 0): Promise<string> {
     if (!launched) throw new Error('launch failed')
@@ -459,7 +486,7 @@ test.describe('@phase-detach-audio audio detach — 오디오 분리', () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
     await openEditor()
-    const { mediaId, durationMs } = await addFixtureMedia()
+    const { mediaId, durationMs } = await addAudioFixtureMedia()
 
     // Add a clip directly on an existing audio track.
     const audioCid = await page.evaluate(
@@ -612,7 +639,7 @@ test.describe('@phase-detach-audio audio detach — 오디오 분리', () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
     await openEditor()
-    const { mediaId, durationMs } = await addFixtureMedia()
+    const { mediaId, durationMs } = await addAudioFixtureMedia()
 
     // Add a clip directly onto an audio track.
     const audioCid = await page.evaluate(

@@ -52,8 +52,8 @@ test.describe('@phase-4-webaudio preview audio graph', () => {
   async function importFixture(): Promise<{ mediaId: string; durationMs: number }> {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
-    const fixture = process.env.E2E_FIXTURE_MP4
-    if (!fixture) throw new Error('E2E_FIXTURE_MP4 not set')
+    const fixture = process.env.E2E_FIXTURE_MP3
+    if (!fixture) throw new Error('E2E_FIXTURE_MP3 not set')
 
     await page.locator('[data-testid="open-editor-button"]').click()
     await expect(page.locator('[data-testid="editor-page"]')).toBeVisible()

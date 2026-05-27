@@ -45,15 +45,18 @@ test.describe('@phase-2-audio audio shaping + track controls', () => {
   // -------------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------------
-  async function openEditorWithMedia(): Promise<{
+  async function openEditorWithMedia(kind: 'video' | 'audio' = 'video'): Promise<{
     mediaId: string
     durationMs: number
     path: string
   }> {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
-    const fixture = process.env.E2E_FIXTURE_MP4
-    if (!fixture) throw new Error('E2E_FIXTURE_MP4 not set')
+    const fixture =
+      kind === 'audio' ? process.env.E2E_FIXTURE_MP3 : process.env.E2E_FIXTURE_MP4
+    if (!fixture) {
+      throw new Error(kind === 'audio' ? 'E2E_FIXTURE_MP3 not set' : 'E2E_FIXTURE_MP4 not set')
+    }
 
     await page.locator('[data-testid="open-editor-button"]').click()
     await expect(page.locator('[data-testid="editor-page"]')).toBeVisible()
@@ -306,7 +309,7 @@ test.describe('@phase-2-audio audio shaping + track controls', () => {
   test('setClipMuted toggles flag on media clip only', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
-    const { mediaId, durationMs } = await openEditorWithMedia()
+    const { mediaId, durationMs } = await openEditorWithMedia('audio')
     const cid = await addClipOnTrack('audio', mediaId, durationMs)
 
     await page.evaluate((id) => {
@@ -441,13 +444,13 @@ test.describe('@phase-2-audio audio shaping + track controls', () => {
   test('removeSilencesFromClip splits a clip into the correct surviving slices', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
-    const { mediaId, durationMs } = await openEditorWithMedia()
+    const { mediaId, durationMs } = await openEditorWithMedia('audio')
     const cid = await addClipOnTrack('audio', mediaId, durationMs)
 
     // Mock silences in source-time coords: drop [1000..1800] and [3000..3600].
     const ranges = [
-      { startMs: 1000, endMs: 1800, durationMs: 800 },
-      { startMs: 3000, endMs: 3600, durationMs: 600 }
+      { startMs: 500, endMs: 900, durationMs: 400 },
+      { startMs: 1400, endMs: 1800, durationMs: 400 }
     ]
     const newIds = await page.evaluate(
       ({ id, r }) => {
@@ -462,7 +465,7 @@ test.describe('@phase-2-audio audio shaping + track controls', () => {
       },
       { id: cid, r: ranges }
     )
-    // 3 survivors: [0..1000], [1800..3000], [3600..durationMs].
+    // 3 survivors: [0..500], [900..1400], [1800..durationMs].
     expect(newIds.length).toBe(3)
 
     const all = await page.evaluate(() => {
@@ -496,17 +499,17 @@ test.describe('@phase-2-audio audio shaping + track controls', () => {
     })
     expect(all.length).toBe(3)
     expect(all[0].startMs).toBe(0)
-    expect(all[0].endMs).toBe(1000)
-    expect(all[1].startMs).toBe(1800)
-    expect(all[1].endMs).toBe(3000)
-    expect(all[2].startMs).toBe(3600)
+    expect(all[0].endMs).toBe(500)
+    expect(all[1].startMs).toBe(900)
+    expect(all[1].endMs).toBe(1400)
+    expect(all[2].startMs).toBe(1800)
     expect(all[2].endMs).toBe(durationMs)
     // Trim points chain so each surviving piece points at the right source slice.
     expect(all[0].trimInMs).toBe(0)
-    expect(all[0].trimOutMs).toBe(1000)
-    expect(all[1].trimInMs).toBe(1800)
-    expect(all[1].trimOutMs).toBe(3000)
-    expect(all[2].trimInMs).toBe(3600)
+    expect(all[0].trimOutMs).toBe(500)
+    expect(all[1].trimInMs).toBe(900)
+    expect(all[1].trimOutMs).toBe(1400)
+    expect(all[2].trimInMs).toBe(1800)
     expect(all[2].trimOutMs).toBe(durationMs)
   })
 
@@ -648,7 +651,7 @@ test.describe('@phase-2-audio audio shaping + track controls', () => {
   test('audio clip shows waveform background after generation', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
-    const { mediaId, durationMs } = await openEditorWithMedia()
+    const { mediaId, durationMs } = await openEditorWithMedia('audio')
     const cid = await addClipOnTrack('audio', mediaId, durationMs)
 
     // Seed the cached data URI directly.

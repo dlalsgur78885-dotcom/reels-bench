@@ -11,6 +11,7 @@ import {
   registerAppSchemePrivileges
 } from './appProtocol'
 import { initAutoUpdate } from './auto-update'
+import { installAppMenu } from './appMenu'
 
 app.setName('Reels Studio')
 
@@ -81,6 +82,7 @@ app.whenReady().then(() => {
   registerMediaProtocolHandler()
   registerAppProtocolHandler()
   registerIpcHandlers()
+  installAppMenu()
   const mainWin = createMainWindow()
 
   // Phase 4.7 — kick off background auto-update check. No-op in dev.

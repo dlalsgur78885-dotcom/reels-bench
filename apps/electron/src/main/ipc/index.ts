@@ -11,6 +11,7 @@ import { registerSttHandlers } from './stt'
 import { registerRecordingHandlers } from './recording'
 import { registerBrandKitHandlers } from './brand-kit'
 import { registerOverlayHandlers } from './overlay'
+import { registerPreviewWindowHandlers } from './preview-window'
 
 export function registerIpcHandlers(): void {
   registerFfmpegHandlers()
@@ -26,4 +27,5 @@ export function registerIpcHandlers(): void {
   registerRecordingHandlers()
   registerBrandKitHandlers()
   registerOverlayHandlers()
+  registerPreviewWindowHandlers()
 }

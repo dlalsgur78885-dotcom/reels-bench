@@ -424,48 +424,76 @@ export default function App(): JSX.Element {
           Editor
         </button>
       </div>
-      {/* Phase 3.87 — current project info card. */}
+      {/* Phase 3.87 — current project info card ("이어서 작업"). */}
       {projectSnapshot && (
-        <div
-          style={{
-            marginTop: 12,
-            padding: 12,
-            background: '#1a1a1a',
-            border: '1px solid #2a2a2a',
-            borderRadius: 8,
-            color: '#cbd5e1',
-            fontSize: 13,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            maxWidth: 520
-          }}
-          data-testid="current-project-card"
-        >
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>
-              📁 {projectSnapshot.name}
-            </div>
-            <div style={{ fontSize: 11, color: '#94a3b8' }}>
-              {projectSnapshot.aspectRatio} · 클립 {projectSnapshot.clipCount}개
-              · 자막 {projectSnapshot.captionCount}개 · 수정{' '}
-              {formatRelativeTime(projectSnapshot.updatedAt)}
-            </div>
-          </div>
-          <button
-            type="button"
-            style={{ ...btn, padding: '6px 14px', fontSize: 12 }}
-            onClick={handleEditor}
-            data-testid="continue-current-project"
+        <>
+          <div
+            style={{
+              marginTop: 24,
+              marginBottom: 8,
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: 0.8,
+              textTransform: 'uppercase',
+              color: '#94a3b8'
+            }}
           >
-            Editor로 계속 →
-          </button>
-        </div>
+            이어서 작업
+          </div>
+          <div
+            style={{
+              padding: 12,
+              background: '#1a1a1a',
+              border: '1px solid #2a2a2a',
+              borderRadius: 8,
+              color: '#cbd5e1',
+              fontSize: 13,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              maxWidth: 520
+            }}
+            data-testid="current-project-card"
+          >
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>
+                📁 {projectSnapshot.name}
+              </div>
+              <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                {projectSnapshot.aspectRatio} · 클립 {projectSnapshot.clipCount}개
+                · 자막 {projectSnapshot.captionCount}개 · 수정{' '}
+                {formatRelativeTime(projectSnapshot.updatedAt)}
+              </div>
+            </div>
+            <button
+              type="button"
+              style={{ ...btn, padding: '6px 14px', fontSize: 12 }}
+              onClick={handleEditor}
+              data-testid="continue-current-project"
+            >
+              Editor로 계속 →
+            </button>
+          </div>
+        </>
       )}
-      {/* Phase 3.88 — preset starts (Reels 9:16 / Shorts 9:16 / Square 1:1 /
-          Long-form 16:9). One click resets the project to that aspect ratio
-          and routes into the editor. */}
-      <div style={{ ...btnRow, marginTop: 12, gap: 8 }}>
+      {/* Phase 3.88 — preset starts (Reels 9:16 / Square 1:1 / Long-form 16:9).
+          Reels 11 슬라이드 5 — "새 프로젝트 만들기" 섹션으로 명시화하여 위의
+          "이어서 작업"과 시각적으로 분리. 클릭 → 비율 적용 + Editor 진입. */}
+      <div
+        style={{
+          marginTop: 24,
+          marginBottom: 8,
+          fontSize: 11,
+          fontWeight: 600,
+          letterSpacing: 0.8,
+          textTransform: 'uppercase',
+          color: '#94a3b8'
+        }}
+        data-testid="new-project-section-heading"
+      >
+        + 새 프로젝트 만들기
+      </div>
+      <div style={{ ...btnRow, gap: 8 }} data-testid="new-project-presets">
         <button
           type="button"
           style={btn}

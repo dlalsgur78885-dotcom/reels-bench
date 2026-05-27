@@ -62,6 +62,8 @@ export function installTestBridge(): void {
         addMedia: Store['addMedia']
         addClip: Store['addClip']
         removeClip: Store['removeClip']
+        // Reels 11 슬라이드 9 — 갭 ripple 삭제.
+        rippleRemoveGap: Store['rippleRemoveGap']
         updateMediaClipTrim: Store['updateMediaClipTrim']
         splitClipAt: Store['splitClipAt']
         duplicateClip: Store['duplicateClip']
@@ -144,10 +146,11 @@ export function installTestBridge(): void {
         addAudioSubmixTrack: Store['addAudioSubmixTrack']
         removeTrack: Store['removeTrack']
         removeTracks: Store['removeTracks']
+        // Reels 11 슬라이드 10 — 트랙 stack 임의 인덱스로 이동.
+        moveTrack: Store['moveTrack']
         addCaption: Store['addCaption']
         addCaptions: Store['addCaptions']
         updateCaption: Store['updateCaption']
-        selectClip: Store['selectClip']
         setClipChromaKey: Store['setClipChromaKey']
         addCountdownCaptions: Store['addCountdownCaptions']
         // Phase 3.13 — motion-track project-store actions.
@@ -182,11 +185,10 @@ export function installTestBridge(): void {
         setAdjustmentLayerCurvePoint: Store['setAdjustmentLayerCurvePoint']
         setAdjustmentLayerHslBand: Store['setAdjustmentLayerHslBand']
         setAdjustmentLayerFilterPreset: Store['setAdjustmentLayerFilterPreset']
-        // pptx11 슬라이드 24 — 우클릭 메뉴 액션들.
+        // pptx11 슬라이드 23/24.
         setAdjustmentLayerLocked: Store['setAdjustmentLayerLocked']
         duplicateAdjustmentLayer: Store['duplicateAdjustmentLayer']
         splitAdjustmentLayerAt: Store['splitAdjustmentLayerAt']
-        // pptx11 슬라이드 23 — fade in/out.
         setAdjustmentLayerFade: Store['setAdjustmentLayerFade']
         // Phase 3.32 — adjustment-layer selection (timeline-UI store).
         setSelectedAdjustmentLayerId: (layerId: string | null) => void
@@ -194,6 +196,8 @@ export function installTestBridge(): void {
         groupClips: Store['groupClips']
         ungroupClips: Store['ungroupClips']
         moveClipGroup: Store['moveClipGroup']
+        // Reels 11 슬라이드 8 — multi-select 본체 드래그.
+        moveClipsByDelta: Store['moveClipsByDelta']
         // Phase 3.40 — cross-track clip drag.
         moveClipToTrack: Store['moveClipToTrack']
         // Phase 3.33 — selectClip (routes through timelineUi so group-expand fires).
@@ -205,6 +209,9 @@ export function installTestBridge(): void {
       addMedia: (asset) => useProjectStore.getState().addMedia(asset),
       addClip: (clip) => useProjectStore.getState().addClip(clip),
       removeClip: (id) => useProjectStore.getState().removeClip(id),
+      // Reels 11 슬라이드 9 — 갭 ripple 삭제.
+      rippleRemoveGap: (trackId, startMs, endMs) =>
+        useProjectStore.getState().rippleRemoveGap(trackId, startMs, endMs),
       updateMediaClipTrim: (id, partial) =>
         useProjectStore.getState().updateMediaClipTrim(id, partial),
       splitClipAt: (id, atMs) =>
@@ -336,11 +343,13 @@ export function installTestBridge(): void {
         useProjectStore.getState().addAudioSubmixTrack(),
       removeTrack: (tid) => useProjectStore.getState().removeTrack(tid),
       removeTracks: (tids) => useProjectStore.getState().removeTracks(tids),
+      // Reels 11 슬라이드 10 — 트랙 stack 임의 인덱스로 이동.
+      moveTrack: (tid, newIndex) =>
+        useProjectStore.getState().moveTrack(tid, newIndex),
       addCaption: (cap) => useProjectStore.getState().addCaption(cap),
       addCaptions: (caps) => useProjectStore.getState().addCaptions(caps),
       updateCaption: (id, partial) =>
         useProjectStore.getState().updateCaption(id, partial),
-      selectClip: (id) => useProjectStore.getState().selectClip(id),
       setClipChromaKey: (id, ck) =>
         useProjectStore.getState().setClipChromaKey(id, ck),
       addCountdownCaptions: (opts) =>
@@ -397,14 +406,13 @@ export function installTestBridge(): void {
         useProjectStore
           .getState()
           .setAdjustmentLayerFilterPreset(id, preset, intensity),
-      // pptx11 슬라이드 24.
+      // pptx11 슬라이드 23/24.
       setAdjustmentLayerLocked: (id, locked) =>
         useProjectStore.getState().setAdjustmentLayerLocked(id, locked),
       duplicateAdjustmentLayer: (id) =>
         useProjectStore.getState().duplicateAdjustmentLayer(id),
       splitAdjustmentLayerAt: (id, atMs) =>
         useProjectStore.getState().splitAdjustmentLayerAt(id, atMs),
-      // pptx11 슬라이드 23 — fade in/out.
       setAdjustmentLayerFade: (id, fadeInMs, fadeOutMs) =>
         useProjectStore.getState().setAdjustmentLayerFade(id, fadeInMs, fadeOutMs),
       setSelectedAdjustmentLayerId: (layerId) =>
@@ -415,6 +423,11 @@ export function installTestBridge(): void {
         useProjectStore.getState().ungroupClips(groupIdOrClipId),
       moveClipGroup: (clipId, desiredStartMs) =>
         useProjectStore.getState().moveClipGroup(clipId, desiredStartMs),
+      // Reels 11 슬라이드 8 — multi-select 본체 드래그.
+      moveClipsByDelta: (clipIds, anchorId, desiredStartMs) =>
+        useProjectStore
+          .getState()
+          .moveClipsByDelta(clipIds, anchorId, desiredStartMs),
       // Phase 3.40 — cross-track clip drag.
       moveClipToTrack: (id, newTrackId) =>
         useProjectStore.getState().moveClipToTrack(id, newTrackId),

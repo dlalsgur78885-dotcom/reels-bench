@@ -78,6 +78,93 @@ function MoreIcon(): JSX.Element {
   )
 }
 
+// Reels 11 슬라이드 12 — 플랫폼별 추가 아이콘.
+function ThumbsDownIcon(): JSX.Element {
+  return (
+    <svg viewBox={ICON_VB} width="100%" height="100%" aria-hidden="true">
+      <path
+        d="M7 14V4h10l3 6v4h-7l1 5a2 2 0 1 1-4 0L7 14z"
+        fill="currentColor"
+      />
+    </svg>
+  )
+}
+
+function PaperPlaneIcon(): JSX.Element {
+  return (
+    <svg viewBox={ICON_VB} width="100%" height="100%" aria-hidden="true">
+      <path
+        d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function FollowPlusBadge(): JSX.Element {
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        bottom: -6,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        width: 16,
+        height: 16,
+        borderRadius: '50%',
+        background: '#fe2c55',
+        color: '#fff',
+        fontSize: 13,
+        fontWeight: 900,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        lineHeight: 1
+      }}
+      aria-hidden="true"
+    >
+      +
+    </div>
+  )
+}
+
+function RotatingMusicDisc(): JSX.Element {
+  return (
+    <div
+      data-testid="social-action-music-disc"
+      style={{
+        width: '11%',
+        minWidth: 30,
+        aspectRatio: '1 / 1',
+        borderRadius: '50%',
+        background:
+          'radial-gradient(circle, #1a1a1a 28%, #2a2a2a 30%, #1a1a1a 32%, #2a2a2a 100%)',
+        border: '2px solid rgba(255,255,255,0.85)',
+        position: 'relative',
+        animation: 'reels-tiktok-disc-spin 6s linear infinite'
+      }}
+      aria-hidden="true"
+    >
+      <div
+        style={{
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          width: '30%',
+          height: '30%',
+          borderRadius: '50%',
+          background: 'linear-gradient(135deg, #25f4ee, #fe2c55)'
+        }}
+      />
+    </div>
+  )
+}
+
 function MusicIcon(): JSX.Element {
   return (
     <svg viewBox={ICON_VB} width="100%" height="100%" aria-hidden="true">
@@ -331,12 +418,17 @@ function TikTokChrome(): JSX.Element {
         </span>
       </div>
       <ActionStack bottomPct={17}>
-        <ActionButton
-          avatar
-          icon={<HeartIcon />}
-          label=""
-          testid="social-action-profile"
-        />
+        {/* Reels 11 슬라이드 12 — TikTok 실제 순서: profile(+팔로우 배지) →
+            like → comment → bookmark(저장) → share(공유) → 회전 음원 디스크. */}
+        <div style={{ position: 'relative' }}>
+          <ActionButton
+            avatar
+            icon={<HeartIcon />}
+            label=""
+            testid="social-action-profile"
+          />
+          <FollowPlusBadge />
+        </div>
         <ActionButton
           icon={<HeartIcon />}
           label="328.4K"
@@ -353,14 +445,15 @@ function TikTokChrome(): JSX.Element {
           testid="social-action-save"
         />
         <ActionButton
-          icon={<ShareIcon />}
+          icon={<PaperPlaneIcon />}
           label="공유"
           testid="social-action-share"
         />
+        <RotatingMusicDisc />
       </ActionStack>
       <CaptionBlock
         accountName="@your_account"
-        caption="여기에 영상 캡션이 표시됩니다 #릴스 #트렌드"
+        caption="여기에 영상 캡션이 표시됩니다 #fyp #foryou"
         bottomPct={8}
         rightPct={22}
         showMusic
@@ -402,10 +495,17 @@ function YouTubeShortsChrome(): JSX.Element {
         <MoreIcon />
       </div>
       <ActionStack bottomPct={14}>
+        {/* Reels 11 슬라이드 12 — YouTube Shorts 실제 순서: 좋아요 → 싫어요 →
+            댓글 → 공유 → 리믹스 → 더보기 → 채널 아바타. */}
         <ActionButton
           icon={<HeartIcon />}
           label="12K"
           testid="social-action-like"
+        />
+        <ActionButton
+          icon={<ThumbsDownIcon />}
+          label="싫어요"
+          testid="social-action-dislike"
         />
         <ActionButton
           icon={<CommentIcon />}
@@ -413,7 +513,7 @@ function YouTubeShortsChrome(): JSX.Element {
           testid="social-action-comment"
         />
         <ActionButton
-          icon={<ShareIcon />}
+          icon={<PaperPlaneIcon />}
           label="공유"
           testid="social-action-share"
         />
@@ -513,6 +613,8 @@ function InstagramReelsChrome(): JSX.Element {
         릴스
       </div>
       <ActionStack bottomPct={16}>
+        {/* Reels 11 슬라이드 12 — Instagram 릴스 실제 순서: 좋아요 → 댓글 →
+            보내기(종이비행기) → 더보기 → 회전 음원 썸네일. 저장은 더보기 안에. */}
         <ActionButton
           icon={<HeartIcon />}
           label="2.8K"
@@ -524,21 +626,16 @@ function InstagramReelsChrome(): JSX.Element {
           testid="social-action-comment"
         />
         <ActionButton
-          icon={<ShareIcon />}
+          icon={<PaperPlaneIcon />}
           label="공유"
           testid="social-action-share"
-        />
-        <ActionButton
-          icon={<SaveIcon />}
-          label="저장"
-          testid="social-action-save"
         />
         <ActionButton
           icon={<MoreIcon />}
           label=""
           testid="social-action-more"
         />
-        {/* Rotating audio thumbnail. */}
+        {/* 회전 audio 썸네일. */}
         <div
           data-testid="social-action-audio"
           style={{
@@ -547,7 +644,8 @@ function InstagramReelsChrome(): JSX.Element {
             aspectRatio: '1 / 1',
             borderRadius: 6,
             border: '2px solid rgba(255,255,255,0.85)',
-            background: 'linear-gradient(135deg, #833ab4, #fd1d1d, #fcb045)'
+            background: 'linear-gradient(135deg, #833ab4, #fd1d1d, #fcb045)',
+            animation: 'reels-tiktok-disc-spin 8s linear infinite'
           }}
         />
       </ActionStack>

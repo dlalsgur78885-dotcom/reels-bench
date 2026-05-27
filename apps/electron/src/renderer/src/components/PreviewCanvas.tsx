@@ -1151,6 +1151,13 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   const audioEls = useRef<Map<string, HTMLAudioElement>>(new Map())
   /** Per-video-track currently-loaded media id (for src-change detection). */
   const loadedVideoId = useRef<Map<string, string>>(new Map())
+  /**
+   * Previous playheadMs — used to detect "user scrub" (seek bar click /
+   * keyboard skip) vs natural rAF progression. Natural progression is
+   * ~16ms/tick at playbackRate 1; anything > 100ms is a user-driven jump
+   * that needs an explicit currentTime sync.
+   */
+  const prevPlayheadMs = useRef<number | null>(null)
   /** Media id loaded into the blurred-bg element (for src-change detection). */
   const loadedBgId = useRef<string | null>(null)
   /** Per-track currently-loaded media id (for src-change detection). */
@@ -1270,7 +1277,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
       // pptx11 슬라이드 23 — fade 영역에선 filterIntensity / colorAdjust 를
       // 0..1 factor 로 곱해 점진 적용. fadeIn/Out 둘 다 0 이면 factor=1.
       // curves / HSL 은 비선형 보간 비용 때문에 full strength 유지 (export
-      // pipeline 도 동일 정책 — schema doc 참조).
+      // pipeline 도 동일 정책).
       const fadeFactor = getAdjustmentLayerFadeFactor(layer, playheadMs)
       const preset = filterPresetToCss(
         layer.filterPreset,
@@ -1400,6 +1407,15 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   useEffect(() => {
     {
       const graph = getPreviewAudioGraph()
+      // Detect "user scrub" — playhead jumped by > 1000ms in a single tick.
+      // Natural rAF is ~16ms; even a slow React rerender batch caps around
+      // 200ms. 1000ms only fires for genuine seek-bar clicks / keyboard
+      // skip — never natural playback. Anything below = native engine 1x
+      // 자연 재생에 무간섭 (anti-seek-storm).
+      const prev = prevPlayheadMs.current
+      const isUserScrub =
+        prev !== null && Math.abs(playheadMs - prev) > 1000
+      prevPlayheadMs.current = playheadMs
 
       // ----- VIDEO TRACKS — one <video> element per track (layer stack) -----
       for (const track of videoTracks) {
@@ -1413,7 +1429,8 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           const activeVideo = layer.clip
           const media = project.media[activeVideo.mediaId]
           if (media && media.kind !== 'audio') {
-            if (loadedVideoId.current.get(track.id) !== media.id) {
+            const srcChanged = loadedVideoId.current.get(track.id) !== media.id
+            if (srcChanged) {
               v.src = toMediaUrl(media.path)
               loadedVideoId.current.set(track.id, media.id)
               // 명시 load() — preload="auto"와 함께 browser가 frame data를
@@ -1423,6 +1440,22 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                 v.load()
               } catch {
                 /* ignore */
+              }
+              // 0.2.11 — src 교체 분기 안에서 currentTime + playbackRate를
+              // initial set. 0.2.10에서 매 tick override가 native engine과
+              // fight → fast-forward + freeze 사고. 이제 src 교체 시점에만
+              // 명시 sync하고 그 후는 native 자연 재생에 맡김.
+              if (media.kind !== 'image') {
+                const initialTarget = clipSourceTimeSec(activeVideo, playheadMs)
+                try {
+                  v.currentTime = Math.max(0, initialTarget)
+                } catch {
+                  /* src not ready — onLoadedData/onCanPlay will retry */
+                }
+                const initialRate = clipPlaybackRate(activeVideo, playheadMs)
+                if (Math.abs(v.playbackRate - initialRate) > 0.001) {
+                  v.playbackRate = initialRate
+                }
               }
               // 0.2.7 — src 교체 + load()는 <video>를 paused 상태로 reset.
               // play/pause useEffect는 deps([playing, audioTracks, videoTracks])
@@ -1435,19 +1468,43 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                      load() 완료 후 next tick에서 다시 시도 가능 */
                 })
               }
-            }
-            if (media.kind !== 'image') {
-              const target = clipSourceTimeSec(activeVideo, playheadMs)
-              // Skip tiny seeks that browsers can't honor anyway.
-              if (Math.abs((v.currentTime || 0) - target) > 0.05) {
+            } else if (media.kind !== 'image') {
+              // src 안 바뀐 일반 tick — native engine이 1x 자연 재생 중.
+              // CRITICAL (0.2.11→0.2.12): 평범한 clip에 대해 매 tick currentTime
+              // override는 절대 금지. probe 결과 매 16ms set이 video 내부 seek
+              // 가 끝나기 전 또 set → ct가 prev=0 stuck → frame 영원히 안
+              // 진행. native engine 1x 자연 재생에 전부 맡김. drift는 자연
+              // 누적되지만 small (60fps, 16ms/tick) → 시각적 영향 없음.
+              // curve/freeze/deletion clip은 mapping이 비선형이라 매 tick
+              // sync가 필수 (그 경우만 seek 매 tick 수행).
+              const needsTightSync =
+                hasSpeedCurve(activeVideo) ||
+                hasFreezeFrames(activeVideo) ||
+                hasTranscriptDeletions(activeVideo)
+              if (needsTightSync) {
+                const target = clipSourceTimeSec(activeVideo, playheadMs)
+                if (Math.abs((v.currentTime || 0) - target) > 0.08) {
+                  try {
+                    v.currentTime = Math.max(0, target)
+                  } catch {
+                    /* src 아직 안 ready — 다음 tick에 재시도 */
+                  }
+                }
+                const rate = clipPlaybackRate(activeVideo, playheadMs)
+                if (Math.abs(v.playbackRate - rate) > 0.001) v.playbackRate = rate
+              }
+              else if (isUserScrub) {
+                // 사용자 scrub — playhead가 한 tick에 100ms+ 점프. native
+                // 재생과 무관하니 즉시 sync. 평범 재생 시엔 이 분기 안 들어옴.
+                const target = clipSourceTimeSec(activeVideo, playheadMs)
                 try {
                   v.currentTime = Math.max(0, target)
                 } catch {
-                  // src may not be ready yet — ignored, will retry next tick.
+                  /* src 아직 안 ready */
                 }
               }
-              const rate = clipPlaybackRate(activeVideo, playheadMs)
-              if (Math.abs(v.playbackRate - rate) > 0.001) v.playbackRate = rate
+              // 그 외 평범한 clip은 currentTime/playbackRate 둘 다 안 건드림.
+              // src 교체 시 initial seek + native engine 1x 자연 재생만 사용.
             }
 
             // Compute effective video-track gain. Use the GainNode if the
@@ -1497,25 +1554,27 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           if (bottomLayer) {
             const media = project.media[bottomLayer.clip.mediaId]
             if (media && media.kind !== 'audio') {
-              if (loadedBgId.current !== media.id) {
+              const bgSrcChanged = loadedBgId.current !== media.id
+              if (bgSrcChanged) {
                 bg.src = toMediaUrl(media.path)
                 bg.muted = true
                 loadedBgId.current = media.id
-              }
-              if (media.kind !== 'image') {
-                const target = clipSourceTimeSec(bottomLayer.clip, playheadMs)
-                if (Math.abs((bg.currentTime || 0) - target) > 0.05) {
-                  try {
-                    bg.currentTime = Math.max(0, target)
-                  } catch {
-                    // ignore
+                if (media.kind !== 'image') {
+                  // initial seek 1회만 — 그 후엔 native engine에 맡김.
+                  const initialTarget = clipSourceTimeSec(bottomLayer.clip, playheadMs)
+                  try { bg.currentTime = Math.max(0, initialTarget) } catch {}
+                  const initialRate = clipPlaybackRate(bottomLayer.clip, playheadMs)
+                  if (Math.abs(bg.playbackRate - initialRate) > 0.001) {
+                    bg.playbackRate = initialRate
                   }
                 }
-                const rate = clipPlaybackRate(bottomLayer.clip, playheadMs)
-                if (Math.abs(bg.playbackRate - rate) > 0.001) {
-                  bg.playbackRate = rate
-                }
+              } else if (media.kind !== 'image' && isUserScrub) {
+                // 사용자 scrub만 explicit sync (same threshold as main video).
+                const target = clipSourceTimeSec(bottomLayer.clip, playheadMs)
+                try { bg.currentTime = Math.max(0, target) } catch {}
               }
+              // curve/freeze/deletion clip은 main video 분기에서 처리. bg는
+              // 시각적 보조라 약간의 drift 허용 (사용자 체감 X).
             } else if (loadedBgId.current !== null) {
               bg.removeAttribute('src')
               bg.load()
@@ -1545,31 +1604,40 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           // actually an audio asset. (A video media on an audio track is
           // a degenerate state that shouldn't normally occur.)
           if (media && media.kind === 'audio') {
-            if (loadedAudioIds.current.get(track.id) !== media.id) {
+            const aSrcChanged = loadedAudioIds.current.get(track.id) !== media.id
+            if (aSrcChanged) {
               a.src = toMediaUrl(media.path)
               loadedAudioIds.current.set(track.id, media.id)
-              // pptx11 슬라이드 4 — src 교체 직후 HTMLMediaElement spec 에 따라
-              // paused=true 로 reset. play/pause sync effect 는 audioTracks/
-              // playing deps 안 바뀌면 fire 안 함 → 트랙 이동 시 새 src 가
-              // 재생 안 되고 이전 트랙 stale 버퍼와 충돌 (BGM 4→BGM 3 이동
-              // 시 TTS 들림). playing 이면 명시적 play() + <audio> 의
-              // onCanPlay 핸들러로 cold src 자동 재생 보장.
+              const initialTarget = clipSourceTimeSec(clip, playheadMs)
+              try { a.currentTime = Math.max(0, initialTarget) } catch {}
+              const initialRate = clipPlaybackRate(clip, playheadMs)
+              if (Math.abs(a.playbackRate - initialRate) > 0.001) a.playbackRate = initialRate
+              // 0.2.11 — src 교체 직후 paused 상태가 됨 (HTMLMediaElement spec:
+              // resource selection algorithm sets paused=true). play/pause sync
+              // effect는 audioTracks/playing이 안 바뀌면 안 fire하므로 트랙
+              // 이동 시 새 src가 재생되지 않거나 이전 트랙의 stale 버퍼와
+              // 충돌 (pptx11 slide 4: BGM 4→BGM 3 이동 시 TTS 들림). 명시적
+              // play() + onCanPlay 핸들러로 cold src 보장.
               if (playing) {
                 a.play().catch(() => {
                   /* src not ready — onCanPlay will retry */
                 })
               }
-            }
-            const target = clipSourceTimeSec(clip, playheadMs)
-            if (Math.abs((a.currentTime || 0) - target) > 0.05) {
-              try {
-                a.currentTime = Math.max(0, target)
-              } catch {
-                // src may not be ready yet — ignored.
+            } else {
+              const needsTightSync =
+                hasSpeedCurve(clip) || hasFreezeFrames(clip) || hasTranscriptDeletions(clip)
+              if (needsTightSync) {
+                const target = clipSourceTimeSec(clip, playheadMs)
+                if (Math.abs((a.currentTime || 0) - target) > 0.08) {
+                  try { a.currentTime = Math.max(0, target) } catch {}
+                }
+                const rate = clipPlaybackRate(clip, playheadMs)
+                if (Math.abs(a.playbackRate - rate) > 0.001) a.playbackRate = rate
+              } else if (isUserScrub) {
+                const target = clipSourceTimeSec(clip, playheadMs)
+                try { a.currentTime = Math.max(0, target) } catch {}
               }
             }
-            const rate = clipPlaybackRate(clip, playheadMs)
-            if (Math.abs(a.playbackRate - rate) > 0.001) a.playbackRate = rate
           }
 
           // Gain math runs unconditionally so the per-track GainNode
@@ -2346,10 +2414,9 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               data-track-role={t.role ?? 'none'}
               data-track-audible={isAudible ? 'true' : 'false'}
               data-ducking={ducking}
-              // pptx11 슬라이드 4 — <video>와 동일하게 cold src 자동 재생.
-              // swap effect 즉시 play() 가 readyState=HAVE_NOTHING 으로
-              // reject 되는 케이스를 capture (트랙 이동 시 stale 버퍼 충돌
-              // 방지).
+              // 0.2.11 — <video>와 동일하게 cold src 자동 재생. swap effect
+              // 즉시 play()가 readyState=HAVE_NOTHING로 reject되는 케이스를
+              // capture (pptx11 slide 4 트랙 이동 시 stale 버퍼 충돌 방지).
               onLoadedData={(e) => {
                 if (playing) (e.currentTarget as HTMLAudioElement).play().catch(() => {})
               }}

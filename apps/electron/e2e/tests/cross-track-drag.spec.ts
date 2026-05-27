@@ -403,9 +403,11 @@ test.describe('@phase-cross-track-drag cross-track clip drag (Phase 3.40)', () =
   })
 
   // =========================================================================
-  // (2) moveClipToTrack — media clip moves to an audio track
+  // (2) moveClipToTrack — video media clip → audio track 거부 (Reels 11 슬라이드
+  // 11). 이전엔 가능했지만 사용자 요구로 동종 가드 추가. 음원/영상 trackKind
+  // 매트릭스 엄격화.
   // =========================================================================
-  test('(2) @phase-cross-track-drag moveClipToTrack: media clip moves V0 → audio track; kind preserved', async () => {
+  test('(2) @phase-cross-track-drag moveClipToTrack: video media → audio track REJECTED (slide 11)', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
     await openEditor()
@@ -418,8 +420,7 @@ test.describe('@phase-cross-track-drag cross-track clip drag (Phase 3.40)', () =
 
     const before = await findClip(clipId)
     expect(before!.kind).toBe('media')
-    const origStart = before!.startMs
-    const origEnd = before!.endMs
+    const origTrackId = before!.trackId
 
     await page.evaluate(
       ({ cid, tid }) => window.__reelsStore.moveClipToTrack(cid, tid),
@@ -429,10 +430,9 @@ test.describe('@phase-cross-track-drag cross-track clip drag (Phase 3.40)', () =
 
     const after = await findClip(clipId)
     expect(after).not.toBeNull()
-    expect(after!.trackId).toBe(audioId)
-    expect(after!.kind).toBe('media')
-    expect(after!.startMs).toBe(origStart)
-    expect(after!.endMs).toBe(origEnd)
+    // 거부됐으므로 trackId 가 원본 그대로.
+    expect(after!.trackId).toBe(origTrackId)
+    expect(after!.trackId).not.toBe(audioId)
   })
 
   // =========================================================================

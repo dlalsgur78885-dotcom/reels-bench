@@ -110,7 +110,9 @@ export function Transport(): JSX.Element {
         return
       }
       if (cap > 0 && next >= cap) {
-        ui.setPlayheadMs(cap)
+        // pptx10 슬라이드 10 — 마지막 clip 의 마지막 프레임에 park (1ms
+        // 안쪽). cap 정확히는 active 아님 → 빈 화면 + 사용자 혼란.
+        ui.setPlayheadMs(Math.max(0, cap - 1))
         ui.setPlaying(false)
         return
       }
@@ -153,11 +155,30 @@ export function Transport(): JSX.Element {
     return () => window.removeEventListener('keydown', onKey)
   }, [togglePlaying])
 
+  // pptx10 슬라이드 10 (재해석 v2) — "처음/끝" 은 **선택된 clip 기준**.
+  // 사용자 의도 = clip 클릭한 상태에서 [끝] → 그 clip 의 마지막 frame,
+  // [처음] → 그 clip 의 시작. 선택 없을 때만 전체 timeline 의 0 / 끝-1ms.
+  const findSelectedClip = (): { startMs: number; endMs: number } | null => {
+    const sel = useTimelineUi.getState().selectedClipIds
+    if (sel.size === 0) return null
+    const targetId = sel.values().next().value
+    for (const t of project.tracks) {
+      for (const c of t.clips) {
+        if (c.id === targetId) return { startMs: c.startMs, endMs: c.endMs }
+      }
+    }
+    return null
+  }
   const skipStart = (): void => {
-    setPlayhead(0)
+    const clip = findSelectedClip()
+    setPlayhead(clip ? clip.startMs : 0)
   }
   const skipEnd = (): void => {
-    setPlayhead(totalMs)
+    const clip = findSelectedClip()
+    // half-open clip 범위 (`ms < endMs`) — 1ms 안쪽 = 그 clip 의 마지막
+    // frame. 선택 없으면 전체 timeline 끝.
+    const target = clip ? clip.endMs - 1 : totalMs - 1
+    setPlayhead(Math.max(0, target))
     setPlaying(false)
   }
 

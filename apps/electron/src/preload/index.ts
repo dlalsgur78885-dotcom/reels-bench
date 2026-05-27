@@ -262,6 +262,34 @@ const api: ElectronApi = {
       return () =>
         ipcRenderer.removeListener(IPC_CHANNELS.updater.error, listener)
     }
+  },
+  // pptx10 슬라이드 17 — Application Menu(Edit) click → renderer dispatch.
+  appMenu: {
+    onAction: (cb: (action: string) => void): (() => void) => {
+      const listener = (_ev: IpcRendererEvent, action: string): void => cb(action)
+      ipcRenderer.on('app-menu:action', listener)
+      return () => ipcRenderer.removeListener('app-menu:action', listener)
+    }
+  },
+  // pptx10 슬라이드 13 (확장) — 진짜 별도 BrowserWindow 분리 + state sync.
+  previewWindow: {
+    openDetached: (): Promise<boolean> => ipcRenderer.invoke('preview:openDetached'),
+    closeDetached: (): Promise<boolean> => ipcRenderer.invoke('preview:closeDetached'),
+    isDetached: (): Promise<boolean> => ipcRenderer.invoke('preview:isDetached'),
+    broadcast: (payload: unknown): void => {
+      ipcRenderer.send('preview-sync:broadcast', payload)
+    },
+    onSyncApply: (cb: (payload: unknown) => void): (() => void) => {
+      const listener = (_ev: IpcRendererEvent, payload: unknown): void => cb(payload)
+      ipcRenderer.on('preview-sync:apply', listener)
+      return () => ipcRenderer.removeListener('preview-sync:apply', listener)
+    },
+    // Reels 11 슬라이드 13 — OS-level 컨트롤.
+    setAlwaysOnTop: (flag: boolean): Promise<boolean> =>
+      ipcRenderer.invoke('preview:setAlwaysOnTop', flag),
+    minimize: (): Promise<boolean> => ipcRenderer.invoke('preview:minimize'),
+    isAlwaysOnTop: (): Promise<boolean> =>
+      ipcRenderer.invoke('preview:isAlwaysOnTop')
   }
 }
 

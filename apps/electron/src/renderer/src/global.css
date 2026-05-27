@@ -41,6 +41,19 @@
  * also fall back to `transition: none`. This rule is a safety net for any
  * component we haven't migrated yet.
  */
+/*
+ * Reels 11 슬라이드 12 — SocialPreviewOverlay 회전 디스크/오디오 썸네일.
+ * TikTok 음원 디스크, Instagram 릴스 오디오 썸네일이 끊김 없이 회전.
+ */
+@keyframes reels-tiktok-disc-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

@@ -81,3 +81,61 @@ export function createMainWindow(): BrowserWindow {
 
   return win
 }
+
+/**
+ * pptx10 슬라이드 13 (확장) — 진짜 별도 BrowserWindow 에 PreviewCanvas
+ * 만 띄움. main window 밖, 다른 모니터로도 이동 가능. URL 에
+ * `?previewOnly=1` query 부착 → renderer 가 그 mode 면 PreviewCanvas
+ * 전용 화면 render. 두 window 의 zustand store 는 BroadcastChannel
+ * (`app://` 같은 origin) 으로 양방향 sync.
+ */
+let detachedPreviewWin: BrowserWindow | null = null
+
+export function getDetachedPreviewWindow(): BrowserWindow | null {
+  return detachedPreviewWin && !detachedPreviewWin.isDestroyed()
+    ? detachedPreviewWin
+    : null
+}
+
+export function openDetachedPreviewWindow(): BrowserWindow {
+  if (detachedPreviewWin && !detachedPreviewWin.isDestroyed()) {
+    detachedPreviewWin.focus()
+    return detachedPreviewWin
+  }
+  const preloadPath = join(__dirname, '../preload/index.js')
+  const win = new BrowserWindow({
+    width: 480,
+    height: 854,
+    minWidth: 200,
+    minHeight: 200,
+    show: false,
+    backgroundColor: '#000000',
+    title: '플레이어 — 분리됨',
+    parent: BrowserWindow.getFocusedWindow() ?? undefined,
+    webPreferences: {
+      preload: preloadPath,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+      devTools: true
+    }
+  })
+  win.removeMenu()
+  win.once('ready-to-show', () => win.show())
+  win.on('closed', () => { detachedPreviewWin = null })
+
+  const url = process.env.ELECTRON_RENDERER_URL ?? getRendererLoadUrl()
+  const sep = url.includes('?') ? '&' : '?'
+  void win.loadURL(`${url}${sep}previewOnly=1`)
+
+  detachedPreviewWin = win
+  return win
+}
+
+export function closeDetachedPreviewWindow(): void {
+  if (detachedPreviewWin && !detachedPreviewWin.isDestroyed()) {
+    detachedPreviewWin.close()
+  }
+  detachedPreviewWin = null
+}

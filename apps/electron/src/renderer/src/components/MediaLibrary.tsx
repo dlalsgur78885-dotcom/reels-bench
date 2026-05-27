@@ -6,6 +6,11 @@ import { ImportPanel, type ImportTab } from './ImportPanel'
 
 /** dataTransfer MIME used to carry a mediaId from MediaLibrary to Timeline. */
 export const MEDIA_DRAG_MIME = 'application/x-reels-media-id'
+// Reels 11 슬라이드 11 — drag 중에도 media kind 를 알 수 있도록 kind 별
+// MIME 동시 등록. dragOver 시점엔 dataTransfer.getData 가 빈 문자열만
+// 반환하므로 (보안) MIME types 배열로 호환성을 판단.
+export const MEDIA_DRAG_KIND_MIME = (kind: 'video' | 'audio' | 'image'): string =>
+  `application/x-reels-media-kind-${kind}`
 
 const SUPPORTED_EXTS = new Set([
   'mp4',
@@ -63,7 +68,28 @@ const styles = {
     height: '100%',
     background: '#141414',
     borderRight: '1px solid #2a2a2a',
-    minWidth: 280
+    minWidth: 280,
+    position: 'relative',
+    transition: 'box-shadow 120ms ease, background 120ms ease'
+  } as React.CSSProperties,
+  wrapDragActive: {
+    background: '#1a2a22',
+    boxShadow: 'inset 0 0 0 3px #10b981'
+  } as React.CSSProperties,
+  wrapDragOverlay: {
+    position: 'absolute',
+    inset: 0,
+    pointerEvents: 'none',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(16, 185, 129, 0.10)',
+    color: '#86efac',
+    fontSize: 16,
+    fontWeight: 700,
+    zIndex: 50,
+    border: '3px dashed #10b981',
+    borderRadius: 6
   } as React.CSSProperties,
   header: {
     padding: '12px 16px',
@@ -143,7 +169,20 @@ const styles = {
     color: '#f5f5f5',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap'
+    whiteSpace: 'nowrap',
+    cursor: 'text'
+  } as React.CSSProperties,
+  filenameInput: {
+    fontSize: 12,
+    fontWeight: 600,
+    color: '#f5f5f5',
+    background: '#0a0a0a',
+    border: '1px solid #4f46e5',
+    borderRadius: 3,
+    padding: '2px 4px',
+    width: '100%',
+    boxSizing: 'border-box',
+    outline: 'none'
   } as React.CSSProperties,
   meta: {
     fontSize: 11,
@@ -164,6 +203,23 @@ const styles = {
     background: '#0d0d0d',
     color: '#fca5a5',
     fontSize: 14,
+    lineHeight: 1,
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center'
+  } as React.CSSProperties,
+  renameBtn: {
+    position: 'absolute',
+    top: 4,
+    right: 28,
+    width: 20,
+    height: 20,
+    border: 'none',
+    borderRadius: 10,
+    background: '#0d0d0d',
+    color: '#a5b4fc',
+    fontSize: 12,
     lineHeight: 1,
     cursor: 'pointer',
     display: 'flex',
@@ -268,6 +324,7 @@ const IMPORT_TABS: { key: ImportTab; label: string }[] = [
 export function MediaLibrary(): JSX.Element {
   const media = useProjectStore((s) => s.project.media)
   const removeMedia = useProjectStore((s) => s.removeMedia)
+  const renameMedia = useProjectStore((s) => s.renameMedia)
 
   const [dragOver, setDragOver] = useState(false)
   const [importing, setImporting] = useState<string[]>([])
@@ -431,8 +488,50 @@ export function MediaLibrary(): JSX.Element {
     </>
   )
 
+  // pptx10 slide 5 — OS 파일을 패널 어디든 떨어뜨려도 import 되게 wrap
+  // 전체로 drop zone 확장. 작은 점선 박스(`styles.drop`)는 시각 안내만
+  // 담당하고 실제 receiver는 wrapper. dragOver state는 wrapper에서 권위
+  // 있게 관리하고, dragLeave는 자식 element 가로지름을 무시하기 위해
+  // relatedTarget 가 wrapper 안이면 skip.
+  const wrapDragOver = (e: React.DragEvent<HTMLDivElement>): void => {
+    if (tab !== 'local') return
+    if (!e.dataTransfer.types.includes('Files')) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    if (!dragOver) setDragOver(true)
+  }
+  const wrapDragLeave = (e: React.DragEvent<HTMLDivElement>): void => {
+    if (tab !== 'local') return
+    const related = e.relatedTarget as Node | null
+    if (related && e.currentTarget.contains(related)) return
+    setDragOver(false)
+  }
+  const wrapDrop = (e: React.DragEvent<HTMLDivElement>): void => {
+    if (tab !== 'local') return
+    if (!e.dataTransfer.types.includes('Files')) return
+    void onDrop(e)
+  }
+  // pptx10 슬라이드 5 (0.2.22) — dragOver 시 wrap 전체에 dashed 강조 +
+  // 가운데 안내 텍스트 overlay. 작은 점선 박스만 활성화 보이던 0.2.16의
+  // 잔여 시각 누락 보강. overlay 는 pointer-events: none 이라 drop 이벤트
+  // 는 그대로 wrap 이 받음.
+  const wrapStyle: React.CSSProperties =
+    dragOver && tab === 'local'
+      ? { ...styles.wrap, ...styles.wrapDragActive }
+      : styles.wrap
   return (
-    <div style={styles.wrap}>
+    <div
+      style={wrapStyle}
+      onDragOver={wrapDragOver}
+      onDragEnter={wrapDragOver}
+      onDragLeave={wrapDragLeave}
+      onDrop={wrapDrop}
+    >
+      {dragOver && tab === 'local' && (
+        <div style={styles.wrapDragOverlay} data-testid="wrap-drop-overlay">
+          여기에 놓아주세요 — 패널 어디든 OK
+        </div>
+      )}
       <div style={styles.header}>
         <div style={styles.title}>미디어 가져오기</div>
         {tab === 'local' && (
@@ -467,20 +566,6 @@ export function MediaLibrary(): JSX.Element {
         <>
           <div
             style={{ ...styles.drop, ...(dragOver ? styles.dropActive : {}) }}
-            onDragOver={(e) => {
-              e.preventDefault()
-              e.stopPropagation()
-              setDragOver(true)
-            }}
-            onDragEnter={(e) => {
-              e.preventDefault()
-              setDragOver(true)
-            }}
-            onDragLeave={(e) => {
-              e.preventDefault()
-              setDragOver(false)
-            }}
-            onDrop={onDrop}
             data-testid="drop-zone"
           >
             {dragOver
@@ -508,6 +593,7 @@ export function MediaLibrary(): JSX.Element {
                   asset={a}
                   thumbUri={thumbCache[a.id]}
                   onRemove={() => removeMedia(a.id)}
+                  onRename={(n) => renameMedia(a.id, n)}
                 />
               ))}
             </div>
@@ -527,9 +613,23 @@ function MediaCard(props: {
   asset: MediaAsset
   thumbUri?: string
   onRemove: () => void
+  onRename: (newName: string) => void
 }): JSX.Element {
-  const { asset, thumbUri, onRemove } = props
+  const { asset, thumbUri, onRemove, onRename } = props
   const [dragging, setDragging] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(asset.fileName)
+  // 외부에서 fileName 이 바뀌면 (timeline 쪽에서 rename) draft 동기화.
+  useEffect(() => { if (!editing) setDraft(asset.fileName) }, [asset.fileName, editing])
+  const commit = (): void => {
+    setEditing(false)
+    const trimmed = draft.trim()
+    if (!trimmed || trimmed === asset.fileName) {
+      setDraft(asset.fileName)
+      return
+    }
+    onRename(trimmed)
+  }
   const cardStyle: React.CSSProperties = dragging
     ? { ...styles.card, opacity: 0.55 }
     : styles.card
@@ -544,6 +644,8 @@ function MediaCard(props: {
         // Two MIME types: the strict one (consumed by Timeline) and a
         // text fallback for debugging / other drop targets.
         e.dataTransfer.setData(MEDIA_DRAG_MIME, asset.id)
+        // Reels 11 슬라이드 11 — kind-tagged MIME 도 함께 등록.
+        e.dataTransfer.setData(MEDIA_DRAG_KIND_MIME(asset.kind), asset.id)
         e.dataTransfer.setData('text/plain', asset.id)
         setDragging(true)
       }}
@@ -561,9 +663,32 @@ function MediaCard(props: {
         </div>
       )}
       <div style={styles.info}>
-        <div style={styles.filename} title={asset.fileName}>
-          {asset.fileName}
-        </div>
+        {editing ? (
+          <input
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); commit() }
+              else if (e.key === 'Escape') { e.preventDefault(); setDraft(asset.fileName); setEditing(false) }
+              e.stopPropagation()
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onDragStart={(e) => e.preventDefault()}
+            data-testid="media-card-rename-input"
+            style={styles.filenameInput}
+          />
+        ) : (
+          <div
+            style={styles.filename}
+            title={asset.fileName + ' — 더블클릭으로 이름 변경'}
+            onDoubleClick={(e) => { e.stopPropagation(); setEditing(true) }}
+            data-testid="media-card-name"
+          >
+            {asset.fileName}
+          </div>
+        )}
         <div style={styles.meta}>
           {fmtDuration(asset.durationMs)}
           {asset.width > 0 && ` · ${asset.width}×${asset.height}`}
@@ -573,6 +698,18 @@ function MediaCard(props: {
           {asset.fileSizeBytes ? ` · ${fmtSize(asset.fileSizeBytes)}` : ''}
         </div>
       </div>
+      <button
+        style={styles.renameBtn}
+        onClick={(e) => {
+          e.stopPropagation()
+          setEditing(true)
+        }}
+        aria-label="이름 변경"
+        title="이름 변경 (또는 파일명 더블클릭)"
+        data-testid="media-card-rename-btn"
+      >
+        ✎
+      </button>
       <button
         style={styles.removeBtn}
         onClick={(e) => {

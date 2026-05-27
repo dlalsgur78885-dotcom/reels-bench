@@ -12,6 +12,7 @@
  * MediaLibrary.tsx, 백그라운드 생성 잡 추적은 store/aiJobs.ts가 맡는다.
  */
 import {
+  authedFetch,
   getTtsJob,
   getMyScript,
   listMyScripts,
@@ -26,6 +27,8 @@ import {
 } from './api'
 import { importFromUrl, type UrlImportResult } from './mediaImport'
 import { getReelVideoUrl } from './api'
+import { useProjectStore } from '../store/project'
+import type { SfxMeta } from '../../../shared/project'
 
 // ---------------------------------------------------------------------------
 // 공통 — 가져오기 그리드 한 칸을 표현하는 정규화된 아이템.
@@ -300,4 +303,228 @@ export async function importScriptTts(
       error: err instanceof Error ? err.message : String(err)
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 — 효과음 (SFX).
+//   소스 2종:
+//     ① 우리 라이브러리   GET /api/sfx?q=&tag=&limit=&offset=
+//     ② Freesound 프록시  GET /api/sfx/freesound/search?q=&page=&license=
+//   import는 둘 다 https URL 다운로드 — 기존 `importFromUrl` 재사용.
+//   import 직후 `updateMediaSfxMeta`로 license/attribution을 부착해 추후
+//   export 단계에서 credit roll에 자동 노출할 수 있게 한다.
+// ---------------------------------------------------------------------------
+
+/** 효과음 한 행 — UI 그리드의 정규화된 카드 데이터. */
+export interface SfxItem {
+  /** 소스 내 안정 id ('ours-123' / 'freesound-456' 형태로 prefix). */
+  id: string
+  /** 표시 이름. */
+  name: string
+  /** 태그 목록 (검색·표시용). */
+  tags: string[]
+  /** 길이 (ms, 미상이면 0). */
+  durationMs: number
+  /** 미리듣기 + 다운로드 대상 https URL. 우리 라이브러리는 동일. */
+  previewUrl: string
+  /** Freesound 'preview HQ MP3'의 다운로드 URL (있으면 이걸로 import). */
+  downloadUrl: string
+  /** 라이선스 짧은 코드 ('CC0', 'CC-BY', …). */
+  license: string
+  /** CC-BY일 때 표기할 저작자 이름. */
+  attribution?: string
+  /** 원본 페이지 URL (Freesound 카드 등). */
+  sourceUrl?: string
+  /** 소스 종류. */
+  source: 'ours' | 'freesound'
+  /** Freesound 업로더 username (표시용). */
+  username?: string
+}
+
+/** `GET /api/sfx` 응답의 raw row. */
+interface RawOurSfxRow {
+  id?: string | number
+  name?: string
+  tags?: unknown
+  duration_ms?: number | null
+  url?: string
+  license?: string
+  attribution?: string | null
+  source?: string
+}
+
+/** `GET /api/sfx/freesound/search` 응답의 raw row. */
+interface RawFreesoundRow {
+  id?: string | number
+  name?: string
+  tags?: unknown
+  duration_ms?: number | null
+  preview_url?: string
+  freesound_url?: string
+  license?: string
+  attribution?: string | null
+  username?: string | null
+}
+
+function normalizeTags(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map((t) => (typeof t === 'string' ? t.trim() : ''))
+    .filter((t) => t.length > 0)
+    .slice(0, 12)
+}
+
+function normalizeLicense(raw: string | undefined): string {
+  const v = (raw ?? '').trim()
+  if (!v) return 'CC-BY'
+  // 흔한 표기 정규화: 'Creative Commons 0' → 'CC0' 등.
+  const lo = v.toLowerCase()
+  if (lo.includes('cc0') || lo.includes('zero') || lo === 'public domain') {
+    return 'CC0'
+  }
+  if (lo.includes('by-nc')) return 'CC-BY-NC'
+  if (lo.includes('by-sa')) return 'CC-BY-SA'
+  if (lo.includes('by')) return 'CC-BY'
+  return v
+}
+
+/**
+ * 우리 라이브러리 검색 — `GET /api/sfx?q=&tag=&limit=&offset=`.
+ * 401/503/네트워크 오류는 throw — 호출자(UI)가 에러 박스를 그린다.
+ */
+export async function searchOurSfx(
+  q?: string,
+  tag?: string,
+  opts?: { limit?: number; offset?: number }
+): Promise<SfxItem[]> {
+  const params = new URLSearchParams()
+  const qs = (q ?? '').trim()
+  if (qs) params.set('q', qs)
+  const ts = (tag ?? '').trim()
+  if (ts) params.set('tag', ts)
+  if (opts?.limit != null) params.set('limit', String(opts.limit))
+  if (opts?.offset != null) params.set('offset', String(opts.offset))
+  const qstr = params.toString()
+  const r = await authedFetch(`/api/sfx${qstr ? `?${qstr}` : ''}`)
+  if (!r.ok) {
+    const msg = await r.text().catch(() => '')
+    throw new Error(`API ${r.status}${msg ? `: ${msg.slice(0, 200)}` : ''}`)
+  }
+  const raw = (await r.json()) as RawOurSfxRow[]
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map((row): SfxItem | null => {
+      const url = row.url
+      if (!url) return null
+      const id = `ours-${String(row.id ?? '')}`
+      return {
+        id,
+        name: row.name || '제목 없음',
+        tags: normalizeTags(row.tags),
+        durationMs:
+          row.duration_ms != null && Number.isFinite(Number(row.duration_ms))
+            ? Math.max(0, Math.round(Number(row.duration_ms)))
+            : 0,
+        previewUrl: url,
+        downloadUrl: url,
+        license: normalizeLicense(row.license),
+        attribution: row.attribution ?? undefined,
+        source: 'ours' as const
+      }
+    })
+    .filter((it): it is SfxItem => it !== null)
+}
+
+/**
+ * Freesound 프록시 검색 — `GET /api/sfx/freesound/search?q=&page=&license=`.
+ *   - 503 → 'API 키 미설정' 메시지로 surface (UI에서 별도 배너 처리).
+ *   - 401/네트워크 오류는 throw.
+ *   - preview_url 이 없는 row는 제외 (import 불가).
+ */
+export async function searchFreesound(
+  q: string,
+  license?: string,
+  page?: number
+): Promise<SfxItem[]> {
+  const qs = (q ?? '').trim()
+  if (!qs) return []
+  const params = new URLSearchParams({ q: qs })
+  if (license) params.set('license', license)
+  if (page != null && page > 0) params.set('page', String(page))
+  const r = await authedFetch(`/api/sfx/freesound/search?${params.toString()}`)
+  if (r.status === 503) {
+    // 키 미설정 — 호출자가 별도 배너로 처리할 수 있게 sentinel 에러.
+    throw new Error('FREESOUND_NOT_CONFIGURED')
+  }
+  if (!r.ok) {
+    const msg = await r.text().catch(() => '')
+    throw new Error(`API ${r.status}${msg ? `: ${msg.slice(0, 200)}` : ''}`)
+  }
+  // 백엔드는 페이지네이션 메타와 함께 `{count, next, previous, results: [...]}`
+  // 객체로 반환한다. 호환을 위해 flat 배열도 받아준다.
+  const json = (await r.json()) as
+    | { results?: RawFreesoundRow[] }
+    | RawFreesoundRow[]
+  const raw: RawFreesoundRow[] = Array.isArray(json)
+    ? json
+    : Array.isArray(json?.results)
+      ? json.results
+      : []
+  return raw
+    .map((row): SfxItem | null => {
+      const preview = row.preview_url
+      if (!preview) return null
+      const id = `freesound-${String(row.id ?? '')}`
+      const attribution = row.attribution ?? row.username ?? undefined
+      const item: SfxItem = {
+        id,
+        name: row.name || '제목 없음',
+        tags: normalizeTags(row.tags),
+        durationMs:
+          row.duration_ms != null && Number.isFinite(Number(row.duration_ms))
+            ? Math.max(0, Math.round(Number(row.duration_ms)))
+            : 0,
+        previewUrl: preview,
+        downloadUrl: preview,
+        license: normalizeLicense(row.license),
+        source: 'freesound' as const
+      }
+      if (attribution) item.attribution = attribution
+      if (row.freesound_url) item.sourceUrl = row.freesound_url
+      if (row.username) item.username = row.username
+      return item
+    })
+    .filter((it): it is SfxItem => it !== null)
+}
+
+/**
+ * 효과음 import — 기존 `importFromUrl` 래퍼 + import 직후 `MediaAsset`에
+ * sfxMeta(license/attribution/source) 부착. NEVER throws.
+ *
+ * 호출 측이 직접 `importFromUrl`을 쓰지 않고 이걸 거쳐야 export 단계에서
+ * credit roll을 자동 생성할 수 있다.
+ */
+export async function importSfxFromUrl(
+  url: string,
+  name: string,
+  meta: SfxMeta
+): Promise<UrlImportResult> {
+  const safeName = (name && name.trim()) || 'sfx'
+  // mp3 확장자 강제 — Freesound preview는 mp3, 우리 라이브러리도 mp3 권장.
+  const suggested = safeName.toLowerCase().endsWith('.mp3')
+    ? safeName
+    : `${safeName}.mp3`
+  const r = await importFromUrl(url, {
+    suggestedName: suggested,
+    displayName: name
+  })
+  if (r.ok && r.asset) {
+    try {
+      useProjectStore.getState().updateMediaSfxMeta(r.asset.id, meta)
+    } catch (err) {
+      // 스토어 부착 실패는 import 자체의 성공을 깨지 않는다.
+      console.warn('[sfx] updateMediaSfxMeta failed', err)
+    }
+  }
+  return r
 }

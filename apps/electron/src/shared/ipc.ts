@@ -737,6 +737,36 @@ export interface ElectronApi {
     /** Subscribe to updater errors (manual check or background). */
     onError(cb: (message: string) => void): () => void
   }
+  /**
+   * pptx10 슬라이드 17 — main process 의 Application Menu (Edit/File/View
+   * 등) click handler 가 보내는 `app-menu:action` 이벤트 listener. action
+   * payload 는 `'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 'delete' |
+   * 'selectAll' | 'duplicate' | 'split'`. Renderer 는 자기 store action 으로
+   * dispatch.
+   */
+  appMenu: {
+    onAction(cb: (action: string) => void): () => void
+  }
+  /**
+   * pptx10 슬라이드 13 (확장) — 진짜 별도 BrowserWindow 의 PreviewCanvas
+   * 분리. main 안 floating 이 아닌 OS-level window 라 다른 모니터 / main
+   * 창 밖 자유 이동 가능. zustand store 는 main process hub 를 통해
+   * BroadcastChannel-like 양방향 sync.
+   */
+  previewWindow: {
+    openDetached(): Promise<boolean>
+    closeDetached(): Promise<boolean>
+    isDetached(): Promise<boolean>
+    /** 한 window 의 store snapshot 을 main 으로 보내고 다른 window 들로 forward. */
+    broadcast(payload: unknown): void
+    /** 다른 window 의 broadcast 를 받음. 받은 쪽 store 가 apply. */
+    onSyncApply(cb: (payload: unknown) => void): () => void
+    /** Reels 11 슬라이드 13 — 분리 윈도우 OS-level 컨트롤. */
+    setAlwaysOnTop(flag: boolean): Promise<boolean>
+    minimize(): Promise<boolean>
+    /** 분리 윈도우의 현재 always-on-top 상태 조회. */
+    isAlwaysOnTop(): Promise<boolean>
+  }
   recording: {
     /**
      * Persist a renderer-captured audio recording (raw bytes from a

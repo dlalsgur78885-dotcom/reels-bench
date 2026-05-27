@@ -25,7 +25,7 @@ import { UpdateStatusPanel } from '../components/UpdateStatusPanel'
 import type { PrefillResult } from '../lib/prefillFromReel'
 import type { AutoEditSummary } from '../lib/autoEdit'
 import { runBeatCut } from '../lib/beatCut'
-import { getTotalDurationMs, useProjectStore, useUndoRedo } from '../store/project'
+import { getTotalDurationMs, useProjectStore, useUndoRedo, newId } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import { markersToChapters } from '../lib/markerExport'
 import {
@@ -125,10 +125,21 @@ const styles = {
   } as React.CSSProperties,
   right: {
     display: 'grid',
-    // Preview takes flex space, transport is auto-sized, timeline gets a
-    // bounded row so it can scroll without pushing the preview off-screen.
-    gridTemplateRows: '1fr auto minmax(220px, 320px)',
+    // pptx10 슬라이드 12 — preview / transport / [splitter] / timeline.
+    // timeline row 높이는 사용자 drag 로 조절 (useState `timelinePanelHeight`).
+    // splitter row 는 4px 고정. inline style 로 row template 매번 override.
     overflow: 'hidden'
+  } as React.CSSProperties,
+  rowSplitter: {
+    cursor: 'row-resize',
+    background: '#0a0a0a',
+    borderTop: '1px solid #2a2a2a',
+    borderBottom: '1px solid #2a2a2a',
+    position: 'relative',
+    transition: 'background 80ms ease'
+  } as React.CSSProperties,
+  rowSplitterActive: {
+    background: '#4f46e5'
   } as React.CSSProperties,
   previewArea: {
     display: 'flex',
@@ -495,6 +506,171 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   // truth.
   const playheadMs = useTimelineUi((s) => s.playheadMs)
   const setPlayheadMs = useTimelineUi((s) => s.setPlayheadMs)
+
+  // pptx10 슬라이드 12 — timeline panel 높이를 사용자 drag 로 조절.
+  // 캡컷 처럼 한번에 여러 트랙 보고 싶을 때 위로 끌어올림. localStorage
+  // 로 persist. range: 160 ~ window.innerHeight * 0.7 (preview 최소 영역
+  // 보장).
+  const [timelinePanelHeight, setTimelinePanelHeight] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem('reels-timeline-panel-height')
+      const n = raw ? parseInt(raw, 10) : NaN
+      return Number.isFinite(n) && n >= 160 ? n : 280
+    } catch { return 280 }
+  })
+  const [splitterDragging, setSplitterDragging] = useState(false)
+
+  // pptx10 슬라이드 13 — 프리뷰 분리 (pop-out). previewArea 통째로
+  // position: fixed 로 floating, drag로 위치 + resize 가능. PreviewCanvas
+  // 자체는 같은 DOM 위치 (video element reload 방지) 유지하고 wrapper
+  // (previewArea) 의 style 만 변경. localStorage persist.
+  const [previewDetached, setPreviewDetached] = useState<boolean>(() => {
+    try { return localStorage.getItem('reels-preview-detached') === '1' } catch { return false }
+  })
+
+  // pptx10 슬라이드 13 (확장) — 진짜 BrowserWindow 분리 토글. 분리 ON 시
+  // main process 가 OS-level window 띄움 → 다른 모니터 가능. main 안
+  // floating placeholder 는 그대로 (분리 mode 표시용).
+  type PrevExt = {
+    previewWindow?: {
+      openDetached: () => Promise<boolean>
+      closeDetached: () => Promise<boolean>
+      broadcast: (payload: unknown) => void
+      onSyncApply: (cb: (payload: unknown) => void) => () => void
+    }
+  }
+  useEffect(() => {
+    const ext = (window as unknown as { electron?: PrevExt }).electron
+    if (!ext?.previewWindow) return
+    if (previewDetached) void ext.previewWindow.openDetached()
+    else void ext.previewWindow.closeDetached()
+  }, [previewDetached])
+  // 양방향 sync — main 의 project/playhead/playing 변경마다 broadcast +
+  // detached 의 변경 수신.
+  const applyingSyncRef = useRef(false)
+  useEffect(() => {
+    const ext = (window as unknown as { electron?: PrevExt }).electron
+    if (!ext?.previewWindow) return
+    // 받기: detached 가 보낸 변경 적용.
+    const off = ext.previewWindow.onSyncApply((payload) => {
+      const msg = payload as { kind: string; value: unknown }
+      if (!msg || typeof msg !== 'object') return
+      applyingSyncRef.current = true
+      try {
+        if (msg.kind === 'request-initial-state') {
+          // detached 가 hydrate 요청 → 현재 project 와 playhead 같이 보냄.
+          const proj = useProjectStore.getState().project
+          ext.previewWindow!.broadcast({ kind: 'project', value: proj })
+          ext.previewWindow!.broadcast({ kind: 'playheadMs', value: useTimelineUi.getState().playheadMs })
+          ext.previewWindow!.broadcast({ kind: 'playing', value: useTimelineUi.getState().playing })
+        } else if (msg.kind === 'request-merge-back') {
+          // Reels 11 슬라이드 13 — 분리 윈도우의 합치기 버튼 클릭 → 메인의
+          // previewDetached 도 false 로 토글하여 placeholder 가 사라지고
+          // in-app preview 가 다시 그려지도록 함.
+          setPreviewDetached(false)
+        } else if (msg.kind === 'playheadMs') {
+          useTimelineUi.getState().setPlayheadMs(msg.value as number)
+        } else if (msg.kind === 'playing') {
+          useTimelineUi.getState().setPlaying(Boolean(msg.value))
+        }
+      } finally {
+        applyingSyncRef.current = false
+      }
+    })
+    // 보내기: project 변경 마다 broadcast.
+    const unsubProj = useProjectStore.subscribe((s, prev) => {
+      if (applyingSyncRef.current) return
+      if (s.project !== prev.project) {
+        ext.previewWindow!.broadcast({ kind: 'project', value: s.project })
+      }
+    })
+    const unsubUi = useTimelineUi.subscribe((s, prev) => {
+      if (applyingSyncRef.current) return
+      if (s.playheadMs !== prev.playheadMs) {
+        ext.previewWindow!.broadcast({ kind: 'playheadMs', value: s.playheadMs })
+      }
+      if (s.playing !== prev.playing) {
+        ext.previewWindow!.broadcast({ kind: 'playing', value: s.playing })
+      }
+    })
+    return () => { off(); unsubProj(); unsubUi() }
+  }, [])
+  const [detachedRect, setDetachedRect] = useState<{ x: number; y: number; w: number; h: number }>(() => {
+    try {
+      const raw = localStorage.getItem('reels-preview-detached-rect')
+      if (raw) {
+        const r = JSON.parse(raw)
+        if (typeof r.x === 'number' && typeof r.y === 'number' && typeof r.w === 'number' && typeof r.h === 'number') return r
+      }
+    } catch {/*ignore*/}
+    return { x: 80, y: 80, w: 360, h: 640 }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('reels-preview-detached', previewDetached ? '1' : '0')
+      localStorage.setItem('reels-preview-detached-rect', JSON.stringify(detachedRect))
+    } catch {/*ignore*/}
+  }, [previewDetached, detachedRect])
+  const onDetachedTitleMouseDown = (e: React.MouseEvent): void => {
+    e.preventDefault()
+    const startX = e.clientX, startY = e.clientY
+    const start = { ...detachedRect }
+    const onMove = (mv: MouseEvent): void => {
+      setDetachedRect({
+        ...start,
+        x: Math.max(0, Math.min(window.innerWidth - 100, start.x + (mv.clientX - startX))),
+        y: Math.max(0, Math.min(window.innerHeight - 60, start.y + (mv.clientY - startY)))
+      })
+    }
+    const onUp = (): void => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+  const onDetachedResizeMouseDown = (e: React.MouseEvent): void => {
+    e.preventDefault(); e.stopPropagation()
+    const startX = e.clientX, startY = e.clientY
+    const start = { ...detachedRect }
+    const onMove = (mv: MouseEvent): void => {
+      setDetachedRect({
+        ...start,
+        w: Math.max(200, start.w + (mv.clientX - startX)),
+        h: Math.max(160, start.h + (mv.clientY - startY))
+      })
+    }
+    const onUp = (): void => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+  useEffect(() => {
+    try {
+      localStorage.setItem('reels-timeline-panel-height', String(timelinePanelHeight))
+    } catch {/*ignore*/}
+  }, [timelinePanelHeight])
+  const onSplitterMouseDown = (e: React.MouseEvent): void => {
+    e.preventDefault()
+    setSplitterDragging(true)
+    const startY = e.clientY
+    const startH = timelinePanelHeight
+    const onMove = (mv: MouseEvent): void => {
+      const dy = startY - mv.clientY  // up-drag → larger timeline
+      const max = Math.max(200, window.innerHeight * 0.7)
+      const next = Math.max(160, Math.min(max, startH + dy))
+      setTimelinePanelHeight(next)
+    }
+    const onUp = (): void => {
+      setSplitterDragging(false)
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
   // Phase 3.81 — preview playback speed.
   const previewSpeed = useTimelineUi((s) => s.previewSpeed)
   const setPreviewSpeed = useTimelineUi((s) => s.setPreviewSpeed)
@@ -622,6 +798,95 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
 
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
   const [editingCaptionId, setEditingCaptionId] = useState<string | null>(null)
+
+  // pptx10 슬라이드 17 — Application Menu (Edit) → renderer dispatch.
+  const clipboardRef = useRef<Clip[]>([])
+  useEffect(() => {
+    type ElectronExt = { appMenu?: { onAction: (cb: (a: string) => void) => () => void } }
+    const ext = (window as unknown as { electron?: ElectronExt }).electron
+    if (!ext?.appMenu?.onAction) return
+    const off = ext.appMenu.onAction((action) => {
+      const projStore = useProjectStore.getState()
+      const uiStore = useTimelineUi.getState()
+      const project = projStore.project
+      const selIds = Array.from(uiStore.selectedClipIds)
+      const collectSelected = (): Clip[] => {
+        const out: Clip[] = []
+        for (const t of project.tracks) for (const c of t.clips) if (selIds.includes(c.id)) out.push(c)
+        return out
+      }
+      switch (action) {
+        case 'undo':
+          useProjectStore.temporal.getState().undo()
+          break
+        case 'redo':
+          useProjectStore.temporal.getState().redo()
+          break
+        case 'selectAll': {
+          const ids: string[] = []
+          for (const t of project.tracks) for (const c of t.clips) ids.push(c.id)
+          useTimelineUi.setState({
+            selectedClipIds: new Set(ids),
+            selectedAdjustmentLayerId: null
+          })
+          break
+        }
+        case 'copy':
+          clipboardRef.current = collectSelected().map((c) => ({ ...c }))
+          break
+        case 'cut': {
+          const sel = collectSelected()
+          clipboardRef.current = sel.map((c) => ({ ...c }))
+          for (const c of sel) projStore.removeClip(c.id)
+          uiStore.clearSelection()
+          break
+        }
+        case 'paste': {
+          if (clipboardRef.current.length === 0) break
+          const phead = uiStore.playheadMs
+          const minStart = clipboardRef.current.reduce(
+            (m, c) => Math.min(m, c.startMs), Infinity
+          )
+          for (const src of clipboardRef.current) {
+            const offset = src.startMs - minStart
+            const dur = src.endMs - src.startMs
+            const newClip = {
+              ...src,
+              id: newId(),
+              startMs: phead + offset,
+              endMs: phead + offset + dur,
+              groupId: undefined
+            }
+            projStore.addClip(newClip as Clip)
+          }
+          break
+        }
+        case 'delete': {
+          for (const c of collectSelected()) {
+            try { projStore.removeClip(c.id) } catch {/*locked*/}
+          }
+          const adjId = uiStore.selectedAdjustmentLayerId
+          if (adjId) projStore.removeAdjustmentLayer(adjId)
+          uiStore.clearSelection()
+          break
+        }
+        case 'duplicate': {
+          for (const c of collectSelected()) projStore.duplicateClip(c.id)
+          break
+        }
+        case 'split': {
+          const phead = uiStore.playheadMs
+          for (const c of collectSelected()) {
+            if (phead > c.startMs && phead < c.endMs) {
+              try { projStore.splitClipAt(c.id, phead) } catch {/*ignore*/}
+            }
+          }
+          break
+        }
+      }
+    })
+    return () => off()
+  }, [])
   const [srtError, setSrtError] = useState<string | null>(null)
   // Phase 3.34 — subtitle (.srt/.vtt) export. Transient UI state only.
   const [subtitleFormat, setSubtitleFormat] = useState<SubtitleFormat>('srt')
@@ -745,6 +1010,12 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
   const selectedAdjustmentLayerId = useTimelineUi(
     (s) => s.selectedAdjustmentLayerId
   )
+
+  // pptx10 slide 24 — 타임라인에서 미디어/오버레이 클립을 선택하면 우측 인스펙터 패널이
+  // 자동으로 열린다. 사용자가 X 로 닫은 후 다른 클립 선택 시 다시 열린다.
+  useEffect(() => {
+    setEffectsOpen(!!effectsClipId)
+  }, [effectsClipId])
 
   // The 효과 panel is shown when the user has toggled it on AND an effect-
   // eligible clip is selected, OR whenever an adjustment layer is selected.
@@ -944,8 +1215,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
       // 가 있는 상태로 Ctrl+Z 를 누르면 keydown 핸들러가 input 이라는 이유로
       // early-return 해서 undo 가 안 먹힘. range/number/checkbox/radio/button
       // 같이 텍스트 편집과 무관한 input 은 native cut/copy/paste/undo 행동이
-      // 없으므로 우리 단축키가 동작해도 안전. textarea / 텍스트 input /
-      // contenteditable 은 그대로 가드.
+      // 없으므로 우리 단축키가 동작해도 안전.
       const isNonTextInput =
         tag === 'input' &&
         ['range', 'number', 'checkbox', 'radio', 'button', 'submit', 'reset'].includes(inputType)
@@ -958,8 +1228,8 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         return
       }
 
-      if (e.key === 'c' || e.key === 'C') {
-        if (e.ctrlKey || e.metaKey) return
+      // 단독 C 키 → 자막 추가. Ctrl+C 는 아래의 Copy 핸들러로 흘려보냄.
+      if ((e.key === 'c' || e.key === 'C') && !e.ctrlKey && !e.metaKey) {
         e.preventDefault()
         handleAddCaption()
         return
@@ -1022,10 +1292,10 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         return
       }
 
-      // Ctrl/Cmd+A → 모든 클립 선택. pptx11 슬라이드 15 — Electron 메뉴
-      // accelerator 만으로는 focus 위치에 따라 OS/browser 가 Ctrl+A 를 먼저
-      // 가로채는 일이 있어 메뉴 click 이 fire 안 됨. renderer keydown 도
-      // 같이 잡아 fallback. Ctrl+D, Ctrl+B 가 이미 동일 패턴 사용.
+      // Ctrl/Cmd+A → 모든 클립 선택. pptx11 슬라이드 15 follow-up — appMenu.ts
+      // accelerator만 있을 때 (focus 위치에 따라) OS / browser 가 Ctrl+A 를
+      // 먼저 잡아가서 메뉴 click 이 fire 되지 않는 일이 있음. renderer
+      // keydown 도 같이 잡아 fallback (Ctrl+D, Ctrl+B 가 이미 같은 패턴).
       // Ctrl+Shift+A 는 위에서 이미 분기 처리 후 return 했으므로 여기 안 들어옴.
       if (
         (e.ctrlKey || e.metaKey) &&
@@ -1044,6 +1314,75 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         return
       }
 
+      // Ctrl/Cmd+X (Cut), Ctrl/Cmd+C (Copy), Ctrl/Cmd+V (Paste) — pptx11
+      // 슬라이드 15 follow-up. appMenu accelerator 가 focus 위치에 따라 안
+      // 먹히는 케이스 fallback. 위쪽 input/textarea 가드를 이미 통과한 상태
+      // (타임라인 등 일반 element focus) 라 native 텍스트 cut/copy/paste 와는
+      // 충돌하지 않음. clipboardRef 는 Editor 함수 컴포넌트 상단(line ~798)
+      // 에서 선언, IPC 핸들러와 같은 ref 를 공유 → 메뉴 click 이든 keydown
+      // 이든 같은 buffer 를 채우고/읽는다.
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        (e.key === 'x' || e.key === 'X' || e.key === 'ㅌ')
+      ) {
+        e.preventDefault()
+        const proj = useProjectStore.getState().project
+        const selIds = Array.from(useTimelineUi.getState().selectedClipIds)
+        const selClips: Clip[] = []
+        for (const t of proj.tracks)
+          for (const c of t.clips)
+            if (selIds.includes(c.id)) selClips.push(c)
+        clipboardRef.current = selClips.map((c) => ({ ...c }))
+        for (const c of selClips) useProjectStore.getState().removeClip(c.id)
+        useTimelineUi.getState().clearSelection()
+        return
+      }
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        (e.key === 'c' || e.key === 'C' || e.key === 'ㅊ')
+      ) {
+        e.preventDefault()
+        const proj = useProjectStore.getState().project
+        const selIds = Array.from(useTimelineUi.getState().selectedClipIds)
+        const selClips: Clip[] = []
+        for (const t of proj.tracks)
+          for (const c of t.clips)
+            if (selIds.includes(c.id)) selClips.push(c)
+        clipboardRef.current = selClips.map((c) => ({ ...c }))
+        return
+      }
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        (e.key === 'v' || e.key === 'V' || e.key === 'ㅍ')
+      ) {
+        e.preventDefault()
+        if (clipboardRef.current.length === 0) return
+        const phead = useTimelineUi.getState().playheadMs
+        const minStart = clipboardRef.current.reduce(
+          (m, c) => Math.min(m, c.startMs),
+          Infinity
+        )
+        for (const src of clipboardRef.current) {
+          const offset = src.startMs - minStart
+          const dur = src.endMs - src.startMs
+          const newClip = {
+            ...src,
+            id: newId(),
+            startMs: phead + offset,
+            endMs: phead + offset + dur,
+            groupId: undefined
+          }
+          useProjectStore.getState().addClip(newClip as Clip)
+        }
+        return
+      }
+
       const store = useProjectStore.getState()
       const ui = useTimelineUi.getState()
       const fps = store.project.fps || 30
@@ -1059,9 +1398,10 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         e.preventDefault()
         const step = e.shiftKey ? 1000 : frameMs
         const cap = getTotalDurationMs(store.project)
-        ui.setPlayheadMs(
-          cap > 0 ? Math.min(cap, ui.playheadMs + step) : ui.playheadMs + step
-        )
+        // pptx10 슬라이드 10 — clip 범위 half-open (`ms < endMs`) 이라 cap
+        // 도달 시 빈 화면. 1ms 안쪽으로 clamp.
+        const maxPark = cap > 0 ? Math.max(0, cap - 1) : Infinity
+        ui.setPlayheadMs(Math.min(maxPark, ui.playheadMs + step))
         return
       }
       if (e.key === 'Home') {
@@ -1071,8 +1411,43 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
       }
       if (e.key === 'End') {
         e.preventDefault()
-        ui.setPlayheadMs(getTotalDurationMs(store.project))
+        const cap = getTotalDurationMs(store.project)
+        ui.setPlayheadMs(Math.max(0, cap - 1))
         return
+      }
+
+      // pptx10 슬라이드 11 — 조정 레이어 선택 + Delete/Backspace 로 삭제.
+      // 이전엔 효과 탭의 빨간 "조정 레이어 삭제" 버튼만 동작했음. clip
+      // selection 검사 전에 먼저 처리. 다른 키 (split, duplicate 등) 는
+      // 조정 레이어 대상 없으므로 Delete/Backspace 만 단축처리.
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const adjId = useTimelineUi.getState().selectedAdjustmentLayerId
+        if (adjId) {
+          e.preventDefault()
+          store.removeAdjustmentLayer(adjId)
+          useTimelineUi.getState().clearSelection()
+          setToast({
+            message: '조정 레이어 삭제됨 · Ctrl+Z로 되돌리기',
+            variant: 'info',
+            durationMs: 6000,
+            id: Date.now()
+          })
+          return
+        }
+        // Reels 11 슬라이드 9 — 갭 선택 + DEL → ripple 삭제(뒷 클립 좌이동).
+        const gap = useTimelineUi.getState().selectedGap
+        if (gap) {
+          e.preventDefault()
+          store.rippleRemoveGap(gap.trackId, gap.startMs, gap.endMs)
+          useTimelineUi.getState().setSelectedGap(null)
+          setToast({
+            message: '빈 공간 삭제됨 · Ctrl+Z로 되돌리기',
+            variant: 'info',
+            durationMs: 6000,
+            id: Date.now()
+          })
+          return
+        }
       }
 
       const sel = useTimelineUi.getState().selectedClipIds
@@ -1081,36 +1456,43 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
 
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault()
-        // Phase 3.41 — locked clips reject keyboard delete.
-        let selClip: Clip | null = null
-        for (const t of store.project.tracks) {
-          const found = t.clips.find((c) => c.id === firstSelected)
-          if (found) {
-            selClip = found
-            break
-          }
-        }
-        if (selClip && isClipLocked(selClip)) return
-        // Resolve clip kind for the undo-hint Toast BEFORE removing (audit
-        // #1: deletes need a surfaced undo path). Same wording as the
-        // ClipContextMenu-dispatched path so users learn one hint.
-        let kindLabel = '클립'
-        if (selClip) {
-          if (selClip.kind === 'caption') kindLabel = '자막'
-          else if (selClip.kind === 'overlay') kindLabel = '오버레이'
-          else if (selClip.kind === 'media') {
-            for (const t of store.project.tracks) {
-              if (t.clips.some((c) => c.id === firstSelected)) {
-                kindLabel = t.kind === 'audio' ? '오디오' : '클립'
-                break
-              }
+        // Reels 11 슬라이드 8 — multi-select 일괄 삭제. selectedClipIds 전부를
+        // 한 번에 제거 (locked 멤버는 skip). 토스트는 마지막 삭제 클립 종류로
+        // 표시(혼합이면 "클립").
+        const selectedIds = [...sel]
+        type Found = { clip: Clip; trackKind: 'video' | 'audio' | 'overlay' | 'caption' }
+        const found: Found[] = []
+        for (const id of selectedIds) {
+          for (const t of store.project.tracks) {
+            const c = t.clips.find((cc) => cc.id === id)
+            if (c) {
+              found.push({ clip: c, trackKind: t.kind as Found['trackKind'] })
+              break
             }
           }
         }
-        store.removeClip(firstSelected)
+        const deletable = found.filter((f) => !isClipLocked(f.clip))
+        if (deletable.length === 0) return
+        let kindLabel = '클립'
+        if (deletable.length === 1) {
+          const only = deletable[0]
+          if (only.clip.kind === 'caption') kindLabel = '자막'
+          else if (only.clip.kind === 'overlay') kindLabel = '오버레이'
+          else if (only.clip.kind === 'media') {
+            kindLabel = only.trackKind === 'audio' ? '오디오' : '클립'
+          }
+        } else {
+          kindLabel = `${deletable.length}개 클립`
+        }
+        for (const { clip } of deletable) {
+          store.removeClip(clip.id)
+        }
         useTimelineUi.getState().clearSelection()
-        setSelectedClipId((cur) => (cur === firstSelected ? null : cur))
-        if (editingCaptionId === firstSelected) setEditingCaptionId(null)
+        const deletedIds = new Set(deletable.map((d) => d.clip.id))
+        setSelectedClipId((cur) => (cur && deletedIds.has(cur) ? null : cur))
+        if (editingCaptionId && deletedIds.has(editingCaptionId)) {
+          setEditingCaptionId(null)
+        }
         setToast({
           message: `${kindLabel} 삭제됨 · Ctrl+Z로 되돌리기`,
           variant: 'info',
@@ -1121,10 +1503,20 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
         e.preventDefault()
-        const nid = store.duplicateClip(firstSelected)
-        if (nid) {
-          useTimelineUi.getState().selectClip(nid)
-          setSelectedClipId(nid)
+        // Reels 11 슬라이드 8 — multi-select 일괄 복제. 선택된 모든 클립을
+        // 차례대로 duplicate. 마지막 새 id 를 active 로.
+        const selectedIds = [...sel]
+        const newIds: string[] = []
+        for (const id of selectedIds) {
+          const nid = store.duplicateClip(id)
+          if (nid) newIds.push(nid)
+        }
+        if (newIds.length > 0) {
+          useTimelineUi.setState({
+            selectedClipIds: new Set(newIds),
+            selectedAdjustmentLayerId: null
+          })
+          setSelectedClipId(newIds[newIds.length - 1])
         }
         return
       }
@@ -1141,16 +1533,19 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           (e.key === 'b' || e.key === 'B' || e.key === 'ㅠ'))
       if (isSplitKey) {
         e.preventDefault()
-        let target = null as null | { kind: string }
-        for (const t of store.project.tracks) {
-          const c = t.clips.find((cc) => cc.id === firstSelected)
-          if (c) {
-            target = c
-            break
+        // Reels 11 슬라이드 8 — multi-select 일괄 split. 선택된 media 클립
+        // 중 playhead 가 그 안에 걸린 것들만 잘림.
+        const ph = useTimelineUi.getState().playheadMs
+        for (const id of [...sel]) {
+          for (const t of store.project.tracks) {
+            const c = t.clips.find((cc) => cc.id === id)
+            if (c) {
+              if (isMediaClip(c) && c.startMs < ph && ph < c.endMs) {
+                store.splitClipAt(id, ph)
+              }
+              break
+            }
           }
-        }
-        if (target && isMediaClip(target as never)) {
-          store.splitClipAt(firstSelected, useTimelineUi.getState().playheadMs)
         }
         return
       }
@@ -1739,8 +2134,73 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
             )}
           </div>
         </div>
-        <div style={styles.right}>
-          <div style={styles.previewArea}>
+        <div
+          style={{
+            ...styles.right,
+            gridTemplateRows: `1fr auto 4px ${timelinePanelHeight}px`
+          }}
+        >
+          {/* pptx10 슬라이드 13 — 분리 시 main grid slot 은 placeholder. */}
+          {previewDetached ? (
+            <div
+              data-testid="preview-detached-placeholder"
+              style={{
+                ...styles.previewArea,
+                flexDirection: 'column',
+                color: '#94a3b8',
+                fontSize: 13,
+                gap: 8
+              }}
+            >
+              <div style={{ fontSize: 14, fontWeight: 600, color: '#cbd5e1' }}>프리뷰가 별도 창으로 분리됨</div>
+              <button
+                type="button"
+                onClick={() => setPreviewDetached(false)}
+                data-testid="preview-reattach-btn"
+                style={{
+                  background: '#1f2937', color: '#cbd5e1', border: '1px solid #374151',
+                  borderRadius: 4, padding: '6px 12px', cursor: 'pointer'
+                }}
+              >
+                ← 합치기
+              </button>
+            </div>
+          ) : null}
+          {/* Reels 11 슬라이드 13 — 분리 시 in-app 플로팅 프리뷰는 더 이상
+              그리지 않음. 별도 BrowserWindow(PreviewOnly) 한 곳에서만 표시.
+              이전엔 placeholder + in-app floater + 별도 BrowserWindow 가
+              동시에 떠 두 개의 프리뷰가 보였음. data-detached='true' 시 div
+              자체를 unmount 하여 중복 제거. */}
+          {!previewDetached && (
+          <div
+            data-detached="false"
+            style={styles.previewArea}
+          >
+            {previewDetached && (
+              <div
+                onMouseDown={onDetachedTitleMouseDown}
+                data-testid="preview-detached-titlebar"
+                style={{
+                  cursor: 'move', background: '#1f2937', color: '#cbd5e1',
+                  padding: '6px 10px', display: 'flex', justifyContent: 'space-between',
+                  alignItems: 'center', borderTopLeftRadius: 8, borderTopRightRadius: 8,
+                  fontSize: 12, userSelect: 'none'
+                }}
+              >
+                <span>플레이어 — 분리됨</span>
+                <button
+                  type="button"
+                  onClick={() => setPreviewDetached(false)}
+                  data-testid="preview-detached-close"
+                  style={{
+                    background: 'transparent', color: '#cbd5e1', border: 'none',
+                    cursor: 'pointer', fontSize: 14
+                  }}
+                  title="원래 자리로"
+                >×</button>
+              </div>
+            )}
+            <div style={previewDetached ? { flex: 1, position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' } : { display: 'contents' }}>
             {/* Phase 6 — SNS 플랫폼 미리보기 selector.
                 Moved to top-LEFT in 0.2.5 because the top-right cluster
                 (AudioMeter / ColorScopes / 풀스크린 / preview-speed) shared
@@ -1817,6 +2277,26 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
                 >
                   ⛶ 풀스크린
                 </button>
+                {/* pptx10 슬라이드 13 — 프리뷰 분리 toggle. detached 상태면
+                    버튼 텍스트가 "합치기" 로 바뀜. */}
+                <button
+                  type="button"
+                  onClick={() => setPreviewDetached((v) => !v)}
+                  data-testid="preview-detach-toggle"
+                  title={previewDetached ? '원래 자리로 합치기' : '별도 창으로 분리'}
+                  style={{
+                    background: previewDetached ? '#4f46e5' : '#1f2937',
+                    color: previewDetached ? '#fff' : '#cbd5e1',
+                    border: '1px solid #374151',
+                    borderRadius: 4,
+                    padding: '3px 8px',
+                    fontSize: 10,
+                    cursor: 'pointer',
+                    fontWeight: 600
+                  }}
+                >
+                  {previewDetached ? '⤡ 합치기' : '⧉ 분리'}
+                </button>
                 {/* Phase 3.81 — preview speed (UI-only playbackRate). */}
                 <select
                   value={previewSpeed}
@@ -1866,9 +2346,37 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
                 {srtError}
               </div>
             )}
+            </div>
+            {previewDetached && (
+              <div
+                onMouseDown={onDetachedResizeMouseDown}
+                data-testid="preview-detached-resize"
+                title="끌어서 크기 조절"
+                style={{
+                  position: 'absolute', right: 0, bottom: 0, width: 14, height: 14,
+                  cursor: 'nwse-resize',
+                  background:
+                    'linear-gradient(135deg, transparent 50%, #475569 50%, #475569 65%, transparent 65%, transparent 75%, #475569 75%, #475569 90%, transparent 90%)'
+                }}
+              />
+            )}
           </div>
+          )}
           {/* Transport bar sits between preview and timeline. */}
           <Transport />
+          {/* pptx10 슬라이드 12 — preview↔timeline splitter. drag 로 timeline
+              panel 높이 조절. cursor: row-resize 로 발견성 확보. */}
+          <div
+            style={
+              splitterDragging
+                ? { ...styles.rowSplitter, ...styles.rowSplitterActive }
+                : styles.rowSplitter
+            }
+            data-testid="timeline-splitter"
+            title="끌어서 타임라인 크기 조절 (더블클릭으로 기본값 복원)"
+            onMouseDown={onSplitterMouseDown}
+            onDoubleClick={() => setTimelinePanelHeight(280)}
+          />
           <div data-testid="timeline-placeholder" style={{ overflow: 'hidden' }}>
             <Timeline
               project={project}

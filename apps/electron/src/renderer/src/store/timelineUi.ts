@@ -54,6 +54,13 @@ export interface TimelineUiStore {
   previewSpeed: number
   setPreviewSpeed(speed: number): void
   /**
+   * pptx10 슬라이드 19 — 트랙 row 의 최소 height (px). 사용자가 slider 로
+   * 압축하면 모든 트랙이 동시에 얇아져 한 화면에 많은 트랙 표시 가능.
+   * range: 16 ~ 120. 기본 60 (옛 minHeight 와 동일).
+   */
+  trackHeightPx: number
+  setTrackHeightPx(px: number): void
+  /**
    * Phase 3.83 — A/B loop range. When set, the transport rAF loop wraps
    * the playhead back to `start` whenever it crosses `end` (inclusive).
    * `null` disables looping. Both ends are clamped to [0, +∞] and ordered
@@ -121,6 +128,17 @@ export interface TimelineUiStore {
   avLinkEnabled: boolean
   setAvLinkEnabled(enabled: boolean): void
 
+  // ----- Reels 11 슬라이드 9 — 빈 공간(갭) 선택 -----
+  /**
+   * 사용자가 트랙의 빈 영역을 클릭하면 그 갭이 선택됨. DEL 키 누르면
+   * 갭 삭제 + 갭 endMs 이후의 같은 트랙 클립들이 갭 길이만큼 앞으로
+   * 붙음(ripple). null = 갭 선택 없음.
+   */
+  selectedGap: { trackId: string; startMs: number; endMs: number } | null
+  setSelectedGap(
+    gap: { trackId: string; startMs: number; endMs: number } | null
+  ): void
+
   // ----- Toolbar: markers (Phase 5) -----
   /** Timeline markers (absolute ms positions), kept as transient UI state. */
   markers: TimelineMarker[]
@@ -177,6 +195,21 @@ export const useTimelineUi = create<TimelineUiStore>((set, get) => ({
     const clamped = Math.max(0.1, Math.min(8, Number(speed)))
     if (clamped !== get().previewSpeed) set({ previewSpeed: clamped })
   },
+  trackHeightPx: ((): number => {
+    try {
+      const raw = localStorage.getItem('reels-track-height-px')
+      const n = raw ? parseInt(raw, 10) : NaN
+      return Number.isFinite(n) && n >= 16 && n <= 120 ? n : 60
+    } catch { return 60 }
+  })(),
+  setTrackHeightPx(px: number): void {
+    if (!Number.isFinite(px)) return
+    const clamped = Math.max(16, Math.min(120, Math.round(px)))
+    if (clamped !== get().trackHeightPx) {
+      set({ trackHeightPx: clamped })
+      try { localStorage.setItem('reels-track-height-px', String(clamped)) } catch {/*ignore*/}
+    }
+  },
   loopRangeMs: null,
   setLoopRange(range): void {
     if (range === null) {
@@ -210,13 +243,38 @@ export const useTimelineUi = create<TimelineUiStore>((set, get) => ({
   avLinkEnabled: false,
   markers: [],
   socialPreviewPlatform: 'none',
+  selectedGap: null,
+  setSelectedGap(gap): void {
+    if (gap === null) {
+      if (get().selectedGap !== null) set({ selectedGap: null })
+      return
+    }
+    if (
+      !gap.trackId ||
+      !Number.isFinite(gap.startMs) ||
+      !Number.isFinite(gap.endMs) ||
+      gap.startMs >= gap.endMs
+    ) {
+      return
+    }
+    // 갭 선택은 클립/조정레이어 선택과 상호 배타.
+    set({
+      selectedGap: {
+        trackId: gap.trackId,
+        startMs: Math.max(0, Math.round(gap.startMs)),
+        endMs: Math.max(0, Math.round(gap.endMs))
+      },
+      selectedClipIds: new Set(),
+      selectedAdjustmentLayerId: null
+    })
+  },
 
   selectClip(clipId: string | null): void {
     const current = get().selectedClipIds
     const hadLayer = get().selectedAdjustmentLayerId !== null
     if (clipId === null) {
-      if (current.size === 0 && !hadLayer) return
-      set({ selectedClipIds: new Set(), selectedAdjustmentLayerId: null })
+      if (current.size === 0 && !hadLayer && get().selectedGap === null) return
+      set({ selectedClipIds: new Set(), selectedAdjustmentLayerId: null, selectedGap: null })
       return
     }
     // Phase 3.33 — selecting a grouped clip selects ALL its group members.
@@ -241,20 +299,33 @@ export const useTimelineUi = create<TimelineUiStore>((set, get) => ({
     ) {
       return
     }
-    // Selecting a clip clears any adjustment-layer selection (mutually exclusive).
-    set({ selectedClipIds: new Set(ids), selectedAdjustmentLayerId: null })
+    // Selecting a clip clears any adjustment-layer / gap selection.
+    set({
+      selectedClipIds: new Set(ids),
+      selectedAdjustmentLayerId: null,
+      selectedGap: null
+    })
   },
   toggleClipSelected(clipId: string): void {
     const next = new Set(get().selectedClipIds)
     if (next.has(clipId)) next.delete(clipId)
     else next.add(clipId)
-    set({ selectedClipIds: next, selectedAdjustmentLayerId: null })
+    set({ selectedClipIds: next, selectedAdjustmentLayerId: null, selectedGap: null })
   },
   clearSelection(): void {
-    if (get().selectedClipIds.size === 0 && get().selectedAdjustmentLayerId === null) {
+    const s = get()
+    if (
+      s.selectedClipIds.size === 0 &&
+      s.selectedAdjustmentLayerId === null &&
+      s.selectedGap === null
+    ) {
       return
     }
-    set({ selectedClipIds: new Set(), selectedAdjustmentLayerId: null })
+    set({
+      selectedClipIds: new Set(),
+      selectedAdjustmentLayerId: null,
+      selectedGap: null
+    })
   },
 
   setSelectedAdjustmentLayerId(layerId: string | null): void {

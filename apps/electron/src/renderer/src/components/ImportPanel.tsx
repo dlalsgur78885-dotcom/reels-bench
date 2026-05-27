@@ -19,10 +19,19 @@ import {
   fetchScriptTtsState,
   importReel,
   importScriptTts,
+  importSfxFromUrl,
+  searchFreesound,
+  searchOurSfx,
   type RemoteMediaItem,
-  type ScriptPickItem
+  type ScriptPickItem,
+  type SfxItem
 } from '../lib/importSources'
 import { importFromUrl } from '../lib/mediaImport'
+import {
+  PENDING_MEDIA_DRAG_MIME,
+  newPendingId,
+  registerPending
+} from '../lib/pendingImport'
 import { cuesToClips, addClipsToStore } from '../lib/captions'
 import { submitSeedanceJob, uploadSeedanceImage, type ReelSummary } from '../lib/api'
 import {
@@ -34,7 +43,7 @@ import { useAiJobs } from '../store/aiJobs'
 import { useProjectStore, newId } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import { BrandKitPanel } from './BrandKitPanel'
-import type { VideoAudioClip, Clip } from '../../../shared/project'
+import type { VideoAudioClip, Clip, MediaAsset } from '../../../shared/project'
 
 export type ImportTab =
   | 'local'
@@ -43,6 +52,7 @@ export type ImportTab =
   | 'ai'
   | 'internal'
   | 'music'
+  | 'sfx'
   | 'brand'
 
 interface ImportPanelProps {
@@ -386,6 +396,142 @@ const styles = {
     fontSize: 12,
     cursor: 'pointer',
     alignSelf: 'center'
+  } as React.CSSProperties,
+  // ── 효과음 (Phase 8) ──
+  sfxSourceToggle: {
+    display: 'flex',
+    gap: 4,
+    background: '#0d0d0d',
+    border: '1px solid #2a2a2a',
+    borderRadius: 8,
+    padding: 4
+  } as React.CSSProperties,
+  sfxSourceBtn: {
+    flex: '1 1 0',
+    background: 'transparent',
+    color: '#9aa0a6',
+    border: 'none',
+    borderRadius: 6,
+    padding: '6px 8px',
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap'
+  } as React.CSSProperties,
+  sfxSourceBtnActive: {
+    background: '#10b981',
+    color: '#04231a'
+  } as React.CSSProperties,
+  sfxSearchRow: {
+    display: 'flex',
+    gap: 6
+  } as React.CSSProperties,
+  sfxSearchBtn: {
+    background: '#10b981',
+    color: '#04231a',
+    border: 'none',
+    borderRadius: 6,
+    padding: '6px 12px',
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap'
+  } as React.CSSProperties,
+  sfxGrid: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6
+  } as React.CSSProperties,
+  sfxCard: {
+    background: '#1a1a1a',
+    border: '1px solid #2a2a2a',
+    borderRadius: 8,
+    padding: '8px 10px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6
+  } as React.CSSProperties,
+  sfxCardHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8
+  } as React.CSSProperties,
+  sfxCardName: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 12,
+    fontWeight: 600,
+    color: '#e2e8f0',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  } as React.CSSProperties,
+  sfxCardMeta: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 6,
+    alignItems: 'center',
+    fontSize: 10,
+    color: '#64748b'
+  } as React.CSSProperties,
+  sfxTagsRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 4
+  } as React.CSSProperties,
+  sfxTag: {
+    background: '#0d0d0d',
+    border: '1px solid #2a2a2a',
+    borderRadius: 4,
+    padding: '1px 5px',
+    fontSize: 9,
+    color: '#94a3b8'
+  } as React.CSSProperties,
+  sfxLicenseCc0: {
+    background: '#0d2a1a',
+    color: '#86efac',
+    border: '1px solid #1f4a35',
+    borderRadius: 4,
+    padding: '1px 6px',
+    fontSize: 9,
+    fontWeight: 700,
+    whiteSpace: 'nowrap'
+  } as React.CSSProperties,
+  sfxLicenseCcBy: {
+    background: '#0d1a2a',
+    color: '#93c5fd',
+    border: '1px solid #1e3a5f',
+    borderRadius: 4,
+    padding: '1px 6px',
+    fontSize: 9,
+    fontWeight: 700,
+    cursor: 'help',
+    whiteSpace: 'nowrap'
+  } as React.CSSProperties,
+  sfxLicenseOther: {
+    background: '#2a1f0d',
+    color: '#fbbf24',
+    border: '1px solid #4a3a1f',
+    borderRadius: 4,
+    padding: '1px 6px',
+    fontSize: 9,
+    fontWeight: 700,
+    cursor: 'help',
+    whiteSpace: 'nowrap'
+  } as React.CSSProperties,
+  sfxBtnRow: {
+    display: 'flex',
+    gap: 6,
+    justifyContent: 'flex-end'
+  } as React.CSSProperties,
+  sfxWarnBanner: {
+    background: '#2a1f0d',
+    border: '1px solid #4a3a1f',
+    color: '#fbbf24',
+    borderRadius: 6,
+    fontSize: 11,
+    padding: '8px 12px',
+    lineHeight: 1.5
   } as React.CSSProperties
 }
 
@@ -398,8 +544,12 @@ function RemoteGrid(props: {
   importedIds: Set<string>
   busyId: string | null
   onPick: (item: RemoteMediaItem) => void
+  /** Drag-and-drop bridge — called when the user starts dragging a tile to
+   *  the timeline. Must kick off the import and return a Promise for the
+   *  resulting MediaAsset (or null on failure). */
+  onDragImport?: (item: RemoteMediaItem) => Promise<MediaAsset | null>
 }): JSX.Element {
-  const { items, importedIds, busyId, onPick } = props
+  const { items, importedIds, busyId, onPick, onDragImport } = props
   return (
     <div style={styles.grid} data-testid="remote-grid">
       {items.map((it) => {
@@ -411,9 +561,23 @@ function RemoteGrid(props: {
             style={{
               ...styles.tile,
               opacity: busy ? 0.6 : 1,
-              borderColor: done ? '#10b981' : '#2a2a2a'
+              borderColor: done ? '#10b981' : '#2a2a2a',
+              cursor: onDragImport ? 'grab' : 'pointer'
             }}
             onClick={() => !busy && onPick(it)}
+            draggable={Boolean(onDragImport)}
+            onDragStart={
+              onDragImport
+                ? (e) => {
+                    e.dataTransfer.effectAllowed = 'copy'
+                    const tempId = newPendingId()
+                    e.dataTransfer.setData(PENDING_MEDIA_DRAG_MIME, tempId)
+                    e.dataTransfer.setData('text/plain', it.title)
+                    const p = onDragImport(it)
+                    registerPending(tempId, p, it.title)
+                  }
+                : undefined
+            }
             data-testid={`remote-tile-${it.id}`}
             title={it.title}
           >
@@ -490,6 +654,28 @@ function VideoLibraryTab({
     [onNotice]
   )
 
+  // CRITICAL — hooks must run on every render path, so this useCallback
+  // sits BEFORE the early returns below. Moving it after them produces
+  // a hook-count mismatch (React error #310) the moment the tab switches
+  // from "loading" to "ready".
+  const onDragImport = useCallback(
+    async (it: RemoteMediaItem): Promise<MediaAsset | null> => {
+      setBusyId(it.id)
+      const r = await importFromUrl(it.downloadUrl, {
+        suggestedName: `${it.id}${it.ext}`,
+        displayName: it.title
+      })
+      setBusyId(null)
+      if (r.ok && r.asset) {
+        setImportedIds((prev) => new Set(prev).add(it.id))
+        onNotice(`"${it.title}" 가져옴`, 'info')
+        return r.asset
+      }
+      onNotice(`가져오기 실패: ${r.error}`, 'error')
+      return null
+    },
+    [onNotice]
+  )
   if (loading) return <div style={styles.state}>영상 라이브러리 불러오는 중…</div>
   if (error) {
     return (
@@ -515,6 +701,7 @@ function VideoLibraryTab({
         importedIds={importedIds}
         busyId={busyId}
         onPick={onPick}
+        onDragImport={onDragImport}
       />
     </div>
   )
@@ -604,6 +791,20 @@ function InternalReelsTab({
         subtitle: '메타데이터 불러오는 중…'
       }
   )
+  const onDragImport = async (
+    it: RemoteMediaItem
+  ): Promise<MediaAsset | null> => {
+    setBusyId(it.id)
+    const r = await importReel(it.id)
+    setBusyId(null)
+    if (r.ok && r.asset) {
+      setImportedIds((prev) => new Set(prev).add(it.id))
+      onNotice(`릴스 "${it.id}" 가져옴`, 'info')
+      return r.asset
+    }
+    onNotice(`가져오기 실패: ${r.error}`, 'error')
+    return null
+  }
   return (
     <div style={styles.body}>
       <RemoteGrid
@@ -611,6 +812,7 @@ function InternalReelsTab({
         importedIds={importedIds}
         busyId={busyId}
         onPick={(it) => onPick(it.id)}
+        onDragImport={onDragImport}
       />
     </div>
   )
@@ -662,18 +864,42 @@ function TtsTab({
     }
   }, [scripts])
 
-  const onPick = useCallback(
-    async (s: ScriptPickItem) => {
-      if (hasTts[s.id] !== true) return
+  const doImportTts = useCallback(
+    async (s: ScriptPickItem, addCaptions: boolean): Promise<MediaAsset | null> => {
+      if (hasTts[s.id] !== true) return null
       setBusyId(s.id)
       const r = await importScriptTts(s.productId, s.id)
       setBusyId(null)
       if (!r.ok) {
         onNotice(`TTS 가져오기 실패: ${r.error}`, 'error')
-        return
+        return null
       }
       let captionMsg = ''
-      if (r.cues && r.cues.length > 0) {
+      const asset = r.mediaId
+        ? useProjectStore.getState().project.media[r.mediaId] ?? null
+        : null
+      // pptx10 슬라이드 14 (급함) — TTS audio 도 자동으로 voice track 에
+      // clip 추가. 이전엔 자막만 timeline 추가하고 audio 는 라이브러리만
+      // 들어감 → 재생 시 소리 안 들림 보고. 자막 onPick 경로(addCaptions)
+      // 일 때만 — drag 경로는 timeline drop handler 가 별도로 처리.
+      if (addCaptions && asset && asset.kind === 'audio') {
+        const store = useProjectStore.getState()
+        const trackId = store.ensureAudioTrack('voice')
+        const dur = asset.durationMs > 0 ? asset.durationMs : 1000
+        const clip: VideoAudioClip = {
+          id: newId(),
+          kind: 'media',
+          mediaId: asset.id,
+          trackId,
+          startMs: 0,
+          endMs: dur,
+          trimInMs: 0,
+          trimOutMs: dur,
+          speed: 1
+        }
+        store.addClip(clip)
+      }
+      if (addCaptions && r.cues && r.cues.length > 0) {
         const clips = cuesToClips(r.cues)
         if (clips.length > 0) {
           addClipsToStore(clips)
@@ -682,8 +908,15 @@ function TtsTab({
       }
       setImportedIds((prev) => new Set(prev).add(s.id))
       onNotice(`"${s.title}" TTS 오디오 가져옴${captionMsg}`, 'info')
+      return asset
     },
     [hasTts, onNotice]
+  )
+  const onPick = useCallback(
+    async (s: ScriptPickItem) => {
+      await doImportTts(s, true)
+    },
+    [doImportTts]
   )
 
   if (loading) return <div style={styles.state}>대본 목록 불러오는 중…</div>
@@ -735,6 +968,18 @@ function TtsTab({
                 opacity: busy ? 0.6 : available ? 1 : 0.45
               }}
               onClick={() => available && !busy && onPick(s)}
+              draggable={available && !busy}
+              onDragStart={
+                available && !busy
+                  ? (e) => {
+                      e.dataTransfer.effectAllowed = 'copy'
+                      const tempId = newPendingId()
+                      e.dataTransfer.setData(PENDING_MEDIA_DRAG_MIME, tempId)
+                      e.dataTransfer.setData('text/plain', s.title)
+                      registerPending(tempId, doImportTts(s, false), s.title)
+                    }
+                  : undefined
+              }
               data-testid={`script-row-${s.id}`}
               title={s.title}
             >
@@ -1312,6 +1557,37 @@ function MusicLibraryTab({
                   }}
                   data-testid={`music-row-${it.id}`}
                   title={it.title}
+                  draggable={!busy}
+                  onDragStart={
+                    !busy
+                      ? (e) => {
+                          e.dataTransfer.effectAllowed = 'copy'
+                          const tempId = newPendingId()
+                          e.dataTransfer.setData(PENDING_MEDIA_DRAG_MIME, tempId)
+                          e.dataTransfer.setData('text/plain', it.title)
+                          setBusyId(it.id)
+                          const p = importFromUrl(it.downloadUrl, {
+                            suggestedName: `${it.id}${it.ext}`,
+                            displayName: it.artist
+                              ? `${it.title} · ${it.artist}`
+                              : it.title
+                          }).then((r): MediaAsset | null => {
+                            setBusyId(null)
+                            if (r.ok && r.asset) {
+                              setAddedIds((prev) => new Set(prev).add(it.id))
+                              onNotice(`"${it.title}" 가져옴`, 'info')
+                              return r.asset
+                            }
+                            onNotice(
+                              `가져오기 실패: ${r.error ?? '알 수 없는 오류'}`,
+                              'error'
+                            )
+                            return null
+                          })
+                          registerPending(tempId, p, it.title)
+                        }
+                      : undefined
+                  }
                 >
                   <div style={styles.musicGlyph}>
                     {it.category === 'sfx' ? '🔊' : '♪'}
@@ -1379,6 +1655,419 @@ function MusicLibraryTab({
 }
 
 // ===========================================================================
+// Phase 8 — 효과음 (SFX) 탭.
+//   소스 토글: 우리 라이브러리 / Freesound.
+//   결과 카드: 이름 · 길이 · 라이선스 배지 · 태그 · 저작자(Freesound).
+//     ▶ 미리듣기 — HTMLAudioElement 하나로 동시 1개만 재생.
+//     가져오기 — `importSfxFromUrl`로 다운로드 + sfxMeta 부착.
+//   라이선스 배지: CC0(녹색) · CC-BY(파랑, 저작자 표기 안내 툴팁) · 기타(주황).
+//   Freesound 503(키 미설정)은 별도 경고 배너로 graceful degrade.
+// ===========================================================================
+type SfxSource = 'ours' | 'freesound'
+
+function SfxTab({
+  onNotice
+}: {
+  onNotice: ImportPanelProps['onNotice']
+}): JSX.Element {
+  const [source, setSource] = useState<SfxSource>('ours')
+  const [query, setQuery] = useState('')
+  const [items, setItems] = useState<SfxItem[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  /** Freesound 키 미설정(503) 전용 경고 — 일반 error와 분리해 톤을 다르게. */
+  const [freesoundUnconfigured, setFreesoundUnconfigured] = useState(false)
+  /** 처음 진입 직후 / 검색 전 안내 상태 식별용. */
+  const [hasSearched, setHasSearched] = useState(false)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [importedIds, setImportedIds] = useState<Set<string>>(new Set())
+  const [previewingId, setPreviewingId] = useState<string | null>(null)
+  const [previewErrorId, setPreviewErrorId] = useState<string | null>(null)
+
+  /** 미리듣기 전용 단일 <audio>. 한 번에 한 트랙만 재생. */
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  if (audioRef.current === null && typeof Audio !== 'undefined') {
+    audioRef.current = new Audio()
+  }
+
+  // audio 이벤트 — 종료/일시정지/에러 시 재생 표시 해제.
+  useEffect(() => {
+    const el = audioRef.current
+    if (!el) return
+    const onEnded = (): void => setPreviewingId(null)
+    const onPause = (): void => setPreviewingId(null)
+    const onErr = (): void => {
+      setPreviewingId(null)
+      setPreviewErrorId(el.dataset.sfxId ?? null)
+    }
+    el.addEventListener('ended', onEnded)
+    el.addEventListener('pause', onPause)
+    el.addEventListener('error', onErr)
+    return () => {
+      el.removeEventListener('ended', onEnded)
+      el.removeEventListener('pause', onPause)
+      el.removeEventListener('error', onErr)
+    }
+  }, [])
+
+  // 언마운트 시 정리.
+  useEffect(() => {
+    return () => {
+      const el = audioRef.current
+      if (el) {
+        el.pause()
+        el.removeAttribute('src')
+        el.load()
+      }
+    }
+  }, [])
+
+  // 소스 전환 시 결과·에러 초기화 (검색은 사용자가 다시 트리거).
+  useEffect(() => {
+    setItems([])
+    setError(null)
+    setFreesoundUnconfigured(false)
+    setHasSearched(false)
+    setPreviewErrorId(null)
+    const el = audioRef.current
+    if (el) el.pause()
+  }, [source])
+
+  const runSearch = useCallback(async () => {
+    const q = query.trim()
+    // 우리 라이브러리는 빈 검색도 허용(전체 목록), Freesound는 검색어 필요.
+    if (source === 'freesound' && !q) {
+      onNotice('Freesound는 검색어를 입력해야 합니다', 'error')
+      return
+    }
+    setLoading(true)
+    setError(null)
+    setFreesoundUnconfigured(false)
+    setHasSearched(true)
+    setPreviewErrorId(null)
+    try {
+      const rows =
+        source === 'ours'
+          ? await searchOurSfx(q || undefined)
+          : await searchFreesound(q)
+      setItems(rows)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg === 'FREESOUND_NOT_CONFIGURED') {
+        setItems([])
+        setFreesoundUnconfigured(true)
+      } else {
+        setItems([])
+        setError(msg)
+      }
+    } finally {
+      setLoading(false)
+    }
+  }, [query, source, onNotice])
+
+  const togglePreview = useCallback(
+    (it: SfxItem) => {
+      const el = audioRef.current
+      if (!el) return
+      setPreviewErrorId(null)
+      if (previewingId === it.id) {
+        el.pause()
+        setPreviewingId(null)
+        return
+      }
+      el.pause()
+      el.dataset.sfxId = it.id
+      el.src = it.previewUrl
+      el.currentTime = 0
+      setPreviewingId(it.id)
+      void el.play().catch(() => {
+        setPreviewingId(null)
+        setPreviewErrorId(it.id)
+      })
+    },
+    [previewingId]
+  )
+
+  const onImport = useCallback(
+    async (it: SfxItem) => {
+      // 미리듣기 중이면 정지 (다운로드 중에도 계속 재생되는 것 방지).
+      const el = audioRef.current
+      if (el && previewingId === it.id) {
+        el.pause()
+        setPreviewingId(null)
+      }
+      setBusyId(it.id)
+      const meta = {
+        source: it.source,
+        license: it.license,
+        ...(it.attribution ? { attribution: it.attribution } : {}),
+        ...(it.sourceUrl ? { sourceUrl: it.sourceUrl } : {})
+      }
+      const r = await importSfxFromUrl(it.downloadUrl, it.name, meta)
+      setBusyId(null)
+      if (r.ok) {
+        setImportedIds((prev) => new Set(prev).add(it.id))
+        onNotice(`효과음 "${it.name}" 가져옴`, 'info')
+      } else {
+        onNotice(`효과음 가져오기 실패: ${r.error}`, 'error')
+      }
+    },
+    [onNotice, previewingId]
+  )
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      void runSearch()
+    }
+  }
+
+  const licenseBadge = (it: SfxItem): JSX.Element => {
+    const lic = it.license
+    if (lic === 'CC0') {
+      return (
+        <span
+          style={styles.sfxLicenseCc0}
+          data-testid={`sfx-license-${it.id}`}
+          title="퍼블릭 도메인 — 자유롭게 사용 가능"
+        >
+          CC0
+        </span>
+      )
+    }
+    if (lic === 'CC-BY') {
+      return (
+        <span
+          style={styles.sfxLicenseCcBy}
+          data-testid={`sfx-license-${it.id}`}
+          title={`저작자 표기 필요${it.attribution ? ` — ${it.attribution}` : ''}`}
+        >
+          CC-BY
+        </span>
+      )
+    }
+    return (
+      <span
+        style={styles.sfxLicenseOther}
+        data-testid={`sfx-license-${it.id}`}
+        title={`라이선스: ${lic} — 사용 조건 확인 필요`}
+      >
+        {lic}
+      </span>
+    )
+  }
+
+  return (
+    <div style={styles.body}>
+      {/* 소스 토글 */}
+      <div
+        style={styles.sfxSourceToggle}
+        data-testid="sfx-source-toggle"
+        role="tablist"
+      >
+        <button
+          style={{
+            ...styles.sfxSourceBtn,
+            ...(source === 'ours' ? styles.sfxSourceBtnActive : {})
+          }}
+          onClick={() => setSource('ours')}
+          data-testid="sfx-source-ours"
+          role="tab"
+          aria-selected={source === 'ours'}
+        >
+          우리 라이브러리
+        </button>
+        <button
+          style={{
+            ...styles.sfxSourceBtn,
+            ...(source === 'freesound' ? styles.sfxSourceBtnActive : {})
+          }}
+          onClick={() => setSource('freesound')}
+          data-testid="sfx-source-freesound"
+          role="tab"
+          aria-selected={source === 'freesound'}
+        >
+          Freesound
+        </button>
+      </div>
+
+      {/* 검색바 */}
+      <div style={styles.sfxSearchRow}>
+        <input
+          style={styles.searchInput}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder={
+            source === 'freesound'
+              ? '예: rain, footsteps, swoosh (검색어 필수)'
+              : '예: 박수, 알림음 (비워두면 전체)'
+          }
+          data-testid="sfx-search-input"
+        />
+        <button
+          style={styles.sfxSearchBtn}
+          onClick={() => void runSearch()}
+          disabled={loading}
+          data-testid="sfx-search-btn"
+        >
+          {loading ? '검색 중…' : '검색'}
+        </button>
+      </div>
+
+      <div style={styles.hint}>
+        가져오는 효과음에는 라이선스 정보가 자동으로 함께 저장됩니다.
+        CC-BY는 추후 영상 내보내기 시 저작자 표기가 자동으로 들어갈 수 있게
+        준비됩니다.
+      </div>
+
+      {/* Freesound 503 — 별도 톤의 경고 배너 */}
+      {freesoundUnconfigured && (
+        <div style={styles.sfxWarnBanner} data-testid="sfx-error">
+          Freesound API 키가 설정되지 않았습니다 — 관리자에게 설정을 요청하거나
+          “우리 라이브러리” 탭을 사용해주세요.
+        </div>
+      )}
+
+      {/* 일반 에러 배너 */}
+      {error && !freesoundUnconfigured && (
+        <div style={styles.errorBox} data-testid="sfx-error">
+          불러오기 실패: {error}
+        </div>
+      )}
+
+      {/* 결과 */}
+      {loading ? (
+        <div style={styles.state}>효과음 검색 중…</div>
+      ) : items.length === 0 ? (
+        !error && !freesoundUnconfigured ? (
+          <div style={styles.state} data-testid="sfx-empty">
+            {hasSearched
+              ? '검색 결과가 없습니다.'
+              : source === 'freesound'
+                ? '검색어를 입력해 Freesound에서 효과음을 찾아보세요.'
+                : '검색어를 입력하거나 [검색]을 눌러 전체 라이브러리를 보세요.'}
+          </div>
+        ) : null
+      ) : (
+        <div style={styles.sfxGrid} data-testid="sfx-grid">
+          {items.map((it) => {
+            const busy = busyId === it.id
+            const done = importedIds.has(it.id)
+            const playing = previewingId === it.id
+            const previewBroken = previewErrorId === it.id
+            return (
+              <div
+                key={it.id}
+                style={{
+                  ...styles.sfxCard,
+                  opacity: busy ? 0.6 : 1,
+                  borderColor: done ? '#10b981' : '#2a2a2a'
+                }}
+                data-testid={`sfx-card-${it.id}`}
+                title={it.name}
+                draggable={!busy}
+                onDragStart={
+                  !busy
+                    ? (e) => {
+                        e.dataTransfer.effectAllowed = 'copy'
+                        const tempId = newPendingId()
+                        e.dataTransfer.setData(PENDING_MEDIA_DRAG_MIME, tempId)
+                        e.dataTransfer.setData('text/plain', it.name)
+                        const el = audioRef.current
+                        if (el && previewingId === it.id) {
+                          el.pause()
+                          setPreviewingId(null)
+                        }
+                        setBusyId(it.id)
+                        const meta = {
+                          source: it.source,
+                          license: it.license,
+                          ...(it.attribution ? { attribution: it.attribution } : {}),
+                          ...(it.sourceUrl ? { sourceUrl: it.sourceUrl } : {})
+                        }
+                        const p = importSfxFromUrl(it.downloadUrl, it.name, meta).then(
+                          (r): MediaAsset | null => {
+                            setBusyId(null)
+                            if (r.ok && r.asset) {
+                              setImportedIds((prev) => new Set(prev).add(it.id))
+                              onNotice(`효과음 "${it.name}" 가져옴`, 'info')
+                              return r.asset
+                            }
+                            onNotice(`효과음 가져오기 실패: ${r.error}`, 'error')
+                            return null
+                          }
+                        )
+                        registerPending(tempId, p, it.name)
+                      }
+                    : undefined
+                }
+              >
+                <div style={styles.sfxCardHeader}>
+                  <div style={styles.sfxCardName}>
+                    {done ? '✓ ' : ''}🔊 {it.name}
+                  </div>
+                  {licenseBadge(it)}
+                </div>
+                <div style={styles.sfxCardMeta}>
+                  <span>{fmtMmSs(it.durationMs)}</span>
+                  {it.source === 'freesound' && it.username && (
+                    <span>by {it.username}</span>
+                  )}
+                  {it.source === 'freesound' && it.sourceUrl && (
+                    <a
+                      href={it.sourceUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: '#94a3b8', textDecoration: 'underline' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      원본
+                    </a>
+                  )}
+                </div>
+                {it.tags.length > 0 && (
+                  <div style={styles.sfxTagsRow}>
+                    {it.tags.slice(0, 6).map((t) => (
+                      <span key={t} style={styles.sfxTag}>
+                        #{t}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {previewBroken && (
+                  <div style={styles.musicPreviewNote}>
+                    미리듣기를 재생할 수 없습니다
+                  </div>
+                )}
+                <div style={styles.sfxBtnRow}>
+                  <button
+                    style={styles.iconBtn}
+                    onClick={() => togglePreview(it)}
+                    data-testid={`sfx-preview-${it.id}`}
+                    title={playing ? '미리듣기 정지' : '미리듣기'}
+                  >
+                    {playing ? '⏸ 정지' : '▶ 미리듣기'}
+                  </button>
+                  <button
+                    style={styles.addBtn}
+                    onClick={() => void onImport(it)}
+                    disabled={busy}
+                    data-testid={`sfx-import-${it.id}`}
+                  >
+                    {busy ? '가져오는 중…' : '가져오기'}
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ===========================================================================
 // 라우터.
 // ===========================================================================
 export function ImportPanel({ tab, onNotice }: ImportPanelProps): JSX.Element {
@@ -1393,6 +2082,8 @@ export function ImportPanel({ tab, onNotice }: ImportPanelProps): JSX.Element {
       return <InternalReelsTab onNotice={onNotice} />
     case 'music':
       return <MusicLibraryTab onNotice={onNotice} />
+    case 'sfx':
+      return <SfxTab onNotice={onNotice} />
     case 'brand':
       return <BrandKitPanel onNotice={onNotice} />
     default:

@@ -24,8 +24,23 @@ void useAuthStore.getState().hydrate()
 ;(window as unknown as { __reelsAuth: typeof useAuthStore }).__reelsAuth =
   useAuthStore
 
-createRoot(container).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-)
+// pptx10 슬라이드 13 (확장) — URL 에 `?previewOnly=1` 있으면 분리된
+// BrowserWindow 안에서 실행. PreviewCanvas 만 render 하는 mini app 로
+// 띄움 (full editor UI 는 main window 가 담당).
+const isPreviewOnly = new URLSearchParams(window.location.search).get('previewOnly') === '1'
+
+if (isPreviewOnly) {
+  void import('./pages/PreviewOnly').then(({ PreviewOnly }) => {
+    createRoot(container).render(
+      <React.StrictMode>
+        <PreviewOnly />
+      </React.StrictMode>
+    )
+  })
+} else {
+  createRoot(container).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  )
+}

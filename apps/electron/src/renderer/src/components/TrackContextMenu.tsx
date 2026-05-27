@@ -41,6 +41,15 @@ interface TrackContextMenuProps {
    * The handler is only invoked from the panel rendered for audio tracks.
    */
   onSetDucking: (target: 'voice' | null, db?: number) => void
+  /**
+   * Reels 11 슬라이드 10 — 트랙 순서 이동. 방향 토큰별 호출: top/up/down/bottom.
+   * 현재 트랙이 stack 의 끝(0 또는 max)에 있으면 해당 방향은 disabled 로 표시.
+   */
+  onMove?: (direction: 'top' | 'up' | 'down' | 'bottom') => void
+  /** stack 내 현재 트랙 index (0-based) — disable 가드용. */
+  trackIndex?: number
+  /** 총 트랙 개수 — disable 가드용. */
+  trackCount?: number
   onClose: () => void
 }
 
@@ -158,6 +167,9 @@ export function TrackContextMenu(props: TrackContextMenuProps): JSX.Element {
     onAddMany,
     onDeleteMany,
     onSetDucking,
+    onMove,
+    trackIndex,
+    trackCount,
     onClose
   } = props
 
@@ -311,6 +323,54 @@ export function TrackContextMenu(props: TrackContextMenuProps): JSX.Element {
           onClose()
         }}
       />
+
+      {/* Reels 11 슬라이드 10 — 트랙 순서 이동 4종. trackIndex/trackCount 가
+          넘어왔을 때만 노출. 맨 위/맨 아래 행은 이미 그 끝에 있을 때 disabled. */}
+      {onMove && typeof trackIndex === 'number' && typeof trackCount === 'number' && (
+        <>
+          <MenuItem
+            testId="track-menu-move-top"
+            label="맨 위로 이동"
+            disabled={trackIndex <= 0}
+            onClick={() => {
+              if (trackIndex <= 0) return
+              onMove('top')
+              onClose()
+            }}
+          />
+          <MenuItem
+            testId="track-menu-move-up"
+            label="위로 이동"
+            disabled={trackIndex <= 0}
+            onClick={() => {
+              if (trackIndex <= 0) return
+              onMove('up')
+              onClose()
+            }}
+          />
+          <MenuItem
+            testId="track-menu-move-down"
+            label="아래로 이동"
+            disabled={trackIndex >= trackCount - 1}
+            onClick={() => {
+              if (trackIndex >= trackCount - 1) return
+              onMove('down')
+              onClose()
+            }}
+          />
+          <MenuItem
+            testId="track-menu-move-bottom"
+            label="맨 아래로 이동"
+            disabled={trackIndex >= trackCount - 1}
+            onClick={() => {
+              if (trackIndex >= trackCount - 1) return
+              onMove('bottom')
+              onClose()
+            }}
+          />
+          <div style={styles.separator} />
+        </>
+      )}
 
       {/* 4. 트랙 하나 삭제 */}
       <MenuItem

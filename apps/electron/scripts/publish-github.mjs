@@ -21,7 +21,7 @@
  * force-push tags).
  */
 import { spawnSync, execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
 
 function getGhToken() {
@@ -39,6 +39,23 @@ function getGhToken() {
 }
 
 const token = getGhToken()
+
+// CRITICAL — electron-builder packages whatever's already in `out/`. If we
+// skip the build step, every "publish" ships the renderer/main/preload
+// bundle from the FIRST time we ran it (the minified asset hash never
+// changes). The renderer hash was stuck at `index-CXFE9UcK.js` across
+// 0.2.10→0.2.13 because of this — none of those version's renderer fixes
+// actually reached users. Always rebuild first.
+console.log('[publish] electron-vite build...')
+const build = spawnSync('npx', ['electron-vite', 'build'], {
+  stdio: 'inherit',
+  shell: true
+})
+if (build.status !== 0) {
+  console.error('[publish] build failed')
+  process.exit(build.status ?? 1)
+}
+
 const result = spawnSync(
   'npx',
   ['electron-builder', '--win', '--x64', '--publish', 'always'],
@@ -129,8 +146,7 @@ function reinstallLocal() {
     `reels-publish-verify-${Date.now()}`
   )
   try {
-    const fs2 = await import('node:fs')
-    fs2.mkdirSync(probeDir, { recursive: true })
+    mkdirSync(probeDir, { recursive: true })
   } catch (e) {
     console.warn('[publish] cannot create probe dir:', e?.message ?? e)
     return
@@ -156,8 +172,7 @@ function reinstallLocal() {
   }
   // Cleanup probe dir — entire scoped temp, never touches the repo.
   try {
-    const fs2 = await import('node:fs')
-    fs2.rmSync(probeDir, { recursive: true, force: true })
+    rmSync(probeDir, { recursive: true, force: true })
   } catch {
     /* ignore */
   }

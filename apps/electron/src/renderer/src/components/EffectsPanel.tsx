@@ -447,6 +447,8 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   const selectedAdjustmentLayerId = useTimelineUi(
     (s) => s.selectedAdjustmentLayerId
   )
+  // Reels 11 슬라이드 19 — 키프레임 리스트에서 행 클릭 시 playhead 점프.
+  const setPlayheadMs = useTimelineUi((s) => s.setPlayheadMs)
   const adjustmentLayer =
     selectedAdjustmentLayerId != null
       ? (project.adjustmentLayers ?? []).find(
@@ -671,16 +673,92 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
    *  - keyframe track but not on a keyframe → insert one at the playhead
    *  - no keyframe track → static transform
    */
+  /**
+   * Reels 11 슬라이드 20 — 효과 일괄 적용 대상 id 목록. drag/Ctrl/Shift 로 2개
+   * 이상 선택돼 있고 ctxClip 이 그 selection 에 포함되면 모든 멤버 ids 반환.
+   * 아니면 ctxClip 단독 [id].
+   */
+  const collectBulkClipIds = (): string[] => {
+    const sel = useTimelineUi.getState().selectedClipIds
+    if (sel.size >= 2 && sel.has(clip.id)) return [...sel]
+    return [clip.id]
+  }
+
   const handleTransform = (partial: Partial<ClipTransform>): void => {
-    if (hasTransformKeyframes(clip)) {
-      if (keyframeIndex >= 0) {
-        updateTransformKeyframe(clip.id, keyframeIndex, { transform: partial })
+    const targets = collectBulkClipIds()
+    // 단일 대상이면 기존 fast path.
+    if (targets.length === 1) {
+      if (hasTransformKeyframes(clip)) {
+        if (keyframeIndex >= 0) {
+          updateTransformKeyframe(clip.id, keyframeIndex, { transform: partial })
+        } else {
+          addTransformKeyframe(clip.id, playheadMs - clip.startMs, partial)
+        }
       } else {
-        addTransformKeyframe(clip.id, playheadMs - clip.startMs, partial)
+        setClipTransform(clip.id, partial)
       }
-    } else {
-      setClipTransform(clip.id, partial)
+      return
     }
+    // 다중 대상 — 각 멤버 자기 transformKeyframes 유무에 따라 처리.
+    const live = useProjectStore.getState().project
+    for (const id of targets) {
+      let t: Clip | null = null
+      for (const tr of live.tracks) {
+        const c = tr.clips.find((cc) => cc.id === id)
+        if (c) {
+          t = c
+          break
+        }
+      }
+      if (!t) continue
+      if (!isMediaClip(t) && !isOverlayClip(t)) continue
+      if (hasTransformKeyframes(t)) {
+        const kfs = t.transformKeyframes ?? []
+        const localMs = playheadMs - t.startMs
+        let bestIdx = -1
+        let bestDist = MIN_KEYFRAME_GAP_MS
+        for (let i = 0; i < kfs.length; i++) {
+          const d = Math.abs(kfs[i].atMs - localMs)
+          if (d < bestDist) {
+            bestDist = d
+            bestIdx = i
+          }
+        }
+        if (bestIdx >= 0) {
+          updateTransformKeyframe(id, bestIdx, { transform: partial })
+        } else {
+          addTransformKeyframe(id, localMs, partial)
+        }
+      } else {
+        setClipTransform(id, partial)
+      }
+    }
+  }
+
+  /**
+   * Reels 11 슬라이드 17 — 슬라이더 행의 ♦ 다이아몬드 클릭 핸들러.
+   * 키프레임 트랙이 없으면 seed 2개 만들고 partial 적용; 이미 있고 playhead
+   * 가 한 키프레임 위라면 그 키프레임에 partial 만 갱신; 그 외엔 새 키프레임
+   * 삽입. addTransformKeyframe 자체가 정규화/dedup 처리.
+   */
+  const handleAddTransformKeyframe = (
+    partial: Partial<ClipTransform>
+  ): void => {
+    if (!isMediaClip(clip) && !isOverlayClip(clip)) return
+    if (hasTransformKeyframes(clip) && keyframeIndex >= 0) {
+      updateTransformKeyframe(clip.id, keyframeIndex, { transform: partial })
+      return
+    }
+    addTransformKeyframe(clip.id, playheadMs - clip.startMs, partial)
+  }
+  // 현재 playhead 위치(±MIN_KEYFRAME_GAP_MS) 의 키프레임. store 가 seed
+  // 시 base transform 전체를 채우므로 per-속성 active 구분은 의미 없음 —
+  // "이 시점에 키프레임이 박혀 있느냐" 만 표시. 5 개 ♦ 가 한 시점에서 동시
+  // active 가 정상 동작.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _activeKf: typeof keyframeIndex = keyframeIndex
+  const kfHas = (_key: keyof ClipTransform): boolean => {
+    return keyframeIndex >= 0
   }
 
   /**
@@ -809,7 +887,12 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
     testid: string,
     decimals = 2,
     parseInt10 = false,
-    disabled = false
+    disabled = false,
+    /**
+     * Reels 11 슬라이드 17 — 행 끝의 ♦ 다이아몬드(클릭 시 그 속성에 한해
+     * 현재 playhead 에 키프레임 삽입). undefined 면 다이아몬드 미표시.
+     */
+    keyframe?: { active: boolean; onAdd: () => void; testid: string }
   ): JSX.Element => (
     <div style={styles.row}>
       <span style={styles.ctrlLabel}>{label}</span>
@@ -849,6 +932,47 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
         data-testid={`${testid}-input`}
         aria-label={`${label} 숫자`}
       />
+      {keyframe && (
+        <button
+          type="button"
+          onClick={keyframe.onAdd}
+          disabled={disabled}
+          data-testid={keyframe.testid}
+          data-kf-active={keyframe.active ? 'true' : 'false'}
+          title={
+            keyframe.active
+              ? '현재 위치에 이 속성 키프레임 있음 (클릭 시 갱신)'
+              : '현재 위치에 이 속성 키프레임 추가'
+          }
+          aria-label={`${label} 키프레임 추가`}
+          aria-pressed={keyframe.active}
+          style={{
+            width: 24,
+            height: 24,
+            marginLeft: 6,
+            padding: 0,
+            background: 'transparent',
+            border: 'none',
+            cursor: disabled ? 'not-allowed' : 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+        >
+          <span
+            aria-hidden="true"
+            style={{
+              display: 'inline-block',
+              width: 11,
+              height: 11,
+              transform: 'rotate(45deg)',
+              background: keyframe.active ? '#3b82f6' : 'transparent',
+              border: `1.5px solid ${keyframe.active ? '#3b82f6' : '#64748b'}`,
+              borderRadius: 2
+            }}
+          />
+        </button>
+      )}
     </div>
   )
 
@@ -905,7 +1029,15 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 MAX_TRANSFORM_SCALE,
                 0.05,
                 (v) => handleTransform({ scale: v }),
-                'effects-transform-scale'
+                'effects-transform-scale',
+                2,
+                false,
+                false,
+                {
+                  active: kfHas('scale'),
+                  onAdd: () => handleAddTransformKeyframe({ scale: transform.scale }),
+                  testid: 'effects-transform-scale-kf'
+                }
               )}
               {sliderRow(
                 '회전',
@@ -915,7 +1047,15 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 1,
                 (v) => handleTransform({ rotation: v }),
                 'effects-transform-rotation',
-                0
+                0,
+                false,
+                false,
+                {
+                  active: kfHas('rotation'),
+                  onAdd: () =>
+                    handleAddTransformKeyframe({ rotation: transform.rotation }),
+                  testid: 'effects-transform-rotation-kf'
+                }
               )}
               {sliderRow(
                 '불투명',
@@ -924,7 +1064,16 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 1,
                 0.05,
                 (v) => handleTransform({ opacity: v }),
-                'effects-transform-opacity'
+                'effects-transform-opacity',
+                2,
+                false,
+                false,
+                {
+                  active: kfHas('opacity'),
+                  onAdd: () =>
+                    handleAddTransformKeyframe({ opacity: transform.opacity }),
+                  testid: 'effects-transform-opacity-kf'
+                }
               )}
               {sliderRow(
                 'X 위치',
@@ -933,7 +1082,15 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 MAX_TRANSFORM_OFFSET,
                 0.01,
                 (v) => handleTransform({ x: v }),
-                'effects-transform-x'
+                'effects-transform-x',
+                2,
+                false,
+                false,
+                {
+                  active: kfHas('x'),
+                  onAdd: () => handleAddTransformKeyframe({ x: transform.x }),
+                  testid: 'effects-transform-x-kf'
+                }
               )}
               {sliderRow(
                 'Y 위치',
@@ -942,7 +1099,15 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 MAX_TRANSFORM_OFFSET,
                 0.01,
                 (v) => handleTransform({ y: v }),
-                'effects-transform-y'
+                'effects-transform-y',
+                2,
+                false,
+                false,
+                {
+                  active: kfHas('y'),
+                  onAdd: () => handleAddTransformKeyframe({ y: transform.y }),
+                  testid: 'effects-transform-y-kf'
+                }
               )}
               <div style={{ height: 8 }} />
               <button
@@ -1127,7 +1292,10 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                       ...styles.preset,
                       ...(active ? styles.presetActive : {})
                     }}
-                    onClick={() => setClipSpeed(clip.id, p)}
+                    onClick={() => {
+                      // Reels 11 슬라이드 20 — bulk apply.
+                      for (const id of collectBulkClipIds()) setClipSpeed(id, p)
+                    }}
                     data-testid={`effects-speed-preset-${p}`}
                   >
                     {p}×
@@ -1142,7 +1310,10 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
               MIN_CLIP_SPEED,
               MAX_CLIP_SPEED,
               0.05,
-              (v) => setClipSpeed(clip.id, v),
+              (v) => {
+                // Reels 11 슬라이드 20 — bulk apply.
+                for (const id of collectBulkClipIds()) setClipSpeed(id, v)
+              },
               'effects-speed'
             )}
           </Section>
@@ -1260,9 +1431,101 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                   </select>
                 </div>
               )}
+              {/* Reels 11 슬라이드 19 — 키프레임 디테일 리스트.
+                  각 행: # · 시간 ms 입력 · 삭제 ×. 행 클릭 시 그 시점으로
+                  playhead 점프 → 사용자가 어느 시간/어떤 키프레임인지 보고
+                  바로 수정 가능. 시간은 0..duration 으로 clamp. */}
+              {hasTransformKeyframes(clip) && (isMediaClip(clip) || isOverlayClip(clip)) && (
+                <div
+                  data-testid="effects-keyframe-list"
+                  style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}
+                >
+                  {(clip.transformKeyframes ?? []).map((kf, idx) => (
+                    <div
+                      key={`${idx}-${kf.atMs}`}
+                      data-testid={`effects-keyframe-row-${idx}`}
+                      data-kf-at-ms={kf.atMs}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        padding: '4px 6px',
+                        background:
+                          keyframeIndex === idx ? '#1e293b' : '#0f172a',
+                        border: `1px solid ${
+                          keyframeIndex === idx ? '#3b82f6' : '#1f2937'
+                        }`,
+                        borderRadius: 4,
+                        cursor: 'pointer'
+                      }}
+                      onClick={() => {
+                        // 행 클릭 → playhead 를 그 키프레임 절대 ms 로 이동.
+                        setPlayheadMs(clip.startMs + kf.atMs)
+                      }}
+                    >
+                      <span
+                        style={{
+                          color: '#94a3b8',
+                          fontSize: 11,
+                          width: 24,
+                          textAlign: 'right'
+                        }}
+                      >
+                        #{idx + 1}
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={Math.max(0, clip.endMs - clip.startMs)}
+                        step={1}
+                        value={kf.atMs}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => {
+                          const raw = parseInt(e.target.value, 10)
+                          if (!Number.isFinite(raw)) return
+                          const dur = clip.endMs - clip.startMs
+                          const clamped = Math.max(0, Math.min(dur, raw))
+                          updateTransformKeyframe(clip.id, idx, { atMs: clamped })
+                        }}
+                        data-testid={`effects-keyframe-time-${idx}`}
+                        aria-label={`키프레임 ${idx + 1} 시간 ms`}
+                        style={{
+                          ...styles.numInput,
+                          width: 80,
+                          flex: 'none'
+                        }}
+                      />
+                      <span style={{ color: '#64748b', fontSize: 11 }}>ms</span>
+                      <div style={{ flex: 1 }} />
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          removeTransformKeyframe(clip.id, idx)
+                        }}
+                        data-testid={`effects-keyframe-remove-${idx}`}
+                        aria-label={`키프레임 ${idx + 1} 삭제`}
+                        title="이 키프레임 삭제"
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: '#94a3b8',
+                          cursor: 'pointer',
+                          padding: '2px 6px',
+                          fontSize: 14,
+                          borderRadius: 3
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <p style={{ ...styles.hint, marginTop: 8 }}>
                 재생헤드를 옮긴 뒤 변형 탭의 슬라이더를 조정하면 그 지점에
-                키프레임이 생겨 자연스럽게 보간돼요.
+                키프레임이 생겨 자연스럽게 보간돼요. 위 리스트의 시간 ms 를
+                직접 수정하면 키프레임 위치가 옮겨져요.
               </p>
             </Section>
           </div>
@@ -1286,7 +1549,12 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                     <button
                       key={p}
                       type="button"
-                      onClick={() => setClipFilter(clip.id, p, filterIntensity)}
+                      onClick={() => {
+                        // Reels 11 슬라이드 20 — bulk apply.
+                        for (const id of collectBulkClipIds()) {
+                          setClipFilter(id, p, filterIntensity)
+                        }
+                      }}
                       data-testid={`effects-filter-preset-${p}`}
                       style={{
                         ...styles.filterCell,
@@ -1316,13 +1584,16 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                   max={100}
                   step={5}
                   value={Math.round(filterIntensity * 100)}
-                  onChange={(e) =>
-                    setClipFilter(
-                      clip.id,
-                      filterPreset,
-                      Math.max(0, Math.min(1, parseInt(e.target.value, 10) / 100))
+                  onChange={(e) => {
+                    const intensity = Math.max(
+                      0,
+                      Math.min(1, parseInt(e.target.value, 10) / 100)
                     )
-                  }
+                    // Reels 11 슬라이드 20 — bulk apply.
+                    for (const id of collectBulkClipIds()) {
+                      setClipFilter(id, filterPreset, intensity)
+                    }
+                  }}
                   style={styles.slider}
                   data-testid="effects-filter-intensity-slider"
                   aria-label="필터 강도"
@@ -1438,7 +1709,12 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                   MIN_COLOR_ADJUST,
                   MAX_COLOR_ADJUST,
                   1,
-                  (v) => setClipColorAdjust(clip.id, { [k]: v }),
+                  (v) => {
+                    // Reels 11 슬라이드 20 — bulk apply.
+                    for (const id of collectBulkClipIds()) {
+                      setClipColorAdjust(id, { [k]: v })
+                    }
+                  },
                   `effects-coloradjust-${k}`,
                   0,
                   true

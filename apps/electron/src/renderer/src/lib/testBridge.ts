@@ -192,6 +192,8 @@ export function installTestBridge(): void {
         setAdjustmentLayerFade: Store['setAdjustmentLayerFade']
         // pptx11 슬라이드 8 — 다중 선택 일괄 이동.
         moveClipsByDelta: Store['moveClipsByDelta']
+        // pptx11 슬라이드 9 — 갭 ripple 삭제.
+        rippleRemoveGap: Store['rippleRemoveGap']
         // Phase 3.32 — adjustment-layer selection (timeline-UI store).
         setSelectedAdjustmentLayerId: (layerId: string | null) => void
         // Phase 3.33 — clip grouping / linking.
@@ -422,6 +424,9 @@ export function installTestBridge(): void {
         useProjectStore
           .getState()
           .moveClipsByDelta(ids, anchorId, desiredAnchorStart),
+      // pptx11 슬라이드 9.
+      rippleRemoveGap: (tid, s, e) =>
+        useProjectStore.getState().rippleRemoveGap(tid, s, e),
       setSelectedAdjustmentLayerId: (layerId) =>
         useTimelineUi.getState().setSelectedAdjustmentLayerId(layerId),
       // Phase 3.33 — clip grouping / linking.

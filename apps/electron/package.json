@@ -1,7 +1,7 @@
 {
   "name": "reels-studio-electron",
   "productName": "Reels Studio",
-  "version": "0.2.37",
+  "version": "0.2.38",
   "private": true,
   "description": "Short-form video editor for Reels Bench",
   "author": {

@@ -705,6 +705,9 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const toggleClipSelectedInUi = useTimelineUi((s) => s.toggleClipSelected)
   // Phase 3.33 — current multi-selection (drives the 그룹 묶기 enablement).
   const selectedClipIds = useTimelineUi((s) => s.selectedClipIds)
+  // pptx11 슬라이드 9 — 갭 선택.
+  const selectedGap = useTimelineUi((s) => s.selectedGap)
+  const setSelectedGap = useTimelineUi((s) => s.setSelectedGap)
   const pps = useTimelineUi((s) => s.pps)
   const setPps = useTimelineUi((s) => s.setPps)
   const beats = useTimelineUi((s) => s.beats)
@@ -835,13 +838,45 @@ export function Timeline(props: TimelineProps): JSX.Element {
     [onSelectClip, toggleClipSelectedInUi]
   )
 
-  const handleLaneClick = (e: React.MouseEvent<HTMLDivElement>): void => {
+  const handleLaneClick = (
+    e: React.MouseEvent<HTMLDivElement>,
+    track?: Track
+  ): void => {
     if (e.target !== e.currentTarget) return
     const target = e.currentTarget
     const rect = target.getBoundingClientRect()
     const x = e.clientX - rect.left
     const ms = Math.max(0, Math.round((x / pps) * 1000))
+    // pptx11 슬라이드 9 — 클릭한 위치가 트랙의 두 클립 사이 빈 공간(gap)
+    // 안에 들어가면 selectedGap 설정 → DEL 키로 ripple 삭제 가능.
+    // 트랙이 안 넘어오는 legacy 호출은 기존 동작 그대로.
+    if (track) {
+      const sorted = [...track.clips].sort((a, b) => a.startMs - b.startMs)
+      let leftEnd = 0
+      let rightStart: number | null = null
+      let insideClip = false
+      for (const c of sorted) {
+        if (ms < c.startMs) {
+          if (rightStart === null) rightStart = c.startMs
+        } else if (ms >= c.endMs) {
+          if (c.endMs > leftEnd) leftEnd = c.endMs
+        } else {
+          insideClip = true
+          break
+        }
+      }
+      if (!insideClip && rightStart !== null && rightStart > leftEnd) {
+        setSelectedGap({
+          trackId: track.id,
+          startMs: leftEnd,
+          endMs: rightStart
+        })
+        onSeek(ms)
+        return
+      }
+    }
     onSeek(ms)
+    setSelectedGap(null)
     handleSelect(null)
   }
 
@@ -2277,7 +2312,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
                   : {}),
                 width: laneWidth
               }}
-              onClick={handleLaneClick}
+              onClick={(e) => handleLaneClick(e, track)}
               onContextMenu={(e) => {
                 // Right-click on the empty lane background (not a clip — clips
                 // stopPropagation in their own onContextMenu) opens the track
@@ -2294,6 +2329,34 @@ export function Timeline(props: TimelineProps): JSX.Element {
                 crossTrackDropTargetId === track.id ? 'true' : 'false'
               }
             >
+              {/* pptx11 슬라이드 9 — 선택된 갭 highlight. selectedGap.trackId
+                  가 이 track 이고 ms 범위가 유효할 때만 표시. */}
+              {selectedGap && selectedGap.trackId === track.id && (
+                <div
+                  data-testid="selected-gap-highlight"
+                  data-gap-track-id={selectedGap.trackId}
+                  data-gap-start-ms={selectedGap.startMs}
+                  data-gap-end-ms={selectedGap.endMs}
+                  style={{
+                    position: 'absolute',
+                    top: 2,
+                    bottom: 2,
+                    left: (selectedGap.startMs / 1000) * pps,
+                    width: Math.max(
+                      2,
+                      ((selectedGap.endMs - selectedGap.startMs) / 1000) * pps
+                    ),
+                    background: 'rgba(255,255,255,0.18)',
+                    border: '1px solid rgba(255,255,255,0.55)',
+                    borderRadius: 3,
+                    pointerEvents: 'none',
+                    zIndex: 2
+                  }}
+                  title={`빈 공간 · ${(selectedGap.startMs / 1000).toFixed(2)}s – ${(
+                    selectedGap.endMs / 1000
+                  ).toFixed(2)}s · DEL 키로 ripple 삭제`}
+                />
+              )}
               {track.clips.map((clip) => {
                 const left = clipLeft(clip, pps)
                 const w = clipWidth(clip, pps)

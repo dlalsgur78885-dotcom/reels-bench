@@ -804,6 +804,13 @@ export interface ProjectStore {
     desiredAnchorStart: number
   ): void
   /**
+   * pptx11 슬라이드 9 — 트랙의 빈 공간(gap) [startMs, endMs) 를 삭제하고
+   * gap 뒤(startMs >= endMs)의 클립들을 (endMs-startMs)만큼 왼쪽으로 ripple.
+   * 갭 영역 안에 클립이 걸쳐 있으면 no-op (사용자 의도 모호). shift 대상
+   * 클립 중 locked 가 있으면 전체 no-op.
+   */
+  rippleRemoveGap(trackId: string, startMs: number, endMs: number): void
+  /**
    * Phase 3.40 — move a single clip onto a different track. Validates
    * compatibility via `canPlaceClipOnTrack`; no-op if source==target,
    * target missing, or kinds incompatible. Preserves every other field on
@@ -2678,6 +2685,49 @@ export const useProjectStore = create<ProjectStore>()(
           : c
       )
     }))
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // pptx11 슬라이드 9 — 트랙의 갭 [startMs, endMs) 를 삭제 + 뒷 클립 ripple
+  // 좌이동. 갭에 걸친 클립이 있으면 no-op. shift 대상에 locked 있으면 no-op.
+  rippleRemoveGap(trackId, startMs, endMs): void {
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return
+    const s = Math.round(startMs)
+    const e = Math.round(endMs)
+    if (e <= s) return
+    const project = get().project
+    const trackIdx = project.tracks.findIndex((t) => t.id === trackId)
+    if (trackIdx === -1) return
+    const track = project.tracks[trackIdx]
+    // 갭 영역 [s, e) 안에 걸쳐 있는 클립이 있으면 no-op — 어떤 부분을 어떻게
+    // 자를지 사용자 의도 모호.
+    for (const c of track.clips) {
+      const overlap = c.startMs < e && c.endMs > s
+      if (overlap) return
+    }
+    // shift 대상 (startMs >= e) 모음 + locked 검사.
+    const shiftIds = new Set<string>()
+    for (const c of track.clips) {
+      if (c.startMs >= e) {
+        if (isClipLocked(c)) return
+        shiftIds.add(c.id)
+      }
+    }
+    if (shiftIds.size === 0) return
+    const delta = -(e - s)
+    const tracks = project.tracks.map((t, i) => {
+      if (i !== trackIdx) return t
+      return {
+        ...t,
+        clips: t.clips.map((c) =>
+          shiftIds.has(c.id)
+            ? { ...c, startMs: c.startMs + delta, endMs: c.endMs + delta }
+            : c
+        )
+      }
+    })
     const next = touch({ ...project, tracks })
     set({ project: next })
     schedulePersist(next)

@@ -21,6 +21,33 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.38 (2026-05-27)
+
+### 추가 (pptx11 슬라이드 9 — 사용자 보고 "개선")
+"빈 공간 선택 후 DEL 키 누르면 빈공간 삭제, 뒷 영상 붙어짐". 트랙의 두
+클립 사이 빈 공간(gap) 을 선택 → DEL → gap 제거 + 뒷 클립 ripple
+좌이동. bench2 가 이미 e2e 4 test + UI 상태(`selectedGap`) + Editor.tsx
+Delete 핸들러까지 작성했지만, store 의 `rippleRemoveGap` 액션과
+Timeline 의 highlight UI / 클릭 핸들러가 store/project.ts corruption
+으로 손실되어 동작 안 함.
+
+- **store/project.ts**: `rippleRemoveGap(trackId, startMs, endMs)` —
+  갭 범위 [s, e) 안 / 걸친 클립 있으면 no-op (사용자 의도 모호); 갭
+  뒤(startMs >= e) 클립 중 locked 있으면 전체 no-op; 그 외 모두를
+  delta=-(e-s) 만큼 좌이동 (atomic, 단일 undo step).
+- **Timeline.tsx**: 빈 lane 클릭 시 클릭 위치가 두 클립 사이 진짜 갭이면
+  `setSelectedGap` 호출 → 트랙 lane 위에 흰색 반투명 highlight 표시
+  (`data-testid="selected-gap-highlight"` + start/end ms attrs).
+  하나의 클립 안쪽 또는 모든 클립 뒤 영역 클릭은 기존 동작(seek + 선택
+  해제) 유지.
+
+### e2e
+- gap-ripple-delete.spec.ts 4 tests 모두 통과 (A-1 뒷 클립 좌이동 /
+  A-2 걸친 클립 no-op / A-3 locked no-op / A-4 lane 클릭 highlight + DEL
+  ripple).
+
+---
+
 ## 0.2.37 (2026-05-27)
 
 ### 버그 (pptx11 슬라이드 8 — 사용자 보고 "급함")

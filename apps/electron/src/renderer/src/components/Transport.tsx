@@ -99,7 +99,11 @@ export function Transport(): JSX.Element {
       const ui = useTimelineUi.getState()
       const current = ui.playheadMs
       const next = current + dt
-      const cap = getTotalDurationMs(useProjectStore.getState().project)
+      // Use the same endpoint as the "끝" button: the last video frame.
+      // Caption/overlay/adjustment layers can extend past media after several
+      // edit passes; letting playback run to total duration leaves PreviewCanvas
+      // in a media-less black section while non-media overlays still render.
+      const cap = getLastVisualMs(useProjectStore.getState().project)
       // Phase 3.83 — A/B loop: when set and the playhead crosses `end`,
       // wrap back to `start` and keep playing. Tested BEFORE the cap-stop
       // so a loop range placed at the very end still cycles.

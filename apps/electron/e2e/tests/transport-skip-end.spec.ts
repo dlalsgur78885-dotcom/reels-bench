@@ -175,6 +175,40 @@ test.describe('@phase-transport-skip-end skip-end goes to last visual frame', ()
     expect(ph).toBeGreaterThanOrEqual(2500) // 비디오 안에 있음
   })
 
+  test('playback with caption longer than video stops on last video frame', async () => {
+    if (!launched) throw new Error('launch failed')
+    await openEditorWithVideo(3000)
+    await addCaption(0, 6000)
+    await launched.page.evaluate(() => {
+      ;(
+        window as unknown as {
+          __reelsTimelineUi: {
+            getState: () => {
+              setPlayheadMs: (ms: number) => void
+              setPlaying: (playing: boolean) => void
+              playheadMs: number
+              playing: boolean
+            }
+          }
+        }
+      ).__reelsTimelineUi.getState().setPlayheadMs(2950)
+    })
+    await launched.page.locator('[data-testid="transport-play"]').click()
+    await launched.page.waitForTimeout(500)
+    const state = await launched.page.evaluate(() => {
+      const ui = (
+        window as unknown as {
+          __reelsTimelineUi: {
+            getState: () => { playheadMs: number; playing: boolean }
+          }
+        }
+      ).__reelsTimelineUi
+      return ui.getState()
+    })
+    expect(state.playing).toBe(false)
+    expect(state.playheadMs).toBe(2999)
+  })
+
   test('End key — same semantics as skip-end button', async () => {
     if (!launched) throw new Error('launch failed')
     await openEditorWithVideo(3000)

@@ -905,7 +905,8 @@ export const CAPTION_FONT_FAMILIES = [
   { id: 'comic', label: 'Comic Sans MS', stack: "'Comic Sans MS'" }
 ] as const
 export type CaptionFontFamilyId =
-  (typeof CAPTION_FONT_FAMILIES)[number]['id']
+  | (typeof CAPTION_FONT_FAMILIES)[number]['id']
+  | `custom:${string}`
 
 /** Per-word optional emphasis. */
 export type CaptionEmphasis = 'bold' | 'highlight' | 'pulse'

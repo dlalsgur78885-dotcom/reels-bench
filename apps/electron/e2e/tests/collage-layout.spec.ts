@@ -26,6 +26,8 @@ import { launchElectron, type LaunchedApp } from '../helpers/launch'
  *        clips for 2-cell preset) → no crash, partial fill.
  *   (9)  UI: effects-tab-layout opens layout-panel; <2 clips selected shows hint;
  *        8 preset thumbnails render; picking one shows slots; layout-apply works.
+ *   (10) Preview playback — 2up-v with two clips from the same media keeps
+ *        both foreground video layers decoded while playing.
  */
 
 // ---------------------------------------------------------------------------
@@ -966,5 +968,57 @@ test.describe('@phase-3-18-collage collage / split-screen layout', () => {
 
     // The layout-clear button should now appear (shared group detected).
     await expect(page.locator('[data-testid="layout-clear"]')).toBeVisible({ timeout: 2_000 })
+  })
+
+  test('(10) preview playback keeps both same-media 2up-v layers visible while playing', async () => {
+    if (!launched) throw new Error('launch failed')
+    await openEditor(launched)
+    const { mediaId, durationMs } = await addFixtureMedia(launched)
+    const { page } = launched
+    const clipDuration = Math.min(durationMs, 4_000)
+
+    const cA = await addVideoClip(launched, mediaId, clipDuration, 0)
+    const secondTrackId = await page.evaluate(() =>
+      (window as unknown as { __reelsStore: ReelsStore }).__reelsStore.addVideoTrack()
+    )
+    const cB = await addVideoClip(launched, mediaId, clipDuration, 0, secondTrackId as string)
+
+    await page.evaluate(
+      ({ idA, idB }) => {
+        ;(window as unknown as { __reelsStore: ReelsStore }).__reelsStore.applyLayout(
+          '2up-v',
+          [idA, idB]
+        )
+      },
+      { idA: cA, idB: cB }
+    )
+
+    await expect(page.locator('[data-preview-video-layer="true"]')).toHaveCount(2)
+    await page.waitForFunction(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('[data-preview-video-layer="true"]')
+      )
+      return videos.length === 2 && videos.every((v) => v.readyState >= 2)
+    })
+
+    await page.locator('[data-testid="transport-play"]').click()
+    await page.waitForTimeout(1_000)
+
+    const layerStates = await page.evaluate(() =>
+      Array.from(
+        document.querySelectorAll<HTMLVideoElement>('[data-preview-video-layer="true"]')
+      ).map((v) => ({
+        readyState: v.readyState,
+        hasPoster: v.poster.startsWith('data:image/'),
+        rect: v.getBoundingClientRect().toJSON()
+      }))
+    )
+
+    expect(layerStates).toHaveLength(2)
+    for (const state of layerStates) {
+      expect(state.readyState >= 2 || state.hasPoster).toBe(true)
+      expect(state.rect.width).toBeGreaterThan(0)
+      expect(state.rect.height).toBeGreaterThan(0)
+    }
   })
 })

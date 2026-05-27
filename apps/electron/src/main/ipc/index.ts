@@ -10,6 +10,7 @@ import { registerUpdaterHandlers } from './updater'
 import { registerSttHandlers } from './stt'
 import { registerRecordingHandlers } from './recording'
 import { registerBrandKitHandlers } from './brand-kit'
+import { registerCaptionFontHandlers } from './caption-fonts'
 import { registerOverlayHandlers } from './overlay'
 import { registerPreviewWindowHandlers } from './preview-window'
 
@@ -26,6 +27,7 @@ export function registerIpcHandlers(): void {
   registerSttHandlers()
   registerRecordingHandlers()
   registerBrandKitHandlers()
+  registerCaptionFontHandlers()
   registerOverlayHandlers()
   registerPreviewWindowHandlers()
 }

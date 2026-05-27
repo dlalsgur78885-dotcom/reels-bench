@@ -7,6 +7,7 @@
  * 신규 한글 6 + 신규 영문 6 id 가 모두 노출.
  */
 import { expect, test } from '@playwright/test'
+import path from 'node:path'
 import { launchElectron, type LaunchedApp } from '../helpers/launch'
 
 async function openCaptionEditorWithCaption(launched: LaunchedApp): Promise<void> {
@@ -126,5 +127,94 @@ test.describe('@phase-caption-font-catalog 자막 폰트 카탈로그 확장', (
       return null
     })
     expect(stored).toBe('verdana')
+  })
+
+  test('폰트 검색으로 목록을 필터링할 수 있음', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    await openCaptionEditorWithCaption(launched)
+    await page.locator('[data-testid="caption-fontfamily-search"]').fill('verdana')
+    const optionValues = await page
+      .locator('[data-testid="caption-fontfamily-select"] option')
+      .evaluateAll((els) => els.map((e) => (e as HTMLOptionElement).value))
+    expect(optionValues).toContain('verdana')
+    expect(optionValues).not.toContain('arial')
+  })
+
+  test('폰트 파일 추가 → 앱 저장 목록에 커스텀 폰트가 생기고 선택 가능', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { app, page } = launched
+    await openCaptionEditorWithCaption(launched)
+    const fontPath = path.resolve(
+      __dirname,
+      '../../build/fonts/Pretendard-Bold.otf'
+    )
+    await app.evaluate(
+      ({ dialog }, pickedPath: string) => {
+        ;(dialog as unknown as { showOpenDialog: unknown }).showOpenDialog =
+          async () => ({
+            canceled: false,
+            filePaths: [pickedPath]
+          })
+      },
+      fontPath
+    )
+    await page.locator('[data-testid="caption-font-import"]').click()
+    await page.waitForFunction(
+      () => {
+        const select = document.querySelector(
+          '[data-testid="caption-fontfamily-select"]'
+        ) as HTMLSelectElement | null
+        return Array.from(select?.options ?? []).some((o) =>
+          o.value.startsWith('custom:')
+        )
+      },
+      null,
+      { timeout: 5_000 }
+    )
+    const stored = await page.evaluate(() => {
+      const reels = (
+        window as unknown as {
+          __reelsStore: {
+            state: () => {
+              project: {
+                tracks: Array<{
+                  clips: Array<{
+                    kind: string
+                    style?: { fontFamilyId?: string }
+                  }>
+                }>
+              }
+            }
+          }
+        }
+      ).__reelsStore
+      for (const t of reels.state().project.tracks)
+        for (const c of t.clips)
+          if (c.kind === 'caption') return c.style?.fontFamilyId
+      return null
+    })
+    expect(stored?.startsWith('custom:')).toBe(true)
+    const listed = await page.evaluate(() => window.electron.captionFonts.list())
+    expect(listed.length).toBeGreaterThanOrEqual(1)
+    expect(listed[0].path).toContain('caption-fonts')
+    const svg = await page.evaluate(async (fontId) => {
+      return window.electron.captions.buildSvg(
+        {
+          spans: [{ text: '폰트' }],
+          style: {
+            preset: 'bottom-center',
+            fontSize: 80,
+            align: 'center',
+            yPosition: 0.8,
+            background: 'none',
+            fontFamilyId: fontId
+          }
+        },
+        1080,
+        1920
+      )
+    }, stored)
+    expect(svg).toContain('ReelsCustomFont_')
   })
 })

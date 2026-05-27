@@ -12,6 +12,8 @@ import {
   type BrandKitImportLogoResult,
   type BrandKitWriteInput,
   type BrandLogoVariant,
+  type CaptionFontImportResult,
+  type CustomCaptionFont,
   type DownloadResult,
   type ElectronApi,
   type ExportBuildPlanResult,
@@ -205,6 +207,12 @@ const api: ElectronApi = {
       ),
     removeLogo: (variant: BrandLogoVariant): Promise<BrandKit> =>
       ipcRenderer.invoke(IPC_CHANNELS.brandKit.removeLogo, variant)
+  },
+  captionFonts: {
+    list: (): Promise<CustomCaptionFont[]> =>
+      ipcRenderer.invoke(IPC_CHANNELS.captionFonts.list),
+    importFont: (sourcePath: string): Promise<CaptionFontImportResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.captionFonts.importFont, sourcePath)
   },
   overlay: {
     saveSticker: (

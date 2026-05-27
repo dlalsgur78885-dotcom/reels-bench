@@ -60,6 +60,7 @@ import {
   type Track,
   type VideoAudioClip
 } from '../../../shared/project'
+import type { CustomCaptionFont } from '../../../shared/ipc'
 import {
   colorAdjustToCss,
   filmToneToCss,
@@ -88,6 +89,23 @@ function hexToRgba(hex: string, opacity: number): string {
   const g = parseInt(hex.slice(3, 5), 16)
   const b = parseInt(hex.slice(5, 7), 16)
   return `rgba(${r}, ${g}, ${b}, ${opacity})`
+}
+
+function injectCustomCaptionFonts(fonts: CustomCaptionFont[]): void {
+  if (typeof document === 'undefined') return
+  const id = 'reels-custom-caption-fonts'
+  let styleEl = document.getElementById(id) as HTMLStyleElement | null
+  if (!styleEl) {
+    styleEl = document.createElement('style')
+    styleEl.id = id
+    document.head.appendChild(styleEl)
+  }
+  styleEl.textContent = fonts
+    .map(
+      (font) =>
+        `@font-face{font-family:'${font.familyName}';src:url("${toMediaUrl(font.path)}") format('${font.format}');font-weight:400 900;font-style:normal;font-display:swap;}`
+    )
+    .join('\n')
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +256,26 @@ function activeAudioClips(
     }
   }
   return out
+}
+
+function previewVideoSrc(path: string, key: string): string {
+  return `${toMediaUrl(path)}?previewVideo=${encodeURIComponent(key)}`
+}
+
+function refreshVideoPoster(video: HTMLVideoElement): void {
+  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return
+  if (video.videoWidth <= 0 || video.videoHeight <= 0) return
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.drawImage(video, 0, 0)
+    video.poster = canvas.toDataURL('image/jpeg', 0.82)
+  } catch {
+    /* Cross-origin or decoder race; poster is best-effort preview fallback. */
+  }
 }
 
 /**
@@ -656,8 +694,9 @@ function CaptionOverlay(props: {
   fittedHeight: number
   playheadMs: number
   project: Project
+  customFonts: CustomCaptionFont[]
 }): JSX.Element {
-  const { caption, fittedWidth, fittedHeight, playheadMs, project } = props
+  const { caption, fittedWidth, fittedHeight, playheadMs, project, customFonts } = props
   const { style } = caption
   const REF_HEIGHT = 1920
   const scaledFontSize =
@@ -706,7 +745,12 @@ function CaptionOverlay(props: {
   // pick is made. Resolver mirrors main/captions/render.ts so preview matches
   // the exported PNG: picked family leads, then Pretendard + system Korean
   // fallbacks fill any missing glyphs.
-  if (style.fontFamilyId && style.fontFamilyId !== 'pretendard') {
+  if (style.fontFamilyId?.startsWith('custom:')) {
+    const customFont = customFonts.find((f) => f.id === style.fontFamilyId)
+    if (customFont) {
+      presetCss.fontFamily = `'${customFont.familyName}','Pretendard','Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',sans-serif`
+    }
+  } else if (style.fontFamilyId && style.fontFamilyId !== 'pretendard') {
     const entry = CAPTION_FONT_FAMILIES.find((f) => f.id === style.fontFamilyId)
     if (entry) {
       presetCss.fontFamily = `${entry.stack},'Pretendard','Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',sans-serif`
@@ -1132,6 +1176,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   // overlay. Transient tracking-store state; never persisted.
   const trackingDrawMode = useTrackingStore((s) => s.drawMode)
   const trackingDrawClipId = useTrackingStore((s) => s.drawClipId)
+  const [customCaptionFonts, setCustomCaptionFonts] = useState<CustomCaptionFont[]>([])
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasAspect = project.width / Math.max(1, project.height)
   const fitted = useFittedRect(containerRef, canvasAspect)
@@ -1243,6 +1288,21 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   // "preview-video-bg"> (byte-identical), other kinds → render a <div> with
   // the same testid + a solid background color.
   const canvasBg = useMemo(() => getCanvasBackground(project), [project])
+  const multiVideoPreview = videoLayers.length > 1
+
+  useEffect(() => {
+    let cancelled = false
+    const ext = window.electron?.captionFonts
+    if (!ext) return
+    void ext.list().then((fonts) => {
+      if (cancelled) return
+      setCustomCaptionFonts(fonts)
+      injectCustomCaptionFonts(fonts)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const activeCaptions = useMemo(
     () => captionsAtTime(project, playheadMs),
@@ -1433,7 +1493,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           if (media && media.kind !== 'audio') {
             const srcChanged = loadedVideoId.current.get(track.id) !== media.id
             if (srcChanged) {
-              v.src = toMediaUrl(media.path)
+              v.src = previewVideoSrc(media.path, `track:${track.id}`)
               loadedVideoId.current.set(track.id, media.id)
               // 명시 load() — preload="auto"와 함께 browser가 frame data를
               // 즉시 fetch 시작. 슬라이드 6 (두 번째 클립으로 넘어가도
@@ -1465,6 +1525,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               // 새 src에 직접 play() — slide 6 추가 증상 "스페이스 눌러야
               // 두 번째 영상이 재생됨" 해결.
               if (playing) {
+                if (multiVideoPreview) v.muted = true
                 v.play().catch(() => {
                   /* autoplay rejection / src not ready — silently ignored;
                      load() 완료 후 next tick에서 다시 시도 가능 */
@@ -1513,7 +1574,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
             // graph is ready; otherwise fall back to `el.volume`.
             const trackIsAudible = trackAudible(track, soloMode)
             const gain = clipGain(activeVideo, playheadMs)
-            const wantAudible = trackIsAudible && gain > 0
+            const wantAudible = !multiVideoPreview && trackIsAudible && gain > 0
             const effectiveGain = wantAudible ? gain : 0
             if (graph.isReady()) {
               graph.setTrackGain(track.id, effectiveGain, 20)
@@ -1558,7 +1619,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
             if (media && media.kind !== 'audio') {
               const bgSrcChanged = loadedBgId.current !== media.id
               if (bgSrcChanged) {
-                bg.src = toMediaUrl(media.path)
+                bg.src = previewVideoSrc(media.path, 'background')
                 bg.muted = true
                 loadedBgId.current = media.id
                 if (media.kind !== 'image') {
@@ -1703,6 +1764,8 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
     hitByTrackId,
     voiceOn,
     soloMode,
+    multiVideoPreview,
+    canvasBg.kind,
     // playing — swap 시 새 src에 자동 play() 호출하려면 effect closure가
     // 최신 playing 값을 봐야 함. closure-stale 방지.
     playing
@@ -1721,6 +1784,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
         const v = videoEls.current.get(track.id)
         if (!v) continue
         if (loadedVideoId.current.get(track.id)) {
+          if (multiVideoPreview) v.muted = true
           v.play().catch(() => {
             /* autoplay rejection / src not ready — silently ignored */
           })
@@ -1753,7 +1817,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
         audioPlaying.current.set(track.id, false)
       }
     }
-  }, [playing, audioTracks, videoTracks])
+  }, [playing, audioTracks, videoTracks, multiVideoPreview])
 
   const hasFit = fitted.width > 0 && fitted.height > 0
   const fittedStyle: React.CSSProperties = hasFit
@@ -2100,10 +2164,19 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               // NOTHING 이라 reject되는 케이스를 capture. playing이 false
               // 면 (사용자가 pause 했음) 자동 재생 안 함.
               onLoadedData={(e) => {
-                if (playing) (e.currentTarget as HTMLVideoElement).play().catch(() => {})
+                refreshVideoPoster(e.currentTarget)
+                if (playing) {
+                  if (multiVideoPreview) e.currentTarget.muted = true
+                  ;(e.currentTarget as HTMLVideoElement).play().catch(() => {})
+                }
               }}
               onCanPlay={(e) => {
-                if (playing && (e.currentTarget as HTMLVideoElement).paused) {
+                refreshVideoPoster(e.currentTarget)
+                if (
+                  playing &&
+                  (e.currentTarget as HTMLVideoElement).paused
+                ) {
+                  if (multiVideoPreview) e.currentTarget.muted = true
                   ;(e.currentTarget as HTMLVideoElement).play().catch(() => {})
                 }
               }}
@@ -2514,6 +2587,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               fittedHeight={fitted.height}
               playheadMs={playheadMs}
               project={project}
+              customFonts={customCaptionFonts}
             />
           ))}
         </div>

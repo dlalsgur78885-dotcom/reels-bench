@@ -30,6 +30,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import type { CustomCaptionFont } from '../../shared/ipc'
 import type {
   CaptionClip,
   CaptionFontFamilyId,
@@ -57,10 +58,16 @@ import {
  */
 function resolveFontFamily(
   id: CaptionFontFamilyId | undefined,
-  hasEmbeddedPretendard: boolean
+  hasEmbeddedPretendard: boolean,
+  customFamilyName?: string
 ): string {
   const koFallback = "'Pretendard','Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',sans-serif"
   const koFallbackNoEmbed = "'Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',Arial,sans-serif"
+  if (customFamilyName) {
+    return hasEmbeddedPretendard
+      ? `'${customFamilyName}',${koFallback}`
+      : `'${customFamilyName}',${koFallbackNoEmbed}`
+  }
   if (id == null) {
     return hasEmbeddedPretendard ? koFallback : koFallbackNoEmbed
   }
@@ -84,6 +91,7 @@ function resolveFontFamily(
 // ---------------------------------------------------------------------------
 
 let cachedFontDataUri: string | null | undefined
+const cachedCustomFontDataUris = new Map<string, string | null>()
 
 function resolveFontPath(): string | null {
   // Dev: src/main → ../../build/fonts/Pretendard-Bold.otf
@@ -143,6 +151,60 @@ function getFontDataUri(): string | null {
   } catch {
     cachedFontDataUri = null
     return null
+  }
+}
+
+function captionFontsManifestPath(): string {
+  return path.join(app.getPath('userData'), 'caption-fonts.json')
+}
+
+function getCustomCaptionFonts(): CustomCaptionFont[] {
+  try {
+    const raw = readFileSync(captionFontsManifestPath(), 'utf-8')
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is CustomCaptionFont => {
+          if (!item || typeof item !== 'object') return false
+          const f = item as Partial<CustomCaptionFont>
+          return (
+            typeof f.id === 'string' &&
+            f.id.startsWith('custom:') &&
+            typeof f.familyName === 'string' &&
+            typeof f.path === 'string' &&
+            existsSync(f.path) &&
+            (f.format === 'opentype' ||
+              f.format === 'truetype' ||
+              f.format === 'woff' ||
+              f.format === 'woff2')
+          )
+        })
+      : []
+  } catch {
+    return []
+  }
+}
+
+function getCustomFontDataUri(id: CaptionFontFamilyId | undefined): {
+  fontFace: string
+  familyName?: string
+} {
+  if (!id?.startsWith('custom:')) return { fontFace: '' }
+  const font = getCustomCaptionFonts().find((f) => f.id === id)
+  if (!font) return { fontFace: '' }
+  let dataUri = cachedCustomFontDataUris.get(font.id)
+  if (dataUri === undefined) {
+    try {
+      const buf = readFileSync(font.path)
+      dataUri = `data:font/${font.format};base64,${buf.toString('base64')}`
+    } catch {
+      dataUri = null
+    }
+    cachedCustomFontDataUris.set(font.id, dataUri)
+  }
+  if (!dataUri) return { fontFace: '' }
+  return {
+    fontFace: `@font-face{font-family:'${font.familyName}';src:url(${dataUri}) format('${font.format}');font-weight:400 900;font-style:normal;}`,
+    familyName: font.familyName
   }
 }
 
@@ -822,7 +884,12 @@ export function buildCaptionSvg(
   const fontFace = fontDataUri
     ? `@font-face{font-family:'Pretendard';src:url(${fontDataUri}) format('opentype');font-weight:bold;font-style:normal;}`
     : ''
-  const fontFamily = resolveFontFamily(style.fontFamilyId, fontDataUri != null)
+  const customFont = getCustomFontDataUri(style.fontFamilyId)
+  const fontFamily = resolveFontFamily(
+    style.fontFamilyId,
+    fontDataUri != null,
+    customFont.familyName
+  )
 
   const defaultFill = style.preset === 'youtube-yellow' ? '#ffd400' : '#ffffff'
 
@@ -856,7 +923,7 @@ export function buildCaptionSvg(
     baselineY,
     spansBody,
     plainText,
-    fontFace,
+    fontFace: `${fontFace}${customFont.fontFace}`,
     fontFamily,
     style,
     spans,

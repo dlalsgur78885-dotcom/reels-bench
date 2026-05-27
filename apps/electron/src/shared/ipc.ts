@@ -85,6 +85,10 @@ export const IPC_CHANNELS = {
     importLogo: 'brandKit:importLogo',
     removeLogo: 'brandKit:removeLogo'
   },
+  captionFonts: {
+    list: 'captionFonts:list',
+    importFont: 'captionFonts:import'
+  },
   overlay: {
     saveSticker: 'overlay:saveSticker'
   }
@@ -131,6 +135,22 @@ export interface BrandKitWriteInput {
 
 export type BrandKitImportLogoResult =
   | { ok: true; logo: BrandLogo }
+  | { ok: false; error: string }
+
+// ---------------------------------------------------------------------------
+// Caption font files — app-level, persisted to userData/caption-fonts/.
+// ---------------------------------------------------------------------------
+export interface CustomCaptionFont {
+  id: `custom:${string}`
+  label: string
+  familyName: string
+  path: string
+  format: 'opentype' | 'truetype' | 'woff' | 'woff2'
+  importedAt: number
+}
+
+export type CaptionFontImportResult =
+  | { ok: true; font: CustomCaptionFont; reused: boolean }
   | { ok: false; error: string }
 
 // ---------------------------------------------------------------------------
@@ -816,6 +836,10 @@ export interface ElectronApi {
     ): Promise<BrandKitImportLogoResult>
     /** Remove a logo variant; returns the updated kit. */
     removeLogo(variant: BrandLogoVariant): Promise<BrandKit>
+  }
+  captionFonts: {
+    list(): Promise<CustomCaptionFont[]>
+    importFont(sourcePath: string): Promise<CaptionFontImportResult>
   }
   overlay: {
     /**

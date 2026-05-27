@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { CustomCaptionFont } from '../../../shared/ipc'
 import { useFocusTrap } from '../lib/useFocusTrap'
 import {
   CAPTION_ENTRANCE_KINDS,
@@ -42,6 +43,7 @@ import {
   makeStyleFromPreset
 } from '../lib/captionPresets'
 import { BrandSwatchRow } from './BrandSwatchRow'
+import { toMediaUrl } from '../lib/mediaUrl'
 
 interface CaptionEditorProps {
   project: Project
@@ -169,6 +171,16 @@ const styles = {
     fontSize: 11,
     color: '#fbbf24'
   } as React.CSSProperties,
+  inlineBtn: {
+    background: '#1f2937',
+    color: '#cbd5e1',
+    border: '1px solid #374151',
+    borderRadius: 6,
+    padding: '6px 8px',
+    fontSize: 11,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap'
+  } as React.CSSProperties,
   collapsible: {
     border: '1px solid #2a2a2a',
     borderRadius: 6,
@@ -192,6 +204,27 @@ const styles = {
     fontSize: 11,
     color: '#9aa0a6'
   } as React.CSSProperties
+}
+
+function fontFormatSource(format: CustomCaptionFont['format']): string {
+  return format
+}
+
+function injectCustomCaptionFonts(fonts: CustomCaptionFont[]): void {
+  if (typeof document === 'undefined') return
+  const id = 'reels-custom-caption-fonts'
+  let styleEl = document.getElementById(id) as HTMLStyleElement | null
+  if (!styleEl) {
+    styleEl = document.createElement('style')
+    styleEl.id = id
+    document.head.appendChild(styleEl)
+  }
+  styleEl.textContent = fonts
+    .map((font) => {
+      const url = toMediaUrl(font.path)
+      return `@font-face{font-family:'${font.familyName}';src:url("${url}") format('${fontFormatSource(font.format)}');font-weight:400 900;font-style:normal;font-display:swap;}`
+    })
+    .join('\n')
 }
 
 function msToMmSs(ms: number): string {
@@ -254,6 +287,9 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
   const [draftEnd, setDraftEnd] = useState(caption ? msToMmSs(caption.endMs) : '')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [selectedSpanIdx, setSelectedSpanIdx] = useState<number | null>(null)
+  const [fontSearch, setFontSearch] = useState('')
+  const [customFonts, setCustomFonts] = useState<CustomCaptionFont[]>([])
+  const [fontImportError, setFontImportError] = useState<string | null>(null)
 
   useEffect(() => {
     if (caption) {
@@ -270,6 +306,20 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
+
+  useEffect(() => {
+    let cancelled = false
+    const ext = window.electron?.captionFonts
+    if (!ext) return
+    void ext.list().then((fonts) => {
+      if (cancelled) return
+      setCustomFonts(fonts)
+      injectCustomCaptionFonts(fonts)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Hook declared at top-level to keep call order stable across the two
   // possible returns below. Trap is always active while CaptionEditor is
@@ -434,6 +484,56 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
     })
   }
 
+  const fontOptions = useMemo(() => {
+    const builtIn = CAPTION_FONT_FAMILIES.map((f) => ({
+      id: f.id as CaptionFontFamilyId,
+      label: f.label,
+      stack: f.stack,
+      custom: false
+    }))
+    const custom = customFonts.map((f) => ({
+      id: f.id as CaptionFontFamilyId,
+      label: `${f.label} (파일)`,
+      stack: `'${f.familyName}'`,
+      custom: true
+    }))
+    const q = fontSearch.trim().toLowerCase()
+    const all = [...builtIn, ...custom]
+    if (!q) return all
+    return all.filter(
+      (f) =>
+        f.label.toLowerCase().includes(q) ||
+        f.id.toLowerCase().includes(q) ||
+        f.stack.toLowerCase().includes(q)
+    )
+  }, [customFonts, fontSearch])
+
+  const selectedFontAvailable = fontOptions.some(
+    (f) => f.id === (caption.style.fontFamilyId ?? 'pretendard')
+  )
+
+  const importFontFile = async (): Promise<void> => {
+    setFontImportError(null)
+    const ext = window.electron
+    if (!ext?.fs || !ext.captionFonts) return
+    const picked = await ext.fs.pickFile([
+      { name: 'Font files', extensions: ['otf', 'ttf', 'woff', 'woff2'] }
+    ])
+    if (!picked) return
+    const result = await ext.captionFonts.importFont(picked)
+    if (!result.ok) {
+      setFontImportError('폰트 파일을 가져오지 못했습니다.')
+      return
+    }
+    const next = await ext.captionFonts.list()
+    setCustomFonts(next)
+    injectCustomCaptionFonts(next)
+    updateCaption(captionId, {
+      style: { ...caption.style, fontFamilyId: result.font.id }
+    })
+    setFontSearch('')
+  }
+
   return (
     <div
       ref={focusTrapRef}
@@ -514,6 +614,23 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
         {/* Font family */}
         <div style={styles.group}>
           <div style={styles.label}>폰트</div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input
+              style={{ ...styles.input, flex: 1 }}
+              value={fontSearch}
+              onChange={(e) => setFontSearch(e.target.value)}
+              placeholder="폰트 검색"
+              data-testid="caption-fontfamily-search"
+            />
+            <button
+              type="button"
+              style={styles.inlineBtn}
+              onClick={importFontFile}
+              data-testid="caption-font-import"
+            >
+              파일 추가
+            </button>
+          </div>
           <select
             style={styles.input}
             value={caption.style.fontFamilyId ?? 'pretendard'}
@@ -527,12 +644,18 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
             }
             data-testid="caption-fontfamily-select"
           >
-            {CAPTION_FONT_FAMILIES.map((f) => (
+            {!selectedFontAvailable && (
+              <option value={caption.style.fontFamilyId ?? 'pretendard'}>
+                현재 선택된 폰트
+              </option>
+            )}
+            {fontOptions.map((f) => (
               <option key={f.id} value={f.id}>
                 {f.label}
               </option>
             ))}
           </select>
+          {fontImportError && <div style={styles.warning}>{fontImportError}</div>}
         </div>
 
         {/* Font size */}

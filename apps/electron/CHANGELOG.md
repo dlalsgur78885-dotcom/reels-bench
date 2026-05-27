@@ -21,6 +21,65 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.35 (2026-05-27)
+
+### 버그 (pptx11 슬라이드 4 — 사용자 보고 "음원 파일 트랙 이동 시 다른 음악 or 음성 틀어짐")
+- BGM 트랙 간 오디오 클립 이동 시 stale 버퍼와 충돌해 이전 클립(예: TTS)
+  소리가 들리던 문제. `<audio>` element 가 `<video>` 와 달리
+  `onLoadedData`/`onCanPlay` 자동재생 핸들러 부재 + src 교체 후 paused
+  로 stuck 됨.
+- **fix**: src 교체 직후 playing 이면 명시적 `a.play()` 호출 +
+  `<audio>` 에도 onLoadedData/onCanPlay 자동재생 핸들러 부착 (cold src
+  보장). PreviewCanvas.tsx.
+
+### 버그 (pptx11 슬라이드 15 — 사용자 보고 "Ctrl+A 안 먹힘")
+- Application Menu accelerator (CmdOrCtrl+A) 만 있고 renderer keydown
+  fallback 부재로 focus 위치에 따라 OS/browser 가 Ctrl+A 를 먼저
+  가로채면 무동작. Cut/Copy/Paste 도 동일 패턴이라 같이 보강.
+- **fix**: Editor.tsx keydown 에 Ctrl+A (selectAll) / Ctrl+X (cut) /
+  Ctrl+C (copy) / Ctrl+V (paste) renderer fallback 추가. clipboardRef
+  공유 — 메뉴 클릭이든 키보드든 동일 buffer.
+
+### 버그 (pptx11 슬라이드 22 — 사용자 보고 "조정 레이어 색 보정 후 Ctrl+Z 안 먹힘")
+- 색보정/필터 슬라이더(input[type=range]) focus 상태에서 Ctrl+Z 가
+  Editor.tsx keydown guard 의 input early-return 에 막혀 undo 가 호출
+  안 되던 문제. store/zundo 자체는 정상 동작.
+- **fix**: keydown guard 정교화. range/number/checkbox/radio/button/
+  submit/reset 같이 텍스트 편집과 무관한 input 타입은 통과 (native
+  cut/copy/paste/undo 없음). textarea / 텍스트 input / contenteditable
+  은 그대로 가드.
+
+### 추가 (pptx11 슬라이드 24 — 사용자 보고 "조정 레이어 우클릭 시 일반 영상처럼 기능 떠야 함")
+- 조정 레이어 우클릭 = 잠금 / 여기서 자르기 (S) / 복제 (Ctrl+D) / 삭제
+  (Delete) 컨텍스트 메뉴. 새 컴포넌트 `AdjustmentLayerContextMenu.tsx`.
+- `AdjustmentLayer.locked?` 필드 + `isAdjustmentLayerLocked` helper.
+- store 신규 액션: `setAdjustmentLayerLocked` / `duplicateAdjustmentLayer`
+  (원본 직후 같은 길이로 sibling) / `splitAdjustmentLayerAt` (playhead
+  지점 split, MIN_CLIP_MS 양쪽 보장). 기존 grade/move/trim/delete 도
+  locked 가드 (clip lock 과 동일 패턴, 토글 자체는 항상 허용).
+
+### 추가 (pptx11 슬라이드 23 — 사용자 보고 "조정 레이어 추가 기능: 일반 효과 기능 전부 삽입")
+- 조정 레이어에 일반 클립처럼 **fade in / fade out** 도입. layer 시작/끝
+  에서 grade 강도가 0→1 또는 1→0 으로 점진 적용.
+- `AdjustmentLayer.fadeInMs?` / `fadeOutMs?` 필드 + helper
+  `getAdjustmentLayerFadeFactor(layer, ms): number → [0..1]`.
+- store: `setAdjustmentLayerFade(id, fin, fout)` — clamp [0, halfDur],
+  0 일 때 field drop, locked 면 no-op.
+- AdjustmentLayerEditor 에 "전환 (페이드)" 섹션 추가 (slider + number
+  input).
+- preview: filterPreset intensity + colorAdjust (brightness/contrast/
+  saturation/temperature) 모두 fade factor 비례 scale. curves / HSL 은
+  비선형 보간 비용 때문에 full-strength 유지.
+- export: `adjustmentLayerToFfmpeg` 가 fade 있으면 N=10 step sub-window
+  로 분할 → 각 step intensity-scaled grade 를 enable-gated 로 emit.
+  같은 layer 내 enable window 비중복이라 한 시점에 한 segment 만 활성.
+
+### 기타
+- `getAdjustmentLayers` 가 신규 필드 (fadeInMs/fadeOutMs/locked) 보존
+  하도록 수정.
+
+---
+
 ## 0.2.34 (2026-05-27)
 
 ### 정정 (슬라이드 20 — 사용자 명시 정정)

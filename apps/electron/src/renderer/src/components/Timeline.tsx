@@ -330,6 +330,14 @@ const styles = {
     outline: '2px solid #60a5fa',
     outlineOffset: -2
   } as React.CSSProperties,
+  marquee: {
+    position: 'absolute' as const,
+    border: '1px solid #60a5fa',
+    background: 'rgba(96, 165, 250, 0.16)',
+    boxShadow: '0 0 0 1px rgba(15, 23, 42, 0.4) inset',
+    pointerEvents: 'none' as const,
+    zIndex: 10
+  } as React.CSSProperties,
   captionClip: {
     background: 'linear-gradient(180deg, #4338ca, #312e81)',
     borderColor: '#6366f1'
@@ -703,6 +711,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
   // Phase 3.33 — Ctrl/Cmd+click multi-select: add/remove one clip id without
   // collapsing the rest of the selection.
   const toggleClipSelectedInUi = useTimelineUi((s) => s.toggleClipSelected)
+  const selectClipsInUi = useTimelineUi((s) => s.selectClips)
   // Phase 3.33 — current multi-selection (drives the 그룹 묶기 enablement).
   const selectedClipIds = useTimelineUi((s) => s.selectedClipIds)
   // pptx11 슬라이드 9 — 갭 선택.
@@ -790,6 +799,13 @@ export function Timeline(props: TimelineProps): JSX.Element {
   // without depending on a stale closure.
   const [crossTrackDropTargetId, setCrossTrackDropTargetId] = useState<string | null>(null)
   const crossTrackDropTargetIdRef = useRef<string | null>(null)
+  const [marquee, setMarquee] = useState<{
+    left: number
+    top: number
+    width: number
+    height: number
+  } | null>(null)
+  const suppressNextLaneClickRef = useRef(false)
 
   // Compute total length (max endMs across all clips, min 10s for ruler).
   // Adjustment layers extend the ruler too so a layer past the last clip
@@ -819,6 +835,31 @@ export function Timeline(props: TimelineProps): JSX.Element {
     [onSelectClip, selectClipInUi]
   )
 
+  const collectClipIdsInClientRect = useCallback((rect: DOMRect): string[] => {
+    const body = bodyRef.current
+    if (!body) return []
+    const ids: string[] = []
+    const seen = new Set<string>()
+    const nodes = body.querySelectorAll<HTMLElement>(
+      '[data-testid="media-clip-block"], [data-testid="caption-clip-block"], [data-testid="overlay-clip-block"]'
+    )
+    nodes.forEach((node) => {
+      const id = node.dataset.clipId
+      if (!id || seen.has(id)) return
+      const r = node.getBoundingClientRect()
+      const intersects =
+        r.left < rect.right &&
+        r.right > rect.left &&
+        r.top < rect.bottom &&
+        r.bottom > rect.top
+      if (intersects) {
+        seen.add(id)
+        ids.push(id)
+      }
+    })
+    return ids
+  }, [])
+
   // Phase 3.33 — Ctrl/Cmd+click multi-select. Toggles the clicked clip in/out
   // of `selectedClipIds` without disturbing the rest, so the user can build a
   // ≥2-clip selection that enables the context menu's "그룹 묶기" row. The
@@ -840,11 +881,82 @@ export function Timeline(props: TimelineProps): JSX.Element {
     [onSelectClip, toggleClipSelectedInUi]
   )
 
+  const handleMarqueeMouseDown = (
+    e: React.MouseEvent<HTMLDivElement>
+  ): void => {
+    if (e.button !== 0) return
+    if (toolMode !== 'select') return
+    if (e.target !== e.currentTarget) return
+    const body = bodyRef.current
+    if (!body) return
+
+    const startClientX = e.clientX
+    const startClientY = e.clientY
+    const startScrollLeft = body.scrollLeft
+    const startScrollTop = body.scrollTop
+    const bodyRect = body.getBoundingClientRect()
+    const startX = startClientX - bodyRect.left + startScrollLeft
+    const startY = startClientY - bodyRect.top + startScrollTop
+    let dragging = false
+
+    const updateRect = (ev: MouseEvent): DOMRect => {
+      const currentX = ev.clientX - bodyRect.left + body.scrollLeft
+      const currentY = ev.clientY - bodyRect.top + body.scrollTop
+      const left = Math.min(startX, currentX)
+      const top = Math.min(startY, currentY)
+      const width = Math.abs(currentX - startX)
+      const height = Math.abs(currentY - startY)
+      setMarquee({ left, top, width, height })
+      return new DOMRect(
+        Math.min(startClientX, ev.clientX),
+        Math.min(startClientY, ev.clientY),
+        Math.abs(ev.clientX - startClientX),
+        Math.abs(ev.clientY - startClientY)
+      )
+    }
+
+    const onMove = (ev: MouseEvent): void => {
+      const dx = ev.clientX - startClientX
+      const dy = ev.clientY - startClientY
+      if (!dragging) {
+        if (Math.hypot(dx, dy) < CLICK_VS_DRAG_PX) return
+        dragging = true
+        suppressNextLaneClickRef.current = true
+        setCtx(null)
+        setAdjCtx(null)
+        setSelectedAdjustmentLayerId(null)
+      }
+      updateRect(ev)
+    }
+
+    const onUp = (ev: MouseEvent): void => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      const clientRect = updateRect(ev)
+      setMarquee(null)
+      if (!dragging) return
+
+      const ids = collectClipIdsInClientRect(clientRect)
+      selectClipsInUi(ids)
+      onSelectClip(ids[0] ?? null)
+      setTimeout(() => {
+        suppressNextLaneClickRef.current = false
+      }, 0)
+    }
+
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
   const handleLaneClick = (
     e: React.MouseEvent<HTMLDivElement>,
     track?: Track
   ): void => {
     if (e.target !== e.currentTarget) return
+    if (suppressNextLaneClickRef.current) {
+      suppressNextLaneClickRef.current = false
+      return
+    }
     const target = e.currentTarget
     const rect = target.getBoundingClientRect()
     const x = e.clientX - rect.left
@@ -2231,6 +2343,18 @@ export function Timeline(props: TimelineProps): JSX.Element {
         </div>
       </div>
       <div style={styles.body} ref={bodyRef}>
+        {marquee && (
+          <div
+            style={{
+              ...styles.marquee,
+              left: marquee.left,
+              top: marquee.top,
+              width: marquee.width,
+              height: marquee.height
+            }}
+            data-testid="timeline-marquee-selection"
+          />
+        )}
         {project.tracks.map((track) => (
           <div
             key={track.id}
@@ -2314,6 +2438,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
                   : {}),
                 width: laneWidth
               }}
+              onMouseDown={handleMarqueeMouseDown}
               onClick={(e) => handleLaneClick(e, track)}
               onContextMenu={(e) => {
                 // Right-click on the empty lane background (not a clip — clips

@@ -111,7 +111,9 @@ test.describe('@phase-2-timeline timeline + preview + transport', () => {
 
   async function addVideoClip(
     durationMs: number,
-    mediaId: string
+    mediaId: string,
+    startMs = 0,
+    timelineDurationMs = durationMs
   ): Promise<string> {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
@@ -137,15 +139,15 @@ test.describe('@phase-2-timeline timeline + preview + transport', () => {
           kind: 'media',
           mediaId: id,
           trackId: videoTrack.id,
-          startMs: 0,
-          endMs: dur,
+          startMs: dur.startMs,
+          endMs: dur.startMs + dur.timelineDurationMs,
           trimInMs: 0,
-          trimOutMs: dur,
+          trimOutMs: dur.timelineDurationMs,
           speed: 1
         })
         return cid
       },
-      { mediaId, dur: durationMs }
+      { mediaId, dur: { startMs, timelineDurationMs } }
     )
   }
 
@@ -411,6 +413,63 @@ test.describe('@phase-2-timeline timeline + preview + transport', () => {
     expect(after!.endMs - after!.startMs).toBe(durationMs)
   })
 
+  test('marquee drag on lane selects multiple clips', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    const { mediaId, durationMs } = await openEditorWithMedia()
+    const clipDur = Math.max(400, Math.min(1000, durationMs))
+    const firstId = await addVideoClip(durationMs, mediaId, 0, clipDur)
+    const secondId = await addVideoClip(
+      durationMs,
+      mediaId,
+      clipDur + 1000,
+      clipDur
+    )
+
+    await expect(page.locator(`[data-clip-id="${firstId}"]`).first()).toBeVisible()
+    await expect(page.locator(`[data-clip-id="${secondId}"]`).first()).toBeVisible()
+
+    const lane = page.locator('[data-testid="track-lane-video"]').first()
+    const firstBox = await page
+      .locator(`[data-testid="media-clip-block"][data-clip-id="${firstId}"]`)
+      .boundingBox()
+    const secondBox = await page
+      .locator(`[data-testid="media-clip-block"][data-clip-id="${secondId}"]`)
+      .boundingBox()
+    const laneBox = await lane.boundingBox()
+    if (!firstBox || !secondBox || !laneBox) throw new Error('bbox missing')
+
+    const startX = Math.max(laneBox.x + 4, firstBox.x - 12)
+    const startY = firstBox.y + firstBox.height + 8
+    const endX = secondBox.x + secondBox.width + 12
+    const endY = Math.max(firstBox.y, secondBox.y) - 8
+
+    await page.mouse.move(startX, startY)
+    await page.mouse.down()
+    await page.mouse.move(startX + 8, startY - 4)
+    await expect(page.locator('[data-testid="timeline-marquee-selection"]')).toBeVisible()
+    await page.mouse.move(endX, endY, { steps: 8 })
+    await page.mouse.up()
+
+    const selected = await page.evaluate(() => {
+      const ui = (
+        window as unknown as {
+          __TIMELINE_UI_FOR_TEST__: {
+            getState: () => { selectedClipIds: Set<string> }
+          }
+        }
+      ).__TIMELINE_UI_FOR_TEST__
+      return [...ui.getState().selectedClipIds]
+    })
+    expect(selected.sort()).toEqual([firstId, secondId].sort())
+    await expect(
+      page.locator(`[data-testid="media-clip-block"][data-clip-id="${firstId}"]`)
+    ).toHaveAttribute('data-selected', 'true')
+    await expect(
+      page.locator(`[data-testid="media-clip-block"][data-clip-id="${secondId}"]`)
+    ).toHaveAttribute('data-selected', 'true')
+  })
+
   // -------------------------------------------------------------------------
   // Ctrl+wheel zoom — clamp to [10, 400].
   // -------------------------------------------------------------------------
@@ -490,7 +549,8 @@ test.describe('@phase-2-timeline timeline + preview + transport', () => {
       ).__TIMELINE_UI_FOR_TEST__
       return ui.getState().playheadMs
     })
-    expect(ms).toBe(durationMs)
+    // Transport parks on the last visible frame of the half-open clip range.
+    expect(ms).toBe(Math.max(0, durationMs - 1))
 
     await page.locator('[data-testid="transport-skip-start"]').click()
     const reset = await page.evaluate(() => {

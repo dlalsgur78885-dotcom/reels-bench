@@ -19,6 +19,8 @@ export interface TimelineUiStore {
   selectClip(clipId: string | null): void
   /** Add or remove a clip id without disturbing the rest (multi-select hook). */
   toggleClipSelected(clipId: string): void
+  /** Replace the selection with an arbitrary clip id set. */
+  selectClips(clipIds: string[]): void
   /** Clear all selection. */
   clearSelection(): void
 
@@ -311,6 +313,24 @@ export const useTimelineUi = create<TimelineUiStore>((set, get) => ({
     if (next.has(clipId)) next.delete(clipId)
     else next.add(clipId)
     set({ selectedClipIds: next, selectedAdjustmentLayerId: null, selectedGap: null })
+  },
+  selectClips(clipIds: string[]): void {
+    const next = new Set(clipIds.filter((id) => typeof id === 'string' && id.length > 0))
+    const current = get().selectedClipIds
+    const same =
+      current.size === next.size && [...next].every((id) => current.has(id))
+    if (
+      same &&
+      get().selectedAdjustmentLayerId === null &&
+      get().selectedGap === null
+    ) {
+      return
+    }
+    set({
+      selectedClipIds: next,
+      selectedAdjustmentLayerId: null,
+      selectedGap: null
+    })
   },
   clearSelection(): void {
     const s = get()

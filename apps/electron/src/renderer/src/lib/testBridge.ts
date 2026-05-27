@@ -186,6 +186,8 @@ export function installTestBridge(): void {
         setAdjustmentLayerLocked: Store['setAdjustmentLayerLocked']
         duplicateAdjustmentLayer: Store['duplicateAdjustmentLayer']
         splitAdjustmentLayerAt: Store['splitAdjustmentLayerAt']
+        // pptx11 슬라이드 23 — fade in/out.
+        setAdjustmentLayerFade: Store['setAdjustmentLayerFade']
         // Phase 3.32 — adjustment-layer selection (timeline-UI store).
         setSelectedAdjustmentLayerId: (layerId: string | null) => void
         // Phase 3.33 — clip grouping / linking.
@@ -402,6 +404,9 @@ export function installTestBridge(): void {
         useProjectStore.getState().duplicateAdjustmentLayer(id),
       splitAdjustmentLayerAt: (id, atMs) =>
         useProjectStore.getState().splitAdjustmentLayerAt(id, atMs),
+      // pptx11 슬라이드 23 — fade in/out.
+      setAdjustmentLayerFade: (id, fadeInMs, fadeOutMs) =>
+        useProjectStore.getState().setAdjustmentLayerFade(id, fadeInMs, fadeOutMs),
       setSelectedAdjustmentLayerId: (layerId) =>
         useTimelineUi.getState().setSelectedAdjustmentLayerId(layerId),
       // Phase 3.33 — clip grouping / linking.

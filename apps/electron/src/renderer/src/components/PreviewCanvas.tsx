@@ -14,6 +14,7 @@ import {
   getCaptionKaraoke,
   getCaptionTextShadow,
   getCaptionTextStroke,
+  getAdjustmentLayerFadeFactor,
   getAdjustmentLayers,
   getCanvasBackground,
   getClipBlurRegions,
@@ -1266,12 +1267,26 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
         .map((v) => v.toFixed(4))
         .join(' ')
     for (const layer of layers) {
+      // pptx11 슬라이드 23 — fade 영역에선 filterIntensity / colorAdjust 를
+      // 0..1 factor 로 곱해 점진 적용. fadeIn/Out 둘 다 0 이면 factor=1.
+      // curves / HSL 은 비선형 보간 비용 때문에 full strength 유지 (export
+      // pipeline 도 동일 정책 — schema doc 참조).
+      const fadeFactor = getAdjustmentLayerFadeFactor(layer, playheadMs)
       const preset = filterPresetToCss(
         layer.filterPreset,
-        layer.filterIntensity ?? 1
+        (layer.filterIntensity ?? 1) * fadeFactor
       )
       if (preset) parts.push(preset)
-      const ca = colorAdjustToCss(resolveColorAdjust(layer.colorAdjust))
+      const rawCa = resolveColorAdjust(layer.colorAdjust)
+      const scaledCa = rawCa
+        ? {
+            brightness: rawCa.brightness * fadeFactor,
+            contrast: rawCa.contrast * fadeFactor,
+            saturation: rawCa.saturation * fadeFactor,
+            temperature: rawCa.temperature * fadeFactor
+          }
+        : null
+      const ca = colorAdjustToCss(scaledCa)
       if (ca) parts.push(ca)
       const curves = resolveClipCurves(layer.curves)
       if (curves) {

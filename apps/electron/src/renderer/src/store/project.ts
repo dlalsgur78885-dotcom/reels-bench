@@ -714,6 +714,12 @@ export interface ProjectStore {
    */
   setAdjustmentLayerLocked(id: string, locked: boolean): void
   /**
+   * pptx11 슬라이드 23 — adjustment layer 의 fade-in / fade-out 길이(ms)
+   * 설정. 둘 다 [0, (endMs-startMs)/2] 로 clamp. 0 이면 해당 field drop
+   * (neutral-collapse). locked 면 no-op.
+   */
+  setAdjustmentLayerFade(id: string, fadeInMs: number, fadeOutMs: number): void
+  /**
    * pptx11 슬라이드 24 — adjustment layer 복제. 원본 직후 startMs 부터
    * 동일 duration 으로 신규 layer 생성 (총 길이 cap 안 넘으면). grade /
    * preset / locked 는 그대로 inherit (locked 만 새로 unlocked 로 시작 —
@@ -2055,6 +2061,35 @@ export const useProjectStore = create<ProjectStore>()(
       return preset === 'none'
         ? { ...l, filterPreset: 'none' as FilterPreset, filterIntensity: 1 }
         : { ...l, filterPreset: preset, filterIntensity: clamped }
+    })
+    if (!changed) return
+    const next = touch({ ...project, adjustmentLayers: nextLayers })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // pptx11 슬라이드 23 — fade-in / fade-out 길이 설정.
+  setAdjustmentLayerFade(id, fadeInMs, fadeOutMs): void {
+    if (!Number.isFinite(fadeInMs) || !Number.isFinite(fadeOutMs)) return
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    let changed = false
+    const nextLayers = layers.map((l) => {
+      if (l.id !== id) return l
+      if (isAdjustmentLayerLocked(l)) return l
+      const halfDur = Math.max(0, (l.endMs - l.startMs) / 2)
+      const fin = Math.max(0, Math.min(halfDur, Math.round(fadeInMs)))
+      const fout = Math.max(0, Math.min(halfDur, Math.round(fadeOutMs)))
+      const curIn = l.fadeInMs ?? 0
+      const curOut = l.fadeOutMs ?? 0
+      if (curIn === fin && curOut === fout) return l
+      changed = true
+      const copy: AdjustmentLayer = { ...l }
+      if (fin > 0) copy.fadeInMs = fin
+      else delete copy.fadeInMs
+      if (fout > 0) copy.fadeOutMs = fout
+      else delete copy.fadeOutMs
+      return copy
     })
     if (!changed) return
     const next = touch({ ...project, adjustmentLayers: nextLayers })

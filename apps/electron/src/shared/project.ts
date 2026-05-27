@@ -1281,11 +1281,47 @@ export interface AdjustmentLayer {
    * 자체는 항상 허용. Absent === false (기본 unlocked).
    */
   locked?: boolean
+  /**
+   * pptx11 슬라이드 23 — 시작 부분에서 grade 가 점진적으로 적용되는 fade-in
+   * 길이(ms). 0 또는 undefined 면 fade 없음. clamp: [0, (endMs-startMs)/2].
+   * fade 영역에서는 colorAdjust 와 filterIntensity 가 0→1 비율로 곱해짐
+   * (curves/HSL 은 export pipeline 의 비선형 보간 비용 때문에 full strength
+   * 유지 — Phase 2 작업).
+   */
+  fadeInMs?: number
+  /** 슬라이드 23 — 끝 부분 fade-out 길이(ms). 동일 clamp / 적용 규칙. */
+  fadeOutMs?: number
 }
 
 /** Adjustment layer 의 locked 검사 helper — undefined/false 둘 다 unlocked. */
 export function isAdjustmentLayerLocked(l: AdjustmentLayer): boolean {
   return l.locked === true
+}
+
+/**
+ * pptx11 슬라이드 23 — adjustment layer 의 timeline ms 시점 fade factor
+ * (0..1). 1.0 = grade 전체 적용, 0.0 = 적용 없음. fadeIn/Out 영역에서
+ * linear 램프. 둘 다 0 이면 layer window 안에서 항상 1.
+ * window 밖이면 0.
+ */
+export function getAdjustmentLayerFadeFactor(
+  layer: AdjustmentLayer,
+  ms: number
+): number {
+  if (ms < layer.startMs || ms >= layer.endMs) return 0
+  const fadeIn = Math.max(0, layer.fadeInMs ?? 0)
+  const fadeOut = Math.max(0, layer.fadeOutMs ?? 0)
+  const fromStart = ms - layer.startMs
+  const toEnd = layer.endMs - ms
+  let factor = 1
+  if (fadeIn > 0 && fromStart < fadeIn) {
+    factor = Math.min(factor, fromStart / fadeIn)
+  }
+  if (fadeOut > 0 && toEnd < fadeOut) {
+    factor = Math.min(factor, toEnd / fadeOut)
+  }
+  if (!Number.isFinite(factor)) return 1
+  return Math.max(0, Math.min(1, factor))
 }
 
 /** Hard cap on adjustment layers per project (filter-graph length guard). */
@@ -1463,6 +1499,16 @@ export function getAdjustmentLayers(project: Project): AdjustmentLayer[] {
       filterPreset: l.filterPreset,
       filterIntensity: l.filterIntensity
     }
+    // pptx11 슬라이드 23/24 — 새 필드들 (fade / lock) 보존.
+    if (Number.isFinite(l.fadeInMs) && (l.fadeInMs ?? 0) > 0) {
+      const halfDur = Math.floor((endMs - startMs) / 2)
+      layer.fadeInMs = Math.max(0, Math.min(halfDur, l.fadeInMs as number))
+    }
+    if (Number.isFinite(l.fadeOutMs) && (l.fadeOutMs ?? 0) > 0) {
+      const halfDur = Math.floor((endMs - startMs) / 2)
+      layer.fadeOutMs = Math.max(0, Math.min(halfDur, l.fadeOutMs as number))
+    }
+    if (l.locked === true) layer.locked = true
     if (isNeutralAdjustmentLayer(layer)) continue
     out.push(layer)
   }

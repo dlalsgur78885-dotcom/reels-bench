@@ -154,6 +154,9 @@ export function AdjustmentLayerEditor(
   const setAdjustmentLayerFilterPreset = useProjectStore(
     (s) => s.setAdjustmentLayerFilterPreset
   )
+  const setAdjustmentLayerFade = useProjectStore(
+    (s) => s.setAdjustmentLayerFade
+  )
   const removeAdjustmentLayer = useProjectStore((s) => s.removeAdjustmentLayer)
   const setSelectedAdjustmentLayerId = useTimelineUi(
     (s) => s.setSelectedAdjustmentLayerId
@@ -384,6 +387,42 @@ export function AdjustmentLayerEditor(
           미리보기는 근사값입니다 — 정확한 색은 내보내기 결과를 확인하세요.
         </p>
       </div>
+
+      <hr style={styles.divider} />
+
+      {/* pptx11 슬라이드 23 — 전환: fade-in / fade-out. ms 단위.
+          최대값은 layer 길이 절반 (clamp 는 store 에서). */}
+      <p style={styles.sectionLabel}>전환 (페이드)</p>
+      <div style={{ height: 6 }} />
+      {(() => {
+        const dur = Math.max(0, layer.endMs - layer.startMs)
+        const halfDur = Math.floor(dur / 2)
+        const fadeIn = Math.min(halfDur, layer.fadeInMs ?? 0)
+        const fadeOut = Math.min(halfDur, layer.fadeOutMs ?? 0)
+        return (
+          <div data-testid="adjustment-fade-panel">
+            {sliderRow(
+              '시작 페이드',
+              fadeIn,
+              0,
+              halfDur,
+              (v) => setAdjustmentLayerFade(layer.id, v, fadeOut),
+              'adjustment-fade-in'
+            )}
+            {sliderRow(
+              '끝 페이드',
+              fadeOut,
+              0,
+              halfDur,
+              (v) => setAdjustmentLayerFade(layer.id, fadeIn, v),
+              'adjustment-fade-out'
+            )}
+            <p style={{ ...styles.hint, marginTop: 6 }}>
+              페이드 구간에선 색 보정 / 필터 강도가 점진적으로 적용됩니다.
+            </p>
+          </div>
+        )
+      })()}
 
       <hr style={styles.divider} />
 

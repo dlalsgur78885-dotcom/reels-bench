@@ -871,24 +871,122 @@ export function adjustmentLayerToFfmpeg(
   endSec: number,
   hueSatAvailable: boolean
 ): string {
+  // pptx11 슬라이드 23 — fade-in/out 처리. fade 영역을 N 개 sub-window 로
+  // 나눠 각 step 별 intensity-scaled grade 를 별도 enable-gate 로 emit.
+  // 동일 layer 안에서 enable window 가 겹치지 않으므로 ffmpeg 가 한 시점에
+  // 하나만 적용. curves / HSL 은 비선형 보간 비용 때문에 full-strength 만
+  // 지원 (fade 안 적용) — 향후 PR scope.
+  const fadeInMs = Math.max(0, layer.fadeInMs ?? 0)
+  const fadeOutMs = Math.max(0, layer.fadeOutMs ?? 0)
+  const hasFade = fadeInMs > 0 || fadeOutMs > 0
+  if (!hasFade) {
+    return adjustmentLayerSegmentToFfmpeg(
+      layer,
+      startSec,
+      endSec,
+      hueSatAvailable,
+      1
+    )
+  }
+  // fade 가 있을 때: 시작 fade ramp (N step) + middle full + 끝 fade ramp.
+  const FADE_STEPS = 10
+  const fadeInSec = fadeInMs / 1000
+  const fadeOutSec = fadeOutMs / 1000
+  const segments: string[] = []
+  // 시작 fade ramp: t ∈ [startSec, startSec+fadeInSec] 에서 intensity 0→1.
+  if (fadeInSec > 0) {
+    const step = fadeInSec / FADE_STEPS
+    for (let i = 0; i < FADE_STEPS; i++) {
+      const segStart = startSec + step * i
+      const segEnd = startSec + step * (i + 1)
+      // 각 step 의 대표 intensity 는 step 중간값 — 사다리꼴 보간.
+      const intensity = (i + 0.5) / FADE_STEPS
+      const frag = adjustmentLayerSegmentToFfmpeg(
+        layer,
+        segStart,
+        segEnd,
+        hueSatAvailable,
+        intensity
+      )
+      if (frag) segments.push(frag)
+    }
+  }
+  // 가운데 full-strength window: [startSec+fadeIn, endSec-fadeOut].
+  const middleStart = startSec + fadeInSec
+  const middleEnd = endSec - fadeOutSec
+  if (middleEnd > middleStart) {
+    const frag = adjustmentLayerSegmentToFfmpeg(
+      layer,
+      middleStart,
+      middleEnd,
+      hueSatAvailable,
+      1
+    )
+    if (frag) segments.push(frag)
+  }
+  // 끝 fade ramp: t ∈ [endSec-fadeOutSec, endSec] 에서 intensity 1→0.
+  if (fadeOutSec > 0) {
+    const step = fadeOutSec / FADE_STEPS
+    for (let i = 0; i < FADE_STEPS; i++) {
+      const segStart = endSec - fadeOutSec + step * i
+      const segEnd = endSec - fadeOutSec + step * (i + 1)
+      const intensity = 1 - (i + 0.5) / FADE_STEPS
+      const frag = adjustmentLayerSegmentToFfmpeg(
+        layer,
+        segStart,
+        segEnd,
+        hueSatAvailable,
+        intensity
+      )
+      if (frag) segments.push(frag)
+    }
+  }
+  return segments.filter(Boolean).join(',')
+}
+
+/**
+ * 단일 시간 구간 [startSec, endSec] 의 grade 를 intensity (0..1) 로 scale
+ * 해서 emit. filterPreset / colorAdjust 만 intensity 곱하기, curves / HSL
+ * 은 그대로. enable 게이트는 각 emit 된 filter 에 부착.
+ */
+function adjustmentLayerSegmentToFfmpeg(
+  layer: AdjustmentLayer,
+  startSec: number,
+  endSec: number,
+  hueSatAvailable: boolean,
+  intensity: number
+): string {
+  const i = Math.max(0, Math.min(1, intensity))
+  if (i <= 0) return ''
   const parts: string[] = []
   const preset = filterPresetToFfmpeg(
     layer.filterPreset ?? 'none',
-    layer.filterIntensity ?? 1
+    (layer.filterIntensity ?? 1) * i
   )
   if (preset) parts.push(preset)
-  const ca = colorAdjustToFfmpeg(resolveColorAdjust(layer.colorAdjust))
+  const rawCa = resolveColorAdjust(layer.colorAdjust)
+  const scaledCa = rawCa
+    ? {
+        brightness: rawCa.brightness * i,
+        contrast: rawCa.contrast * i,
+        saturation: rawCa.saturation * i,
+        temperature: rawCa.temperature * i
+      }
+    : null
+  const ca = colorAdjustToFfmpeg(scaledCa)
   if (ca) parts.push(ca)
-  const cv = curvesToFfmpeg(resolveClipCurves(layer.curves))
-  if (cv) parts.push(cv)
-  if (hueSatAvailable) {
-    const hs = hslToFfmpeg(resolveClipHsl(layer.hsl))
-    if (hs) parts.push(hs)
+  // curves / HSL: intensity scale 없이 full-strength (fade 안 적용).
+  // 단, intensity 가 1.0 일 때만 emit — fade ramp 의 부분 step 에서는 생략
+  // 해서 색이 갑자기 튀는 일 방지.
+  if (i >= 0.999) {
+    const cv = curvesToFfmpeg(resolveClipCurves(layer.curves))
+    if (cv) parts.push(cv)
+    if (hueSatAvailable) {
+      const hs = hslToFfmpeg(resolveClipHsl(layer.hsl))
+      if (hs) parts.push(hs)
+    }
   }
   if (parts.length === 0) return ''
-  // Each `parts` entry may itself be a comma-joined multi-filter string. Split
-  // on the top-level commas (these color filters have no commas in their args)
-  // and time-gate every individual filter.
   const enable = `:enable='between(t,${startSec.toFixed(3)},${endSec.toFixed(3)})'`
   return parts
     .join(',')

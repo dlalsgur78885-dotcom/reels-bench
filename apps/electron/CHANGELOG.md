@@ -21,6 +21,33 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.37 (2026-05-27)
+
+### 버그 (pptx11 슬라이드 8 — 사용자 보고 "급함")
+"드래그 다중 선택 각종 효과들 안 먹힘 문제" — 세 가지 multi-select 동작
+모두가 단일 클립에만 적용되던 문제.
+
+- **다중 선택 후 이동하면 1개만 이동**: 신규 store 액션
+  `moveClipsByDelta(clipIds, anchorId, desiredAnchorStart)`. anchor 의
+  새 startMs 로부터 delta 계산 → 모든 멤버에 적용. 트랙별 non-moving
+  clip 과 no-overlap clamp + earliest 0 floor + locked 1개라도 있으면
+  전체 거부. Timeline drag 핸들러가 selectedClipIds.size > 1 이면 이
+  액션을 호출.
+- **우클릭 효과 안 먹힘**: ClipContextMenu 의 onSpeedChange /
+  onTransitionChange / onFilterChange / onColorAdjustChange /
+  onColorAdjustReset 콜백이 multi-select 일 때 모든 선택된 클립에 일괄
+  적용. onMenuAction 의 delete / duplicate / detach-audio / split 도
+  동일.
+- **DEL 키 1개만 삭제**: bench2 가 이미 multi-select 일괄 삭제 코드를
+  작성했지만 store/project.ts corruption 으로 moveClipsByDelta 액션이
+  손실되어 multi-select 흐름이 끊겨 있었음. 이 릴리스로 흐름 복구.
+
+### e2e
+- multi-select-actions.spec.ts 5 tests (A-1 anchor delta / A-2 locked
+  거부 / A-3 0 floor / A-4 per-member overlap clamp / A-5 DEL 일괄 삭제).
+
+---
+
 ## 0.2.36 (2026-05-27)
 
 ### 버그 (pptx11 슬라이드 7 — 사용자 보고 "끝 버튼 오류")

@@ -792,6 +792,18 @@ export interface ProjectStore {
    */
   moveClipGroup(clipId: string, desiredStartMs: number): void
   /**
+   * pptx11 슬라이드 8 — 다중 선택된 클립들을 같은 delta 만큼 일괄 이동.
+   * `anchorId` 의 새 startMs 를 `desiredAnchorStart` 로 보내고 그 delta 를
+   * 나머지 멤버에 적용. 각 클립의 트랙 내 no-overlap 제약 + earliest 0
+   * floor 로 delta 가 clamp 됨. 멤버 중 1개라도 locked 면 전체 거부.
+   * `anchorId` 가 `clipIds` 에 없거나 미존재 / 빈 list 면 no-op.
+   */
+  moveClipsByDelta(
+    clipIds: string[],
+    anchorId: string,
+    desiredAnchorStart: number
+  ): void
+  /**
    * Phase 3.40 — move a single clip onto a different track. Validates
    * compatibility via `canPlaceClipOnTrack`; no-op if source==target,
    * target missing, or kinds incompatible. Preserves every other field on
@@ -2589,6 +2601,79 @@ export const useProjectStore = create<ProjectStore>()(
       ...t,
       clips: t.clips.map((c) =>
         memberIds.has(c.id)
+          ? { ...c, startMs: c.startMs + delta, endMs: c.endMs + delta }
+          : c
+      )
+    }))
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // pptx11 슬라이드 8 — 다중 선택 일괄 이동. anchor 의 새 startMs 로부터
+  // delta 계산 → 모든 member 에 적용. 각 트랙의 non-moving clip 과
+  // overlap 안 되도록 가장 제한적인 delta 로 clamp. earliest member 가
+  // 0 아래로 못 내려감. locked member 1개라도 있으면 전체 거부.
+  moveClipsByDelta(
+    clipIds: string[],
+    anchorId: string,
+    desiredAnchorStart: number
+  ): void {
+    if (!Array.isArray(clipIds) || clipIds.length === 0) return
+    if (typeof anchorId !== 'string' || !anchorId) return
+    if (!Number.isFinite(desiredAnchorStart)) return
+    const project = get().project
+    const wantIds = new Set(clipIds)
+    if (!wantIds.has(anchorId)) return
+    // 1) 이동 대상 수집 + locked 검사 + anchor 위치 확인.
+    type Found = { clip: Clip; trackIdx: number }
+    const moving: Found[] = []
+    let anchor: Clip | null = null
+    for (let ti = 0; ti < project.tracks.length; ti++) {
+      for (const c of project.tracks[ti].clips) {
+        if (!wantIds.has(c.id)) continue
+        if (isClipLocked(c)) return // any locked → reject 전체.
+        moving.push({ clip: c, trackIdx: ti })
+        if (c.id === anchorId) anchor = c
+      }
+    }
+    if (moving.length === 0 || !anchor) return
+
+    // 2) delta 계산 + clamp.
+    let delta = Math.round(desiredAnchorStart) - anchor.startMs
+    if (delta === 0) return
+    // 2a) earliest member 가 0 미만이 되지 않도록.
+    let minStart = Infinity
+    for (const m of moving) if (m.clip.startMs < minStart) minStart = m.clip.startMs
+    if (minStart + delta < 0) delta = -minStart
+    if (delta === 0) return
+    // 2b) 트랙별 non-moving clip edge 와 충돌 안 나는 delta 제한.
+    for (const m of moving) {
+      const track = project.tracks[m.trackIdx]
+      for (const other of track.clips) {
+        if (wantIds.has(other.id)) continue
+        if (delta > 0) {
+          // m 의 새 endMs 가 other.startMs 를 넘어가면 안 됨.
+          if (m.clip.endMs <= other.startMs) {
+            const maxDelta = other.startMs - m.clip.endMs
+            if (delta > maxDelta) delta = Math.max(0, maxDelta)
+          }
+        } else {
+          // m 의 새 startMs 가 other.endMs 보다 작아지면 안 됨.
+          if (m.clip.startMs >= other.endMs) {
+            const minDelta = other.endMs - m.clip.startMs
+            if (delta < minDelta) delta = Math.min(0, minDelta)
+          }
+        }
+      }
+    }
+    if (delta === 0) return
+
+    // 3) 적용 — 한 번에 모든 트랙 변경.
+    const tracks = project.tracks.map((t) => ({
+      ...t,
+      clips: t.clips.map((c) =>
+        wantIds.has(c.id)
           ? { ...c, startMs: c.startMs + delta, endMs: c.endMs + delta }
           : c
       )

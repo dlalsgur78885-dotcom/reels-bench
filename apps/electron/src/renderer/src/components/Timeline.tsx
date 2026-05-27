@@ -730,6 +730,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const groupClips = useProjectStore((s) => s.groupClips)
   const ungroupClips = useProjectStore((s) => s.ungroupClips)
   const moveClipGroup = useProjectStore((s) => s.moveClipGroup)
+  // pptx11 슬라이드 8 — 다중 선택 일괄 이동.
+  const moveClipsByDelta = useProjectStore((s) => s.moveClipsByDelta)
   // Phase 3.40 — cross-track clip drag.
   const moveClipToTrack = useProjectStore((s) => s.moveClipToTrack)
   const { undo, redo, canUndo, canRedo } = useUndoRedo()
@@ -1025,20 +1027,51 @@ export function Timeline(props: TimelineProps): JSX.Element {
     }
     // When locked, every other menu action is blocked.
     if (isClipLocked(clip)) return
+    // pptx11 슬라이드 8 — multi-select 시 일괄 적용. ctxClip 이 선택 set 에
+    // 포함되어 있을 때만 multi 동작 (다른 클립 우클릭 = single-target).
+    const sel = selectedClipIds
+    const multiTargets =
+      sel.size > 1 && sel.has(clip.id)
+        ? ([...sel] as string[])
+        : ([clip.id] as string[])
     if (key === 'edit-caption' && isCaptionClip(clip)) {
       onEditCaption(clip.id)
     } else if (key === 'change-style' && isCaptionClip(clip)) {
       onEditCaption(clip.id)
     } else if (key === 'delete') {
-      onDeleteClip(clip.id)
+      for (const id of multiTargets) {
+        try {
+          onDeleteClip(id)
+        } catch {
+          /* locked or already gone */
+        }
+      }
     } else if (key === 'duplicate') {
-      const newId = duplicateClip(clip.id)
-      if (newId) handleSelect(newId)
+      const newIds: string[] = []
+      for (const id of multiTargets) {
+        const nid = duplicateClip(id)
+        if (nid) newIds.push(nid)
+      }
+      if (newIds.length > 0) handleSelect(newIds[newIds.length - 1])
     } else if (key === 'detach-audio' && isMediaClip(clip)) {
-      const newId = detachAudio(clip.id)
-      if (newId) handleSelect(newId)
+      // detachAudio 는 single-clip semantics 가 명확 (media clip → 새 audio
+      // clip 생성). multi 일 땐 각각 시도.
+      let lastNewId: string | null = null
+      for (const id of multiTargets) {
+        const newId = detachAudio(id)
+        if (newId) lastNewId = newId
+      }
+      if (lastNewId) handleSelect(lastNewId)
     } else if (key === 'split' && isMediaClip(clip)) {
-      splitClipAt(clip.id, playheadMs)
+      // playhead 가 클립 안에 있어야 split — multi 일 땐 그 조건 만족한
+      // 클립만 실제로 잘림 (store 가 verify).
+      for (const id of multiTargets) {
+        try {
+          splitClipAt(id, playheadMs)
+        } catch {
+          /* skip */
+        }
+      }
     } else if (key === 'remove-silence' && isMediaClip(clip)) {
       props.onOpenSilenceDialog?.(clip.id)
     } else if (key === 'group') {
@@ -1399,7 +1432,15 @@ export function Timeline(props: TimelineProps): JSX.Element {
 
       const newStart = desired
       const newEnd = newStart + duration
-      if (clip.groupId) {
+      // pptx11 슬라이드 8 — 다중 선택 (Ctrl+클릭 / marquee) 으로 anchor
+      // 외에도 다른 클립들이 같이 선택되어 있으면 일괄 이동. groupId
+      // (Phase 3.33 link group) 가 있어도 multi-select 가 그것을 포함하면
+      // multi-select 가 우선 (사용자 의도 명확).
+      const selectedIds = useTimelineUi.getState().selectedClipIds
+      const isMultiMove = selectedIds.size > 1 && selectedIds.has(clip.id)
+      if (isMultiMove) {
+        moveClipsByDelta([...selectedIds], clip.id, newStart)
+      } else if (clip.groupId) {
         // Phase 3.33 — grouped clip: move the WHOLE link group together. The
         // snap/clamp math above stays anchored on the dragged clip; the store
         // shifts every member by the resulting delta.
@@ -2998,21 +3039,31 @@ export function Timeline(props: TimelineProps): JSX.Element {
           onSpeedChange={
             isMediaClip(ctxClip)
               ? (s: number): void => {
-                  setClipSpeed(ctxClip.id, s)
+                  // pptx11 슬라이드 8 — multi-select 이면 일괄 적용.
+                  const sel = useTimelineUi.getState().selectedClipIds
+                  const targets =
+                    sel.size > 1 && sel.has(ctxClip.id) ? [...sel] : [ctxClip.id]
+                  for (const id of targets) setClipSpeed(id, s)
                 }
               : undefined
           }
           onTransitionChange={
             isMediaClip(ctxClip)
               ? (kind, durationMs): void => {
-                  setClipTransitionIn(ctxClip.id, kind, durationMs)
+                  const sel = useTimelineUi.getState().selectedClipIds
+                  const targets =
+                    sel.size > 1 && sel.has(ctxClip.id) ? [...sel] : [ctxClip.id]
+                  for (const id of targets) setClipTransitionIn(id, kind, durationMs)
                 }
               : undefined
           }
           onFilterChange={
             isMediaClip(ctxClip)
               ? (preset, intensity): void => {
-                  setClipFilter(ctxClip.id, preset, intensity)
+                  const sel = useTimelineUi.getState().selectedClipIds
+                  const targets =
+                    sel.size > 1 && sel.has(ctxClip.id) ? [...sel] : [ctxClip.id]
+                  for (const id of targets) setClipFilter(id, preset, intensity)
                 }
               : undefined
           }
@@ -3082,14 +3133,21 @@ export function Timeline(props: TimelineProps): JSX.Element {
               ? (partial): void => {
                   // Color adjust is STATIC — no keyframe redirect. Goes
                   // straight to the store action.
-                  setClipColorAdjust(ctxClip.id, partial)
+                  // pptx11 슬라이드 8 — multi-select 시 일괄 적용.
+                  const sel = useTimelineUi.getState().selectedClipIds
+                  const targets =
+                    sel.size > 1 && sel.has(ctxClip.id) ? [...sel] : [ctxClip.id]
+                  for (const id of targets) setClipColorAdjust(id, partial)
                 }
               : undefined
           }
           onColorAdjustReset={
             isMediaClip(ctxClip)
               ? (): void => {
-                  resetClipColorAdjust(ctxClip.id)
+                  const sel = useTimelineUi.getState().selectedClipIds
+                  const targets =
+                    sel.size > 1 && sel.has(ctxClip.id) ? [...sel] : [ctxClip.id]
+                  for (const id of targets) resetClipColorAdjust(id)
                 }
               : undefined
           }

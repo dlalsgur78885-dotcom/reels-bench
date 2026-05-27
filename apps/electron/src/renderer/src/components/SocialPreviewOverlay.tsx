@@ -281,7 +281,13 @@ function SafeZones(props: { topPct: number; bottomPct: number }): JSX.Element {
   )
 }
 
-/** Right-hand vertical action button stack — anchored bottom-right. */
+/** Right-hand vertical action button stack — anchored bottom-right.
+ *
+ * pptx11 슬라이드 12 — explicit width 가 없으면 label 텍스트("2.8K",
+ * "공유" 등) 가 stack 가로 폭을 늘려서 `right: 3.5%` 가 stack 의 오른쪽
+ * 끝이 되고 본체는 영상 중앙쯤에 위치 → 아이콘이 인물 얼굴 위로 겹침.
+ * 좁은 컬럼(viewport 의 ~14%) 으로 폭 고정 + alignItems:center 유지.
+ */
 function ActionStack(props: {
   bottomPct: number
   children: React.ReactNode
@@ -293,6 +299,8 @@ function ActionStack(props: {
         position: 'absolute',
         right: '3.5%',
         bottom: `${props.bottomPct}%`,
+        width: '14%',
+        minWidth: 48,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',

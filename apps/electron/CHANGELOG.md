@@ -21,6 +21,30 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.41 (2026-05-27)
+
+### 버그 (pptx11 슬라이드 12 — 사용자 보고 "플랫폼 미리보기 오류")
+릴스/숏츠/틱톡 오버레이의 좋아요/댓글/공유 아이콘들이 영상 오른쪽
+가장자리가 아닌 **가운데**에 떠 있어 인물 얼굴 위로 겹치던 문제.
+
+**원인**: `ActionStack` 에 explicit width 가 없어 ActionButton 의 label
+텍스트("2.8K", "공유", "리믹스" 등) 가 stack 가로 폭을 늘림. CSS `right:
+3.5%` 는 stack 의 **오른쪽 edge** 기준이라 stack 본체가 가운데 위치 →
+icon 들이 alignItems:center 로 가운데 정렬.
+
+**fix**: `ActionStack` 에 `width: 14%, minWidth: 48` 명시 → label 이
+stack 폭을 못 늘리고 좁은 컬럼으로 우측 정렬 유지. 0.2.35 bench2 배치
+때 SocialPreviewOverlay 자체는 들어왔지만 이 layout 버그는 못 잡혀
+있었음.
+
+### e2e
+- social-preview-position.spec.ts 3 tests — 각 플랫폼(tiktok/youtube/
+  instagram) 의 ActionStack 위치 회귀 가드. preview-fitted-rect 대비
+  stack right edge ≥ 90% / left edge ≥ 65% / 폭 ≤ 30% 검증.
+- 기존 social-preview-actions.spec.ts 3 tests (action 구성) 도 그대로 통과.
+
+---
+
 ## 0.2.40 (2026-05-27)
 
 ### 버그/개선 (pptx11 슬라이드 11 — 사용자 보고)

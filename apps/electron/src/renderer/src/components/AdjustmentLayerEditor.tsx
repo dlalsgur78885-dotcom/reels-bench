@@ -136,8 +136,61 @@ const styles = {
     fontSize: 11,
     color: '#c4b5fd',
     margin: 0
+  } as React.CSSProperties,
+  // pptx12 슬라이드 18 — 일반 EffectsPanel 과 동일한 6탭 바.
+  tabBar: {
+    display: 'flex',
+    gap: 2,
+    margin: '8px 0 4px',
+    flexWrap: 'wrap' as const
+  } as React.CSSProperties,
+  tabBtn: {
+    flex: 1,
+    minWidth: 48,
+    background: '#1a1a1a',
+    color: '#9aa0a6',
+    border: '1px solid #2a2a2a',
+    borderRadius: 6,
+    padding: '5px 6px',
+    fontSize: 11,
+    fontWeight: 600,
+    cursor: 'pointer'
+  } as React.CSSProperties,
+  tabBtnActive: {
+    background: '#6366f1',
+    color: '#fff',
+    borderColor: '#6366f1'
+  } as React.CSSProperties,
+  emptyHint: {
+    padding: '24px 12px',
+    fontSize: 11,
+    color: '#94a3b8',
+    background: '#111',
+    border: '1px dashed #2a2a2a',
+    borderRadius: 6,
+    lineHeight: 1.6,
+    margin: '8px 0'
   } as React.CSSProperties
 }
+
+// pptx12 슬라이드 18 — 일반 효과 패널과 동일 6탭 라벨.
+type AdjTab = 'transform' | 'speed' | 'animation' | 'adjust' | 'transition' | 'layout'
+const ADJ_TAB_LABELS: Record<AdjTab, string> = {
+  transform: '변형',
+  speed: '속도',
+  animation: '애니메이션',
+  adjust: '조정',
+  transition: '전환',
+  layout: '레이아웃'
+}
+const ADJ_TABS: AdjTab[] = [
+  'transform',
+  'speed',
+  'animation',
+  'adjust',
+  'transition',
+  'layout'
+]
 
 export function AdjustmentLayerEditor(
   props: AdjustmentLayerEditorProps
@@ -164,6 +217,8 @@ export function AdjustmentLayerEditor(
 
   // HSL band selection — transient UI state (not in the project schema).
   const [hslBand, setHslBand] = useState<HslBandKey>('red')
+  // pptx12 슬라이드 18 — 6탭 활성. 기본은 가장 자주 쓰는 '조정'.
+  const [activeTab, setActiveTab] = useState<AdjTab>('adjust')
 
   // --- Derived current values (resolved via the shared payload helpers). ---
   const colorAdjust: ColorAdjust =
@@ -217,6 +272,35 @@ export function AdjustmentLayerEditor(
     </div>
   )
 
+  // pptx12 슬라이드 18 — 변형/속도/레이아웃은 조정 레이어 의미상 무관
+  // (조정 레이어는 visual 요소가 아니라 프레임 전체 grade 합성). 사용자가
+  // 일반 효과 패널과 동일한 탭 구조를 요청해서 노출만 하고, 컨텐츠는
+  // 명시적 안내문으로 처리.
+  const transformPanel = (
+    <div data-testid="adjustment-tab-transform" style={styles.emptyHint}>
+      조정 레이어는 영상 위에 색 보정만 합성하는 time-range grade 입니다.
+      위치 / 크기 / 회전 변경은 개별 영상 / 오버레이 클립에서 가능합니다.
+    </div>
+  )
+  const speedPanel = (
+    <div data-testid="adjustment-tab-speed" style={styles.emptyHint}>
+      조정 레이어는 자체 미디어를 가지지 않으므로 재생 속도가 의미 없습니다.
+      구간 시작 / 끝 ms 는 타임라인에서 드래그로 조절하세요.
+    </div>
+  )
+  const animationPanel = (
+    <div data-testid="adjustment-tab-animation" style={styles.emptyHint}>
+      구간 동안 grade 가 시간에 따라 변하는 키프레임 애니메이션은 추후 지원
+      예정입니다. 지금은 [전환] 탭의 시작/끝 페이드로 강도 램프만 적용 가능.
+    </div>
+  )
+  const layoutPanel = (
+    <div data-testid="adjustment-tab-layout" style={styles.emptyHint}>
+      조정 레이어는 프레임 전체에 grade 가 합성되므로 레이아웃(분할 / 그리드)
+      적용 대상이 아닙니다.
+    </div>
+  )
+
   return (
     <div data-testid="adjustment-layer-editor" data-layer-id={layer.id}>
       <p style={styles.meta}>
@@ -227,6 +311,32 @@ export function AdjustmentLayerEditor(
         이 구간 아래의 모든 트랙에 색 보정이 적용됩니다.
       </p>
 
+      {/* pptx12 슬라이드 18 — 일반 효과 패널과 동일한 6탭 바. */}
+      <div style={styles.tabBar} data-testid="adjustment-editor-tabs">
+        {ADJ_TABS.map((t) => (
+          <button
+            key={t}
+            type="button"
+            data-testid={`adjustment-effects-tab-${t}`}
+            aria-pressed={activeTab === t}
+            onClick={() => setActiveTab(t)}
+            style={{
+              ...styles.tabBtn,
+              ...(activeTab === t ? styles.tabBtnActive : {})
+            }}
+          >
+            {ADJ_TAB_LABELS[t]}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'transform' && transformPanel}
+      {activeTab === 'speed' && speedPanel}
+      {activeTab === 'animation' && animationPanel}
+      {activeTab === 'layout' && layoutPanel}
+
+      {activeTab === 'adjust' && (
+        <div data-testid="adjustment-tab-adjust">
       <hr style={styles.divider} />
 
       {/* Filter preset */}
@@ -387,42 +497,46 @@ export function AdjustmentLayerEditor(
           미리보기는 근사값입니다 — 정확한 색은 내보내기 결과를 확인하세요.
         </p>
       </div>
+        </div>
+      )}
 
-      <hr style={styles.divider} />
-
-      {/* pptx11 슬라이드 23 — 전환: fade-in / fade-out. ms 단위.
-          최대값은 layer 길이 절반 (clamp 는 store 에서). */}
-      <p style={styles.sectionLabel}>전환 (페이드)</p>
-      <div style={{ height: 6 }} />
-      {(() => {
-        const dur = Math.max(0, layer.endMs - layer.startMs)
-        const halfDur = Math.floor(dur / 2)
-        const fadeIn = Math.min(halfDur, layer.fadeInMs ?? 0)
-        const fadeOut = Math.min(halfDur, layer.fadeOutMs ?? 0)
-        return (
-          <div data-testid="adjustment-fade-panel">
-            {sliderRow(
-              '시작 페이드',
-              fadeIn,
-              0,
-              halfDur,
-              (v) => setAdjustmentLayerFade(layer.id, v, fadeOut),
-              'adjustment-fade-in'
-            )}
-            {sliderRow(
-              '끝 페이드',
-              fadeOut,
-              0,
-              halfDur,
-              (v) => setAdjustmentLayerFade(layer.id, fadeIn, v),
-              'adjustment-fade-out'
-            )}
-            <p style={{ ...styles.hint, marginTop: 6 }}>
-              페이드 구간에선 색 보정 / 필터 강도가 점진적으로 적용됩니다.
-            </p>
-          </div>
-        )
-      })()}
+      {activeTab === 'transition' && (
+        <div data-testid="adjustment-tab-transition">
+          {/* pptx11 슬라이드 23 — 전환: fade-in / fade-out. ms 단위.
+              최대값은 layer 길이 절반 (clamp 는 store 에서). */}
+          <p style={styles.sectionLabel}>전환 (페이드)</p>
+          <div style={{ height: 6 }} />
+          {(() => {
+            const dur = Math.max(0, layer.endMs - layer.startMs)
+            const halfDur = Math.floor(dur / 2)
+            const fadeIn = Math.min(halfDur, layer.fadeInMs ?? 0)
+            const fadeOut = Math.min(halfDur, layer.fadeOutMs ?? 0)
+            return (
+              <div data-testid="adjustment-fade-panel">
+                {sliderRow(
+                  '시작 페이드',
+                  fadeIn,
+                  0,
+                  halfDur,
+                  (v) => setAdjustmentLayerFade(layer.id, v, fadeOut),
+                  'adjustment-fade-in'
+                )}
+                {sliderRow(
+                  '끝 페이드',
+                  fadeOut,
+                  0,
+                  halfDur,
+                  (v) => setAdjustmentLayerFade(layer.id, fadeIn, v),
+                  'adjustment-fade-out'
+                )}
+                <p style={{ ...styles.hint, marginTop: 6 }}>
+                  페이드 구간에선 색 보정 / 필터 강도가 점진적으로 적용됩니다.
+                </p>
+              </div>
+            )
+          })()}
+        </div>
+      )}
 
       <hr style={styles.divider} />
 

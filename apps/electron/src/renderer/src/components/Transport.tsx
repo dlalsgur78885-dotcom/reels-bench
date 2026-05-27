@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
-import { getTotalDurationMs, useProjectStore } from '../store/project'
+import { getLastVisualMs, getTotalDurationMs, useProjectStore } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import { accent, font, radius, space, surface, text } from '../theme/tokens'
 
@@ -176,8 +176,11 @@ export function Transport(): JSX.Element {
   const skipEnd = (): void => {
     const clip = findSelectedClip()
     // half-open clip 범위 (`ms < endMs`) — 1ms 안쪽 = 그 clip 의 마지막
-    // frame. 선택 없으면 전체 timeline 끝.
-    const target = clip ? clip.endMs - 1 : totalMs - 1
+    // frame. 선택 없으면 비디오 트랙의 마지막 프레임 (pptx11 슬라이드 7:
+    // getTotalDurationMs 는 audio/caption/overlay 포함이라 BGM/자막이
+    // 비디오보다 길면 playhead 가 클립 너머로 가서 검은 화면이 됨).
+    const lastVisual = getLastVisualMs(project)
+    const target = clip ? clip.endMs - 1 : lastVisual - 1
     setPlayhead(Math.max(0, target))
     setPlaying(false)
   }

@@ -6966,6 +6966,28 @@ export function getTotalDurationMs(project: Project): number {
   return max
 }
 
+/**
+ * pptx11 슬라이드 7 — "끝" 버튼 / End 키가 도착해야 하는 ms.
+ * `getTotalDurationMs` 는 audio (BGM) / caption / overlay 트랙도 포함해서
+ * 그쪽이 더 길면 비디오 너머로 playhead 가 가서 검은 화면이 됨. 사용자
+ * 의도는 "마지막 영상 프레임" 이므로 video 트랙의 max endMs 만 사용 (한
+ * 클립 안에 머무는 frame). video 트랙에 클립이 없을 때만 fallback 으로
+ * 전체 totalMs 사용.
+ */
+export function getLastVisualMs(project: Project): number {
+  let max = 0
+  for (const t of project.tracks) {
+    if (t.kind !== 'video') continue
+    for (const c of t.clips) {
+      if (c.endMs > max) max = c.endMs
+    }
+  }
+  if (max > 0) return max
+  // fallback — 비디오 클립이 하나도 없으면 그냥 total 끝 (검은 화면이지만
+  // 이건 사용자가 만든 정상 상태).
+  return getTotalDurationMs(project)
+}
+
 // ---------------------------------------------------------------------------
 // E2E hook: expose the store on window so Playwright can introspect state.
 // Strictly read-only via getState; tests that need to mutate go through IPC

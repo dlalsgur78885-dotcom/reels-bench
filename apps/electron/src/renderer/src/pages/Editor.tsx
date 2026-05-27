@@ -25,7 +25,13 @@ import { UpdateStatusPanel } from '../components/UpdateStatusPanel'
 import type { PrefillResult } from '../lib/prefillFromReel'
 import type { AutoEditSummary } from '../lib/autoEdit'
 import { runBeatCut } from '../lib/beatCut'
-import { getTotalDurationMs, useProjectStore, useUndoRedo, newId } from '../store/project'
+import {
+  getLastVisualMs,
+  getTotalDurationMs,
+  useProjectStore,
+  useUndoRedo,
+  newId
+} from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import { markersToChapters } from '../lib/markerExport'
 import {
@@ -1411,7 +1417,9 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
       }
       if (e.key === 'End') {
         e.preventDefault()
-        const cap = getTotalDurationMs(store.project)
+        // pptx11 슬라이드 7 — End 키도 Transport "끝" 버튼과 동일 의미.
+        // 비디오 트랙의 마지막 프레임 (audio/caption 너머 검은 화면 방지).
+        const cap = getLastVisualMs(store.project)
         ui.setPlayheadMs(Math.max(0, cap - 1))
         return
       }

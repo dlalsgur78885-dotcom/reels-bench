@@ -21,6 +21,21 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.36 (2026-05-27)
+
+### 버그 (pptx11 슬라이드 7 — 사용자 보고 "끝 버튼 오류")
+- "영상 1개만 있을 땐 잘 작동, 영상 여러개일 때 타임라인 끝으로 가서
+  검은 화면". `getTotalDurationMs` 가 video 외 audio (BGM) / caption /
+  overlay 트랙 endMs 까지 포함하기 때문에 BGM/자막이 비디오보다 길면
+  Transport "끝" 버튼이 playhead 를 마지막 비디오 클립 너머로 보내서
+  composite 가 빈 프레임이 됨.
+- **fix**: 신규 헬퍼 `getLastVisualMs(project)` — video 트랙의 max endMs
+  만 계산 (없으면 totalMs fallback). Transport.skipEnd / Editor.tsx End
+  키 모두 이 헬퍼 사용. 선택 클립이 있을 땐 그 클립 endMs 유지 (기존
+  동작 — 슬라이드 10 의미 보존).
+
+---
+
 ## 0.2.35 (2026-05-27)
 
 ### 버그 (pptx11 슬라이드 4 — 사용자 보고 "음원 파일 트랙 이동 시 다른 음악 or 음성 틀어짐")

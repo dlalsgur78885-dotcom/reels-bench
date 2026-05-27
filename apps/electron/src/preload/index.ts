@@ -23,6 +23,7 @@ import {
   type FilePickerFilter,
   type JobResult,
   type ParsedCaptionCue,
+  type ProjectListItem,
   type SubtitleExportResult,
   type PickFileOptions,
   type ProgressEvent,
@@ -72,8 +73,14 @@ const api: ElectronApi = {
       ipcRenderer.invoke(IPC_CHANNELS.fs.saveFile, defaultName),
     readProject: (): Promise<Project | null> =>
       ipcRenderer.invoke(IPC_CHANNELS.fs.readProject),
+    readProjectById: (projectId: string): Promise<Project | null> =>
+      ipcRenderer.invoke(IPC_CHANNELS.fs.readProjectById, projectId),
     writeProject: (project: Project): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.fs.writeProject, project),
+    archiveProject: (project: Project): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.fs.archiveProject, project),
+    listProjects: (): Promise<ProjectListItem[]> =>
+      ipcRenderer.invoke(IPC_CHANNELS.fs.listProjects),
     allowPath: (p: string): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.fs.allowPath, p)
   },

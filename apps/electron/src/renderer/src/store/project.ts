@@ -605,6 +605,7 @@ export interface ProjectStore {
   hydrated: boolean
 
   createNew(): void
+  loadProject(project: Project): void
   setName(name: string): void
   setAspectRatio(ratio: AspectRatio): void
   /** Phase 3.27 — mark a timeline ms as the video's cover frame. */
@@ -1657,6 +1658,12 @@ export const useProjectStore = create<ProjectStore>()(
   hydrated: false,
 
   createNew(): void {
+    const current = get().project
+    if (typeof window !== 'undefined' && window.electron?.fs?.archiveProject) {
+      void window.electron.fs.archiveProject(current).catch((err: unknown) => {
+        console.error('[store] archiveProject failed', err)
+      })
+    }
     set({ project: freshProject() })
     schedulePersist(get().project)
     // A brand-new project should be the new baseline; previous history
@@ -1665,6 +1672,16 @@ export const useProjectStore = create<ProjectStore>()(
     // pastStates).
     // Push past the throttle window so any in-flight trailing-edge entry
     // for the just-issued set() lands before we wipe the stack.
+    setTimeout(
+      () => useProjectStore.temporal.getState().clear(),
+      UNDO_THROTTLE_MS + 50
+    )
+  },
+
+  loadProject(project: Project): void {
+    const next = migrateLoadedProject(project)
+    set({ project: next, hydrated: true })
+    schedulePersist(next)
     setTimeout(
       () => useProjectStore.temporal.getState().clear(),
       UNDO_THROTTLE_MS + 50

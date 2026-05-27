@@ -3,11 +3,12 @@ import '../../shared/ipc'
 import type {
   FfmpegCapabilities,
   FfmpegRunSpec,
-  ProgressEvent
+  ProgressEvent,
+  ProjectListItem
 } from '../../shared/ipc'
 import { Editor } from './pages/Editor'
 import Login from './pages/Login'
-import { initProjectStore } from './store/project'
+import { initProjectStore, useProjectStore } from './store/project'
 import { useAuthStore } from './store/auth'
 import { UpdateBanner } from './components/UpdateBanner'
 import { usePrefersReducedMotion } from './lib/usePrefersReducedMotion'
@@ -316,43 +317,61 @@ export default function App(): JSX.Element {
   // clip count + last-modified relative-time on Home is a meaningful UX
   // step short of building a multi-project file manager.
   const [projectSnapshot, setProjectSnapshot] = useState<{
+    id: string
     name: string
     aspectRatio: string
     clipCount: number
     captionCount: number
     updatedAt: number
   } | null>(null)
+  const [savedProjects, setSavedProjects] = useState<ProjectListItem[]>([])
+
+  const refreshSavedProjects = (): void => {
+    if (!window.electron?.fs?.listProjects) return
+    void window.electron.fs
+      .listProjects()
+      .then(setSavedProjects)
+      .catch((err: unknown) => console.error('[App] listProjects failed', err))
+  }
+
   useEffect(() => {
     let cancelled = false
-    void import('./store/project').then(({ useProjectStore }) => {
-      const read = (): void => {
-        if (cancelled) return
-        const p = useProjectStore.getState().project
-        if (!p) return
-        let clipCount = 0
-        let captionCount = 0
-        for (const t of p.tracks) {
-          for (const c of t.clips) {
-            if (c.kind === 'caption') captionCount += 1
-            else clipCount += 1
-          }
+    const read = (): void => {
+      if (cancelled) return
+      const p = useProjectStore.getState().project
+      if (!p) return
+      let clipCount = 0
+      let captionCount = 0
+      for (const t of p.tracks) {
+        for (const c of t.clips) {
+          if (c.kind === 'caption') captionCount += 1
+          else clipCount += 1
         }
-        setProjectSnapshot({
-          name: p.name || '제목 없음',
-          aspectRatio: p.aspectRatio,
-          clipCount,
-          captionCount,
-          updatedAt: p.updatedAt
-        })
       }
-      read()
-      const unsub = useProjectStore.subscribe(read)
-      return () => unsub()
-    })
+      setProjectSnapshot({
+        id: p.id,
+        name: p.name || '제목 없음',
+        aspectRatio: p.aspectRatio,
+        clipCount,
+        captionCount,
+        updatedAt: p.updatedAt
+      })
+      refreshSavedProjects()
+    }
+    read()
+    const unsub = useProjectStore.subscribe(read)
     return () => {
       cancelled = true
+      unsub()
     }
   }, [])
+
+  useEffect(() => {
+    if (view !== 'home') return
+    refreshSavedProjects()
+    const timer = setTimeout(refreshSavedProjects, 350)
+    return () => clearTimeout(timer)
+  }, [view])
 
   // Phase 3.88 — preset-start. Resets the project to a blank canvas at the
   // platform's native aspect ratio, then routes into the editor. The same
@@ -361,12 +380,19 @@ export default function App(): JSX.Element {
   const handleStartWithPreset = (
     ratio: '9:16' | '1:1' | '16:9' | '4:5'
   ): void => {
-    void import('./store/project').then(({ useProjectStore }) => {
-      const store = useProjectStore.getState()
-      store.createNew()
-      store.setAspectRatio(ratio)
+    const store = useProjectStore.getState()
+    store.createNew()
+    store.setAspectRatio(ratio)
+    setView('editor')
+  }
+  const handleOpenSavedProject = (projectId: string): void => {
+    if (!window.electron?.fs?.readProjectById) return
+    void (async () => {
+      const project = await window.electron.fs.readProjectById(projectId)
+      if (!project) return
+      useProjectStore.getState().loadProject(project)
       setView('editor')
-    })
+    })()
   }
   const handleSignOut = (): void => {
     void signOut().then(() => setView('home'))
@@ -395,6 +421,10 @@ export default function App(): JSX.Element {
       </>
     )
   }
+
+  const archivedProjects = savedProjects.filter(
+    (p) => p.id !== projectSnapshot?.id
+  )
 
   return (
     <div style={wrap}>
@@ -473,6 +503,79 @@ export default function App(): JSX.Element {
             >
               Editor로 계속 →
             </button>
+          </div>
+        </>
+      )}
+      {archivedProjects.length > 0 && (
+        <>
+          <div
+            style={{
+              marginTop: 18,
+              marginBottom: 8,
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: 0.8,
+              textTransform: 'uppercase',
+              color: '#94a3b8'
+            }}
+            data-testid="saved-projects-heading"
+          >
+            저장된 프로젝트
+          </div>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+              maxWidth: 520
+            }}
+            data-testid="saved-project-list"
+          >
+            {archivedProjects.slice(0, 5).map((project) => (
+              <div
+                key={project.id}
+                style={{
+                  padding: 12,
+                  background: '#171717',
+                  border: '1px solid #2a2a2a',
+                  borderRadius: 8,
+                  color: '#cbd5e1',
+                  fontSize: 13,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12
+                }}
+                data-testid="saved-project-card"
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontWeight: 700,
+                      color: '#e2e8f0',
+                      marginBottom: 4,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    📁 {project.name}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                    {project.aspectRatio} · 클립 {project.clipCount}개 · 자막{' '}
+                    {project.captionCount}개 · 수정{' '}
+                    {formatRelativeTime(project.updatedAt)}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  style={{ ...btn, padding: '6px 14px', fontSize: 12 }}
+                  onClick={() => handleOpenSavedProject(project.id)}
+                  data-testid="open-saved-project"
+                >
+                  열기
+                </button>
+              </div>
+            ))}
           </div>
         </>
       )}

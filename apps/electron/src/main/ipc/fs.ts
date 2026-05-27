@@ -1,7 +1,12 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { IPC_CHANNELS, type FilePickerFilter, type PickFileOptions } from '../../shared/ipc'
+import {
+  IPC_CHANNELS,
+  type FilePickerFilter,
+  type PickFileOptions,
+  type ProjectListItem
+} from '../../shared/ipc'
 import type { Project } from '../../shared/project'
 import { allowPath } from '../ffmpeg/security'
 
@@ -30,6 +35,72 @@ function sanitizeFilters(filters: unknown): FilePickerFilter[] {
 
 function projectFilePath(): string {
   return path.join(app.getPath('userData'), 'project.json')
+}
+
+function projectsDir(): string {
+  return path.join(app.getPath('userData'), 'projects')
+}
+
+function projectArchivePath(projectId: string): string {
+  return path.join(projectsDir(), `${projectId}.json`)
+}
+
+function isSafeProjectId(projectId: unknown): projectId is string {
+  return typeof projectId === 'string' && /^[0-9A-HJKMNP-TV-Z]{26}$/.test(projectId)
+}
+
+function allowProjectMedia(project: Project): void {
+  if (project.media && typeof project.media === 'object') {
+    for (const asset of Object.values(project.media)) {
+      if (asset && typeof asset.path === 'string') allowPath(asset.path)
+      if (asset && typeof asset.thumbnailPath === 'string') {
+        allowPath(asset.thumbnailPath)
+      }
+    }
+  }
+}
+
+function projectSummary(project: Project): ProjectListItem {
+  let clipCount = 0
+  let captionCount = 0
+  for (const t of project.tracks ?? []) {
+    for (const c of t.clips ?? []) {
+      if (c.kind === 'caption') captionCount += 1
+      else clipCount += 1
+    }
+  }
+  return {
+    id: project.id,
+    name: project.name || '제목 없는 프로젝트',
+    aspectRatio: project.aspectRatio,
+    updatedAt:
+      typeof project.updatedAt === 'number' && Number.isFinite(project.updatedAt)
+        ? project.updatedAt
+        : 0,
+    clipCount,
+    captionCount
+  }
+}
+
+async function writeProjectArchive(project: Project): Promise<void> {
+  if (!project || typeof project !== 'object' || !isSafeProjectId(project.id)) {
+    throw new Error('[fs] archiveProject: invalid project payload')
+  }
+  const target = projectArchivePath(project.id)
+  await mkdir(path.dirname(target), { recursive: true })
+  const tmp = target + '.tmp'
+  await writeFile(tmp, JSON.stringify(project, null, 2), 'utf-8')
+  await rename(tmp, target)
+}
+
+async function readProjectFromPath(filePath: string): Promise<Project | null> {
+  const raw = await readFile(filePath, 'utf-8')
+  const parsed = JSON.parse(raw) as Project
+  if (!parsed || typeof parsed !== 'object' || typeof parsed.id !== 'string') {
+    return null
+  }
+  allowProjectMedia(parsed)
+  return parsed
 }
 
 export function registerFsHandlers(): void {
@@ -142,26 +213,23 @@ export function registerFsHandlers(): void {
   // Stored at userData/project.json (which is in the allowed-roots tree).
   ipcMain.handle(IPC_CHANNELS.fs.readProject, async () => {
     try {
-      const raw = await readFile(projectFilePath(), 'utf-8')
-      const parsed = JSON.parse(raw) as Project
-      // Light defensive shape check; renderer also validates.
-      if (!parsed || typeof parsed !== 'object' || typeof parsed.id !== 'string') {
-        return null
-      }
-      // Re-allow media paths so ffmpeg/probe handlers accept them after restart.
-      if (parsed.media && typeof parsed.media === 'object') {
-        for (const asset of Object.values(parsed.media)) {
-          if (asset && typeof asset.path === 'string') allowPath(asset.path)
-          if (asset && typeof asset.thumbnailPath === 'string') {
-            allowPath(asset.thumbnailPath)
-          }
-        }
-      }
-      return parsed
+      return await readProjectFromPath(projectFilePath())
     } catch (err: unknown) {
       const code = (err as NodeJS.ErrnoException)?.code
       if (code === 'ENOENT') return null
       console.error('[fs] readProject failed', err)
+      return null
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.fs.readProjectById, async (_event, projectId: unknown) => {
+    if (!isSafeProjectId(projectId)) return null
+    try {
+      return await readProjectFromPath(projectArchivePath(projectId))
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException)?.code
+      if (code === 'ENOENT') return null
+      console.error('[fs] readProjectById failed', err)
       return null
     }
   })
@@ -177,6 +245,41 @@ export function registerFsHandlers(): void {
     const tmp = target + '.tmp'
     await writeFile(tmp, JSON.stringify(project, null, 2), 'utf-8')
     await rename(tmp, target)
+    await writeProjectArchive(project)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.fs.archiveProject, async (_event, project: Project) => {
+    await writeProjectArchive(project)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.fs.listProjects, async () => {
+    const found = new Map<string, ProjectListItem>()
+    const ingest = async (filePath: string): Promise<void> => {
+      try {
+        const project = await readProjectFromPath(filePath)
+        if (project && isSafeProjectId(project.id)) {
+          found.set(project.id, projectSummary(project))
+        }
+      } catch {
+        // Ignore corrupt project snapshots; the active project reader handles
+        // its own diagnostics.
+      }
+    }
+
+    await ingest(projectFilePath())
+    try {
+      const files = await readdir(projectsDir(), { withFileTypes: true })
+      await Promise.all(
+        files
+          .filter((f) => f.isFile() && f.name.endsWith('.json'))
+          .slice(0, 500)
+          .map((f) => ingest(path.join(projectsDir(), f.name)))
+      )
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException)?.code
+      if (code !== 'ENOENT') console.error('[fs] listProjects failed', err)
+    }
+    return Array.from(found.values()).sort((a, b) => b.updatedAt - a.updatedAt)
   })
 
   // Drag-and-drop allowlist: renderer extracts a path via webUtils and asks

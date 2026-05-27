@@ -19,7 +19,10 @@ export const IPC_CHANNELS = {
     pickDirectory: 'fs:pickDirectory',
     saveFile: 'fs:saveFile',
     readProject: 'fs:readProject',
+    readProjectById: 'fs:readProjectById',
     writeProject: 'fs:writeProject',
+    archiveProject: 'fs:archiveProject',
+    listProjects: 'fs:listProjects',
     allowPath: 'fs:allowPath'
   },
   media: {
@@ -310,6 +313,15 @@ export interface PickFileOptions {
   multi?: boolean
 }
 
+export interface ProjectListItem {
+  id: string
+  name: string
+  aspectRatio: string
+  updatedAt: number
+  clipCount: number
+  captionCount: number
+}
+
 // ---------------------------------------------------------------------------
 // Export pipeline types (Phase 2.6).
 // ---------------------------------------------------------------------------
@@ -594,7 +606,10 @@ export interface ElectronApi {
     pickDirectory(): Promise<string | null>
     saveFile(defaultName?: string): Promise<string | null>
     readProject(): Promise<Project | null>
+    readProjectById(projectId: string): Promise<Project | null>
     writeProject(project: Project): Promise<void>
+    archiveProject(project: Project): Promise<void>
+    listProjects(): Promise<ProjectListItem[]>
     /** Register a path (from drag-drop) so ffmpeg/probe handlers accept it. */
     allowPath(p: string): Promise<void>
   }

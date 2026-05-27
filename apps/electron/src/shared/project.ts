@@ -880,14 +880,29 @@ export interface CaptionStyle {
  * 2-step change: extend this list + add a stack entry in the resolver.
  */
 export const CAPTION_FONT_FAMILIES = [
+  // 한글 (Korean) — Pretendard 가 default embedded, 나머지는 시스템 의존
   { id: 'pretendard', label: 'Pretendard (기본)', stack: "'Pretendard'" },
   { id: 'malgun', label: '맑은 고딕', stack: "'Malgun Gothic'" },
   { id: 'apple-sd', label: 'Apple SD 고딕 Neo', stack: "'Apple SD Gothic Neo'" },
   { id: 'noto-sans-kr', label: 'Noto Sans KR', stack: "'Noto Sans KR'" },
+  // pptx12 슬라이드 13 — 한글 추가.
+  { id: 'nanum-gothic', label: '나눔고딕', stack: "'NanumGothic','Nanum Gothic'" },
+  { id: 'nanum-myeongjo', label: '나눔명조', stack: "'NanumMyeongjo','Nanum Myeongjo'" },
+  { id: 'nanum-square', label: '나눔스퀘어', stack: "'NanumSquare','Nanum Square'" },
+  { id: 'nanum-pen', label: '나눔손글씨 펜', stack: "'NanumPenScript','Nanum Pen Script'" },
+  { id: 'noto-serif-kr', label: 'Noto Serif KR', stack: "'Noto Serif KR'" },
+  { id: 'gmarket-sans', label: 'G마켓 산스', stack: "'GmarketSansTTFBold','Gmarket Sans'" },
+  // 영문 (Latin) — 기존 + 자주 쓰는 시스템 폰트 추가
   { id: 'arial', label: 'Arial', stack: 'Arial' },
+  { id: 'helvetica', label: 'Helvetica', stack: "'Helvetica Neue',Helvetica" },
   { id: 'impact', label: 'Impact', stack: 'Impact' },
   { id: 'georgia', label: 'Georgia', stack: 'Georgia' },
-  { id: 'courier', label: 'Courier New', stack: "'Courier New'" }
+  { id: 'times', label: 'Times New Roman', stack: "'Times New Roman',Times" },
+  { id: 'courier', label: 'Courier New', stack: "'Courier New',Courier,monospace" },
+  { id: 'verdana', label: 'Verdana', stack: 'Verdana' },
+  { id: 'tahoma', label: 'Tahoma', stack: 'Tahoma' },
+  { id: 'trebuchet', label: 'Trebuchet MS', stack: "'Trebuchet MS'" },
+  { id: 'comic', label: 'Comic Sans MS', stack: "'Comic Sans MS'" }
 ] as const
 export type CaptionFontFamilyId =
   (typeof CAPTION_FONT_FAMILIES)[number]['id']

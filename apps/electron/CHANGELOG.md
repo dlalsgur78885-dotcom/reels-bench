@@ -21,6 +21,28 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.43 (2026-05-27)
+
+### 개선 (pptx12 슬라이드 13 — 사용자 보고 "자막 폰트 얼마 없음")
+자막 폰트 카탈로그 8 → 20 으로 확장.
+
+- 기존 8: Pretendard / 맑은 고딕 / Apple SD 고딕 Neo / Noto Sans KR /
+  Arial / Impact / Georgia / Courier New
+- **신규 한글 6**: 나눔고딕 / 나눔명조 / 나눔스퀘어 / 나눔손글씨 펜 /
+  Noto Serif KR / G마켓 산스
+- **신규 영문 6**: Helvetica / Times New Roman / Verdana / Tahoma /
+  Trebuchet MS / Comic Sans MS
+
+폰트는 시스템 + Pretendard fallback 체인을 따르므로 사용자 OS 에 설치
+안 된 폰트는 Pretendard 로 자연 fallback. 시스템 폰트 + Pretendard 임
+베디드만 가정.
+
+### e2e
+- caption-font-catalog.spec.ts 2 tests — selector 의 option ≥18 + 기존 8 +
+  신규 12 id 모두 노출 / 새 폰트 선택 시 caption.style.fontFamilyId 저장.
+
+---
+
 ## 0.2.42 (2026-05-27)
 
 ### 개선 (pptx12 슬라이드 18 — 사용자 재요청)

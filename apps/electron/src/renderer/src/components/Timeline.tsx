@@ -60,6 +60,7 @@ import {
 } from '../store/timelineUi'
 import { startVoiceRecording, type VoiceRecorder } from '../lib/voiceRecording'
 import { useTrackingStore } from '../store/tracking'
+import { AdjustmentLayerContextMenu } from './AdjustmentLayerContextMenu'
 import { ClipContextMenu } from './ClipContextMenu'
 import { TrackContextMenu } from './TrackContextMenu'
 import { MEDIA_DRAG_MIME } from './MediaLibrary'
@@ -736,6 +737,17 @@ export function Timeline(props: TimelineProps): JSX.Element {
   // Phase 3.32 — adjustment layers (range color-grades over the composite).
   const addAdjustmentLayer = useProjectStore((s) => s.addAdjustmentLayer)
   const updateAdjustmentLayer = useProjectStore((s) => s.updateAdjustmentLayer)
+  // pptx11 슬라이드 24 — 우클릭 메뉴 액션 핸들러용.
+  const removeAdjustmentLayer = useProjectStore((s) => s.removeAdjustmentLayer)
+  const setAdjustmentLayerLocked = useProjectStore(
+    (s) => s.setAdjustmentLayerLocked
+  )
+  const duplicateAdjustmentLayer = useProjectStore(
+    (s) => s.duplicateAdjustmentLayer
+  )
+  const splitAdjustmentLayerAt = useProjectStore(
+    (s) => s.splitAdjustmentLayerAt
+  )
   const selectedAdjustmentLayerId = useTimelineUi(
     (s) => s.selectedAdjustmentLayerId
   )
@@ -751,6 +763,12 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const [recordElapsed, setRecordElapsed] = useState(0)
 
   const [ctx, setCtx] = useState<{ clipId: string; x: number; y: number } | null>(null)
+  // pptx11 슬라이드 24 — adjustment layer 우클릭 context menu state.
+  const [adjCtx, setAdjCtx] = useState<{
+    layerId: string
+    x: number
+    y: number
+  } | null>(null)
   // Phase 3 — track header context menu (slide 11).
   const [trackCtx, setTrackCtx] = useState<{
     trackId: string
@@ -2104,6 +2122,13 @@ export function Timeline(props: TimelineProps): JSX.Element {
                 onMouseDown={(e) =>
                   onAdjustmentLayerMouseDown(e, layer, 'move')
                 }
+                onContextMenu={(e) => {
+                  // pptx11 슬라이드 24 — 우클릭 시 일반 클립처럼 메뉴 띄움.
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setSelectedAdjustmentLayerId(layer.id)
+                  setAdjCtx({ layerId: layer.id, x: e.clientX, y: e.clientY })
+                }}
               >
                 <div
                   style={{ ...styles.trimHandle, ...styles.trimHandleLeft }}
@@ -2933,6 +2958,33 @@ export function Timeline(props: TimelineProps): JSX.Element {
         ))}
       </div>
 
+      {/* pptx11 슬라이드 24 — adjustment layer 우클릭 메뉴. */}
+      {adjCtx && (() => {
+        const layer = adjustmentLayers.find((l) => l.id === adjCtx.layerId)
+        if (!layer) return null
+        return (
+          <AdjustmentLayerContextMenu
+            layer={layer}
+            x={adjCtx.x}
+            y={adjCtx.y}
+            playheadMs={playheadMs}
+            onAction={(key) => {
+              if (key === 'toggle-lock') {
+                setAdjustmentLayerLocked(layer.id, !(layer.locked ?? false))
+              } else if (key === 'split') {
+                splitAdjustmentLayerAt(layer.id, playheadMs)
+              } else if (key === 'duplicate') {
+                const newId = duplicateAdjustmentLayer(layer.id)
+                if (newId) setSelectedAdjustmentLayerId(newId)
+              } else if (key === 'delete') {
+                removeAdjustmentLayer(layer.id)
+                setSelectedAdjustmentLayerId(null)
+              }
+            }}
+            onClose={() => setAdjCtx(null)}
+          />
+        )
+      })()}
       {ctx && ctxClip && (
         <ClipContextMenu
           clip={ctxClip}

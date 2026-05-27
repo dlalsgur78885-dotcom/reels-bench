@@ -182,6 +182,10 @@ export function installTestBridge(): void {
         setAdjustmentLayerCurvePoint: Store['setAdjustmentLayerCurvePoint']
         setAdjustmentLayerHslBand: Store['setAdjustmentLayerHslBand']
         setAdjustmentLayerFilterPreset: Store['setAdjustmentLayerFilterPreset']
+        // pptx11 슬라이드 24 — 우클릭 메뉴 액션들.
+        setAdjustmentLayerLocked: Store['setAdjustmentLayerLocked']
+        duplicateAdjustmentLayer: Store['duplicateAdjustmentLayer']
+        splitAdjustmentLayerAt: Store['splitAdjustmentLayerAt']
         // Phase 3.32 — adjustment-layer selection (timeline-UI store).
         setSelectedAdjustmentLayerId: (layerId: string | null) => void
         // Phase 3.33 — clip grouping / linking.
@@ -391,6 +395,13 @@ export function installTestBridge(): void {
         useProjectStore
           .getState()
           .setAdjustmentLayerFilterPreset(id, preset, intensity),
+      // pptx11 슬라이드 24.
+      setAdjustmentLayerLocked: (id, locked) =>
+        useProjectStore.getState().setAdjustmentLayerLocked(id, locked),
+      duplicateAdjustmentLayer: (id) =>
+        useProjectStore.getState().duplicateAdjustmentLayer(id),
+      splitAdjustmentLayerAt: (id, atMs) =>
+        useProjectStore.getState().splitAdjustmentLayerAt(id, atMs),
       setSelectedAdjustmentLayerId: (layerId) =>
         useTimelineUi.getState().setSelectedAdjustmentLayerId(layerId),
       // Phase 3.33 — clip grouping / linking.

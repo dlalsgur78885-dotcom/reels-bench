@@ -1275,6 +1275,17 @@ export interface AdjustmentLayer {
   filterPreset?: FilterPreset
   /** Preset intensity 0..1. Default 1. */
   filterIntensity?: number
+  /**
+   * pptx11 슬라이드 24 — 일반 클립과 동일한 잠금 동작. true 면 모든
+   * mutation (move/trim/grade/split/duplicate/delete) 가 no-op. 잠금 토글
+   * 자체는 항상 허용. Absent === false (기본 unlocked).
+   */
+  locked?: boolean
+}
+
+/** Adjustment layer 의 locked 검사 helper — undefined/false 둘 다 unlocked. */
+export function isAdjustmentLayerLocked(l: AdjustmentLayer): boolean {
+  return l.locked === true
 }
 
 /** Hard cap on adjustment layers per project (filter-graph length guard). */

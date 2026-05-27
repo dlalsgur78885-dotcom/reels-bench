@@ -137,6 +137,7 @@ import {
   hasVolumeEnvelope,
   resolvedVolumeKeyframes,
   getVolumeDbAt,
+  isAdjustmentLayerLocked,
   isCaptionClip,
   isClipLocked,
   isClipReversed,
@@ -706,6 +707,26 @@ export interface ProjectStore {
     preset: FilterPreset,
     intensity?: number
   ): void
+  /**
+   * pptx11 슬라이드 24 — adjustment layer 잠금 토글. locked=true 면 grade
+   * 변경 / 이동 / split / duplicate / delete 모두 no-op. 잠금 토글 자체는
+   * 항상 허용 (clip lock 과 동일 패턴).
+   */
+  setAdjustmentLayerLocked(id: string, locked: boolean): void
+  /**
+   * pptx11 슬라이드 24 — adjustment layer 복제. 원본 직후 startMs 부터
+   * 동일 duration 으로 신규 layer 생성 (총 길이 cap 안 넘으면). grade /
+   * preset / locked 는 그대로 inherit (locked 만 새로 unlocked 로 시작 —
+   * 사용자가 복제 직후 편집할 수 있게). 새 id 반환, 실패 시 null.
+   */
+  duplicateAdjustmentLayer(id: string): string | null
+  /**
+   * pptx11 슬라이드 24 — adjustment layer 를 atMs 지점에서 둘로 자름.
+   * (left: startMs..atMs, right: atMs..endMs) 양쪽 모두 MIN_CLIP_MS 이상
+   * 필요. MAX_ADJUSTMENT_LAYERS cap 초과 시 실패. grade / preset 은 inherit.
+   * locked 면 no-op. 새 right layer 의 id 반환, 실패 시 null.
+   */
+  splitAdjustmentLayerAt(id: string, atMs: number): string | null
 
   addMedia(asset: MediaAsset): void
   removeMedia(mediaId: string): void
@@ -1888,8 +1909,11 @@ export const useProjectStore = create<ProjectStore>()(
   removeAdjustmentLayer(id: string): void {
     const project = get().project
     const layers = project.adjustmentLayers ?? []
+    const target = layers.find((l) => l.id === id)
+    if (!target) return
+    // pptx11 슬라이드 24 — 잠긴 레이어는 삭제 차단 (clip lock 과 동일).
+    if (isAdjustmentLayerLocked(target)) return
     const filtered = layers.filter((l) => l.id !== id)
-    if (filtered.length === layers.length) return
     const next = touch({ ...project, adjustmentLayers: filtered })
     set({ project: next })
     schedulePersist(next)
@@ -1906,6 +1930,8 @@ export const useProjectStore = create<ProjectStore>()(
     let changed = false
     const nextLayers = layers.map((l) => {
       if (l.id !== id) return l
+      // pptx11 슬라이드 24 — 잠긴 레이어는 이동/트림 차단.
+      if (isAdjustmentLayerLocked(l)) return l
       const startMs = patch.startMs !== undefined ? patch.startMs : l.startMs
       const endMs = patch.endMs !== undefined ? patch.endMs : l.endMs
       const window = clampAdjustmentLayerWindow(startMs, endMs)
@@ -1929,6 +1955,7 @@ export const useProjectStore = create<ProjectStore>()(
     let changed = false
     const nextLayers = layers.map((l) => {
       if (l.id !== id) return l
+      if (isAdjustmentLayerLocked(l)) return l
       const merged = clampColorAdjust({
         ...(l.colorAdjust ?? NEUTRAL_COLOR_ADJUST),
         ...partial
@@ -1955,6 +1982,7 @@ export const useProjectStore = create<ProjectStore>()(
     let changed = false
     const nextLayers = layers.map((l) => {
       if (l.id !== id) return l
+      if (isAdjustmentLayerLocked(l)) return l
       const base = sanitizeClipCurves(l.curves ?? IDENTITY_CLIP_CURVES)
       const pts = base[channel]
       if (!pts || pointIndex < 0 || pointIndex >= pts.length) return l
@@ -1989,6 +2017,7 @@ export const useProjectStore = create<ProjectStore>()(
     let changed = false
     const nextLayers = layers.map((l) => {
       if (l.id !== id) return l
+      if (isAdjustmentLayerLocked(l)) return l
       const base = sanitizeClipHsl(l.hsl ?? NEUTRAL_CLIP_HSL)
       const clampAdj = (v: number): number =>
         Math.min(MAX_HSL_ADJUST, Math.max(MIN_HSL_ADJUST, v))
@@ -2021,6 +2050,7 @@ export const useProjectStore = create<ProjectStore>()(
     let changed = false
     const nextLayers = layers.map((l) => {
       if (l.id !== id) return l
+      if (isAdjustmentLayerLocked(l)) return l
       changed = true
       return preset === 'none'
         ? { ...l, filterPreset: 'none' as FilterPreset, filterIntensity: 1 }
@@ -2030,6 +2060,95 @@ export const useProjectStore = create<ProjectStore>()(
     const next = touch({ ...project, adjustmentLayers: nextLayers })
     set({ project: next })
     schedulePersist(next)
+  },
+
+  // pptx11 슬라이드 24 — adjustment layer 잠금 토글. 토글은 항상 허용
+  // (locked → unlocked 가 막히면 영원히 못 풀음).
+  setAdjustmentLayerLocked(id, locked): void {
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    let changed = false
+    const nextLayers = layers.map((l) => {
+      if (l.id !== id) return l
+      const want = locked === true
+      if ((l.locked ?? false) === want) return l
+      changed = true
+      // neutral-collapse: locked=false 면 field 자체를 drop (JSON 노이즈 최소화).
+      const copy: AdjustmentLayer = { ...l }
+      if (want) copy.locked = true
+      else delete copy.locked
+      return copy
+    })
+    if (!changed) return
+    const next = touch({ ...project, adjustmentLayers: nextLayers })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  // pptx11 슬라이드 24 — 원본 직후 같은 길이로 복제. 캡 초과·잠금 시 null.
+  duplicateAdjustmentLayer(id): string | null {
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    const src = layers.find((l) => l.id === id)
+    if (!src) return null
+    if (isAdjustmentLayerLocked(src)) return null
+    if (layers.length >= MAX_ADJUSTMENT_LAYERS) return null
+    const dur = src.endMs - src.startMs
+    const startMs = src.endMs
+    const endMs = startMs + dur
+    const window = clampAdjustmentLayerWindow(startMs, endMs)
+    if (!window) return null
+    const newId = ulid()
+    // grade / preset / curves / hsl 는 inherit, locked 만 새로 unlocked.
+    const cloned: AdjustmentLayer = {
+      ...src,
+      id: newId,
+      startMs: window.startMs,
+      endMs: window.endMs
+    }
+    delete cloned.locked
+    const next = touch({
+      ...project,
+      adjustmentLayers: [...layers, cloned]
+    })
+    set({ project: next })
+    schedulePersist(next)
+    return newId
+  },
+
+  // pptx11 슬라이드 24 — atMs 에서 둘로 split. 양쪽 MIN_CLIP_MS 이상 필요.
+  splitAdjustmentLayerAt(id, atMs): string | null {
+    if (!Number.isFinite(atMs)) return null
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    const src = layers.find((l) => l.id === id)
+    if (!src) return null
+    if (isAdjustmentLayerLocked(src)) return null
+    if (layers.length >= MAX_ADJUSTMENT_LAYERS) return null
+    if (atMs <= src.startMs + MIN_CLIP_MS) return null
+    if (atMs >= src.endMs - MIN_CLIP_MS) return null
+    const newRightId = ulid()
+    const leftLayer: AdjustmentLayer = { ...src, endMs: atMs }
+    const rightLayer: AdjustmentLayer = {
+      ...src,
+      id: newRightId,
+      startMs: atMs,
+      endMs: src.endMs
+    }
+    // locked 는 split 시 양쪽 모두 unlocked 로 (split 자체가 잠금 해제 동작).
+    delete leftLayer.locked
+    delete rightLayer.locked
+    const idx = layers.findIndex((l) => l.id === id)
+    const nextLayers = [
+      ...layers.slice(0, idx),
+      leftLayer,
+      rightLayer,
+      ...layers.slice(idx + 1)
+    ]
+    const next = touch({ ...project, adjustmentLayers: nextLayers })
+    set({ project: next })
+    schedulePersist(next)
+    return newRightId
   },
 
   addMedia(asset: MediaAsset): void {

@@ -470,6 +470,158 @@ test.describe('@phase-2-timeline timeline + preview + transport', () => {
     ).toHaveAttribute('data-selected', 'true')
   })
 
+  test('dragging a marquee-selected clip moves the full selection', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    const { mediaId, durationMs } = await openEditorWithMedia()
+    const clipDur = Math.max(400, Math.min(1000, durationMs))
+    const firstId = await addVideoClip(durationMs, mediaId, 0, clipDur)
+    const secondId = await addVideoClip(
+      durationMs,
+      mediaId,
+      clipDur + 1000,
+      clipDur
+    )
+
+    const lane = page.locator('[data-testid="track-lane-video"]').first()
+    const firstBlock = page.locator(
+      `[data-testid="media-clip-block"][data-clip-id="${firstId}"]`
+    )
+    const secondBlock = page.locator(
+      `[data-testid="media-clip-block"][data-clip-id="${secondId}"]`
+    )
+    await expect(firstBlock).toBeVisible()
+    await expect(secondBlock).toBeVisible()
+    const firstBox = await firstBlock.boundingBox()
+    const secondBox = await secondBlock.boundingBox()
+    const laneBox = await lane.boundingBox()
+    if (!firstBox || !secondBox || !laneBox) throw new Error('bbox missing')
+
+    await page.mouse.move(Math.max(laneBox.x + 4, firstBox.x - 12), firstBox.y + firstBox.height + 8)
+    await page.mouse.down()
+    await page.mouse.move(secondBox.x + secondBox.width + 12, firstBox.y - 8, { steps: 8 })
+    await page.mouse.up()
+
+    const before = await page.evaluate(({ a, b }) => {
+      const clips = window.__reelsStore.state().project.tracks.flatMap((t) => t.clips)
+      const c1 = clips.find((c) => c.id === a)!
+      const c2 = clips.find((c) => c.id === b)!
+      return { a: c1.startMs, b: c2.startMs }
+    }, { a: firstId, b: secondId })
+
+    const body = page.locator(`[data-testid="clip-body"][data-clip-id="${firstId}"]`)
+    const bodyBox = await body.boundingBox()
+    if (!bodyBox) throw new Error('clip body bbox missing')
+    const startX = bodyBox.x + Math.min(40, bodyBox.width / 2)
+    const startY = bodyBox.y + bodyBox.height / 2
+    await page.mouse.move(startX, startY)
+    await page.mouse.down()
+    await page.mouse.move(startX + 10, startY)
+    await page.mouse.move(startX + 120, startY, { steps: 8 })
+    await page.mouse.up()
+
+    const after = await page.evaluate(({ a, b }) => {
+      const clips = window.__reelsStore.state().project.tracks.flatMap((t) => t.clips)
+      const c1 = clips.find((c) => c.id === a)!
+      const c2 = clips.find((c) => c.id === b)!
+      return { a: c1.startMs, b: c2.startMs }
+    }, { a: firstId, b: secondId })
+    expect(after.a).toBeGreaterThan(before.a)
+    expect(after.b - before.b).toBe(after.a - before.a)
+  })
+
+  test('context-menu transform applies to marquee-selected clips', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    const { mediaId, durationMs } = await openEditorWithMedia()
+    const clipDur = Math.max(400, Math.min(1000, durationMs))
+    const firstId = await addVideoClip(durationMs, mediaId, 0, clipDur)
+    const secondId = await addVideoClip(
+      durationMs,
+      mediaId,
+      clipDur + 1000,
+      clipDur
+    )
+
+    const firstBlock = page.locator(
+      `[data-testid="media-clip-block"][data-clip-id="${firstId}"]`
+    )
+    const secondBlock = page.locator(
+      `[data-testid="media-clip-block"][data-clip-id="${secondId}"]`
+    )
+    const laneBox = await page.locator('[data-testid="track-lane-video"]').first().boundingBox()
+    const firstBox = await firstBlock.boundingBox()
+    const secondBox = await secondBlock.boundingBox()
+    if (!firstBox || !secondBox || !laneBox) throw new Error('bbox missing')
+
+    await page.mouse.move(Math.max(laneBox.x + 4, firstBox.x - 12), firstBox.y + firstBox.height + 8)
+    await page.mouse.down()
+    await page.mouse.move(secondBox.x + secondBox.width + 12, firstBox.y - 8, { steps: 8 })
+    await page.mouse.up()
+
+    await firstBlock.click({ button: 'right', position: { x: 20, y: 12 } })
+    await expect(page.locator('[data-testid="clip-context-menu"]')).toBeVisible()
+    await page
+      .locator('[data-testid="menu-transform"]')
+      .evaluate((node) => (node as HTMLElement).click())
+    await page.locator('[data-testid="menu-transform-scale"]').evaluate((node) => {
+      const input = node as HTMLInputElement
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value'
+      )?.set
+      setter?.call(input, '1.5')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await page.waitForTimeout(150)
+
+    const result = await page.evaluate(({ a, b }) => {
+      const clips = window.__reelsStore.state().project.tracks.flatMap((t) => t.clips)
+      const c1 = clips.find((c) => c.id === a)!
+      const c2 = clips.find((c) => c.id === b)!
+      return { s1: c1.transform?.scale, s2: c2.transform?.scale }
+    }, { a: firstId, b: secondId })
+    expect(result.s1).toBeCloseTo(1.5, 2)
+    expect(result.s2).toBeCloseTo(1.5, 2)
+  })
+
+  test('Delete after marquee selection removes all selected clips', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    const { mediaId, durationMs } = await openEditorWithMedia()
+    const clipDur = Math.max(400, Math.min(1000, durationMs))
+    const firstId = await addVideoClip(durationMs, mediaId, 0, clipDur)
+    const secondId = await addVideoClip(
+      durationMs,
+      mediaId,
+      clipDur + 1000,
+      clipDur
+    )
+
+    const firstBox = await page
+      .locator(`[data-testid="media-clip-block"][data-clip-id="${firstId}"]`)
+      .boundingBox()
+    const secondBox = await page
+      .locator(`[data-testid="media-clip-block"][data-clip-id="${secondId}"]`)
+      .boundingBox()
+    const laneBox = await page.locator('[data-testid="track-lane-video"]').first().boundingBox()
+    if (!firstBox || !secondBox || !laneBox) throw new Error('bbox missing')
+
+    await page.mouse.move(Math.max(laneBox.x + 4, firstBox.x - 12), firstBox.y + firstBox.height + 8)
+    await page.mouse.down()
+    await page.mouse.move(secondBox.x + secondBox.width + 12, firstBox.y - 8, { steps: 8 })
+    await page.mouse.up()
+    await page.keyboard.press('Delete')
+    await page.waitForTimeout(150)
+
+    const remaining = await page.evaluate(() =>
+      window.__reelsStore.state().project.tracks.flatMap((t) => t.clips).map((c) => c.id)
+    )
+    expect(remaining).not.toContain(firstId)
+    expect(remaining).not.toContain(secondId)
+  })
+
   // -------------------------------------------------------------------------
   // Ctrl+wheel zoom — clamp to [10, 400].
   // -------------------------------------------------------------------------

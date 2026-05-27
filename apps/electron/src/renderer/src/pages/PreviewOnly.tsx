@@ -9,8 +9,12 @@
  *      main 에 forward.
  *   3. <PreviewCanvas> 를 가운데에, 하단에 mini transport 만.
  */
-import { useEffect, useState } from 'react'
-import { PreviewCanvas } from '../components/PreviewCanvas'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
+import { PreviewCanvas, PreviewGuidesControl } from '../components/PreviewCanvas'
+import { AudioMeter } from '../components/AudioMeter'
+import { ColorScopes } from '../components/ColorScopes'
+import { SocialPreviewSelector } from '../components/SocialPreviewOverlay'
 import { useProjectStore } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import type { Project } from '../../../shared/project'
@@ -27,7 +31,7 @@ type ElectronExt = {
 }
 
 interface SyncMsg {
-  kind: 'project' | 'playheadMs' | 'playing'
+  kind: 'project' | 'playheadMs' | 'playing' | 'previewSpeed'
   value: unknown
 }
 
@@ -35,6 +39,7 @@ export function PreviewOnly(): JSX.Element {
   const project = useProjectStore((s) => s.project)
   const playheadMs = useTimelineUi((s) => s.playheadMs)
   const playing = useTimelineUi((s) => s.playing)
+  const previewSpeed = useTimelineUi((s) => s.previewSpeed)
   const [hydrated, setHydrated] = useState(false)
 
   // Subscribe to main 의 broadcast — project / playhead / playing 받아 apply.
@@ -55,6 +60,8 @@ export function PreviewOnly(): JSX.Element {
           useTimelineUi.getState().setPlayheadMs(msg.value as number)
         } else if (msg.kind === 'playing') {
           useTimelineUi.getState().setPlaying(Boolean(msg.value))
+        } else if (msg.kind === 'previewSpeed') {
+          useTimelineUi.getState().setPreviewSpeed(Number(msg.value) || 1)
         }
       } finally {
         applyingRef.current = false
@@ -68,6 +75,17 @@ export function PreviewOnly(): JSX.Element {
 
   // 분리 window 에서 직접 일으킨 변경도 main 으로 broadcast (양방향).
   useEffect(() => {
+    const ext = (window as unknown as { electron?: ElectronExt }).electron
+    if (!ext?.previewWindow) return
+    const unsub = useProjectStore.subscribe((s, prev) => {
+      if (applyingRef.current) return
+      if (s.project !== prev.project) {
+        ext.previewWindow!.broadcast({ kind: 'project', value: s.project })
+      }
+    })
+    return () => unsub()
+  }, [applyingRef])
+  useEffect(() => {
     if (applyingRef.current) return
     const ext = (window as unknown as { electron?: ElectronExt }).electron
     ext?.previewWindow?.broadcast({ kind: 'playheadMs', value: playheadMs })
@@ -77,6 +95,11 @@ export function PreviewOnly(): JSX.Element {
     const ext = (window as unknown as { electron?: ElectronExt }).electron
     ext?.previewWindow?.broadcast({ kind: 'playing', value: playing })
   }, [playing, applyingRef])
+  useEffect(() => {
+    if (applyingRef.current) return
+    const ext = (window as unknown as { electron?: ElectronExt }).electron
+    ext?.previewWindow?.broadcast({ kind: 'previewSpeed', value: previewSpeed })
+  }, [previewSpeed, applyingRef])
 
   if (!hydrated) {
     return (
@@ -103,6 +126,65 @@ function PreviewOnlyWithToolbar(props: {
 }): JSX.Element {
   const { project, playheadMs } = props
   const [alwaysOnTop, setAlwaysOnTop] = useState(false)
+  const previewSpeed = useTimelineUi((s) => s.previewSpeed)
+  const setPreviewSpeed = useTimelineUi((s) => s.setPreviewSpeed)
+  const previewWrapRef = useRef<HTMLDivElement | null>(null)
+
+  const togglePreviewFullscreen = useCallback((): void => {
+    const el = previewWrapRef.current
+    if (!el) return
+    if (document.fullscreenElement === el) {
+      void document.exitFullscreen().catch(() => {})
+    } else {
+      void el.requestFullscreen().catch(() => {})
+    }
+  }, [])
+
+  useEffect(() => {
+    const apply = (el: HTMLMediaElement): void => {
+      if (el.playbackRate !== previewSpeed) el.playbackRate = previewSpeed
+    }
+    document
+      .querySelectorAll<HTMLMediaElement>('video, audio')
+      .forEach(apply)
+    const obs = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        m.addedNodes.forEach((node) => {
+          if (!(node instanceof HTMLElement)) return
+          if (node instanceof HTMLMediaElement) {
+            apply(node)
+          } else {
+            node
+              .querySelectorAll<HTMLMediaElement>('video, audio')
+              .forEach(apply)
+          }
+        })
+      }
+    })
+    obs.observe(document.body, { childList: true, subtree: true })
+    return () => obs.disconnect()
+  }, [previewSpeed])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const t = e.target as HTMLElement | null
+      const tag = t?.tagName
+      if (
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        (t && t.isContentEditable)
+      ) {
+        return
+      }
+      if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault()
+        togglePreviewFullscreen()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [togglePreviewFullscreen])
 
   useEffect(() => {
     const ext = (window as unknown as { electron?: ElectronExt }).electron
@@ -128,7 +210,7 @@ function PreviewOnlyWithToolbar(props: {
     void ext?.previewWindow?.closeDetached?.()
   }
 
-  const btn: React.CSSProperties = {
+  const btn: CSSProperties = {
     background: '#1f2937',
     color: '#cbd5e1',
     border: '1px solid #374151',
@@ -137,7 +219,7 @@ function PreviewOnlyWithToolbar(props: {
     fontSize: 11,
     cursor: 'pointer'
   }
-  const btnActive: React.CSSProperties = {
+  const btnActive: CSSProperties = {
     ...btn,
     background: '#2563eb',
     borderColor: '#2563eb',
@@ -203,10 +285,33 @@ function PreviewOnlyWithToolbar(props: {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          overflow: 'hidden'
+          overflow: 'hidden',
+          position: 'relative'
         }}
       >
         <div
+          style={{
+            position: 'absolute',
+            top: 8,
+            left: 8,
+            zIndex: 5
+          }}
+        >
+          <SocialPreviewSelector />
+        </div>
+        <div
+          style={{
+            position: 'absolute',
+            top: 8,
+            right: 168,
+            zIndex: 5
+          }}
+        >
+          <PreviewGuidesControl />
+        </div>
+        <div
+          ref={previewWrapRef}
+          data-testid="preview-only-canvas-wrap"
           style={{
             aspectRatio: `${project.width} / ${project.height}`,
             maxWidth: '100%',
@@ -218,6 +323,62 @@ function PreviewOnlyWithToolbar(props: {
           }}
         >
           <PreviewCanvas project={project} playheadMs={playheadMs} />
+          <div
+            style={{
+              position: 'absolute',
+              top: 8,
+              right: 8,
+              zIndex: 5,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'flex-end',
+              gap: 4
+            }}
+          >
+            <AudioMeter />
+            <ColorScopes />
+            <button
+              type="button"
+              onClick={togglePreviewFullscreen}
+              data-testid="preview-only-fullscreen-toggle"
+              title="프리뷰 풀스크린 (F)"
+              style={{
+                background: '#1f2937',
+                color: '#cbd5e1',
+                border: '1px solid #374151',
+                borderRadius: 4,
+                padding: '3px 8px',
+                fontSize: 10,
+                cursor: 'pointer',
+                fontWeight: 600
+              }}
+            >
+              ⛶ 풀스크린
+            </button>
+            <select
+              value={previewSpeed}
+              onChange={(e) => setPreviewSpeed(parseFloat(e.target.value) || 1)}
+              data-testid="preview-only-speed-select"
+              title="프리뷰 재생 속도"
+              style={{
+                background: '#0d0d0d',
+                color: '#cbd5e1',
+                border: '1px solid #2a2a2a',
+                borderRadius: 4,
+                padding: '2px 6px',
+                fontSize: 10,
+                fontWeight: 600,
+                cursor: 'pointer'
+              }}
+            >
+              <option value="0.25">0.25x</option>
+              <option value="0.5">0.5x</option>
+              <option value="1">1x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2">2x</option>
+              <option value="4">4x</option>
+            </select>
+          </div>
         </div>
       </div>
     </div>

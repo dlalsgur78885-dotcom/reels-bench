@@ -860,6 +860,11 @@ export function Timeline(props: TimelineProps): JSX.Element {
     return ids
   }, [])
 
+  const getContextTargetIds = useCallback((clipId: string): string[] => {
+    const sel = useTimelineUi.getState().selectedClipIds
+    return sel.size > 1 && sel.has(clipId) ? [...sel] : [clipId]
+  }, [])
+
   // Phase 3.33 — Ctrl/Cmd+click multi-select. Toggles the clicked clip in/out
   // of `selectedClipIds` without disturbing the rest, so the user can build a
   // ≥2-clip selection that enables the context menu's "그룹 묶기" row. The
@@ -1178,11 +1183,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
     if (isClipLocked(clip)) return
     // pptx11 슬라이드 8 — multi-select 시 일괄 적용. ctxClip 이 선택 set 에
     // 포함되어 있을 때만 multi 동작 (다른 클립 우클릭 = single-target).
-    const sel = selectedClipIds
-    const multiTargets =
-      sel.size > 1 && sel.has(clip.id)
-        ? ([...sel] as string[])
-        : ([clip.id] as string[])
+    const multiTargets = getContextTargetIds(clip.id)
     if (key === 'edit-caption' && isCaptionClip(clip)) {
       onEditCaption(clip.id)
     } else if (key === 'change-style' && isCaptionClip(clip)) {
@@ -1553,7 +1554,12 @@ export function Timeline(props: TimelineProps): JSX.Element {
       if (!dragging) {
         if (Math.abs(dx) < CLICK_VS_DRAG_PX) return
         dragging = true
-        handleSelect(clip.id)
+        const sel = useTimelineUi.getState().selectedClipIds
+        if (sel.size > 1 && sel.has(clip.id)) {
+          onSelectClip(clip.id)
+        } else {
+          handleSelect(clip.id)
+        }
       }
       const deltaMs = (dx / pps) * 1000
       let desired = origStart + deltaMs
@@ -3229,37 +3235,38 @@ export function Timeline(props: TimelineProps): JSX.Element {
           onSpeedChange={
             isMediaClip(ctxClip)
               ? (s: number): void => {
-                  // pptx11 슬라이드 8 — multi-select 이면 일괄 적용.
-                  const sel = useTimelineUi.getState().selectedClipIds
-                  const targets =
-                    sel.size > 1 && sel.has(ctxClip.id) ? [...sel] : [ctxClip.id]
-                  for (const id of targets) setClipSpeed(id, s)
+                  for (const id of getContextTargetIds(ctxClip.id)) {
+                    setClipSpeed(id, s)
+                  }
                 }
               : undefined
           }
           onTransitionChange={
             isMediaClip(ctxClip)
               ? (kind, durationMs): void => {
-                  const sel = useTimelineUi.getState().selectedClipIds
-                  const targets =
-                    sel.size > 1 && sel.has(ctxClip.id) ? [...sel] : [ctxClip.id]
-                  for (const id of targets) setClipTransitionIn(id, kind, durationMs)
+                  for (const id of getContextTargetIds(ctxClip.id)) {
+                    setClipTransitionIn(id, kind, durationMs)
+                  }
                 }
               : undefined
           }
           onFilterChange={
             isMediaClip(ctxClip)
               ? (preset, intensity): void => {
-                  const sel = useTimelineUi.getState().selectedClipIds
-                  const targets =
-                    sel.size > 1 && sel.has(ctxClip.id) ? [...sel] : [ctxClip.id]
-                  for (const id of targets) setClipFilter(id, preset, intensity)
+                  for (const id of getContextTargetIds(ctxClip.id)) {
+                    setClipFilter(id, preset, intensity)
+                  }
                 }
               : undefined
           }
           onTransformChange={
             isMediaClip(ctxClip) || isOverlayClip(ctxClip)
               ? (partial): void => {
+                  const targets = getContextTargetIds(ctxClip.id)
+                  if (targets.length > 1) {
+                    for (const id of targets) setClipTransform(id, partial)
+                    return
+                  }
                   // Phase 3.5 redirect:
                   //  - active keyframe track + playhead ON a keyframe →
                   //    update that keyframe.
@@ -3287,7 +3294,9 @@ export function Timeline(props: TimelineProps): JSX.Element {
           onTransformReset={
             isMediaClip(ctxClip) || isOverlayClip(ctxClip)
               ? (): void => {
-                  resetClipTransform(ctxClip.id)
+                  for (const id of getContextTargetIds(ctxClip.id)) {
+                    resetClipTransform(id)
+                  }
                 }
               : undefined
           }
@@ -3296,14 +3305,18 @@ export function Timeline(props: TimelineProps): JSX.Element {
               ? (partial): void => {
                   // Crop is STATIC — no keyframe redirect. Goes straight to
                   // the store action.
-                  setClipCrop(ctxClip.id, partial)
+                  for (const id of getContextTargetIds(ctxClip.id)) {
+                    setClipCrop(id, partial)
+                  }
                 }
               : undefined
           }
           onCropReset={
             isMediaClip(ctxClip)
               ? (): void => {
-                  resetClipCrop(ctxClip.id)
+                  for (const id of getContextTargetIds(ctxClip.id)) {
+                    resetClipCrop(id)
+                  }
                 }
               : undefined
           }
@@ -3323,21 +3336,18 @@ export function Timeline(props: TimelineProps): JSX.Element {
               ? (partial): void => {
                   // Color adjust is STATIC — no keyframe redirect. Goes
                   // straight to the store action.
-                  // pptx11 슬라이드 8 — multi-select 시 일괄 적용.
-                  const sel = useTimelineUi.getState().selectedClipIds
-                  const targets =
-                    sel.size > 1 && sel.has(ctxClip.id) ? [...sel] : [ctxClip.id]
-                  for (const id of targets) setClipColorAdjust(id, partial)
+                  for (const id of getContextTargetIds(ctxClip.id)) {
+                    setClipColorAdjust(id, partial)
+                  }
                 }
               : undefined
           }
           onColorAdjustReset={
             isMediaClip(ctxClip)
               ? (): void => {
-                  const sel = useTimelineUi.getState().selectedClipIds
-                  const targets =
-                    sel.size > 1 && sel.has(ctxClip.id) ? [...sel] : [ctxClip.id]
-                  for (const id of targets) resetClipColorAdjust(id)
+                  for (const id of getContextTargetIds(ctxClip.id)) {
+                    resetClipColorAdjust(id)
+                  }
                 }
               : undefined
           }
@@ -3349,7 +3359,9 @@ export function Timeline(props: TimelineProps): JSX.Element {
               ? (s): void => {
                   // Noise reduction is EXPORT-ONLY — straight to the store
                   // action; the preview audio graph is untouched.
-                  setClipNoiseReduction(ctxClip.id, s)
+                  for (const id of getContextTargetIds(ctxClip.id)) {
+                    setClipNoiseReduction(id, s)
+                  }
                 }
               : undefined
           }
@@ -3363,7 +3375,9 @@ export function Timeline(props: TimelineProps): JSX.Element {
               ? (patch): void => {
                   // Voice enhance is EXPORT-ONLY — straight to the store
                   // action; the preview audio graph is untouched.
-                  setClipVoiceEnhance(ctxClip.id, patch)
+                  for (const id of getContextTargetIds(ctxClip.id)) {
+                    setClipVoiceEnhance(id, patch)
+                  }
                 }
               : undefined
           }
@@ -3372,7 +3386,11 @@ export function Timeline(props: TimelineProps): JSX.Element {
           }
           onVoiceChangerChange={
             isMediaClip(ctxClip)
-              ? (id): void => setClipVoiceChanger(ctxClip.id, id)
+              ? (voiceId): void => {
+                  for (const id of getContextTargetIds(ctxClip.id)) {
+                    setClipVoiceChanger(id, voiceId)
+                  }
+                }
               : undefined
           }
           blurRegions={

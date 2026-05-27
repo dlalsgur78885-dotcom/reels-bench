@@ -47,6 +47,7 @@ import {
   type CanvasBackgroundKind,
   type Clip,
   type ProgressBarPosition,
+  type Project,
   type VideoAudioClip
 } from '../../../shared/project'
 import {
@@ -569,15 +570,20 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           ext.previewWindow!.broadcast({ kind: 'project', value: proj })
           ext.previewWindow!.broadcast({ kind: 'playheadMs', value: useTimelineUi.getState().playheadMs })
           ext.previewWindow!.broadcast({ kind: 'playing', value: useTimelineUi.getState().playing })
+          ext.previewWindow!.broadcast({ kind: 'previewSpeed', value: useTimelineUi.getState().previewSpeed })
         } else if (msg.kind === 'request-merge-back') {
           // Reels 11 슬라이드 13 — 분리 윈도우의 합치기 버튼 클릭 → 메인의
           // previewDetached 도 false 로 토글하여 placeholder 가 사라지고
           // in-app preview 가 다시 그려지도록 함.
           setPreviewDetached(false)
+        } else if (msg.kind === 'project') {
+          useProjectStore.getState()._hydrateFromDisk(msg.value as Project)
         } else if (msg.kind === 'playheadMs') {
           useTimelineUi.getState().setPlayheadMs(msg.value as number)
         } else if (msg.kind === 'playing') {
           useTimelineUi.getState().setPlaying(Boolean(msg.value))
+        } else if (msg.kind === 'previewSpeed') {
+          useTimelineUi.getState().setPreviewSpeed(Number(msg.value) || 1)
         }
       } finally {
         applyingSyncRef.current = false
@@ -597,6 +603,9 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
       }
       if (s.playing !== prev.playing) {
         ext.previewWindow!.broadcast({ kind: 'playing', value: s.playing })
+      }
+      if (s.previewSpeed !== prev.previewSpeed) {
+        ext.previewWindow!.broadcast({ kind: 'previewSpeed', value: s.previewSpeed })
       }
     })
     return () => { off(); unsubProj(); unsubUi() }

@@ -7,7 +7,8 @@
  *      (data-detached='true') 가 더 이상 DOM 에 없음.
  *  (3) 분리 ON — 별도 BrowserWindow 가 열리고 preview-only-toolbar +
  *      preview-only-aot-toggle + preview-only-minimize + preview-only-merge
- *      testid 모두 노출.
+ *      testid 모두 노출. 기존 메인 프리뷰 기능(SNS 미리보기, 가이드,
+ *      스코프, 풀스크린, 재생속도)도 같은 창 안에 노출.
  *  (4) 분리 윈도우의 합치기 버튼 → 메인 windows 의 previewDetached=false 로
  *      되돌아오고 placeholder 사라짐.
  *
@@ -95,6 +96,13 @@ test.describe('@reels-11-slide-13-preview-detach-merge 분리 시 중복 제거'
       preview.locator('[data-testid="preview-only-minimize"]')
     ).toBeVisible()
     await expect(preview.locator('[data-testid="preview-only-merge"]')).toBeVisible()
+    await expect(preview.locator('[data-testid="social-preview-selector"]')).toBeVisible()
+    await expect(preview.locator('[data-testid="preview-guides-control"]')).toBeVisible()
+    await expect(preview.locator('[data-testid="color-scopes"]')).toBeVisible()
+    await expect(
+      preview.locator('[data-testid="preview-only-fullscreen-toggle"]')
+    ).toBeVisible()
+    await expect(preview.locator('[data-testid="preview-only-speed-select"]')).toBeVisible()
   })
 
   test('A-4 분리 윈도우 합치기 → 메인의 placeholder 사라지고 in-app 복귀', async () => {
@@ -113,6 +121,23 @@ test.describe('@reels-11-slide-13-preview-detach-merge 분리 시 중복 제거'
       page.locator('[data-testid="preview-detached-placeholder"]')
     ).toHaveCount(0, { timeout: 5_000 })
     await expect(page.locator('[data-detached="false"]')).toHaveCount(1)
+  })
+
+  test('A-4b 분리 윈도우 재생속도 변경 → 메인 프리뷰로 동기화', async () => {
+    const { app, page } = launched!
+    await page.locator('[data-testid="preview-detach-toggle"]').click()
+    await page.waitForTimeout(800)
+    const preview = app
+      .windows()
+      .find((p) => p !== page && p.url().includes('previewOnly=1'))
+    expect(preview).toBeTruthy()
+    if (!preview) return
+    await preview.waitForLoadState('domcontentloaded')
+    await preview.locator('[data-testid="preview-only-speed-select"]').selectOption('2')
+    await preview.locator('[data-testid="preview-only-merge"]').click()
+    await expect(page.locator('[data-testid="preview-speed-select"]')).toHaveValue('2', {
+      timeout: 5_000
+    })
   })
 
   test('A-5 항상-위 토글 IPC 왕복', async () => {

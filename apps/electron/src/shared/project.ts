@@ -76,6 +76,25 @@ export function canPlaceClipOnTrack(
   return clipKind === 'media'
 }
 
+/**
+ * pptx11 슬라이드 11 — media clip 의 mediaKind 도 트랙 종류와 일치해야 함.
+ *
+ *   - video track  ← video / image 미디어 (둘 다 시각적 source)
+ *   - audio track  ← audio 미디어만
+ *
+ * 사용자 보고 "음원파일 & 영상파일 둘다 서로 트랙에 넘어갈 수 있음" — 이걸
+ * 차단. caption / overlay 트랙은 media clip 자체를 받지 않으니 이 함수는
+ * media-clip 경로에서만 호출됨.
+ */
+export function canPlaceMediaOnTrack(
+  mediaKind: 'video' | 'audio' | 'image',
+  trackKind: TrackKind
+): boolean {
+  if (trackKind === 'video') return mediaKind === 'video' || mediaKind === 'image'
+  if (trackKind === 'audio') return mediaKind === 'audio'
+  return false
+}
+
 // ---------------------------------------------------------------------------
 // Clips: discriminated union between media-backed clips and caption clips.
 // ---------------------------------------------------------------------------

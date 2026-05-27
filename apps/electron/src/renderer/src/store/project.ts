@@ -119,6 +119,7 @@ import {
   type ClipKind,
   aspectRatioConversion,
   canPlaceClipOnTrack,
+  canPlaceMediaOnTrack,
   resolveCoverMs,
   clampBlurRegion,
   getClipDuration,
@@ -2294,6 +2295,12 @@ export const useProjectStore = create<ProjectStore>()(
     // matrix has a single source of truth shared with `moveClipToTrack`.
     const track = project.tracks[trackIdx]
     if (!canPlaceClipOnTrack(clip.kind as ClipKind, track.kind)) return
+    // pptx11 슬라이드 11 — media clip 은 mediaKind 도 track.kind 와 맞아야
+    // 함 (audio media → video track 같은 cross-kind drop 차단).
+    if (isMediaClip(clip)) {
+      const media = project.media[clip.mediaId]
+      if (media && !canPlaceMediaOnTrack(media.kind, track.kind)) return
+    }
 
     const tracks = [...project.tracks]
     tracks[trackIdx] = {
@@ -2784,6 +2791,11 @@ export const useProjectStore = create<ProjectStore>()(
     // Phase 3.41 — locked clips can't be re-laned.
     if (isClipLocked(clip)) return
     if (!canPlaceClipOnTrack(clip.kind as ClipKind, tgtTrack.kind)) return
+    // pptx11 슬라이드 11 — mediaKind 도 일치해야 함 (audio↔video cross drop 차단).
+    if (isMediaClip(clip)) {
+      const media = project.media[clip.mediaId]
+      if (media && !canPlaceMediaOnTrack(media.kind, tgtTrack.kind)) return
+    }
     // Build the new tracks array: drop the clip from the source lane, append
     // it to the target lane with `trackId` rewritten. Pass-through on every
     // other field (startMs/endMs/groupId/transform/etc.).

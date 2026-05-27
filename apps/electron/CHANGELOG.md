@@ -21,6 +21,32 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.40 (2026-05-27)
+
+### 버그/개선 (pptx11 슬라이드 11 — 사용자 보고)
+"비디오 트랙 / 음원 트랙 구분 필요. 음원파일 & 영상파일 둘다 서로 트랙에
+넘어갈 수 있음 / 넘어올 수 없게 해야 됨". 이전엔 media clip 인 한 모든
+media 트랙(video/audio) 에 drop 가능 — 사용자가 비디오 트랙에 음원을
+올리는 등의 미스를 만들 수 있었음.
+
+- **shared/project.ts**: 신규 헬퍼 `canPlaceMediaOnTrack(mediaKind,
+  trackKind)` —
+  - video track: video / image media OK
+  - audio track: audio media만 OK
+- **store addClip / moveClipToTrack**: media clip 추가/이동 시
+  project.media[clip.mediaId].kind 를 lookup → canPlaceMediaOnTrack 위반
+  이면 silently reject (기존 `canPlaceClipOnTrack` 가드와 동일 패턴).
+  caption / overlay 트랙은 기존 canPlaceClipOnTrack 가 이미 차단.
+- bench2 가 e2e 7 tests (A-1~A-7) 까지 다 작성한 상태였고 store 측 가드만
+  손실되어 있었음. 이번에 복구.
+
+### e2e
+- track-kind-guard.spec.ts 7 tests 통과 (audio→video addClip reject /
+  video→audio reject / image→audio reject / audio→audio OK / video→video
+  OK / video clip→audio moveClipToTrack no-op / audio clip→video no-op).
+
+---
+
 ## 0.2.39 (2026-05-27)
 
 ### 추가 (pptx11 슬라이드 10 — 사용자 보고 "자막칸 맨 상단으로 이동이 안됨")

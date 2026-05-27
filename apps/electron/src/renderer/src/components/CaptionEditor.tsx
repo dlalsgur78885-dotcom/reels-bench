@@ -540,19 +540,53 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
           <div style={styles.label}>
             글자 크기: {caption.style.fontSize}px
           </div>
-          <input
-            type="range"
-            min={16}
-            max={96}
-            step={1}
-            value={caption.style.fontSize}
-            onChange={(e) =>
-              updateCaption(captionId, {
-                style: { ...caption.style, fontSize: Number(e.target.value) }
-              })
-            }
-            data-testid="caption-fontsize-slider"
-          />
+          {/* pptx12 슬라이드 12 — 사용자 보고 "최대 크기가 너무 작음"
+              (이전 max=96). 500 으로 확장. 입력란도 함께 노출해서 정밀
+              값 지정 가능 (슬라이더로는 1px 단위 큰 범위 미세 조정이
+              번거로움). */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input
+              type="range"
+              min={16}
+              max={500}
+              step={1}
+              value={caption.style.fontSize}
+              onChange={(e) =>
+                updateCaption(captionId, {
+                  style: { ...caption.style, fontSize: Number(e.target.value) }
+                })
+              }
+              style={{ flex: 1 }}
+              data-testid="caption-fontsize-slider"
+            />
+            <input
+              type="number"
+              min={16}
+              max={500}
+              step={1}
+              value={caption.style.fontSize}
+              onChange={(e) => {
+                const v = Number(e.target.value)
+                if (!Number.isFinite(v)) return
+                const clamped = Math.max(16, Math.min(500, Math.round(v)))
+                updateCaption(captionId, {
+                  style: { ...caption.style, fontSize: clamped }
+                })
+              }}
+              style={{
+                width: 64,
+                background: '#0a0a0a',
+                color: '#f5f5f5',
+                border: '1px solid #2a2a2a',
+                borderRadius: 4,
+                padding: '3px 6px',
+                fontSize: 11,
+                textAlign: 'right'
+              }}
+              data-testid="caption-fontsize-input"
+              aria-label="글자 크기 (px)"
+            />
+          </div>
         </div>
 
         {/* Vertical position */}

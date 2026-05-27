@@ -21,6 +21,19 @@ auto-updater가 더 이상 latest.yml을 찾지 못함). 0.2.0부터는 다시 �
 
 ---
 
+## 0.2.44 (2026-05-27)
+
+### 개선 (pptx12 슬라이드 12 — 사용자 보고 "자막 최대 크기가 너무 작음")
+- 자막 글자 크기 슬라이더 max 96 → **500** 으로 확장.
+- 숫자 입력란(`caption-fontsize-input`) 추가 — 슬라이더 1px 단위로 큰
+  범위 미세 조정 번거로움 해소. [16, 500] clamp.
+
+### e2e
+- caption-fontsize-range.spec.ts 3 tests — slider max 속성 / slider 500
+  set 시 store 반영 / number input clamp 검증.
+
+---
+
 ## 0.2.43 (2026-05-27)
 
 ### 개선 (pptx12 슬라이드 13 — 사용자 보고 "자막 폰트 얼마 없음")

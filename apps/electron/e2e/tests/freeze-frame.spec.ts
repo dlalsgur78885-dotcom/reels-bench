@@ -25,8 +25,9 @@
  *   (10) Freeze + speed curve together → buildPlan ok, graph has setpts/ AND tpad.
  *   (11) Edge — freeze at clip start (sourceMs≈0) → no crash, graph well-formed.
  *   (12) UI — video clip right-click menu exposes direct freeze-frame add.
- *   (13) UI — freeze-frame-indicator / freeze-frame-band / freeze-frame-count testids.
- *   (14) Real-encode smoke — exporter:run with one ~1s freeze → valid mp4 > 1KB.
+ *   (13) UI — long context menu scrolls inside the viewport.
+ *   (14) UI — freeze-frame-indicator / freeze-frame-band / freeze-frame-count testids.
+ *   (15) Real-encode smoke — exporter:run with one ~1s freeze → valid mp4 > 1KB.
  *
  * @phase-3-16-freeze-frame
  */
@@ -895,10 +896,51 @@ test.describe('@phase-3-16-freeze-frame freeze frame feature', () => {
     ).toBeVisible({ timeout: 5_000 })
   })
 
+  test('(13) @phase-3-16-freeze-frame UI: long clip context menu scrolls inside the viewport', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    await page.setViewportSize({ width: 900, height: 360 })
+    await openEditor()
+    const { mediaId, durationMs } = await addFixtureMedia()
+    const cid = await addVideoClip(mediaId, durationMs)
+
+    await setPlayhead(Math.floor(durationMs / 2))
+    const clipBlock = page.locator(`[data-testid="media-clip-block"][data-clip-id="${cid}"]`)
+    await expect(clipBlock).toBeVisible({ timeout: 5_000 })
+    await clipBlock.click({ button: 'right' })
+
+    const menu = page.locator('[data-testid="clip-context-menu"]')
+    await expect(menu).toBeVisible({ timeout: 3_000 })
+    const metrics = await menu.evaluate((node) => {
+      const el = node as HTMLElement
+      const style = window.getComputedStyle(el)
+      return {
+        overflowY: style.overflowY,
+        rectTop: el.getBoundingClientRect().top,
+        rectBottom: el.getBoundingClientRect().bottom,
+        clientHeight: el.clientHeight,
+        scrollHeight: el.scrollHeight,
+        viewportHeight: window.innerHeight
+      }
+    })
+
+    expect(metrics.overflowY).toBe('auto')
+    expect(metrics.rectTop).toBeGreaterThanOrEqual(0)
+    expect(metrics.rectBottom).toBeLessThanOrEqual(metrics.viewportHeight)
+    expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight)
+
+    const scrolled = await menu.evaluate((node) => {
+      const el = node as HTMLElement
+      el.scrollTop = 240
+      return el.scrollTop
+    })
+    expect(scrolled).toBeGreaterThan(0)
+  })
+
   // =========================================================================
-  // SCENARIO (13): UI — data-testid surfaces for freeze-frame panel / band
+  // SCENARIO (14): UI — data-testid surfaces for freeze-frame panel / band
   // =========================================================================
-  test('(13) @phase-3-16-freeze-frame UI: freeze-frame-indicator + freeze-frame-band appear; freeze-frame-count updates; clear removes them', async () => {
+  test('(14) @phase-3-16-freeze-frame UI: freeze-frame-indicator + freeze-frame-band appear; freeze-frame-count updates; clear removes them', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
     await openEditor()
@@ -962,7 +1004,7 @@ test.describe('@phase-3-16-freeze-frame freeze frame feature', () => {
   // =========================================================================
   // SCENARIO (13): Real-encode smoke — exporter:run with 1s freeze → valid mp4
   // =========================================================================
-  test('(14) @phase-3-16-freeze-frame exporter:run with a 1s freeze produces valid mp4 > 1KB', async () => {
+  test('(15) @phase-3-16-freeze-frame exporter:run with a 1s freeze produces valid mp4 > 1KB', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
     await openEditor()

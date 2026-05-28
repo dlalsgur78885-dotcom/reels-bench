@@ -266,12 +266,16 @@ const styles = {
   wrap: {
     position: 'fixed' as const,
     minWidth: 200,
+    maxWidth: 340,
     background: '#1a1a1a',
     border: '1px solid #2a2a2a',
     borderRadius: 8,
     padding: 4,
     boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
     zIndex: 9999,
+    overflowY: 'auto',
+    overflowX: 'hidden',
+    overscrollBehavior: 'contain',
     fontSize: 12,
     color: '#f5f5f5'
   } as React.CSSProperties,
@@ -756,13 +760,14 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
   // Clamp the menu so it stays inside the viewport.
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1000
   const vh = typeof window !== 'undefined' ? window.innerHeight : 800
+  const maxMenuHeight = Math.max(240, vh - 24)
   const left = Math.min(x, Math.max(0, vw - 240))
-  const top = Math.min(y, Math.max(0, vh - 280))
+  const top = Math.min(Math.max(12, y), Math.max(12, vh - maxMenuHeight - 12))
 
   return (
     <div
       ref={ref}
-      style={{ ...styles.wrap, left, top }}
+      style={{ ...styles.wrap, left, top, maxHeight: maxMenuHeight }}
       role="menu"
       data-testid="clip-context-menu"
       data-clip-kind={clip.kind}

@@ -4,6 +4,9 @@ import { api } from '../api'
 
 type Release = Awaited<ReturnType<typeof api.editorLatest>>
 
+const CURRENT_EDITOR_VERSION = '0.2.49'
+const CURRENT_EDITOR_COMMIT_AT = '2026-05-28T12:55:42+09:00'
+
 function fmtSize(bytes: number | null): string {
   if (!bytes) return ''
   return `${(bytes / 1024 / 1024).toFixed(0)} MB`
@@ -13,6 +16,17 @@ function fmtDate(iso: string | null): string {
   const d = new Date(iso)
   return isNaN(d.getTime()) ? '' : d.toLocaleDateString('ko-KR')
 }
+function fmtDateTime(iso: string | null): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return isNaN(d.getTime()) ? '' : d.toLocaleString('ko-KR', {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
 
 // 영상 편집기(Reels Studio 데스크톱 앱) 다운로드 페이지.
 export default function DownloadEditor() {
@@ -20,6 +34,8 @@ export default function DownloadEditor() {
   const [rel, setRel] = useState<Release | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const displayVersion = CURRENT_EDITOR_VERSION
+  const displayUpdatedAt = CURRENT_EDITOR_COMMIT_AT
 
   useEffect(() => {
     api.editorLatest()
@@ -55,7 +71,15 @@ export default function DownloadEditor() {
           </div>
         )}
 
-        {rel && (
+        {rel && !rel.download_url && (
+          <div style={{ padding: 16, background: 'var(--bg-base)', borderRadius: 8,
+            border: '1px dashed var(--border)', fontSize: 13, color: 'var(--text-muted)' }}>
+            ⏳ 새 버전을 준비 중입니다. 잠시 후 다시 시도해주세요.
+            <span style={{ marginLeft: 8, opacity: 0.7 }}>(target v{displayVersion})</span>
+          </div>
+        )}
+
+        {rel && rel.download_url && (
           <>
             <a href={rel.download_url}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 8,
@@ -63,18 +87,17 @@ export default function DownloadEditor() {
                 background: 'var(--accent)', color: '#fff', borderRadius: 8,
                 textDecoration: 'none' }}>
               ⬇ Windows용 다운로드
-              {rel.version && (
-                <span style={{ fontSize: 12, fontWeight: 500, opacity: 0.85 }}>
-                  v{rel.version}
-                </span>
-              )}
+              <span style={{ fontSize: 12, fontWeight: 500, opacity: 0.85 }}>
+                v{displayVersion}
+              </span>
             </a>
 
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 12,
               display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-              {rel.version && <span>버전 {rel.version}</span>}
+              <span>버전 {displayVersion}</span>
               {rel.size != null && <span>· {fmtSize(rel.size)}</span>}
-              {rel.release_date && <span>· {fmtDate(rel.release_date)} 출시</span>}
+              {rel.release_date && <span>· 릴리스 {fmtDate(rel.release_date)}</span>}
+              <span>· 최근 커밋 {fmtDateTime(displayUpdatedAt)}</span>
               <span>· Windows 64-bit</span>
             </div>
 

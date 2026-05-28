@@ -1340,10 +1340,10 @@ export function isAdjustmentLayerLocked(l: AdjustmentLayer): boolean {
   return l.locked === true
 }
 
-/** Resolve an adjustment layer transform, filling identity for absent fields. */
+/** Resolve an adjustment layer transform, filling element-like defaults. */
 export function getAdjustmentLayerTransform(layer: AdjustmentLayer): ClipTransform {
   const t = layer.transform
-  if (!t) return { ...IDENTITY_TRANSFORM }
+  if (!t) return { ...DEFAULT_ADJUSTMENT_LAYER_TRANSFORM }
   return {
     x: Number.isFinite(t.x) ? t.x : 0,
     y: Number.isFinite(t.y) ? t.y : 0,
@@ -2182,6 +2182,13 @@ export const IDENTITY_TRANSFORM: ClipTransform = {
   x: 0,
   y: 0,
   scale: 1,
+  rotation: 0,
+  opacity: 1
+}
+export const DEFAULT_ADJUSTMENT_LAYER_TRANSFORM: ClipTransform = {
+  x: 0,
+  y: 0,
+  scale: 0.5,
   rotation: 0,
   opacity: 1
 }

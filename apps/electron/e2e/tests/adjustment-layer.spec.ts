@@ -303,6 +303,9 @@ test.describe('@phase-3-32-adjustment-layer adjustment layer contract', () => {
     expect(layers[0].id).toBe(id)
     expect(layers[0].startMs).toBe(1000)
     expect(layers[0].endMs).toBe(4000)
+    expect(layers[0].transform?.scale).toBeCloseTo(0.5, 4)
+    expect(layers[0].transform?.x).toBeCloseTo(0, 4)
+    expect(layers[0].transform?.y).toBeCloseTo(0, 4)
 
     // Clamp: endMs < startMs + MIN_CLIP_MS → clamped to startMs + MIN_CLIP_MS.
     const id2 = await page.evaluate(() => {

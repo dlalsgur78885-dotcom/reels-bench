@@ -239,7 +239,7 @@ test.describe('@phase-adjustment-layer-fade adjustment layer fade in/out', () =>
       }, ms)
       await launched!.page.waitForTimeout(140)
       return (await launched!.page.getAttribute(
-        '[data-testid="preview-fitted-rect"]',
+        '[data-testid="preview-adjustment-region"]',
         'style'
       )) ?? ''
     }

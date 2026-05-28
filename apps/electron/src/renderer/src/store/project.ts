@@ -7,6 +7,7 @@ import {
   DEFAULT_BLUR_REGION_RECT,
   DEFAULT_BLUR_STRENGTH,
   DEFAULT_DUCKING_DB,
+  DEFAULT_ADJUSTMENT_LAYER_TRANSFORM,
   DEFAULT_TRANSITION_MS,
   IDENTITY_CROP,
   MAX_AUDIO_TRACKS,
@@ -712,7 +713,8 @@ export interface ProjectStore {
   ): void
   /**
    * Merge a static transform onto an adjustment layer. Identity collapses the
-   * field to undefined so full-frame grade remains the default.
+   * field to undefined; newly created/reset layers use an element-like
+   * default transform instead of full-frame identity.
    */
   setAdjustmentLayerTransform(
     id: string,
@@ -1976,7 +1978,8 @@ export const useProjectStore = create<ProjectStore>()(
     const layer: AdjustmentLayer = {
       id,
       startMs: window.startMs,
-      endMs: window.endMs
+      endMs: window.endMs,
+      transform: { ...DEFAULT_ADJUSTMENT_LAYER_TRANSFORM }
     }
     const next = touch({
       ...project,
@@ -2178,11 +2181,19 @@ export const useProjectStore = create<ProjectStore>()(
     let changed = false
     const nextLayers = layers.map((l) => {
       if (l.id !== id) return l
-      if (isAdjustmentLayerLocked(l) || l.transform === undefined) return l
+      if (isAdjustmentLayerLocked(l)) return l
+      if (
+        l.transform &&
+        l.transform.x === DEFAULT_ADJUSTMENT_LAYER_TRANSFORM.x &&
+        l.transform.y === DEFAULT_ADJUSTMENT_LAYER_TRANSFORM.y &&
+        l.transform.scale === DEFAULT_ADJUSTMENT_LAYER_TRANSFORM.scale &&
+        l.transform.rotation === DEFAULT_ADJUSTMENT_LAYER_TRANSFORM.rotation &&
+        l.transform.opacity === DEFAULT_ADJUSTMENT_LAYER_TRANSFORM.opacity
+      ) {
+        return l
+      }
       changed = true
-      const copy: AdjustmentLayer = { ...l }
-      delete copy.transform
-      return copy
+      return { ...l, transform: { ...DEFAULT_ADJUSTMENT_LAYER_TRANSFORM } }
     })
     if (!changed) return
     const next = touch({ ...project, adjustmentLayers: nextLayers })

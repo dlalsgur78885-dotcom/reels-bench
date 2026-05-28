@@ -111,8 +111,11 @@ test.describe('@phase-adjustment-layer-tabs 조정 레이어 6탭 구조', () =>
     await expect(
       page.locator('[data-testid="adjustment-transform-scale-slider"]')
     ).toBeVisible()
+    await expect(
+      page.locator('[data-testid="adjustment-transform-scale-input"]')
+    ).toHaveValue('50')
 
-    await page.locator('[data-testid="adjustment-transform-scale-input"]').fill('50')
+    await page.locator('[data-testid="adjustment-transform-scale-input"]').fill('65')
     await page.locator('[data-testid="adjustment-transform-y-input"]').fill('-25')
     await page.locator('[data-testid="adjustment-transform-opacity-input"]').fill('70')
     await page.waitForTimeout(120)
@@ -125,7 +128,7 @@ test.describe('@phase-adjustment-layer-tabs 조정 레이어 6탭 구조', () =>
       }
       return project.adjustmentLayers?.[0]?.transform
     })
-    expect(saved?.scale).toBeCloseTo(0.5, 4)
+    expect(saved?.scale).toBeCloseTo(0.65, 4)
     expect(saved?.y).toBeCloseTo(-0.25, 4)
     expect(saved?.opacity).toBeCloseTo(0.7, 4)
 
@@ -147,11 +150,13 @@ test.describe('@phase-adjustment-layer-tabs 조정 레이어 6탭 구조', () =>
     await page.waitForTimeout(120)
     const reset = await page.evaluate(() => {
       const project = window.__reelsStore.state().project as {
-        adjustmentLayers?: Array<{ transform?: unknown }>
+        adjustmentLayers?: Array<{ transform?: { scale?: number; y?: number; opacity?: number } }>
       }
       return project.adjustmentLayers?.[0]?.transform ?? null
     })
-    expect(reset).toBeNull()
+    expect(reset?.scale).toBeCloseTo(0.5, 4)
+    expect(reset?.y).toBeCloseTo(0, 4)
+    expect(reset?.opacity).toBeCloseTo(1, 4)
   })
 
   test('속도/애니메이션/레이아웃 탭은 안내문 노출', async () => {

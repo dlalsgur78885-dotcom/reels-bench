@@ -327,10 +327,10 @@ export function AdjustmentLayerEditor(
         onClick={() => resetAdjustmentLayerTransform(layer.id)}
         data-testid="adjustment-transform-reset"
       >
-        변형 초기화
+        요소 크기로 초기화
       </button>
       <p style={{ ...styles.hint, marginTop: 6 }}>
-        크기를 줄이면 조정 효과가 해당 사각 영역 안에만 적용됩니다.
+        조정 효과는 이 사각 영역 안에만 적용됩니다.
       </p>
     </div>
   )
@@ -348,8 +348,8 @@ export function AdjustmentLayerEditor(
   )
   const layoutPanel = (
     <div data-testid="adjustment-tab-layout" style={styles.emptyHint}>
-      조정 레이어는 프레임 전체에 grade 가 합성되므로 레이아웃(분할 / 그리드)
-      적용 대상이 아닙니다.
+      조정 레이어는 캔버스 위의 독립 영역으로 배치됩니다. 분할 / 그리드
+      레이아웃은 미디어 클립에 적용하세요.
     </div>
   )
 
@@ -360,7 +360,7 @@ export function AdjustmentLayerEditor(
         {(layer.endMs / 1000).toFixed(2)}s
       </p>
       <p style={styles.hint}>
-        이 구간 아래의 모든 트랙에 색 보정이 적용됩니다.
+        이 구간의 선택 영역 안에 있는 화면에만 색 보정이 적용됩니다.
       </p>
 
       {/* pptx12 슬라이드 18 — 일반 효과 패널과 동일한 6탭 바. */}

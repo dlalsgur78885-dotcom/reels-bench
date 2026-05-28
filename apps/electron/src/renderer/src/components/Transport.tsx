@@ -24,6 +24,8 @@ const TRANSPORT_FG = '#f5f5f5'
 // shift hue. Keep a transport-local alias so the play button doesn't change.
 const PLAY_GREEN = '#10b981'
 const PLAY_GREEN_INK = '#04231a'
+const PLAYHEAD_COMMIT_INTERVAL_MS = 33
+const EXTERNAL_SEEK_THRESHOLD_MS = 120
 const styles = {
   bar: {
     flexShrink: 0,
@@ -81,6 +83,9 @@ export function Transport(): JSX.Element {
   // -----------------------------------------------------------------------
   const rafRef = useRef<number | null>(null)
   const lastTickRef = useRef<number | null>(null)
+  const playbackHeadRef = useRef<number | null>(null)
+  const lastCommitAtRef = useRef<number | null>(null)
+  const lastCommittedPlayheadRef = useRef<number | null>(null)
 
   useEffect(() => {
     if (!playing) {
@@ -89,6 +94,9 @@ export function Transport(): JSX.Element {
         rafRef.current = null
       }
       lastTickRef.current = null
+      playbackHeadRef.current = null
+      lastCommitAtRef.current = null
+      lastCommittedPlayheadRef.current = null
       return
     }
     const tick = (): void => {
@@ -97,8 +105,19 @@ export function Transport(): JSX.Element {
       const dt = now - last
       lastTickRef.current = now
       const ui = useTimelineUi.getState()
-      const current = ui.playheadMs
+      const committed = lastCommittedPlayheadRef.current
+      let current = playbackHeadRef.current ?? ui.playheadMs
+      // Manual scrub / keyboard seek while playing writes directly to the UI
+      // store. Since playback commits are throttled below, ignore tiny store
+      // lag and only adopt meaningful external jumps.
+      if (
+        committed !== null &&
+        Math.abs(ui.playheadMs - committed) > EXTERNAL_SEEK_THRESHOLD_MS
+      ) {
+        current = ui.playheadMs
+      }
       const next = current + dt
+      playbackHeadRef.current = next
       // Use the same endpoint as the "끝" button: the last video frame.
       // Caption/overlay/adjustment layers can extend past media after several
       // edit passes; letting playback run to total duration leaves PreviewCanvas
@@ -110,17 +129,29 @@ export function Transport(): JSX.Element {
       const loop = ui.loopRangeMs
       if (loop && next >= loop[1]) {
         ui.setPlayheadMs(loop[0])
+        playbackHeadRef.current = loop[0]
+        lastCommitAtRef.current = now
+        lastCommittedPlayheadRef.current = loop[0]
         rafRef.current = requestAnimationFrame(tick)
         return
       }
       if (cap > 0 && next >= cap) {
         // pptx10 슬라이드 10 — 마지막 clip 의 마지막 프레임에 park (1ms
         // 안쪽). cap 정확히는 active 아님 → 빈 화면 + 사용자 혼란.
-        ui.setPlayheadMs(Math.max(0, cap - 1))
+        const parked = Math.max(0, cap - 1)
+        ui.setPlayheadMs(parked)
+        playbackHeadRef.current = parked
+        lastCommitAtRef.current = now
+        lastCommittedPlayheadRef.current = parked
         ui.setPlaying(false)
         return
       }
-      ui.setPlayheadMs(next)
+      const lastCommitAt = lastCommitAtRef.current ?? 0
+      if (now - lastCommitAt >= PLAYHEAD_COMMIT_INTERVAL_MS) {
+        ui.setPlayheadMs(next)
+        lastCommitAtRef.current = now
+        lastCommittedPlayheadRef.current = next
+      }
       rafRef.current = requestAnimationFrame(tick)
     }
     rafRef.current = requestAnimationFrame(tick)

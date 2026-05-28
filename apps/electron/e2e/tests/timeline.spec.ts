@@ -362,6 +362,46 @@ test.describe('@phase-2-timeline timeline + preview + transport', () => {
     expect(ms).toBeLessThan(5_000)
   })
 
+  test('playback throttles global playhead commits while still advancing', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    const { mediaId, durationMs } = await openEditorWithMedia()
+    await addVideoClip(durationMs, mediaId)
+
+    const result = await page.evaluate(async () => {
+      const ui = (
+        window as unknown as {
+          __TIMELINE_UI_FOR_TEST__: {
+            getState: () => {
+              playheadMs: number
+              setPlayheadMs: (ms: number) => void
+              setPlaying: (p: boolean) => void
+            }
+            subscribe: (fn: (s: { playheadMs: number }) => void) => () => void
+          }
+        }
+      ).__TIMELINE_UI_FOR_TEST__
+      ui.getState().setPlayheadMs(0)
+      let commits = 0
+      let last = ui.getState().playheadMs
+      const unsubscribe = ui.subscribe((s) => {
+        if (s.playheadMs !== last) {
+          commits += 1
+          last = s.playheadMs
+        }
+      })
+      ui.getState().setPlaying(true)
+      await new Promise((resolve) => setTimeout(resolve, 650))
+      ui.getState().setPlaying(false)
+      unsubscribe()
+      return { commits, playheadMs: ui.getState().playheadMs }
+    })
+
+    expect(result.playheadMs).toBeGreaterThan(400)
+    expect(result.commits).toBeGreaterThan(8)
+    expect(result.commits).toBeLessThanOrEqual(26)
+  })
+
   // -------------------------------------------------------------------------
   // Clip body drag → reposition.
   // -------------------------------------------------------------------------

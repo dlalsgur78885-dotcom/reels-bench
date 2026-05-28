@@ -24,8 +24,9 @@
  *   (9)  Split through a freeze — both halves valid, freezeFrames partitioned correctly.
  *   (10) Freeze + speed curve together → buildPlan ok, graph has setpts/ AND tpad.
  *   (11) Edge — freeze at clip start (sourceMs≈0) → no crash, graph well-formed.
- *   (12) UI — freeze-frame-indicator / freeze-frame-band / freeze-frame-count testids.
- *   (13) Real-encode smoke — exporter:run with one ~1s freeze → valid mp4 > 1KB.
+ *   (12) UI — video clip right-click menu exposes direct freeze-frame add.
+ *   (13) UI — freeze-frame-indicator / freeze-frame-band / freeze-frame-count testids.
+ *   (14) Real-encode smoke — exporter:run with one ~1s freeze → valid mp4 > 1KB.
  *
  * @phase-3-16-freeze-frame
  */
@@ -245,6 +246,22 @@ test.describe('@phase-3-16-freeze-frame freeze frame feature', () => {
         for (const c of t.clips) if (c.id === cid) return c
       return null
     }, clipId)) as Record<string, unknown> | null
+  }
+
+  async function setPlayhead(ms: number): Promise<void> {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    await page.evaluate((m) => {
+      const ui = (
+        window as unknown as {
+          __reelsTimelineUi: {
+            getState: () => { setPlayheadMs: (n: number) => void }
+          }
+        }
+      ).__reelsTimelineUi
+      ui.getState().setPlayheadMs(m)
+    }, ms)
+    await page.waitForTimeout(120)
   }
 
   async function buildPlan(outputPath: string): Promise<{
@@ -846,9 +863,42 @@ test.describe('@phase-3-16-freeze-frame freeze frame feature', () => {
   })
 
   // =========================================================================
-  // SCENARIO (12): UI — data-testid surfaces for freeze-frame panel / band
+  // SCENARIO (12): UI — direct right-click freeze action
   // =========================================================================
-  test('(12) @phase-3-16-freeze-frame UI: freeze-frame-indicator + freeze-frame-band appear; freeze-frame-count updates; clear removes them', async () => {
+  test('(12) @phase-3-16-freeze-frame UI: video right-click menu directly adds a freeze frame', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    await openEditor()
+    const { mediaId, durationMs } = await addFixtureMedia()
+    const cid = await addVideoClip(mediaId, durationMs)
+    const targetMs = Math.floor(durationMs / 2)
+
+    await setPlayhead(targetMs)
+    const clipBlock = page.locator(`[data-testid="media-clip-block"][data-clip-id="${cid}"]`)
+    await expect(clipBlock).toBeVisible({ timeout: 5_000 })
+    await clipBlock.click({ button: 'right' })
+
+    const directFreeze = page.locator('[data-testid="menu-freeze-frame-add-direct"]')
+    await expect(page.locator('[data-testid="clip-context-menu"]')).toBeVisible({ timeout: 3_000 })
+    await expect(directFreeze).toBeVisible()
+    await expect(directFreeze).toHaveAttribute('aria-disabled', 'false')
+    await directFreeze.click()
+    await page.waitForTimeout(250)
+
+    const clip = await getClipFromState(cid)
+    const freezes = (clip?.freezeFrames ?? []) as FreezeFrame[]
+    expect(freezes).toHaveLength(1)
+    expect(freezes[0].durationMs).toBe(DEFAULT_FREEZE_MS)
+    expect(Math.abs(freezes[0].sourceMs - targetMs)).toBeLessThan(120)
+    await expect(
+      page.locator(`[data-testid="freeze-frame-indicator"][data-clip-id="${cid}"]`)
+    ).toBeVisible({ timeout: 5_000 })
+  })
+
+  // =========================================================================
+  // SCENARIO (13): UI — data-testid surfaces for freeze-frame panel / band
+  // =========================================================================
+  test('(13) @phase-3-16-freeze-frame UI: freeze-frame-indicator + freeze-frame-band appear; freeze-frame-count updates; clear removes them', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
     await openEditor()
@@ -912,7 +962,7 @@ test.describe('@phase-3-16-freeze-frame freeze frame feature', () => {
   // =========================================================================
   // SCENARIO (13): Real-encode smoke — exporter:run with 1s freeze → valid mp4
   // =========================================================================
-  test('(13) @phase-3-16-freeze-frame exporter:run with a 1s freeze produces valid mp4 > 1KB', async () => {
+  test('(14) @phase-3-16-freeze-frame exporter:run with a 1s freeze produces valid mp4 > 1KB', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
     await openEditor()

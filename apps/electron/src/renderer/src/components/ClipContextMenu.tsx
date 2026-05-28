@@ -479,7 +479,9 @@ function mediaRows(
   playheadMs: number | undefined,
   audioDetachable: boolean,
   groupable: boolean,
-  grouped: boolean
+  grouped: boolean,
+  isOnFreezeFrame: boolean,
+  freezeDisabled: boolean
 ): MenuRow[] {
   // Strict-inside gate matches splitClipAt: must have ≥100ms on each side.
   const split = isMediaClip(clip) && playheadMs !== undefined
@@ -495,6 +497,11 @@ function mediaRows(
           label: '여기서 자르기',
           shortcut: 'S',
           enabled: split
+        },
+        {
+          key: isOnFreezeFrame ? 'freeze-frame-remove-direct' : 'freeze-frame-add-direct',
+          label: isOnFreezeFrame ? '프리즈 프레임 삭제' : '프리즈 프레임 추가',
+          enabled: !freezeDisabled
         },
         { key: 'duplicate', label: '복제', shortcut: 'Ctrl+D' },
         // 오디오 분리 — split this video clip's audio onto its own audio track.
@@ -658,7 +665,9 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
           playheadMs,
           audioDetachable === true,
           groupable === true,
-          grouped === true
+          grouped === true,
+          isOnFreezeFrame === true,
+          reversed === true
         )
 
   // Read current speed (default 1) from the media clip; captions don't have one.
@@ -781,6 +790,16 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
             }}
             onClick={() => {
               if (!enabled) return
+              if (it.key === 'freeze-frame-add-direct') {
+                onAddFreezeFrame()
+                onClose()
+                return
+              }
+              if (it.key === 'freeze-frame-remove-direct') {
+                onRemoveFreezeFrameAtPlayhead()
+                onClose()
+                return
+              }
               onAction(it.key)
               onClose()
             }}

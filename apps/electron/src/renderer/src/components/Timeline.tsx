@@ -2531,7 +2531,9 @@ export function Timeline(props: TimelineProps): JSX.Element {
                   ? getClipSourceText(clip) || '(빈 자막)'
                   : isOverlayClip(clip)
                     ? overlaySourceLabel(clip.source)
-                    : `clip ${clip.id.slice(-4)}`
+                    : isMediaClip(clip)
+                      ? project.media[clip.mediaId]?.fileName || `clip ${clip.id.slice(-4)}`
+                      : `clip ${clip.id.slice(-4)}`
                 // Phase 3.10 — a curve clip shows a min→max speed RANGE; a
                 // constant clip keeps the single-value label (only when != 1).
                 let speedLabel = ''

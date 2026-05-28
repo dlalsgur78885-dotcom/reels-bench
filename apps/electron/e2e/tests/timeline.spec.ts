@@ -65,6 +65,7 @@ test.describe('@phase-2-timeline timeline + preview + transport', () => {
   async function openEditorWithMedia(): Promise<{
     mediaId: string
     durationMs: number
+    fileName: string
   }> {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
@@ -105,7 +106,7 @@ test.describe('@phase-2-timeline timeline + preview + transport', () => {
         fileName,
         fileSizeBytes: 0
       })
-      return { mediaId: id, durationMs: probe.durationMs }
+      return { mediaId: id, durationMs: probe.durationMs, fileName }
     }, fixture)
   }
 
@@ -246,6 +247,34 @@ test.describe('@phase-2-timeline timeline + preview + transport', () => {
     expect(created[0].mediaId).toBe(mediaId)
     expect(created[0].endMs - created[0].startMs).toBe(durationMs)
     await expect(page.locator('[data-testid="media-clip-block"]')).toHaveCount(1)
+  })
+
+  test('timeline media clip label matches the imported media name', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    const { mediaId, durationMs, fileName } = await openEditorWithMedia()
+    const clipId = await addVideoClip(durationMs, mediaId)
+
+    await expect(page.locator(`[data-testid="media-card"][data-media-id="${mediaId}"]`)).toContainText(fileName)
+    const clipBlock = page.locator(`[data-testid="media-clip-block"][data-clip-id="${clipId}"]`)
+    await expect(clipBlock).toContainText(fileName)
+
+    await page.evaluate(
+      ({ id }) => {
+        const store = (
+          window as unknown as {
+            __PROJECT_STORE_FOR_TEST__: {
+              getState: () => { renameMedia: (mediaId: string, fileName: string) => void }
+            }
+          }
+        ).__PROJECT_STORE_FOR_TEST__
+        store.getState().renameMedia(id, '가져온 영상 이름.mp4')
+      },
+      { id: mediaId }
+    )
+
+    await expect(page.locator(`[data-testid="media-card"][data-media-id="${mediaId}"]`)).toContainText('가져온 영상 이름.mp4')
+    await expect(clipBlock).toContainText('가져온 영상 이름.mp4')
   })
 
   // -------------------------------------------------------------------------

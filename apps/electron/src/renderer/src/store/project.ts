@@ -722,6 +722,8 @@ export interface ProjectStore {
   ): void
   /** Reset an adjustment layer transform back to full-frame identity. */
   resetAdjustmentLayerTransform(id: string): void
+  /** Toggle horizontal/vertical mirroring on an adjustment layer. */
+  toggleAdjustmentLayerMirror(id: string, axis: 'x' | 'y'): void
   /**
    * Paste copied adjustment-layer properties onto a target layer. Timing/id and
    * locked state are intentionally preserved.
@@ -737,6 +739,8 @@ export interface ProjectStore {
         | 'filterPreset'
         | 'filterIntensity'
         | 'transform'
+        | 'mirrorX'
+        | 'mirrorY'
         | 'fadeInMs'
         | 'fadeOutMs'
       >
@@ -2201,6 +2205,32 @@ export const useProjectStore = create<ProjectStore>()(
     schedulePersist(next)
   },
 
+  toggleAdjustmentLayerMirror(id, axis): void {
+    if (axis !== 'x' && axis !== 'y') return
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    let changed = false
+    const nextLayers = layers.map((l) => {
+      if (l.id !== id) return l
+      if (isAdjustmentLayerLocked(l)) return l
+      changed = true
+      const copy: AdjustmentLayer = { ...l }
+      if (axis === 'x') {
+        if (copy.mirrorX === true) delete copy.mirrorX
+        else copy.mirrorX = true
+      } else if (copy.mirrorY === true) {
+        delete copy.mirrorY
+      } else {
+        copy.mirrorY = true
+      }
+      return copy
+    })
+    if (!changed) return
+    const next = touch({ ...project, adjustmentLayers: nextLayers })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
   setAdjustmentLayerProperties(id, properties): void {
     if (!properties || typeof properties !== 'object') return
     const project = get().project
@@ -2222,6 +2252,8 @@ export const useProjectStore = create<ProjectStore>()(
         filterPreset: properties.filterPreset,
         filterIntensity: properties.filterIntensity,
         transform: clone(properties.transform),
+        mirrorX: properties.mirrorX === true ? true : undefined,
+        mirrorY: properties.mirrorY === true ? true : undefined,
         fadeInMs: properties.fadeInMs,
         fadeOutMs: properties.fadeOutMs
       }

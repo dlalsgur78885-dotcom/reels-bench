@@ -4027,20 +4027,32 @@ function stitchAdjustments(
     const srcLabel = `vadj${adjCount}src`
     const gradeLabel = `vadj${adjCount}grade`
     const cropLabel = `vadj${adjCount}crop`
+    const mirrorLabel = `vadj${adjCount}mirror`
     const alphaLabel = `vadj${adjCount}alpha`
     const cropChain = `crop=${w}:${h}:${x}:${y}`
+    const mirrorChain =
+      layer.mirrorX === true || layer.mirrorY === true
+        ? `[${cropLabel}]${[
+            layer.mirrorX === true ? 'hflip' : '',
+            layer.mirrorY === true ? 'vflip' : ''
+          ]
+            .filter(Boolean)
+            .join(',')}[${mirrorLabel}]`
+        : ''
+    const effectLabel = mirrorChain ? mirrorLabel : cropLabel
     const alphaChain =
       opacity < 0.999
-        ? `[${cropLabel}]format=rgba,colorchannelmixer=aa=${opacity.toFixed(
+        ? `[${effectLabel}]format=rgba,colorchannelmixer=aa=${opacity.toFixed(
             3
           )}[${alphaLabel}]`
         : ''
-    const overlayInput = opacity < 0.999 ? alphaLabel : cropLabel
+    const overlayInput = opacity < 0.999 ? alphaLabel : effectLabel
     fragments.push(
       [
         `[${prevLabel}]split=2[${baseLabel}][${srcLabel}]`,
         `[${srcLabel}]${frag}[${gradeLabel}]`,
         `[${gradeLabel}]${cropChain}[${cropLabel}]`,
+        mirrorChain,
         alphaChain,
         `[${baseLabel}][${overlayInput}]overlay=${x}:${y}:enable='between(t,${startSec.toFixed(
           3

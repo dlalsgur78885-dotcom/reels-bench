@@ -206,6 +206,8 @@ interface ScopedAdjustmentRegion {
   id: string
   filter: string
   transform: ClipTransform
+  mirrorX?: boolean
+  mirrorY?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -1421,7 +1423,9 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
         regions.push({
           id: layer.id,
           filter: layerParts.join(' '),
-          transform
+          transform,
+          mirrorX: layer.mirrorX,
+          mirrorY: layer.mirrorY
         })
       } else {
         parts.push(...layerParts)
@@ -2590,7 +2594,9 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               transformOrigin: 'center center',
               transform: `translate(${region.transform.x * 100}%, ${
                 region.transform.y * 100
-              }%) scale(${region.transform.scale}) rotate(${
+              }%) scale(${region.transform.scale}) scaleX(${
+                region.mirrorX ? -1 : 1
+              }) scaleY(${region.mirrorY ? -1 : 1}) rotate(${
                 region.transform.rotation
               }deg)`,
               opacity: region.transform.opacity,

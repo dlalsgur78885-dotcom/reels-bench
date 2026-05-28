@@ -11,6 +11,7 @@ import { isAdjustmentLayerLocked, MIN_CLIP_MS } from '../../../shared/project'
  *   - 복제 (Ctrl+D)
  *   - 특성 복사 / 특성 붙여넣기
  *   - 삭제 (Delete)
+ *   - 편집: 프리즈/역방향(비디오 소스 전용 안내), 미러링/회전
  *
  * 일반 클립 메뉴와 동일한 fixed-positioning + outside-click + Esc 닫기 패턴.
  */
@@ -30,6 +31,8 @@ const styles = {
   wrap: {
     position: 'fixed' as const,
     minWidth: 200,
+    maxHeight: 'calc(100vh - 8px)',
+    overflowY: 'auto' as const,
     background: '#1a1a1a',
     border: '1px solid #2a2a2a',
     borderRadius: 8,
@@ -55,6 +58,13 @@ const styles = {
   } as React.CSSProperties,
   itemDestructive: {
     color: '#fca5a5'
+  } as React.CSSProperties,
+  section: {
+    padding: '6px 10px 3px',
+    color: '#94a3b8',
+    fontSize: 10,
+    fontWeight: 700,
+    userSelect: 'none' as const
   } as React.CSSProperties,
   shortcut: {
     color: '#94a3b8',
@@ -105,7 +115,7 @@ export function AdjustmentLayerContextMenu(
   )
   const top = Math.max(
     4,
-    Math.min(y, (typeof window !== 'undefined' ? window.innerHeight : 768) - 220)
+    Math.min(y, (typeof window !== 'undefined' ? window.innerHeight : 768) - 360)
   )
 
   const locked = isAdjustmentLayerLocked(layer)
@@ -123,8 +133,8 @@ export function AdjustmentLayerContextMenu(
   }
   // 그 외 행은 locked 면 모두 비활성.
   const otherRows: Row[] = [
-    { key: 'split', label: '여기서 자르기', shortcut: 'S', enabled: splittable },
-    { key: 'duplicate', label: '복제', shortcut: 'Ctrl+D', enabled: !locked },
+    { key: 'split', label: '자르기', shortcut: 'S', enabled: splittable },
+    { key: 'duplicate', label: '사본 만들기', shortcut: 'Ctrl+D', enabled: !locked },
     { key: 'copy-properties', label: '특성 복사', shortcut: 'Alt+C', enabled: true },
     {
       key: 'paste-properties',
@@ -139,6 +149,32 @@ export function AdjustmentLayerContextMenu(
       enabled: !locked,
       destructive: true
     }
+  ]
+  const editRows: Row[] = [
+    {
+      key: 'freeze-frame',
+      label: '프리즈',
+      shortcut: '영상 전용',
+      enabled: false
+    },
+    {
+      key: 'reverse',
+      label: '역방향',
+      shortcut: '영상 전용',
+      enabled: false
+    },
+    {
+      key: 'mirror-x',
+      label: layer.mirrorX ? '미러링 가로 해제' : '미러링 가로',
+      enabled: !locked
+    },
+    {
+      key: 'mirror-y',
+      label: layer.mirrorY ? '미러링 세로 해제' : '미러링 세로',
+      enabled: !locked
+    },
+    { key: 'rotate-left', label: '왼쪽으로 90도 회전', enabled: !locked },
+    { key: 'rotate-right', label: '오른쪽으로 90도 회전', enabled: !locked }
   ]
 
   const handleClick = (row: Row): void => {
@@ -187,6 +223,9 @@ export function AdjustmentLayerContextMenu(
       {renderRow(lockRow, 0)}
       <div style={styles.separator} />
       {otherRows.map((r, i) => renderRow(r, i + 1))}
+      <div style={styles.separator} />
+      <div style={styles.section}>편집</div>
+      {editRows.map((r, i) => renderRow(r, i + 1 + otherRows.length))}
     </div>
   )
 }

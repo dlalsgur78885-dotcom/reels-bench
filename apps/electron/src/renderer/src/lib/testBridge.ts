@@ -187,6 +187,7 @@ export function installTestBridge(): void {
         setAdjustmentLayerFilterPreset: Store['setAdjustmentLayerFilterPreset']
         setAdjustmentLayerTransform: Store['setAdjustmentLayerTransform']
         resetAdjustmentLayerTransform: Store['resetAdjustmentLayerTransform']
+        toggleAdjustmentLayerMirror: Store['toggleAdjustmentLayerMirror']
         setAdjustmentLayerProperties: Store['setAdjustmentLayerProperties']
         // pptx11 슬라이드 23/24.
         setAdjustmentLayerLocked: Store['setAdjustmentLayerLocked']
@@ -413,6 +414,8 @@ export function installTestBridge(): void {
         useProjectStore.getState().setAdjustmentLayerTransform(id, partial),
       resetAdjustmentLayerTransform: (id) =>
         useProjectStore.getState().resetAdjustmentLayerTransform(id),
+      toggleAdjustmentLayerMirror: (id, axis) =>
+        useProjectStore.getState().toggleAdjustmentLayerMirror(id, axis),
       setAdjustmentLayerProperties: (id, properties) =>
         useProjectStore.getState().setAdjustmentLayerProperties(id, properties),
       // pptx11 슬라이드 23/24.

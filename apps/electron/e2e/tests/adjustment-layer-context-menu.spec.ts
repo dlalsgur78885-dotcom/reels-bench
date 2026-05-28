@@ -10,6 +10,7 @@
  *  (6) 삭제 — 메뉴에서 삭제 시 layers 에서 제거
  *  (7) playhead 가 layer 범위 밖이면 자르기 비활성
  *  (8) locked 면 split/duplicate/delete/paste 비활성
+ *  (9) 편집 섹션 — 프리즈/역방향은 영상 전용으로 비활성, 미러링/회전은 동작
  */
 
 import { expect, test } from '@playwright/test'
@@ -80,7 +81,9 @@ test.describe('@phase-adjustment-layer-ctx adjustment layer right-click menu', (
       locked?: boolean
       filterPreset?: string
       colorAdjust?: { brightness?: number }
-      transform?: { scale?: number; y?: number }
+      transform?: { scale?: number; y?: number; rotation?: number }
+      mirrorX?: boolean
+      mirrorY?: boolean
       fadeInMs?: number
     }>
   > {
@@ -98,7 +101,9 @@ test.describe('@phase-adjustment-layer-ctx adjustment layer right-click menu', (
                   locked?: boolean
                   filterPreset?: string
                   colorAdjust?: { brightness?: number }
-                  transform?: { scale?: number; y?: number }
+                  transform?: { scale?: number; y?: number; rotation?: number }
+                  mirrorX?: boolean
+                  mirrorY?: boolean
                   fadeInMs?: number
                 }>
               }
@@ -141,7 +146,13 @@ test.describe('@phase-adjustment-layer-ctx adjustment layer right-click menu', (
       'duplicate',
       'copy-properties',
       'paste-properties',
-      'delete'
+      'delete',
+      'freeze-frame',
+      'reverse',
+      'mirror-x',
+      'mirror-y',
+      'rotate-left',
+      'rotate-right'
     ]) {
       await expect(
         launched.page.locator(`[data-testid="adjustment-ctx-${key}"]`)
@@ -361,7 +372,16 @@ test.describe('@phase-adjustment-layer-ctx adjustment layer right-click menu', (
       .click({ button: 'right' })
     await launched.page.waitForTimeout(100)
 
-    for (const key of ['split', 'duplicate', 'paste-properties', 'delete']) {
+    for (const key of [
+      'split',
+      'duplicate',
+      'paste-properties',
+      'delete',
+      'mirror-x',
+      'mirror-y',
+      'rotate-left',
+      'rotate-right'
+    ]) {
       const enabled = await launched.page.getAttribute(
         `[data-testid="adjustment-ctx-${key}"]`,
         'data-enabled'
@@ -374,5 +394,47 @@ test.describe('@phase-adjustment-layer-ctx adjustment layer right-click menu', (
       'data-enabled'
     )
     expect(lockEnabled).toBe('true')
+  })
+
+  test('edit rows expose video-only states and apply mirror/rotation', async () => {
+    if (!launched) throw new Error('launch failed')
+    const layerId = await openEditorAndAddLayer(3000)
+
+    await launched.page
+      .locator(`[data-testid="adjustment-layer-${layerId}"]`)
+      .click({ button: 'right' })
+    await launched.page.waitForTimeout(100)
+
+    await expect(
+      launched.page.locator('[data-testid="adjustment-ctx-freeze-frame"]')
+    ).toHaveAttribute('data-enabled', 'false')
+    await expect(
+      launched.page.locator('[data-testid="adjustment-ctx-reverse"]')
+    ).toHaveAttribute('data-enabled', 'false')
+
+    await launched.page.locator('[data-testid="adjustment-ctx-mirror-x"]').click()
+    await launched.page.waitForTimeout(100)
+    expect((await getLayers())[0].mirrorX).toBe(true)
+
+    await launched.page
+      .locator(`[data-testid="adjustment-layer-${layerId}"]`)
+      .click({ button: 'right' })
+    await launched.page.locator('[data-testid="adjustment-ctx-mirror-y"]').click()
+    await launched.page.waitForTimeout(100)
+    expect((await getLayers())[0].mirrorY).toBe(true)
+
+    await launched.page
+      .locator(`[data-testid="adjustment-layer-${layerId}"]`)
+      .click({ button: 'right' })
+    await launched.page.locator('[data-testid="adjustment-ctx-rotate-right"]').click()
+    await launched.page.waitForTimeout(100)
+    expect((await getLayers())[0].transform?.rotation).toBe(90)
+
+    await launched.page
+      .locator(`[data-testid="adjustment-layer-${layerId}"]`)
+      .click({ button: 'right' })
+    await launched.page.locator('[data-testid="adjustment-ctx-rotate-left"]').click()
+    await launched.page.waitForTimeout(100)
+    expect((await getLayers())[0].transform?.rotation).toBe(0)
   })
 })

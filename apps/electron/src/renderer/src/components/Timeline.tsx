@@ -8,6 +8,7 @@ import {
   getClipMotionTracks,
   getClipSourceText,
   getClipTransform,
+  getAdjustmentLayerTransform,
   getClipFreezeFrames,
   getClipTimelineDuration,
   getSpeedAt,
@@ -764,6 +765,12 @@ export function Timeline(props: TimelineProps): JSX.Element {
   const splitAdjustmentLayerAt = useProjectStore(
     (s) => s.splitAdjustmentLayerAt
   )
+  const setAdjustmentLayerTransform = useProjectStore(
+    (s) => s.setAdjustmentLayerTransform
+  )
+  const toggleAdjustmentLayerMirror = useProjectStore(
+    (s) => s.toggleAdjustmentLayerMirror
+  )
   const setAdjustmentLayerProperties = useProjectStore(
     (s) => s.setAdjustmentLayerProperties
   )
@@ -798,6 +805,8 @@ export function Timeline(props: TimelineProps): JSX.Element {
         | 'filterPreset'
         | 'filterIntensity'
         | 'transform'
+        | 'mirrorX'
+        | 'mirrorY'
         | 'fadeInMs'
         | 'fadeOutMs'
       >
@@ -3258,12 +3267,24 @@ export function Timeline(props: TimelineProps): JSX.Element {
                   transform: layer.transform
                     ? JSON.parse(JSON.stringify(layer.transform))
                     : undefined,
+                  mirrorX: layer.mirrorX,
+                  mirrorY: layer.mirrorY,
                   fadeInMs: layer.fadeInMs,
                   fadeOutMs: layer.fadeOutMs
                 }
               } else if (key === 'paste-properties') {
                 const copied = adjustmentPropertiesClipboardRef.current
                 if (copied) setAdjustmentLayerProperties(layer.id, copied)
+              } else if (key === 'mirror-x') {
+                toggleAdjustmentLayerMirror(layer.id, 'x')
+              } else if (key === 'mirror-y') {
+                toggleAdjustmentLayerMirror(layer.id, 'y')
+              } else if (key === 'rotate-left') {
+                const t = getAdjustmentLayerTransform(layer)
+                setAdjustmentLayerTransform(layer.id, { rotation: t.rotation - 90 })
+              } else if (key === 'rotate-right') {
+                const t = getAdjustmentLayerTransform(layer)
+                setAdjustmentLayerTransform(layer.id, { rotation: t.rotation + 90 })
               } else if (key === 'delete') {
                 removeAdjustmentLayer(layer.id)
                 setSelectedAdjustmentLayerId(null)

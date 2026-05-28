@@ -781,6 +781,7 @@ export interface ElectronApi {
    */
   appMenu: {
     onAction(cb: (action: string) => void): () => void
+    zoom(command: 'in' | 'out' | 'reset'): Promise<number>
   }
   /**
    * pptx10 슬라이드 13 (확장) — 진짜 별도 BrowserWindow 의 PreviewCanvas

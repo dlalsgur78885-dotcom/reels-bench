@@ -11,7 +11,7 @@
  * Cut / Copy / Paste 는 selected clip 들이 대상. clipboard 는 renderer 내부
  * (`pendingImport.ts` 와 비슷한 모듈) 가 관리하므로 main 은 신호만 보냄.
  */
-import { Menu, MenuItemConstructorOptions, BrowserWindow } from 'electron'
+import { Menu, MenuItemConstructorOptions, BrowserWindow, ipcMain } from 'electron'
 
 export type AppMenuAction =
   | 'undo' | 'redo'
@@ -31,9 +31,56 @@ function dispatch(action: AppMenuAction): void {
   send(focused, action)
 }
 
+const MIN_ZOOM_FACTOR = 0.5
+const MAX_ZOOM_FACTOR = 3
+const ZOOM_STEP = 0.1
+
+function getTargetWindow(): BrowserWindow | null {
+  return BrowserWindow.getFocusedWindow()
+    ?? BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+    ?? null
+}
+
+function clampZoomFactor(value: number): number {
+  if (!Number.isFinite(value)) return 1
+  return Math.max(MIN_ZOOM_FACTOR, Math.min(MAX_ZOOM_FACTOR, value))
+}
+
+function setInterfaceZoom(win: BrowserWindow | null, factor: number): void {
+  if (!win || win.isDestroyed()) return
+  win.webContents.setZoomFactor(clampZoomFactor(factor))
+}
+
+function changeInterfaceZoom(delta: number): void {
+  const win = getTargetWindow()
+  if (!win || win.isDestroyed()) return
+  setInterfaceZoom(win, win.webContents.getZoomFactor() + delta)
+}
+
+function resetInterfaceZoom(): void {
+  setInterfaceZoom(getTargetWindow(), 1)
+}
+
+function handleInterfaceZoomCommand(command: 'in' | 'out' | 'reset'): number {
+  const win = getTargetWindow()
+  if (!win || win.isDestroyed()) return 1
+  if (command === 'reset') {
+    setInterfaceZoom(win, 1)
+  } else {
+    changeInterfaceZoom(command === 'in' ? ZOOM_STEP : -ZOOM_STEP)
+  }
+  return win.webContents.getZoomFactor()
+}
+
 export function installAppMenu(): void {
   const isMac = process.platform === 'darwin'
   const template: MenuItemConstructorOptions[] = []
+
+  ipcMain.removeHandler('app-menu:zoom')
+  ipcMain.handle('app-menu:zoom', (_event, command: 'in' | 'out' | 'reset') => {
+    if (command !== 'in' && command !== 'out' && command !== 'reset') return 1
+    return handleInterfaceZoomCommand(command)
+  })
 
   if (isMac) {
     template.push({
@@ -123,9 +170,27 @@ export function installAppMenu(): void {
       { role: 'forceReload' },
       { role: 'toggleDevTools' },
       { type: 'separator' },
-      { role: 'resetZoom' },
-      { role: 'zoomIn' },
-      { role: 'zoomOut' },
+      {
+        label: 'Actual Size',
+        accelerator: 'CmdOrCtrl+0',
+        click: () => resetInterfaceZoom()
+      },
+      {
+        label: 'Zoom In',
+        accelerator: 'CmdOrCtrl+=',
+        click: () => changeInterfaceZoom(ZOOM_STEP)
+      },
+      {
+        label: 'Zoom In',
+        visible: false,
+        accelerator: 'CmdOrCtrl+Plus',
+        click: () => changeInterfaceZoom(ZOOM_STEP)
+      },
+      {
+        label: 'Zoom Out',
+        accelerator: 'CmdOrCtrl+-',
+        click: () => changeInterfaceZoom(-ZOOM_STEP)
+      },
       { type: 'separator' },
       { role: 'togglefullscreen' }
     ]

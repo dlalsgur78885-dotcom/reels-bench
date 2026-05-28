@@ -8,6 +8,10 @@ const ALLOWED_EXTERNAL_HOSTS = new Set<string>([
   'github.com'
 ])
 
+const MIN_INTERFACE_ZOOM = 0.5
+const MAX_INTERFACE_ZOOM = 3
+const INTERFACE_ZOOM_STEP = 0.1
+
 function isAllowedExternal(url: string): boolean {
   try {
     const u = new URL(url)
@@ -18,6 +22,50 @@ function isAllowedExternal(url: string): boolean {
   } catch {
     return false
   }
+}
+
+function clampInterfaceZoom(value: number): number {
+  if (!Number.isFinite(value)) return 1
+  return Math.max(MIN_INTERFACE_ZOOM, Math.min(MAX_INTERFACE_ZOOM, value))
+}
+
+function installInterfaceZoomKeyHandler(win: BrowserWindow): void {
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return
+    if (!(input.control || input.meta)) return
+    if (input.alt) return
+
+    const key = input.key.toLowerCase()
+    const code = input.code.toLowerCase()
+    const isZoomIn =
+      key === '+' ||
+      key === '=' ||
+      key === 'plus' ||
+      code === 'equal' ||
+      code === 'numpadadd'
+    const isZoomOut =
+      key === '-' ||
+      key === '_' ||
+      key === 'minus' ||
+      code === 'minus' ||
+      code === 'numpadsubtract'
+    const isReset =
+      key === '0' ||
+      code === 'digit0' ||
+      code === 'numpad0'
+
+    if (!isZoomIn && !isZoomOut && !isReset) return
+
+    event.preventDefault()
+    const current = win.webContents.getZoomFactor()
+    if (isReset) {
+      win.webContents.setZoomFactor(1)
+    } else if (isZoomIn) {
+      win.webContents.setZoomFactor(clampInterfaceZoom(current + INTERFACE_ZOOM_STEP))
+    } else {
+      win.webContents.setZoomFactor(clampInterfaceZoom(current - INTERFACE_ZOOM_STEP))
+    }
+  })
 }
 
 export function createMainWindow(): BrowserWindow {
@@ -44,6 +92,7 @@ export function createMainWindow(): BrowserWindow {
   })
 
   win.once('ready-to-show', () => win.show())
+  installInterfaceZoomKeyHandler(win)
 
   // TEMP DIAG: pipe renderer console messages to the main-process stderr so
   // the bg log captures them. Also auto-open devtools in dev. Revert when fix is in.
@@ -123,6 +172,7 @@ export function openDetachedPreviewWindow(): BrowserWindow {
   })
   win.removeMenu()
   win.once('ready-to-show', () => win.show())
+  installInterfaceZoomKeyHandler(win)
   win.on('closed', () => { detachedPreviewWin = null })
 
   const url = process.env.ELECTRON_RENDERER_URL ?? getRendererLoadUrl()

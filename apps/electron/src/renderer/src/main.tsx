@@ -8,6 +8,30 @@ import './global.css'
 const container = document.getElementById('root')
 if (!container) throw new Error('root container missing')
 
+// pptx13 slide 10 — View 메뉴의 기본 accelerator 만으로는 Windows
+// Ctrl++ 입력이 누락될 수 있어 renderer keydown 도 main zoom IPC로 연결한다.
+window.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+  const key = e.key.toLowerCase()
+  const code = e.code.toLowerCase()
+  const isZoomIn =
+    key === '+' ||
+    key === '=' ||
+    code === 'equal' ||
+    code === 'numpadadd'
+  const isZoomOut =
+    key === '-' ||
+    key === '_' ||
+    code === 'minus' ||
+    code === 'numpadsubtract'
+  const isReset = key === '0' || code === 'digit0' || code === 'numpad0'
+  if (!isZoomIn && !isZoomOut && !isReset) return
+  e.preventDefault()
+  e.stopPropagation()
+  const command = isReset ? 'reset' : isZoomIn ? 'in' : 'out'
+  void window.electron?.appMenu?.zoom?.(command)
+}, { capture: true })
+
 // Renderer-only test bridge — exposes editing actions on window for
 // Playwright. Safe to install unconditionally (a few KB of refs).
 installTestBridge()

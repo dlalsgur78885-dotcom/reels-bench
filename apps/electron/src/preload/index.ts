@@ -284,7 +284,9 @@ const api: ElectronApi = {
       const listener = (_ev: IpcRendererEvent, action: string): void => cb(action)
       ipcRenderer.on('app-menu:action', listener)
       return () => ipcRenderer.removeListener('app-menu:action', listener)
-    }
+    },
+    zoom: (command: 'in' | 'out' | 'reset'): Promise<number> =>
+      ipcRenderer.invoke('app-menu:zoom', command)
   },
   // pptx10 슬라이드 13 (확장) — 진짜 별도 BrowserWindow 분리 + state sync.
   previewWindow: {

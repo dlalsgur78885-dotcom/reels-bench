@@ -1009,6 +1009,9 @@ test.describe('@phase-3-18-collage collage / split-screen layout', () => {
         document.querySelectorAll<HTMLVideoElement>('[data-preview-video-layer="true"]')
       ).map((v) => ({
         readyState: v.readyState,
+        currentTime: v.currentTime,
+        paused: v.paused,
+        muted: v.muted,
         hasPoster: v.poster.startsWith('data:image/'),
         rect: v.getBoundingClientRect().toJSON()
       }))
@@ -1017,6 +1020,9 @@ test.describe('@phase-3-18-collage collage / split-screen layout', () => {
     expect(layerStates).toHaveLength(2)
     for (const state of layerStates) {
       expect(state.readyState >= 2 || state.hasPoster).toBe(true)
+      expect(state.currentTime).toBeGreaterThan(0.5)
+      expect(state.paused).toBe(false)
+      expect(state.muted).toBe(true)
       expect(state.rect.width).toBeGreaterThan(0)
       expect(state.rect.height).toBeGreaterThan(0)
     }

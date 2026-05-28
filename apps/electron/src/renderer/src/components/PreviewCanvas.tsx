@@ -1610,11 +1610,11 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
             if (graph.isReady()) {
               graph.setTrackGain(track.id, effectiveGain, 20)
               // WebAudio path uses unity passthrough on `el.volume` to avoid
-              // double-attenuation. But we still mirror track-mute on
-              // `el.muted` so legacy DOM-readers (e.g. audio.spec.ts) see
-              // the expected muted=true. Setting el.muted=true on a wrapped
-              // element silences both layers consistently.
-              const wantElMuted = !trackIsAudible
+              // double-attenuation. In multi-video preview, keep DOM video
+              // elements muted too; Chromium can otherwise treat simultaneous
+              // audible <video> playback differently even when the GainNode is
+              // ramped to zero, which makes layout preview frames stall.
+              const wantElMuted = multiVideoPreview || !trackIsAudible
               if (v.muted !== wantElMuted) v.muted = wantElMuted
               if (Math.abs(v.volume - 1) > 0.005) v.volume = 1
             } else {

@@ -24,7 +24,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 # API Key 인증 미들웨어 — 외부 origin은 X-API-Key 필수
 from services import auth as auth_svc  # noqa: E402
-from fastapi.responses import JSONResponse  # noqa: E402
+from fastapi.responses import JSONResponse, RedirectResponse  # noqa: E402
 
 _PUBLIC_API_PATHS = {
     "/api/health",
@@ -541,12 +541,13 @@ def reanalyze_structure_for_reel(shortcode: str, request: Request):
     H = {"apikey": SK, "Authorization": f"Bearer {SK}"}
 
     tr_rows = _r.get(
-        f"{SUPA}/rest/v1/reels_transcripts?shortcode=eq.{shortcode}&select=transcript&limit=1",
+        f"{SUPA}/rest/v1/reels_transcripts?shortcode=eq.{shortcode}&select=transcript,segments&limit=1",
         headers=H, timeout=10,
     ).json()
     if not tr_rows or not tr_rows[0].get("transcript"):
         raise HTTPException(404, "transcript 없음")
     transcript = tr_rows[0]["transcript"]
+    segments = tr_rows[0].get("segments") or None
 
     meta_rows = _r.get(
         f"{SUPA}/rest/v1/reels_metadata?shortcode=eq.{shortcode}&select=caption_text&limit=1",
@@ -555,7 +556,7 @@ def reanalyze_structure_for_reel(shortcode: str, request: Request):
     caption = (meta_rows[0].get("caption_text") if meta_rows else "") or ""
 
     from services import gemini as _g
-    structure = _g.analyze_script_structure(transcript, caption)
+    structure = _g.analyze_script_structure(transcript, caption, segments=segments)
     if not structure:
         raise HTTPException(500, "structure 재생성 실패")
 
@@ -904,7 +905,7 @@ JSON만. 설명 X.
         "required": ["문제", "해결", "혜택"],
     }
     try:
-        result = script_gen.call_gemini(prompt, model="gemini-3.1-flash-lite-preview", max_tokens=4096, response_schema=schema)
+        result = script_gen.call_gemini(prompt, model="gemini-3.1-flash-lite", max_tokens=4096, response_schema=schema)
         if isinstance(result, list) and result:
             result = result[0]
         if not isinstance(result, dict):
@@ -1021,7 +1022,7 @@ JSON만. 설명·앞말·줄번호 X.
         "required": ["reviews"],
     }
     try:
-        result = script_gen.call_gemini(prompt, model="gemini-3.1-flash-lite-preview", max_tokens=4096, response_schema=schema)
+        result = script_gen.call_gemini(prompt, model="gemini-3.1-flash-lite", max_tokens=4096, response_schema=schema)
         if isinstance(result, list) and result:
             result = result[0]
         if not isinstance(result, dict):
@@ -1094,7 +1095,7 @@ def preview_mapping(shortcode: str, body: PreviewMappingRequest, request: Reques
     def _call_pre_planner():
         # max_tokens=8192 + responseSchema 강제 → user_usp_ids[] 형식 보장
         r = script_gen.call_gemini(
-            prompt, model="gemini-3-flash-preview", max_tokens=8192,
+            prompt, model="gemini-3.5-flash", max_tokens=8192,
             response_schema=script_gen.PRE_PLANNER_SCHEMA,
         )
         return r[0] if isinstance(r, list) and r else r
@@ -7905,15 +7906,29 @@ def audio_library(
     return {"items": items, "next_cursor": None}
 
 
-# ── Reels Studio (Electron) — latest release pointer ──
+# ── Reels Studio (Electron) — latest installer pointer ──
 #
-# `/editor` 페이지가 호출하는 단일 GET. GitHub Releases API에서 최신 릴리스
-# 정보를 가져와 NSIS Setup .exe asset만 골라 응답 shape으로 변환.
-# 0.2.0부터 Supabase Storage(50MB 한도) → GitHub Releases로 호스팅 이전.
-# unauthenticated GitHub API: 60 req/h per IP — 페이지 로드 빈도라 충분.
+# `/editor` 페이지가 호출하는 단일 GET. 자동업데이트를 쓰지 않으므로
+# GitHub Releases/latest.yml/blockmap이 아니라 직접 업로드한 NSIS Setup
+# installer URL을 우선 응답한다. 운영 환경에는 아래 값을 넣는다:
+#   EDITOR_DOWNLOAD_URL      필수: 직접 다운로드 URL
+#   EDITOR_DOWNLOAD_VERSION  선택: 표시 버전
+#   EDITOR_DOWNLOAD_FILENAME 선택: 파일명
+#   EDITOR_DOWNLOAD_SIZE     선택: 바이트 단위 크기
+#   EDITOR_RELEASE_DATE      선택: ISO 날짜
+#
+# 직접 URL이 아직 설정되지 않은 환경만 기존 GitHub Release 조회로 fallback 한다.
 _EDITOR_REPO = "dlalsgur78885-dotcom/reels-bench"
 _editor_cache: dict[str, tuple[float, dict]] = {}
 _EDITOR_CACHE_TTL = 120.0  # 2분 — 새 릴리스 알람 지연 허용
+
+
+@app.get("/editor/download")
+def editor_download_redirect():
+    direct_url = os.getenv("EDITOR_DOWNLOAD_URL", "").strip()
+    if not direct_url:
+        raise HTTPException(404, "editor installer not configured")
+    return RedirectResponse(direct_url, status_code=302)
 
 
 @app.get("/api/editor/latest")
@@ -7921,7 +7936,7 @@ def editor_latest(request: Request):
     """영상 편집기(Electron) 최신 NSIS installer 정보.
 
     응답 shape: { version, filename, download_url, release_date, size, platform }.
-    asset이 없으면 download_url='' 로 graceful — UI 가 "준비 중" 표시.
+    직접 다운로드 URL이 없으면 download_url='' 로 graceful — UI 가 "준비 중" 표시.
     옛 endpoint와 동일하게 require_user — 로그인된 사용자만 다운로드 페이지에서
     호출 가능 (same-origin이면 middleware는 통과, require_user가 user 검증).
     """
@@ -7931,6 +7946,26 @@ def editor_latest(request: Request):
     cached = _editor_cache.get("latest")
     if cached and now - cached[0] < _EDITOR_CACHE_TTL:
         return cached[1]
+
+    direct_url = os.getenv("EDITOR_DOWNLOAD_URL", "").strip()
+    if direct_url:
+        size_raw = os.getenv("EDITOR_DOWNLOAD_SIZE", "").strip()
+        try:
+            size = int(size_raw) if size_raw else None
+        except ValueError:
+            size = None
+        payload = {
+            "version": os.getenv("EDITOR_DOWNLOAD_VERSION") or None,
+            "filename": os.getenv("EDITOR_DOWNLOAD_FILENAME")
+                or direct_url.rstrip("/").split("/")[-1],
+            "download_url": os.getenv("EDITOR_DOWNLOAD_PUBLIC_URL") or "/editor/download",
+            "release_date": os.getenv("EDITOR_RELEASE_DATE") or None,
+            "size": size,
+            "platform": "win32",
+        }
+        _editor_cache["latest"] = (now, payload)
+        return payload
+
     try:
         r = requests.get(
             f"https://api.github.com/repos/{_EDITOR_REPO}/releases/latest",

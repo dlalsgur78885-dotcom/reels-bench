@@ -30,8 +30,7 @@
   },
   "win": {
     "target": [
-      { "target": "nsis", "arch": ["x64"] },
-      { "target": "portable", "arch": ["x64"] }
+      { "target": "nsis", "arch": ["x64"] }
     ],
     "icon": "build/icon.ico",
     "signAndEditExecutable": false
@@ -42,12 +41,5 @@
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
     "shortcutName": "Reels Studio"
-  },
-  "publish": {
-    "provider": "github",
-    "owner": "dlalsgur78885-dotcom",
-    "repo": "reels-bench",
-    "releaseType": "release",
-    "vPrefixedTagName": true
   }
 }

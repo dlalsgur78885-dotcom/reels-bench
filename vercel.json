@@ -8,7 +8,12 @@
     { "src": "web/dist/mockup-cards/**", "use": "@vercel/static" },
     { "src": "web/dist/mockup-bg-thumbs/**", "use": "@vercel/static" },
     { "src": "web/dist/mockup-frames/**", "use": "@vercel/static" },
-    { "src": "api/index.py", "use": "@vercel/python", "config": { "maxDuration": 800, "includeFiles": "web/dist/**" } },
+    { "src": "editor-installers/**", "use": "@vercel/static" },
+    { "src": "api/index.py", "use": "@vercel/python", "config": {
+      "maxDuration": 800,
+      "includeFiles": "web/dist/**",
+      "excludeFiles": "{apps/**,node_modules/**,web/node_modules/**,test-results/**,_pw_screens/**,frames/**,thumbs/**,editor-installers/**,**/*.mp4,**/*.mp3,**/*.wav,logs/**,tts/**}"
+    } },
     { "src": "api/cron/fb-scrape.ts", "use": "@vercel/node", "config": { "maxDuration": 60 } }
   ],
   "routes": [
@@ -22,6 +27,8 @@
       "headers": { "Cache-Control": "public, max-age=86400" } },
     { "src": "/mockup-frames/(.*)", "dest": "/web/dist/mockup-frames/$1",
       "headers": { "Cache-Control": "public, max-age=86400" } },
+    { "src": "/downloads/(.*)", "dest": "/editor-installers/$1",
+      "headers": { "Cache-Control": "public, max-age=31536000, immutable" } },
     { "src": "/api/cron/fb-scrape", "dest": "/api/cron/fb-scrape.ts" },
     { "src": "/(.*)", "dest": "/api/index.py" }
   ],

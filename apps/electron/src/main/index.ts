@@ -10,7 +10,6 @@ import {
   registerAppProtocolHandler,
   registerAppSchemePrivileges
 } from './appProtocol'
-import { initAutoUpdate } from './auto-update'
 import { installAppMenu } from './appMenu'
 
 app.setName('Reels Studio')
@@ -84,15 +83,6 @@ app.whenReady().then(() => {
   registerIpcHandlers()
   installAppMenu()
   const mainWin = createMainWindow()
-
-  // Phase 4.7 — kick off background auto-update check. No-op in dev.
-  // The getter walks BrowserWindow.getAllWindows() as a fallback so the
-  // banner still arrives if the original window was closed/recreated.
-  initAutoUpdate(() => {
-    if (mainWin && !mainWin.isDestroyed()) return mainWin
-    const wins = BrowserWindow.getAllWindows()
-    return wins.find((w) => !w.isDestroyed()) ?? null
-  })
 
   // Best-effort: surface the bundled ffmpeg version in main-process logs so
   // future debugging immediately shows which build the app is using. Doesn't

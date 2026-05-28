@@ -59,7 +59,7 @@ export default function DownloadEditor() {
         <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 4px' }}>영상 편집기 — Reels Studio</h1>
         <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: '0 0 20px', lineHeight: 1.6 }}>
           릴스 제작용 데스크톱 영상 편집기입니다. 설치하면 자막·오디오·컷 편집을
-          앱 안에서 바로 할 수 있고, 새 버전이 나오면 자동으로 업데이트됩니다.
+          앱 안에서 바로 할 수 있습니다. 새 버전은 이 페이지에서 다시 받아 설치하면 됩니다.
         </p>
 
         {loading && <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>릴리스 정보 불러오는 중…</div>}
@@ -111,7 +111,7 @@ export default function DownloadEditor() {
                 <li>다운로드한 파일을 실행합니다. (Windows SmartScreen 경고가 뜨면
                   "추가 정보 → 실행"을 누르세요.)</li>
                 <li>설치가 끝나면 바탕화면/시작 메뉴의 <b>Reels Studio</b>로 실행합니다.</li>
-                <li>이후 새 버전은 앱 실행 시 자동으로 업데이트됩니다.</li>
+                <li>새 버전이 필요하면 이 페이지에서 최신 설치 파일을 다시 다운로드합니다.</li>
               </ol>
             </div>
           </>

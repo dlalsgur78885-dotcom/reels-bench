@@ -25,6 +25,7 @@ web/dist/
 thumbs/
 frames/
 extra_cache/
+editor-installers/
 *.tar.bz2
 sherpa-onnx-*/
 *.html

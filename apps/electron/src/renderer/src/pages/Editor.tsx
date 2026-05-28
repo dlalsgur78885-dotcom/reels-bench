@@ -1804,9 +1804,8 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
 
         {/* Phase 3.46 — 옵션 메뉴 popover: BPM/비트 스냅/커버/진행 바/캔버스 배경/플레이헤드 */}
         <ToolbarMenu label="옵션" testId="topbar-menu-options">
-          {/* 버전 + 업데이트 확인 — 자동 알람 인프라(UpdateBanner)는
-              packaged 빌드에서 5분마다 자체 동작. 여기는 수동 트리거 +
-              현재 버전 가시화. */}
+          {/* 현재 설치 버전 표시. 업데이트는 웹 /editor 에서 설치 파일을
+              다시 내려받는 수동 배포 방식으로 운영한다. */}
           <UpdateStatusPanel />
           <div style={styles.menuGroupLabel}>BPM · 비트 스냅</div>
           <div style={styles.menuRow}>

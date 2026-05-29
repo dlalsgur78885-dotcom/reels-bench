@@ -147,6 +147,74 @@ test.describe('@phase-1-import-panel MediaLibrary 5-tab import panel', () => {
     await expect(dropZone).toContainText('가져오기')
   })
 
+  test('local media can be filtered by folder and sorted from the empty-space context menu', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+
+    await page.evaluate(() => {
+      const store = (
+        window as unknown as {
+          __PROJECT_STORE_FOR_TEST__: {
+            getState: () => {
+              createNew: () => void
+              addMedia: (asset: unknown) => void
+            }
+          }
+        }
+      ).__PROJECT_STORE_FOR_TEST__
+      const state = store.getState()
+      state.createNew()
+      const base = {
+        kind: 'video',
+        width: 1080,
+        height: 1920,
+        codec: 'h264',
+        fileSizeBytes: 0
+      }
+      state.addMedia({
+        ...base,
+        id: 'media-zeta',
+        path: 'C:\\source\\folder-a\\zeta.mp4',
+        durationMs: 3000,
+        importedAt: 300,
+        fileName: 'zeta.mp4'
+      })
+      state.addMedia({
+        ...base,
+        id: 'media-alpha',
+        path: 'C:\\source\\folder-a\\alpha.mp4',
+        durationMs: 1000,
+        importedAt: 100,
+        fileName: 'alpha.mp4'
+      })
+      state.addMedia({
+        ...base,
+        id: 'media-bravo',
+        path: 'D:\\assets\\folder-b\\bravo.mp4',
+        durationMs: 2000,
+        importedAt: 200,
+        fileName: 'bravo.mp4'
+      })
+    })
+
+    await expect(page.locator('[data-testid="media-card"]')).toHaveCount(3)
+    await expect(page.locator('[data-testid="media-library-controls"]')).toBeVisible()
+
+    await page.locator('[data-testid="drop-zone"]').click({ button: 'right' })
+    await expect(page.locator('[data-testid="media-library-context-menu"]')).toBeVisible()
+    await page.locator('[data-testid="media-context-folder"]').filter({ hasText: 'folder-b' }).click()
+    await expect(page.locator('[data-testid="media-card"]')).toHaveCount(1)
+    await expect(page.locator('[data-testid="media-card-name"]')).toHaveText('bravo.mp4')
+
+    await page.locator('[data-testid="media-folder-filter"]').selectOption('__all__')
+    await page.locator('[data-testid="media-sort-select"]').selectOption('nameAsc')
+    await expect(page.locator('[data-testid="media-card-name"]')).toHaveText([
+      'alpha.mp4',
+      'bravo.mp4',
+      'zeta.mp4'
+    ])
+  })
+
   test('switching away from local tab hides the import button', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
@@ -718,5 +786,147 @@ test.describe('@phase-1-import-panel library tab happy path (200 + items)', () =
     await expect(
       page.locator('[role="button"]:has-text("가져오기 실패")')
     ).toBeVisible({ timeout: 5_000 })
+  })
+
+  test('dragging a library tile to the timeline waits for pending import and creates a clip', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    const fixture = process.env.E2E_FIXTURE_MP4
+    if (!fixture) throw new Error('E2E_FIXTURE_MP4 not set — globalSetup failed')
+
+    await page.locator('[data-testid="import-tab-library"]').click()
+    await expect(page.locator('[data-testid="remote-grid"]')).toBeVisible({
+      timeout: 8_000
+    })
+
+    await page.evaluate(async (filePath: string) => {
+      await window.electron.fs.allowPath(filePath)
+      const probe = await window.electron.media.probe(filePath)
+      const store = (
+        window as unknown as {
+          __PROJECT_STORE_FOR_TEST__: {
+            getState: () => {
+              addMedia: (asset: unknown) => void
+            }
+          }
+        }
+      ).__PROJECT_STORE_FOR_TEST__
+      const pending = (
+        window as unknown as {
+          __PENDING_IMPORT_FOR_TEST__: {
+            mime: string
+            newPendingId: () => string
+            registerPending: (
+              tempId: string,
+              promise: Promise<unknown>,
+              displayName: string
+            ) => void
+          }
+        }
+      ).__PENDING_IMPORT_FOR_TEST__
+      const asset = {
+        id: 'pending-library-media',
+        path: filePath,
+        kind: probe.kind,
+        durationMs: probe.durationMs,
+        width: probe.width,
+        height: probe.height,
+        codec: probe.codec,
+        importedAt: Date.now(),
+        fileName: 'Fake Video 0',
+        fileSizeBytes: 0
+      }
+      store.getState().addMedia(asset)
+      const tempId = pending.newPendingId()
+      pending.registerPending(
+        tempId,
+        new Promise((resolve) => setTimeout(() => resolve(asset), 100)),
+        'Fake Video 0'
+      )
+      ;(window as unknown as { __TEST_PENDING_DROP__: { mime: string; tempId: string } }).__TEST_PENDING_DROP__ = {
+        mime: pending.mime,
+        tempId
+      }
+    }, fixture)
+
+    await page.evaluate(() => {
+      const lane = document.querySelector(
+        '[data-testid="track-lane-video"]'
+      ) as HTMLElement | null
+      if (!lane) throw new Error('lane missing')
+      const pending = (
+        window as unknown as { __TEST_PENDING_DROP__: { mime: string; tempId: string } }
+      ).__TEST_PENDING_DROP__
+      const dt = new DataTransfer()
+      dt.setData(pending.mime, pending.tempId)
+      const rect = lane.getBoundingClientRect()
+      const clientX = rect.left + 90
+      const clientY = rect.top + rect.height / 2
+      lane.dispatchEvent(
+        new DragEvent('dragover', {
+          bubbles: true,
+          cancelable: true,
+          clientX,
+          clientY,
+          dataTransfer: dt
+        })
+      )
+      lane.dispatchEvent(
+        new DragEvent('drop', {
+          bubbles: true,
+          cancelable: true,
+          clientX,
+          clientY,
+          dataTransfer: dt
+        })
+      )
+    })
+
+    await page.waitForFunction(
+      () =>
+        (
+          window as unknown as {
+            __PROJECT_STORE_FOR_TEST__: {
+              getState: () => {
+                project: {
+                  tracks: Array<{ kind: string; clips: unknown[] }>
+                }
+              }
+            }
+          }
+        ).__PROJECT_STORE_FOR_TEST__
+          .getState()
+          .project.tracks.find((t) => t.kind === 'video')?.clips.length === 1,
+      null,
+      { timeout: 8_000 }
+    )
+
+    const result = await page.evaluate(() => {
+      const store = (
+        window as unknown as {
+          __PROJECT_STORE_FOR_TEST__: {
+            getState: () => {
+              project: {
+                tracks: Array<{
+                  kind: string
+                  clips: Array<{ kind: string; mediaId: string }>
+                }>
+                media: Record<string, { fileName: string }>
+              }
+            }
+          }
+        }
+      ).__PROJECT_STORE_FOR_TEST__
+      const project = store.getState().project
+      const videoTrack = project.tracks.find((t) => t.kind === 'video')
+      return {
+        clipCount: videoTrack?.clips.length ?? 0,
+        mediaNames: Object.values(project.media).map((m) => m.fileName)
+      }
+    })
+
+    expect(result.clipCount).toBe(1)
+    expect(result.mediaNames).toContain('Fake Video 0')
+    await expect(page.locator('[data-testid="media-clip-block"]')).toHaveCount(1)
   })
 })

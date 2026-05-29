@@ -50,3 +50,17 @@ export function awaitPending(tempId: string): Promise<MediaAsset | null> {
 export function pendingDisplayName(tempId: string): string | undefined {
   return pending.get(tempId)?.displayName
 }
+
+if (typeof window !== 'undefined') {
+  ;(window as unknown as {
+    __PENDING_IMPORT_FOR_TEST__?: {
+      mime: string
+      newPendingId: typeof newPendingId
+      registerPending: typeof registerPending
+    }
+  }).__PENDING_IMPORT_FOR_TEST__ = {
+    mime: PENDING_MEDIA_DRAG_MIME,
+    newPendingId,
+    registerPending
+  }
+}

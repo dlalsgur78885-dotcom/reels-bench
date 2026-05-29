@@ -129,6 +129,7 @@ import {
   getClipFreezeFrames,
   getClipTimelineDuration,
   getAdjustmentLayerTransform,
+  getAdjustmentLayerTransformAt,
   getClipTransform,
   getSpeedAt,
   getTransformAt,
@@ -720,8 +721,32 @@ export interface ProjectStore {
     id: string,
     partial: Partial<ClipTransform>
   ): void
-  /** Reset an adjustment layer transform back to full-frame identity. */
+  /** Reset an adjustment layer transform back to full-frame identity. Also drops any keyframe track. */
   resetAdjustmentLayerTransform(id: string): void
+  /**
+   * 릴스벤치14 슬라이드 6 — adjustment layer 변형 키프레임 (영상 클립과 동일).
+   * 트랙이 없으면 layer.startMs 기준 0ms + atMs 두 키프레임을 현재 정적 변형으로
+   * seed, 있으면 곡선 위에 삽입. atMs 는 layer.startMs 기준 오프셋.
+   */
+  addAdjustmentLayerTransformKeyframe(
+    id: string,
+    atMs: number,
+    transform?: Partial<ClipTransform>
+  ): void
+  /** Update an adjustment layer keyframe (transform/atMs/easing patch). */
+  updateAdjustmentLayerTransformKeyframe(
+    id: string,
+    kfIndex: number,
+    partial: {
+      transform?: Partial<ClipTransform>
+      atMs?: number
+      easing?: EasingKind | null
+    }
+  ): void
+  /** Remove one keyframe; collapsing below 2 bakes the survivor into the static transform. */
+  removeAdjustmentLayerTransformKeyframe(id: string, kfIndex: number): void
+  /** Drop the whole keyframe track, keeping the static transform. */
+  clearAdjustmentLayerTransformKeyframes(id: string): void
   /** Toggle horizontal/vertical mirroring on an adjustment layer. */
   toggleAdjustmentLayerMirror(id: string, axis: 'x' | 'y'): void
   /**
@@ -2186,18 +2211,201 @@ export const useProjectStore = create<ProjectStore>()(
     const nextLayers = layers.map((l) => {
       if (l.id !== id) return l
       if (isAdjustmentLayerLocked(l)) return l
-      if (
+      const isDefaultStatic =
         l.transform &&
         l.transform.x === DEFAULT_ADJUSTMENT_LAYER_TRANSFORM.x &&
         l.transform.y === DEFAULT_ADJUSTMENT_LAYER_TRANSFORM.y &&
         l.transform.scale === DEFAULT_ADJUSTMENT_LAYER_TRANSFORM.scale &&
         l.transform.rotation === DEFAULT_ADJUSTMENT_LAYER_TRANSFORM.rotation &&
         l.transform.opacity === DEFAULT_ADJUSTMENT_LAYER_TRANSFORM.opacity
-      ) {
-        return l
-      }
+      // Already at the default static look AND no keyframe track → nothing to do.
+      if (isDefaultStatic && l.transformKeyframes === undefined) return l
       changed = true
-      return { ...l, transform: { ...DEFAULT_ADJUSTMENT_LAYER_TRANSFORM } }
+      const copy: AdjustmentLayer = {
+        ...l,
+        transform: { ...DEFAULT_ADJUSTMENT_LAYER_TRANSFORM }
+      }
+      // 초기화는 애니메이션 트랙도 함께 제거.
+      delete copy.transformKeyframes
+      return copy
+    })
+    if (!changed) return
+    const next = touch({ ...project, adjustmentLayers: nextLayers })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  addAdjustmentLayerTransformKeyframe(id, atMs, transform): void {
+    const at = Math.round(Number(atMs))
+    if (!Number.isFinite(at) || at < 0) return
+    if (transform && typeof transform === 'object') {
+      for (const v of Object.values(transform)) {
+        if (v !== undefined && !Number.isFinite(v)) return
+      }
+    }
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    let changed = false
+    const nextLayers = layers.map((l) => {
+      if (l.id !== id) return l
+      if (isAdjustmentLayerLocked(l)) return l
+      const dur = Math.max(0, l.endMs - l.startMs)
+      if (at > dur) return l
+      const existing = Array.isArray(l.transformKeyframes)
+        ? [...l.transformKeyframes]
+        : []
+      let nextKfs: TransformKeyframe[]
+      if (existing.length < 2) {
+        // Seed two keyframes (0 + requested) at the layer's current static
+        // transform. atMs===0 collapses on dedup, so nudge the second.
+        const base = clampClipTransform(getAdjustmentLayerTransform(l))
+        const secondAt = at <= 0 ? Math.min(dur, MIN_KEYFRAME_GAP_MS) : at
+        nextKfs = [
+          { atMs: 0, transform: { ...base } },
+          {
+            atMs: secondAt,
+            transform:
+              transform && Object.keys(transform).length > 0
+                ? clampClipTransform({ ...base, ...transform })
+                : { ...base }
+          }
+        ]
+      } else {
+        if (existing.length >= MAX_KEYFRAMES_PER_CLIP) return l
+        const onCurve = getAdjustmentLayerTransformAt(l, l.startMs + at)
+        const merged: ClipTransform =
+          transform && Object.keys(transform).length > 0
+            ? clampClipTransform({ ...onCurve, ...transform })
+            : clampClipTransform(onCurve)
+        nextKfs = [...existing, { atMs: at, transform: merged }]
+      }
+      const finalKfs = normalizeKeyframes(nextKfs)
+      if (finalKfs.length < 2) return l
+      changed = true
+      return { ...l, transformKeyframes: finalKfs }
+    })
+    if (!changed) return
+    const next = touch({ ...project, adjustmentLayers: nextLayers })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  updateAdjustmentLayerTransformKeyframe(id, kfIndex, partial): void {
+    if (!partial || typeof partial !== 'object') return
+    if (partial.transform && typeof partial.transform === 'object') {
+      for (const v of Object.values(partial.transform)) {
+        if (v !== undefined && !Number.isFinite(v)) return
+      }
+    }
+    if (partial.atMs !== undefined && !Number.isFinite(Number(partial.atMs))) {
+      return
+    }
+    if (
+      partial.easing !== undefined &&
+      partial.easing !== null &&
+      !(EASING_KINDS as readonly string[]).includes(partial.easing)
+    ) {
+      return
+    }
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    let changed = false
+    const nextLayers = layers.map((l) => {
+      if (l.id !== id) return l
+      if (isAdjustmentLayerLocked(l)) return l
+      const existing = Array.isArray(l.transformKeyframes)
+        ? [...l.transformKeyframes]
+        : []
+      if (kfIndex < 0 || kfIndex >= existing.length) return l
+      const dur = Math.max(0, l.endMs - l.startMs)
+      const cur = existing[kfIndex]
+      const nextAt =
+        partial.atMs !== undefined
+          ? Math.max(0, Math.min(dur, Math.round(Number(partial.atMs))))
+          : cur.atMs
+      const nextTransform = partial.transform
+        ? clampClipTransform({ ...cur.transform, ...partial.transform })
+        : clampClipTransform(cur.transform)
+      const nextEasing: EasingKind | undefined =
+        partial.easing === undefined
+          ? cur.easing
+          : partial.easing === null || partial.easing === 'linear'
+            ? undefined
+            : partial.easing
+      const updated = existing.map((kf, i) =>
+        i === kfIndex
+          ? {
+              atMs: nextAt,
+              transform: nextTransform,
+              ...(nextEasing ? { easing: nextEasing } : {})
+            }
+          : kf
+      )
+      const finalKfs = normalizeKeyframes(updated)
+      changed = true
+      if (finalKfs.length < 2) {
+        // Collapsed below the invariant — bake the survivor into the static transform.
+        const copy: AdjustmentLayer = {
+          ...l,
+          transform: finalKfs[0]
+            ? clampClipTransform(finalKfs[0].transform)
+            : l.transform
+        }
+        delete copy.transformKeyframes
+        return copy
+      }
+      return { ...l, transformKeyframes: finalKfs }
+    })
+    if (!changed) return
+    const next = touch({ ...project, adjustmentLayers: nextLayers })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  removeAdjustmentLayerTransformKeyframe(id, kfIndex): void {
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    let changed = false
+    const nextLayers = layers.map((l) => {
+      if (l.id !== id) return l
+      if (isAdjustmentLayerLocked(l)) return l
+      const existing = Array.isArray(l.transformKeyframes)
+        ? [...l.transformKeyframes]
+        : []
+      if (kfIndex < 0 || kfIndex >= existing.length) return l
+      const remaining = existing.filter((_, i) => i !== kfIndex)
+      changed = true
+      if (remaining.length < 2) {
+        // Below the >= 2 invariant — bake the survivor's look into the static transform.
+        const survivor = remaining[0]
+        const baked = survivor
+          ? clampClipTransform(survivor.transform)
+          : undefined
+        const copy: AdjustmentLayer = { ...l }
+        delete copy.transformKeyframes
+        if (baked && !isIdentityTransform(baked)) copy.transform = baked
+        return copy
+      }
+      return { ...l, transformKeyframes: normalizeKeyframes(remaining) }
+    })
+    if (!changed) return
+    const next = touch({ ...project, adjustmentLayers: nextLayers })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  clearAdjustmentLayerTransformKeyframes(id): void {
+    const project = get().project
+    const layers = project.adjustmentLayers ?? []
+    let changed = false
+    const nextLayers = layers.map((l) => {
+      if (l.id !== id) return l
+      if (isAdjustmentLayerLocked(l)) return l
+      if (l.transformKeyframes === undefined) return l
+      changed = true
+      const copy: AdjustmentLayer = { ...l }
+      delete copy.transformKeyframes
+      return copy
     })
     if (!changed) return
     const next = touch({ ...project, adjustmentLayers: nextLayers })
@@ -6998,6 +7206,19 @@ export const useProjectStore = create<ProjectStore>()(
     }
     if (located.length < 2) return
 
+    // Atomic undo step. applyLayout performs SEVERAL store mutations:
+    // addVideoTrack() creates tracks through their OWN set(), plus the final
+    // clip-move set(). Leaving zundo's 200ms throttle to coalesce them is
+    // fragile — a quick Ctrl+Z races the trailing flush, which either leaves a
+    // phantom empty video track (undo lands before the addVideoTrack set is
+    // recorded) or reverts the wrong amount and wipes redo. Pause temporal
+    // across every mutation, then push exactly ONE history entry (same pattern
+    // as runAutoReframe). The body is synchronous; try/finally guarantees the
+    // pause is always lifted even on an unexpected throw.
+    const preRunProject = get().project
+    const temporal = useProjectStore.temporal.getState()
+    temporal.pause()
+    try {
     // Use only as many clips as the preset has cells.
     const memberCount = Math.min(located.length, preset.cells.length)
     const members = located.slice(0, memberCount)
@@ -7146,6 +7367,20 @@ export const useProjectStore = create<ProjectStore>()(
     const next = touch({ ...base, tracks })
     set({ project: next })
     schedulePersist(next)
+    } finally {
+      temporal.resume()
+      // One clean undo entry for the whole apply. touch() always returns a
+      // fresh object on a real apply, so cur !== preRunProject holds.
+      const cur = get().project
+      if (cur !== preRunProject) {
+        useProjectStore.temporal.setState((s) => ({
+          pastStates: [...s.pastStates, { project: preRunProject }].slice(
+            -UNDO_LIMIT
+          ),
+          futureStates: []
+        }))
+      }
+    }
   },
 
   clearLayout(layoutGroupId: string): void {

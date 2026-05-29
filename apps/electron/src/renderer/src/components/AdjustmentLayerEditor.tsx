@@ -1,19 +1,30 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type {
   AdjustmentLayer,
   ClipHsl,
   ClipTransform,
   ColorAdjust,
+  EasingKind,
   FilterPreset,
   HslBandAdjust,
   HslBandKey
 } from '../../../shared/project'
 import {
+  EASING_KINDS,
+  EASING_LABELS,
   FILTER_PRESETS,
   getAdjustmentLayerTransform,
+  getAdjustmentLayerTransformAt,
+  hasAdjustmentLayerTransformKeyframes,
   HSL_BAND_KEYS,
   MAX_COLOR_ADJUST,
   MAX_HSL_ADJUST,
+  MAX_TRANSFORM_OFFSET,
+  MAX_TRANSFORM_ROTATION,
+  MAX_TRANSFORM_SCALE,
+  MIN_KEYFRAME_GAP_MS,
+  MIN_TRANSFORM_OFFSET,
+  MIN_TRANSFORM_ROTATION,
   MIN_TRANSFORM_SCALE,
   MIN_COLOR_ADJUST,
   MIN_HSL_ADJUST,
@@ -68,7 +79,7 @@ const styles = {
     color: '#9aa0a6',
     flexShrink: 0
   } as React.CSSProperties,
-  slider: { flex: 1 } as React.CSSProperties,
+  slider: { flex: 1, minWidth: 0 } as React.CSSProperties,
   numInput: {
     background: '#0a0a0a',
     color: '#f5f5f5',
@@ -77,6 +88,7 @@ const styles = {
     padding: '3px 6px',
     fontSize: 11,
     width: 60,
+    flexShrink: 0,
     textAlign: 'right' as const
   } as React.CSSProperties,
   hint: { fontSize: 10, color: '#64748b', margin: 0 } as React.CSSProperties,
@@ -123,6 +135,30 @@ const styles = {
     fontSize: 11,
     cursor: 'pointer',
     width: '100%'
+  } as React.CSSProperties,
+  kfBtn: {
+    flex: 1,
+    background: '#1f2937',
+    color: '#f5f5f5',
+    border: '1px solid #374151',
+    borderRadius: 4,
+    padding: '5px 8px',
+    fontSize: 11,
+    cursor: 'pointer'
+  } as React.CSSProperties,
+  kfBtnDisabled: {
+    color: '#475569',
+    cursor: 'not-allowed'
+  } as React.CSSProperties,
+  kfBadge: {
+    minWidth: 22,
+    textAlign: 'center' as const,
+    fontSize: 11,
+    color: '#c4b5fd',
+    background: '#1a1a1a',
+    border: '1px solid #2a2a2a',
+    borderRadius: 4,
+    padding: '3px 6px'
   } as React.CSSProperties,
   deleteBtn: {
     background: '#7f1d1d',
@@ -219,10 +255,24 @@ export function AdjustmentLayerEditor(
   const resetAdjustmentLayerTransform = useProjectStore(
     (s) => s.resetAdjustmentLayerTransform
   )
+  const addAdjustmentLayerTransformKeyframe = useProjectStore(
+    (s) => s.addAdjustmentLayerTransformKeyframe
+  )
+  const updateAdjustmentLayerTransformKeyframe = useProjectStore(
+    (s) => s.updateAdjustmentLayerTransformKeyframe
+  )
+  const removeAdjustmentLayerTransformKeyframe = useProjectStore(
+    (s) => s.removeAdjustmentLayerTransformKeyframe
+  )
+  const clearAdjustmentLayerTransformKeyframes = useProjectStore(
+    (s) => s.clearAdjustmentLayerTransformKeyframes
+  )
   const removeAdjustmentLayer = useProjectStore((s) => s.removeAdjustmentLayer)
   const setSelectedAdjustmentLayerId = useTimelineUi(
     (s) => s.setSelectedAdjustmentLayerId
   )
+  const playheadMs = useTimelineUi((s) => s.playheadMs)
+  const setPlayheadMs = useTimelineUi((s) => s.setPlayheadMs)
 
   // HSL band selection — transient UI state (not in the project schema).
   const [hslBand, setHslBand] = useState<HslBandKey>('red')
@@ -236,7 +286,155 @@ export function AdjustmentLayerEditor(
   const hslBandAdjust: HslBandAdjust = hsl[hslBand]
   const filterPreset: FilterPreset = layer.filterPreset ?? 'none'
   const filterIntensity = layer.filterIntensity ?? 1
-  const transform: ClipTransform = getAdjustmentLayerTransform(layer)
+  // Effective transform at the playhead — interpolated when a keyframe track
+  // is active, otherwise the static layer transform.
+  const transform: ClipTransform = getAdjustmentLayerTransformAt(
+    layer,
+    playheadMs
+  )
+  const hasKeyframes = hasAdjustmentLayerTransformKeyframes(layer)
+  const keyframeCount = layer.transformKeyframes?.length ?? 0
+
+  // Index of the keyframe under the playhead (within ±MIN_KEYFRAME_GAP_MS), or -1.
+  const keyframeIndex = useMemo<number>(() => {
+    const kfs = layer.transformKeyframes
+    if (!kfs || kfs.length === 0) return -1
+    const localMs = playheadMs - layer.startMs
+    let bestIdx = -1
+    let bestDist = MIN_KEYFRAME_GAP_MS
+    for (let i = 0; i < kfs.length; i++) {
+      const d = Math.abs(kfs[i].atMs - localMs)
+      if (d < bestDist) {
+        bestDist = d
+        bestIdx = i
+      }
+    }
+    return bestIdx
+  }, [layer, playheadMs])
+  const isOnKeyframe = keyframeIndex >= 0
+
+  // Slider drag: route to the keyframe track when one is active (update the kf
+  // under the playhead, else insert one), otherwise edit the static transform.
+  const handleTransform = (partial: Partial<ClipTransform>): void => {
+    if (hasKeyframes) {
+      if (keyframeIndex >= 0) {
+        updateAdjustmentLayerTransformKeyframe(layer.id, keyframeIndex, {
+          transform: partial
+        })
+      } else {
+        addAdjustmentLayerTransformKeyframe(
+          layer.id,
+          playheadMs - layer.startMs,
+          partial
+        )
+      }
+    } else {
+      setAdjustmentLayerTransform(layer.id, partial)
+    }
+  }
+
+  // ◇ diamond click: seed/insert a keyframe for this property at the playhead.
+  const handleAddKeyframe = (partial: Partial<ClipTransform>): void => {
+    if (hasKeyframes && keyframeIndex >= 0) {
+      updateAdjustmentLayerTransformKeyframe(layer.id, keyframeIndex, {
+        transform: partial
+      })
+      return
+    }
+    addAdjustmentLayerTransformKeyframe(
+      layer.id,
+      playheadMs - layer.startMs,
+      partial
+    )
+  }
+
+  /**
+   * Float slider + number input + optional ◇ keyframe button — mirrors the
+   * per-clip transform tab (EffectsPanel) so adjustment layers get the SAME
+   * keyframe UX (릴스벤치14 슬라이드 6).
+   */
+  const transformSliderRow = (
+    label: string,
+    value: number,
+    min: number,
+    max: number,
+    step: number,
+    onChange: (v: number) => void,
+    testid: string,
+    decimals: number,
+    keyframe: { active: boolean; onAdd: () => void; testid: string }
+  ): JSX.Element => (
+    <div style={styles.row}>
+      <span style={styles.ctrlLabel}>{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => {
+          const v = parseFloat(e.target.value)
+          if (Number.isFinite(v)) onChange(v)
+        }}
+        style={styles.slider}
+        data-testid={`${testid}-slider`}
+        aria-label={label}
+      />
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={Number(value.toFixed(decimals))}
+        onChange={(e) => {
+          const v = parseFloat(e.target.value)
+          if (Number.isFinite(v)) onChange(v)
+        }}
+        style={styles.numInput}
+        data-testid={`${testid}-input`}
+        aria-label={`${label} 숫자`}
+      />
+      <button
+        type="button"
+        onClick={keyframe.onAdd}
+        data-testid={keyframe.testid}
+        data-kf-active={keyframe.active ? 'true' : 'false'}
+        title={
+          keyframe.active
+            ? '현재 위치에 키프레임 있음 (클릭 시 갱신)'
+            : '현재 위치에 키프레임 추가'
+        }
+        aria-label={`${label} 키프레임 추가`}
+        aria-pressed={keyframe.active}
+        style={{
+          width: 24,
+          height: 24,
+          flexShrink: 0,
+          marginLeft: 6,
+          padding: 0,
+          background: 'transparent',
+          border: 'none',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center'
+        }}
+      >
+        <span
+          aria-hidden="true"
+          style={{
+            display: 'inline-block',
+            width: 11,
+            height: 11,
+            transform: 'rotate(45deg)',
+            background: keyframe.active ? '#3b82f6' : 'transparent',
+            border: `1.5px solid ${keyframe.active ? '#3b82f6' : '#64748b'}`,
+            borderRadius: 2
+          }}
+        />
+      </button>
+    </div>
+  )
 
   /** A labelled range + number-input pair (mirrors EffectsPanel's sliderRow). */
   const sliderRow = (
@@ -286,39 +484,82 @@ export function AdjustmentLayerEditor(
   // the grade applies only inside the resized/moved rectangle.
   const transformPanel = (
     <div data-testid="adjustment-tab-transform">
-      <p style={styles.sectionLabel}>위치 / 크기</p>
+      <p style={styles.sectionLabel}>크기 · 회전 · 위치</p>
       <div style={{ height: 6 }} />
-      {sliderRow(
-        'X',
-        Math.round(transform.x * 100),
-        -200,
-        200,
-        (v) => setAdjustmentLayerTransform(layer.id, { x: v / 100 }),
-        'adjustment-transform-x'
-      )}
-      {sliderRow(
-        'Y',
-        Math.round(transform.y * 100),
-        -200,
-        200,
-        (v) => setAdjustmentLayerTransform(layer.id, { y: v / 100 }),
-        'adjustment-transform-y'
-      )}
-      {sliderRow(
+      {transformSliderRow(
         '크기',
-        Math.round(transform.scale * 100),
-        Math.round(MIN_TRANSFORM_SCALE * 100),
-        100,
-        (v) => setAdjustmentLayerTransform(layer.id, { scale: v / 100 }),
-        'adjustment-transform-scale'
+        transform.scale,
+        MIN_TRANSFORM_SCALE,
+        MAX_TRANSFORM_SCALE,
+        0.05,
+        (v) => handleTransform({ scale: v }),
+        'adjustment-transform-scale',
+        2,
+        {
+          active: isOnKeyframe,
+          onAdd: () => handleAddKeyframe({ scale: transform.scale }),
+          testid: 'adjustment-transform-scale-kf'
+        }
       )}
-      {sliderRow(
-        '투명도',
-        Math.round(transform.opacity * 100),
+      {transformSliderRow(
+        '회전',
+        transform.rotation,
+        MIN_TRANSFORM_ROTATION,
+        MAX_TRANSFORM_ROTATION,
+        1,
+        (v) => handleTransform({ rotation: v }),
+        'adjustment-transform-rotation',
         0,
-        100,
-        (v) => setAdjustmentLayerTransform(layer.id, { opacity: v / 100 }),
-        'adjustment-transform-opacity'
+        {
+          active: isOnKeyframe,
+          onAdd: () => handleAddKeyframe({ rotation: transform.rotation }),
+          testid: 'adjustment-transform-rotation-kf'
+        }
+      )}
+      {transformSliderRow(
+        '불투명',
+        transform.opacity,
+        0,
+        1,
+        0.05,
+        (v) => handleTransform({ opacity: v }),
+        'adjustment-transform-opacity',
+        2,
+        {
+          active: isOnKeyframe,
+          onAdd: () => handleAddKeyframe({ opacity: transform.opacity }),
+          testid: 'adjustment-transform-opacity-kf'
+        }
+      )}
+      {transformSliderRow(
+        'X 위치',
+        transform.x,
+        MIN_TRANSFORM_OFFSET,
+        MAX_TRANSFORM_OFFSET,
+        0.01,
+        (v) => handleTransform({ x: v }),
+        'adjustment-transform-x',
+        2,
+        {
+          active: isOnKeyframe,
+          onAdd: () => handleAddKeyframe({ x: transform.x }),
+          testid: 'adjustment-transform-x-kf'
+        }
+      )}
+      {transformSliderRow(
+        'Y 위치',
+        transform.y,
+        MIN_TRANSFORM_OFFSET,
+        MAX_TRANSFORM_OFFSET,
+        0.01,
+        (v) => handleTransform({ y: v }),
+        'adjustment-transform-y',
+        2,
+        {
+          active: isOnKeyframe,
+          onAdd: () => handleAddKeyframe({ y: transform.y }),
+          testid: 'adjustment-transform-y-kf'
+        }
       )}
       <div style={{ height: 8 }} />
       <button
@@ -327,8 +568,14 @@ export function AdjustmentLayerEditor(
         onClick={() => resetAdjustmentLayerTransform(layer.id)}
         data-testid="adjustment-transform-reset"
       >
-        요소 크기로 초기화
+        변형 초기화
       </button>
+      {hasKeyframes && (
+        <p style={{ ...styles.hint, marginTop: 8 }}>
+          키프레임 애니메이션 적용 중 — 슬라이더 조정은 재생헤드 위치의
+          키프레임에 반영돼요. (애니메이션 탭)
+        </p>
+      )}
       <p style={{ ...styles.hint, marginTop: 6 }}>
         조정 효과는 이 사각 영역 안에만 적용됩니다.
       </p>
@@ -341,9 +588,158 @@ export function AdjustmentLayerEditor(
     </div>
   )
   const animationPanel = (
-    <div data-testid="adjustment-tab-animation" style={styles.emptyHint}>
-      구간 동안 grade 가 시간에 따라 변하는 키프레임 애니메이션은 추후 지원
-      예정입니다. 지금은 [전환] 탭의 시작/끝 페이드로 강도 램프만 적용 가능.
+    <div data-testid="adjustment-tab-animation">
+      <p style={styles.sectionLabel}>변형 키프레임</p>
+      <div style={{ height: 6 }} />
+      <div style={styles.row}>
+        <button
+          type="button"
+          style={styles.kfBtn}
+          onClick={() =>
+            addAdjustmentLayerTransformKeyframe(
+              layer.id,
+              playheadMs - layer.startMs
+            )
+          }
+          data-testid="adjustment-add-keyframe"
+        >
+          {isOnKeyframe ? '키프레임 갱신' : '현재 위치에 키프레임 추가'}
+        </button>
+        <button
+          type="button"
+          style={{
+            ...styles.kfBtn,
+            ...(isOnKeyframe ? {} : styles.kfBtnDisabled)
+          }}
+          disabled={!isOnKeyframe}
+          onClick={() => {
+            if (keyframeIndex >= 0) {
+              removeAdjustmentLayerTransformKeyframe(layer.id, keyframeIndex)
+            }
+          }}
+          data-testid="adjustment-remove-keyframe"
+        >
+          키프레임 삭제
+        </button>
+        <span style={styles.kfBadge} data-testid="adjustment-keyframe-count">
+          {keyframeCount}
+        </span>
+      </div>
+
+      {hasKeyframes && (
+        <>
+          {/* 현재 키프레임의 OUTGOING 이징 (다음 키프레임까지 보간 곡선). */}
+          <div
+            style={{ ...styles.row, marginTop: 8 }}
+            data-testid="adjustment-keyframe-easing-row"
+          >
+            <span style={styles.ctrlLabel}>이징</span>
+            <select
+              value={
+                isOnKeyframe && keyframeIndex >= 0
+                  ? ((layer.transformKeyframes?.[keyframeIndex]
+                      ?.easing as EasingKind) ?? 'linear')
+                  : 'linear'
+              }
+              onChange={(e) => {
+                if (!isOnKeyframe || keyframeIndex < 0) return
+                const v = e.target.value as EasingKind
+                updateAdjustmentLayerTransformKeyframe(layer.id, keyframeIndex, {
+                  easing: v === 'linear' ? null : v
+                })
+              }}
+              disabled={!isOnKeyframe}
+              style={{
+                ...styles.numInput,
+                width: 140,
+                opacity: isOnKeyframe ? 1 : 0.5
+              }}
+              data-testid="adjustment-keyframe-easing-select"
+              aria-label="현재 키프레임의 이징"
+            >
+              {EASING_KINDS.map((k) => (
+                <option key={k} value={k}>
+                  {EASING_LABELS[k]}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 키프레임 리스트 — 행 클릭 시 그 시점으로 재생헤드 점프. */}
+          <div
+            data-testid="adjustment-keyframe-list"
+            style={{
+              marginTop: 10,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4
+            }}
+          >
+            {(layer.transformKeyframes ?? []).map((kf, idx) => (
+              <div
+                key={`${idx}-${kf.atMs}`}
+                data-testid={`adjustment-keyframe-row-${idx}`}
+                data-kf-at-ms={kf.atMs}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '4px 6px',
+                  background: keyframeIndex === idx ? '#1e293b' : '#0f172a',
+                  border: `1px solid ${
+                    keyframeIndex === idx ? '#3b82f6' : '#1f2937'
+                  }`,
+                  borderRadius: 4,
+                  cursor: 'pointer'
+                }}
+                onClick={() => setPlayheadMs(layer.startMs + kf.atMs)}
+              >
+                <span style={{ color: '#94a3b8', fontSize: 11, width: 18 }}>
+                  #{idx + 1}
+                </span>
+                <span style={{ flex: 1, fontSize: 11, color: '#cbd5e1' }}>
+                  {(kf.atMs / 1000).toFixed(2)}s
+                </span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    removeAdjustmentLayerTransformKeyframe(layer.id, idx)
+                  }}
+                  data-testid={`adjustment-keyframe-remove-${idx}`}
+                  aria-label={`${idx + 1}번 키프레임 삭제`}
+                  style={{
+                    background: 'transparent',
+                    color: '#f87171',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: 14,
+                    padding: '0 4px'
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ height: 8 }} />
+          <button
+            type="button"
+            style={styles.resetBtn}
+            onClick={() => clearAdjustmentLayerTransformKeyframes(layer.id)}
+            data-testid="adjustment-clear-keyframes"
+          >
+            키프레임 전체 삭제
+          </button>
+        </>
+      )}
+
+      <p style={{ ...styles.hint, marginTop: 8 }}>
+        [변형] 탭의 ◇ 를 눌러 재생헤드 위치에 키프레임을 추가하세요. 두 개
+        이상이면 구간 동안 크기·회전·위치·투명도가 보간됩니다. (내보내기는
+        현재 정적 변형을 사용합니다)
+      </p>
     </div>
   )
   const layoutPanel = (

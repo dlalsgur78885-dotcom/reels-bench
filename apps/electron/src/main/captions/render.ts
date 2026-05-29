@@ -52,9 +52,10 @@ import {
 
 /**
  * Build the CSS font-family stack for an SVG <text>. The picked family's stack
- * leads; Pretendard (embedded) and system Korean fonts follow so any Hangul
- * glyph the picked family lacks is filled from the fallback chain. With no
- * pick, the legacy default is byte-identical to pre-Phase output.
+ * leads; for non-default picks, system Korean fonts follow before embedded
+ * Pretendard so Hangul text visibly changes even when the exact picked family
+ * is not installed. With no pick, the legacy Pretendard default is
+ * byte-identical to pre-Phase output.
  */
 function resolveFontFamily(
   id: CaptionFontFamilyId | undefined,
@@ -63,10 +64,12 @@ function resolveFontFamily(
 ): string {
   const koFallback = "'Pretendard','Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',sans-serif"
   const koFallbackNoEmbed = "'Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',Arial,sans-serif"
+  const pickedFallback = "'Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR','Pretendard',sans-serif"
+  const pickedFallbackNoEmbed = "'Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',Arial,sans-serif"
   if (customFamilyName) {
     return hasEmbeddedPretendard
-      ? `'${customFamilyName}',${koFallback}`
-      : `'${customFamilyName}',${koFallbackNoEmbed}`
+      ? `'${customFamilyName}',${pickedFallback}`
+      : `'${customFamilyName}',${pickedFallbackNoEmbed}`
   }
   if (id == null) {
     return hasEmbeddedPretendard ? koFallback : koFallbackNoEmbed
@@ -76,8 +79,8 @@ function resolveFontFamily(
     return hasEmbeddedPretendard ? koFallback : koFallbackNoEmbed
   }
   return hasEmbeddedPretendard
-    ? `${entry.stack},${koFallback}`
-    : `${entry.stack},${koFallbackNoEmbed}`
+    ? `${entry.stack},${pickedFallback}`
+    : `${entry.stack},${pickedFallbackNoEmbed}`
 }
 
 // ---------------------------------------------------------------------------

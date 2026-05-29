@@ -113,11 +113,12 @@ test.describe('@phase-adjustment-layer-tabs 조정 레이어 6탭 구조', () =>
     ).toBeVisible()
     await expect(
       page.locator('[data-testid="adjustment-transform-scale-input"]')
-    ).toHaveValue('50')
+    ).toHaveValue('0.5')
 
-    await page.locator('[data-testid="adjustment-transform-scale-input"]').fill('65')
-    await page.locator('[data-testid="adjustment-transform-y-input"]').fill('-25')
-    await page.locator('[data-testid="adjustment-transform-opacity-input"]').fill('70')
+    // 클립 변형 탭과 동일한 raw 값 (scale 배율, y/opacity 0..1).
+    await page.locator('[data-testid="adjustment-transform-scale-input"]').fill('0.65')
+    await page.locator('[data-testid="adjustment-transform-y-input"]').fill('-0.25')
+    await page.locator('[data-testid="adjustment-transform-opacity-input"]').fill('0.7')
     await page.waitForTimeout(120)
 
     const saved = await page.evaluate(() => {
@@ -159,10 +160,12 @@ test.describe('@phase-adjustment-layer-tabs 조정 레이어 6탭 구조', () =>
     expect(reset?.opacity).toBeCloseTo(1, 4)
   })
 
-  test('속도/애니메이션/레이아웃 탭은 안내문 노출', async () => {
+  test('속도/레이아웃 탭은 안내문 노출', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
-    for (const tab of ['speed', 'animation', 'layout']) {
+    // 애니메이션 탭은 이제 실제 변형 키프레임 UI(릴스벤치14 슬라이드 6)라
+    // 안내문 전용이 아님 — 별도 테스트에서 다룸.
+    for (const tab of ['speed', 'layout']) {
       await page.locator(`[data-testid="adjustment-effects-tab-${tab}"]`).click()
       await page.waitForTimeout(80)
       await expect(
@@ -188,5 +191,137 @@ test.describe('@phase-adjustment-layer-tabs 조정 레이어 6탭 구조', () =>
     await expect(
       page.locator('[data-testid="adjustment-fade-out-slider"]')
     ).toBeVisible()
+  })
+
+  // 릴스벤치14 슬라이드 6 — 영상 클립과 동일한 변형 키프레임.
+  test('변형 ◇ 클릭 시 키프레임 트랙 생성 + 애니메이션 탭 리스트', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    // 재생헤드 0 으로 이동.
+    await page.evaluate(() =>
+      (
+        window as unknown as {
+          __reelsTimelineUi: { getState: () => { setPlayheadMs: (n: number) => void } }
+        }
+      ).__reelsTimelineUi.getState().setPlayheadMs(0)
+    )
+    await page.locator('[data-testid="adjustment-effects-tab-transform"]').click()
+    await page.waitForTimeout(60)
+
+    // 5개 필드 모두 ◇ 버튼 노출 (클립 변형 탭과 동일).
+    for (const f of ['scale', 'rotation', 'opacity', 'x', 'y']) {
+      await expect(
+        page.locator(`[data-testid="adjustment-transform-${f}-kf"]`)
+      ).toBeVisible()
+    }
+
+    const editorBox = await page
+      .locator('[data-testid="adjustment-layer-editor"]')
+      .boundingBox()
+    expect(editorBox).not.toBeNull()
+    for (const f of ['scale', 'rotation', 'opacity', 'x', 'y']) {
+      const buttonBox = await page
+        .locator(`[data-testid="adjustment-transform-${f}-kf"]`)
+        .boundingBox()
+      expect(buttonBox).not.toBeNull()
+      expect(buttonBox!.x + buttonBox!.width).toBeLessThanOrEqual(
+        editorBox!.x + editorBox!.width + 1
+      )
+    }
+
+    const scaleKf = page.locator('[data-testid="adjustment-transform-scale-kf"]')
+    await expect(scaleKf).toHaveAttribute('data-kf-active', 'false')
+
+    await scaleKf.click()
+    await page.waitForTimeout(120)
+
+    const kfCount = await page.evaluate(() => {
+      const p = (
+        window as unknown as {
+          __reelsStore: {
+            state: () => {
+              project: {
+                adjustmentLayers?: Array<{ transformKeyframes?: unknown[] }>
+              }
+            }
+          }
+        }
+      ).__reelsStore.state().project
+      return p.adjustmentLayers?.[0]?.transformKeyframes?.length ?? 0
+    })
+    expect(kfCount).toBeGreaterThanOrEqual(2)
+    // 재생헤드 0 은 첫 키프레임 위 → ◇ active.
+    await expect(scaleKf).toHaveAttribute('data-kf-active', 'true')
+    for (const f of ['rotation', 'opacity', 'x', 'y']) {
+      await expect(
+        page.locator(`[data-testid="adjustment-transform-${f}-kf"]`)
+      ).toHaveAttribute('data-kf-active', 'true')
+    }
+
+    // 애니메이션 탭 — 카운트 배지 + 키프레임 리스트.
+    await page.locator('[data-testid="adjustment-effects-tab-animation"]').click()
+    await page.waitForTimeout(60)
+    await expect(
+      page.locator('[data-testid="adjustment-keyframe-count"]')
+    ).toHaveText(String(kfCount))
+    await expect(
+      page.locator('[data-testid="adjustment-keyframe-row-0"]')
+    ).toBeVisible()
+  })
+
+  test('키프레임 보간이 프리뷰 영역 transform 에 반영', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    await page.evaluate(() => {
+      const reels = (
+        window as unknown as {
+          __reelsStore: {
+            state: () => { project: { adjustmentLayers: Array<{ id: string }> } }
+            setAdjustmentLayerColorAdjust: (id: string, p: Record<string, number>) => void
+            addAdjustmentLayerTransformKeyframe: (
+              id: string,
+              atMs: number,
+              t?: Record<string, number>
+            ) => void
+          }
+        }
+      ).__reelsStore
+      const id = reels.state().project.adjustmentLayers[0].id
+      // grade 를 줘서 영역이 확실히 렌더되게.
+      reels.setAdjustmentLayerColorAdjust(id, { brightness: 30 })
+      reels.addAdjustmentLayerTransformKeyframe(id, 0, { scale: 0.5 })
+      reels.addAdjustmentLayerTransformKeyframe(id, 2000, { scale: 2.0 })
+    })
+
+    const scaleAt = async (ms: number): Promise<number> => {
+      await page.evaluate(
+        (m) =>
+          (
+            window as unknown as {
+              __reelsTimelineUi: {
+                getState: () => { setPlayheadMs: (n: number) => void }
+              }
+            }
+          ).__reelsTimelineUi.getState().setPlayheadMs(m),
+        ms
+      )
+      await page.waitForTimeout(120)
+      const style = await page
+        .locator('[data-testid="preview-adjustment-region"]')
+        .first()
+        .getAttribute('style')
+      const m = /[^X]scale\(([-0-9.]+)\)/.exec(` ${style ?? ''}`)
+      return m ? parseFloat(m[1]) : NaN
+    }
+
+    const s0 = await scaleAt(0)
+    const s1000 = await scaleAt(1000)
+    const s2000 = await scaleAt(2000)
+
+    expect(s0).toBeCloseTo(0.5, 1)
+    expect(s2000).toBeCloseTo(2.0, 1)
+    // 중간 시점은 두 끝 사이 — 보간이 프리뷰까지 전달됨.
+    expect(s1000).toBeGreaterThan(s0)
+    expect(s1000).toBeLessThan(s2000)
   })
 })

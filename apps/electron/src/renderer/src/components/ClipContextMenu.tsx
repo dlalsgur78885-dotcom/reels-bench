@@ -434,6 +434,20 @@ function centeredCropForAspect(aR: number, srcAspect: number): CropRect {
   return { x: (1 - w) / 2, y: 0, w, h: 1 }
 }
 
+function resizeCropWidthAroundCenter(c: CropRect, w: number): Partial<CropRect> {
+  const nextW = Math.max(MIN_CROP_SIZE, Math.min(1, w))
+  const centerX = c.x + c.w / 2
+  const x = Math.max(0, Math.min(1 - nextW, centerX - nextW / 2))
+  return { x, w: nextW }
+}
+
+function resizeCropHeightAroundCenter(c: CropRect, h: number): Partial<CropRect> {
+  const nextH = Math.max(MIN_CROP_SIZE, Math.min(1, h))
+  const centerY = c.y + c.h / 2
+  const y = Math.max(0, Math.min(1 - nextH, centerY - nextH / 2))
+  return { y, h: nextH }
+}
+
 interface MenuRow {
   key: string
   label: string
@@ -1690,7 +1704,7 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                   onChange={(e) => {
                     const v = parseFloat(e.target.value)
                     if (!Number.isFinite(v)) return
-                    onCropChange({ w: v })
+                    onCropChange(resizeCropWidthAroundCenter(cropRect, v))
                   }}
                   style={styles.slider}
                   data-testid="menu-crop-w"
@@ -1705,7 +1719,7 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                   onChange={(e) => {
                     const v = parseFloat(e.target.value)
                     if (!Number.isFinite(v)) return
-                    onCropChange({ w: v })
+                    onCropChange(resizeCropWidthAroundCenter(cropRect, v))
                   }}
                   style={styles.speedInput}
                   aria-label="크롭 너비 숫자"
@@ -1723,7 +1737,7 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                   onChange={(e) => {
                     const v = parseFloat(e.target.value)
                     if (!Number.isFinite(v)) return
-                    onCropChange({ h: v })
+                    onCropChange(resizeCropHeightAroundCenter(cropRect, v))
                   }}
                   style={styles.slider}
                   data-testid="menu-crop-h"
@@ -1738,7 +1752,7 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                   onChange={(e) => {
                     const v = parseFloat(e.target.value)
                     if (!Number.isFinite(v)) return
-                    onCropChange({ h: v })
+                    onCropChange(resizeCropHeightAroundCenter(cropRect, v))
                   }}
                   style={styles.speedInput}
                   aria-label="크롭 높이 숫자"

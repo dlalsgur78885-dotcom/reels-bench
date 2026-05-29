@@ -22,6 +22,11 @@
  * 14. effects-panel-close button closes the panel.
  * 15. Regression — effects panel open does NOT break context-menu (right-click
  *     on clip opens context menu when panel is also open).
+ * 16. Slide 10/11 regression — 크롭 controls live under 변형 tab, update
+ *     the same cropRect state as the context menu, and width/height resize
+ *     around the crop center.
+ * 18. Slide 16 regression — leaving CaptionEditor for a media clip opens the
+ *     영상 효과 panel via the toolbar button or media double-click.
  *
  * Tag: @phase-7-effects-panel
  */
@@ -792,9 +797,77 @@ test.describe('@phase-7-effects-panel CapCut 효과 패널 (Phase 7)', () => {
   })
 
   // =========================================================================
-  // 16. No renderer crashes across all tab switches
+  // 16. Slide 10/11 — crop controls are under transform and resize correctly
   // =========================================================================
-  test('[16] no page errors while cycling all five tabs', async () => {
+  test('[16] slide 10/11: 변형 tab crop controls update cropRect with centered resize', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+
+    const { mediaId, durationMs } = await addFixtureMedia(launched)
+    const clipId = await addVideoClip(launched, mediaId, durationMs)
+    await selectClip(launched, clipId)
+
+    await page.locator('[data-testid="toggle-effects-panel"]').click()
+    await expect(page.locator('[data-testid="effects-panel"]')).toBeVisible({ timeout: 3_000 })
+    await expect(page.locator('[data-testid="effects-tab-transform"]')).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    )
+    await expect(page.locator('[data-testid="effects-section-transform"]')).toBeVisible()
+    await expect(page.locator('[data-testid="effects-section-crop"]')).toBeVisible()
+
+    await page.locator('[data-testid="effects-crop-preset-1:1"]').click()
+    await expect.poll(async () => {
+      const clip = await getClip(launched!, clipId)
+      return Boolean((clip?.cropRect as Record<string, number> | undefined)?.w)
+    }).toBe(true)
+
+    const cropped = await getClip(launched, clipId)
+    const cropRect = cropped!.cropRect as Record<string, number>
+    expect(cropRect.w).toBeGreaterThan(0)
+    expect(cropRect.w).toBeLessThanOrEqual(1)
+    expect(cropRect.h).toBeGreaterThan(0)
+    expect(cropRect.h).toBeLessThanOrEqual(1)
+
+    await page.locator('[data-testid="effects-crop-reset"]').click()
+    await expect.poll(async () => {
+      const clip = await getClip(launched!, clipId)
+      return clip?.cropRect
+    }).toBeUndefined()
+
+    const widthInput = page.locator('[data-testid="effects-crop-w-input"]')
+    await widthInput.fill('0.80')
+    await widthInput.press('Enter')
+    await expect.poll(async () => {
+      const clip = await getClip(launched!, clipId)
+      const cr = clip?.cropRect as Record<string, number> | undefined
+      return cr ? { x: Number(cr.x.toFixed(2)), w: Number(cr.w.toFixed(2)) } : null
+    }).toEqual({ x: 0.1, w: 0.8 })
+
+    const heightInput = page.locator('[data-testid="effects-crop-h-input"]')
+    await heightInput.fill('0.70')
+    await heightInput.press('Enter')
+    await expect.poll(async () => {
+      const clip = await getClip(launched!, clipId)
+      const cr = clip?.cropRect as Record<string, number> | undefined
+      return cr ? { y: Number(cr.y.toFixed(2)), h: Number(cr.h.toFixed(2)) } : null
+    }).toEqual({ y: 0.15, h: 0.7 })
+
+    await page.locator('[data-testid="effects-crop-reset"]').click()
+    await expect.poll(async () => {
+      const clip = await getClip(launched!, clipId)
+      return clip?.cropRect
+    }).toBeUndefined()
+
+    await page.locator('[data-testid="effects-tab-adjust"]').click()
+    await expect(page.locator('[data-testid="effects-section-adjust"]')).toBeVisible()
+    await expect(page.locator('[data-testid="effects-section-crop"]')).toHaveCount(0)
+  })
+
+  // =========================================================================
+  // 17. No renderer crashes across all tab switches
+  // =========================================================================
+  test('[17] no page errors while cycling all five tabs', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
 
@@ -819,5 +892,48 @@ test.describe('@phase-7-effects-panel CapCut 효과 패널 (Phase 7)', () => {
       (msg) => !/supabase|auth|fetch|network|401|403/i.test(msg)
     )
     expect(criticalConsoleErrors).toHaveLength(0)
+  })
+
+  // =========================================================================
+  // 18. Slide 16 — CaptionEditor does not trap the right dock
+  // =========================================================================
+  test('[18] slide 16: caption editor can switch back to media effects panel', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+
+    const { mediaId, durationMs } = await addFixtureMedia(launched)
+    const clipId = await addVideoClip(launched, mediaId, durationMs)
+
+    await openCaptionsMenu(page)
+    await page.locator('[data-testid="add-caption-button"]').click()
+    await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible({
+      timeout: 5_000
+    })
+
+    await selectClip(launched, clipId)
+    await expect(page.locator('[data-testid="caption-editor"]')).toHaveCount(0)
+    const toggleBtn = page.locator('[data-testid="toggle-effects-panel"]')
+    await expect(toggleBtn).toBeEnabled({ timeout: 3_000 })
+    await toggleBtn.click()
+    await expect(page.locator('[data-testid="effects-panel"]')).toBeVisible({
+      timeout: 3_000
+    })
+    await expect(page.locator('[data-testid="caption-editor"]')).toHaveCount(0)
+
+    await page.locator('[data-testid="effects-panel-close"]').click()
+    const captionBlock = page.locator('[data-testid="caption-clip-block"]').first()
+    await captionBlock.dblclick({ force: true })
+    await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible({
+      timeout: 3_000
+    })
+
+    await page
+      .locator(`[data-testid="media-clip-block"][data-clip-id="${clipId}"]`)
+      .first()
+      .dblclick({ force: true })
+    await expect(page.locator('[data-testid="caption-editor"]')).toHaveCount(0)
+    await expect(page.locator('[data-testid="effects-panel"]')).toBeVisible({
+      timeout: 3_000
+    })
   })
 })

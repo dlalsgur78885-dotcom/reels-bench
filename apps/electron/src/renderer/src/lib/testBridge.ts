@@ -187,6 +187,10 @@ export function installTestBridge(): void {
         setAdjustmentLayerFilterPreset: Store['setAdjustmentLayerFilterPreset']
         setAdjustmentLayerTransform: Store['setAdjustmentLayerTransform']
         resetAdjustmentLayerTransform: Store['resetAdjustmentLayerTransform']
+        addAdjustmentLayerTransformKeyframe: Store['addAdjustmentLayerTransformKeyframe']
+        updateAdjustmentLayerTransformKeyframe: Store['updateAdjustmentLayerTransformKeyframe']
+        removeAdjustmentLayerTransformKeyframe: Store['removeAdjustmentLayerTransformKeyframe']
+        clearAdjustmentLayerTransformKeyframes: Store['clearAdjustmentLayerTransformKeyframes']
         toggleAdjustmentLayerMirror: Store['toggleAdjustmentLayerMirror']
         setAdjustmentLayerProperties: Store['setAdjustmentLayerProperties']
         // pptx11 슬라이드 23/24.
@@ -414,6 +418,22 @@ export function installTestBridge(): void {
         useProjectStore.getState().setAdjustmentLayerTransform(id, partial),
       resetAdjustmentLayerTransform: (id) =>
         useProjectStore.getState().resetAdjustmentLayerTransform(id),
+      addAdjustmentLayerTransformKeyframe: (id, atMs, transform) =>
+        useProjectStore
+          .getState()
+          .addAdjustmentLayerTransformKeyframe(id, atMs, transform),
+      updateAdjustmentLayerTransformKeyframe: (id, kfIndex, partial) =>
+        useProjectStore
+          .getState()
+          .updateAdjustmentLayerTransformKeyframe(id, kfIndex, partial),
+      removeAdjustmentLayerTransformKeyframe: (id, kfIndex) =>
+        useProjectStore
+          .getState()
+          .removeAdjustmentLayerTransformKeyframe(id, kfIndex),
+      clearAdjustmentLayerTransformKeyframes: (id) =>
+        useProjectStore
+          .getState()
+          .clearAdjustmentLayerTransformKeyframes(id),
       toggleAdjustmentLayerMirror: (id, axis) =>
         useProjectStore.getState().toggleAdjustmentLayerMirror(id, axis),
       setAdjustmentLayerProperties: (id, properties) =>

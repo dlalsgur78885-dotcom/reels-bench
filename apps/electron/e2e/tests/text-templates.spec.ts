@@ -258,7 +258,7 @@ test.describe('@phase-3-24 text template picker', () => {
     const pickerVisible = await pickerLocator.isVisible()
     if (!pickerVisible) {
       await openAiMenu(page)
-    await page.locator('[data-testid="open-text-template-picker"]').click()
+      await page.locator('[data-testid="open-text-template-picker"]').click()
       await expect(pickerLocator).toBeVisible()
     }
 
@@ -298,6 +298,47 @@ test.describe('@phase-3-24 text template picker', () => {
     // Close button works.
     await page.locator('[data-testid="text-template-picker-close"]').click()
     await expect(page.locator('[data-testid="text-template-picker"]')).not.toBeVisible()
+  })
+
+  test('T1b slide 17: picker always reopens in the right dock, never lower-left', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+
+    await openEditor()
+
+    const expectRightDocked = async (): Promise<void> => {
+      const picker = page.locator('[data-testid="text-template-picker"]')
+      await expect(picker).toBeVisible()
+      const pickerBox = await picker.boundingBox()
+      const editorBox = await page.locator('[data-testid="editor-page"]').boundingBox()
+      expect(pickerBox).not.toBeNull()
+      expect(editorBox).not.toBeNull()
+      expect(pickerBox!.x).toBeGreaterThan(editorBox!.x + editorBox!.width - 430)
+      expect(pickerBox!.y).toBeLessThan(editorBox!.y + 80)
+      expect(pickerBox!.x + pickerBox!.width).toBeLessThanOrEqual(
+        editorBox!.x + editorBox!.width + 1
+      )
+    }
+
+    await openAiMenu(page)
+    await page.locator('[data-testid="open-text-template-picker"]').click()
+    await expectRightDocked()
+    await page.locator('[data-testid="text-template-picker-close"]').click()
+
+    await openAiMenu(page)
+    await page.locator('[data-testid="open-text-template-picker"]').click()
+    await expectRightDocked()
+    await page.locator('[data-testid="text-template-card-title-bold"]').click()
+    await expect(page.locator('[data-testid="caption-editor"]')).toBeVisible()
+
+    await openAiMenu(page)
+    await page.locator('[data-testid="open-text-template-picker"]').click()
+    await expect(page.locator('[data-testid="caption-editor"]')).toHaveCount(0)
+    await expectRightDocked()
+    await page.locator('[data-testid="text-template-picker-close"]').click()
+
+    await page.locator('[data-testid="left-rail-text"]').click()
+    await expectRightDocked()
   })
 
   // ===========================================================================

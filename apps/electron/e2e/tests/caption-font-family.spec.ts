@@ -201,4 +201,65 @@ test.describe('@caption-font-family CaptionStyle.fontFamilyId', () => {
     expect(ff2).toContain('courier')
     expect(ff2).not.toContain('georgia')
   })
+
+  test('A-5 slide 15: Korean font picks put distinctive Hangul fallback before Pretendard', async () => {
+    const cid = await seedCaption()
+    await launched!.page.evaluate((id: string) => {
+      const reels = window.__reelsStore
+      const cap = reels
+        .state()
+        .project.tracks.find((t) => t.kind === 'caption')!
+        .clips.find((c) => c.id === id)!
+      reels.updateCaption(id, {
+        style: { ...(cap.style ?? {}), fontFamilyId: 'noto-serif-kr' }
+      })
+    }, cid)
+    await launched!.page.waitForTimeout(100)
+
+    const overlay = launched!.page.locator(
+      `[data-testid="caption-overlay"][data-caption-id="${cid}"]`
+    )
+    await expect(overlay).toBeAttached({ timeout: 5_000 })
+    const previewFamily = (
+      await overlay.evaluate((el) => getComputedStyle(el).fontFamily)
+    ).toLowerCase()
+    expect(previewFamily).toContain('noto serif kr')
+    expect(previewFamily).toContain('batang')
+    expect(previewFamily.indexOf('batang')).toBeLessThan(
+      previewFamily.indexOf('pretendard')
+    )
+
+    const svg = await launched!.page.evaluate(async () => {
+      return (
+        window as unknown as {
+          electron: {
+            captions: {
+              buildSvg: (caption: unknown, width: number, height: number) => Promise<string>
+            }
+          }
+        }
+      ).electron.captions.buildSvg(
+        {
+          spans: [{ text: '치루화된' }],
+          style: {
+            preset: 'block-bold',
+            fontSize: 80,
+            align: 'center',
+            yPosition: 0.8,
+            background: 'none',
+            fontFamilyId: 'noto-serif-kr'
+          }
+        },
+        1080,
+        1920
+      )
+    })
+    const fontFamilyDecl = /\.t\{font-family:([^;]+);/i.exec(svg)?.[1].toLowerCase()
+    expect(fontFamilyDecl).toBeTruthy()
+    expect(fontFamilyDecl!).toContain('noto serif kr')
+    expect(fontFamilyDecl!).toContain('batang')
+    expect(fontFamilyDecl!.indexOf('batang')).toBeLessThan(
+      fontFamilyDecl!.indexOf('pretendard')
+    )
+  })
 })

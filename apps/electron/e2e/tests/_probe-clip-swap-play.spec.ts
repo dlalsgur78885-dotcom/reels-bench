@@ -92,4 +92,88 @@ test.describe('@clip-swap-play', () => {
     expect(status.length).toBeGreaterThanOrEqual(1)
     expect(status.some((v) => !v.paused)).toBe(true)
   })
+
+  test('재생 중 preview video가 멈춰도 watchdog이 다시 재생시킴', async () => {
+    test.setTimeout(60_000)
+    const { page } = launched!
+    const fixture = process.env.E2E_FIXTURE_MP4!
+
+    await page.evaluate(async (fp: string) => {
+      await window.electron.fs.allowPath(fp)
+      const probe = await window.electron.media.probe(fp)
+      const reels = window.__reelsStore
+      const mediaId = reels.newId()
+      reels.addMedia({
+        id: mediaId,
+        path: fp,
+        kind: probe.kind,
+        durationMs: probe.durationMs,
+        width: probe.width ?? 720,
+        height: probe.height ?? 1280,
+        codec: probe.codec,
+        importedAt: Date.now(),
+        fileName: 'watchdog.mp4',
+        fileSizeBytes: 0
+      })
+      const track = reels.state().project.tracks.find((t) => t.kind === 'video')!
+      reels.addClip({
+        id: reels.newId(),
+        kind: 'media',
+        mediaId,
+        trackId: track.id,
+        startMs: 0,
+        endMs: 3000,
+        trimInMs: 0,
+        trimOutMs: 3000,
+        speed: 1
+      })
+    }, fixture)
+
+    await page.locator('body').click().catch(() => {})
+    await page.evaluate(() => {
+      const ui = (window as unknown as {
+        __reelsTimelineUi: {
+          getState: () => {
+            setPlaying: (b: boolean) => void
+            setPlayheadMs: (n: number) => void
+          }
+        }
+      }).__reelsTimelineUi
+      ui.getState().setPlayheadMs(500)
+      ui.getState().setPlaying(true)
+    })
+
+    await page.waitForFunction(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      return videos.some((v) => !v.paused && v.readyState >= 2)
+    }, null, { timeout: 8_000 })
+
+    await page.evaluate(() => {
+      for (const v of document.querySelectorAll<HTMLVideoElement>(
+        'video[data-preview-video-layer]'
+      )) {
+        v.pause()
+      }
+    })
+
+    await page.waitForFunction(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      return videos.some((v) => !v.paused)
+    }, null, { timeout: 4_000 })
+
+    const recovered = await page.evaluate(() =>
+      Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      ).map((v) => ({
+        paused: v.paused,
+        currentTime: v.currentTime,
+        readyState: v.readyState
+      }))
+    )
+    expect(recovered.some((v) => !v.paused)).toBe(true)
+  })
 })

@@ -167,6 +167,20 @@ function centeredCropForAspect(aR: number, srcAspect: number): CropRect {
   return { x: (1 - w) / 2, y: 0, w, h: 1 }
 }
 
+function resizeCropWidthAroundCenter(c: CropRect, w: number): Partial<CropRect> {
+  const nextW = Math.max(MIN_CROP_SIZE, Math.min(1, w))
+  const centerX = c.x + c.w / 2
+  const x = Math.max(0, Math.min(1 - nextW, centerX - nextW / 2))
+  return { x, w: nextW }
+}
+
+function resizeCropHeightAroundCenter(c: CropRect, h: number): Partial<CropRect> {
+  const nextH = Math.max(MIN_CROP_SIZE, Math.min(1, h))
+  const centerY = c.y + c.h / 2
+  const y = Math.max(0, Math.min(1 - nextH, centerY - nextH / 2))
+  return { y, h: nextH }
+}
+
 const styles = {
   panel: {
     width: 360,
@@ -1125,6 +1139,80 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 </p>
               )}
             </Section>
+            {isMedia && (
+              <Section
+                id="crop"
+                title="크롭"
+                testId="effects-section-crop"
+                defaultOpen
+              >
+                <div style={styles.presetRow}>
+                  {CROP_PRESETS.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      style={styles.preset}
+                      data-testid={`effects-crop-preset-${p.id}`}
+                      onClick={() => {
+                        if (p.aspect === null) return
+                        setClipCrop(
+                          clip.id,
+                          centeredCropForAspect(p.aspect, srcAspect)
+                        )
+                      }}
+                    >
+                      {p.id === 'free' ? '자유' : p.id}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ height: 8 }} />
+                {sliderRow(
+                  'X',
+                  cropRect.x,
+                  0,
+                  1,
+                  0.01,
+                  (v) => setClipCrop(clip.id, { x: v }),
+                  'effects-crop-x'
+                )}
+                {sliderRow(
+                  'Y',
+                  cropRect.y,
+                  0,
+                  1,
+                  0.01,
+                  (v) => setClipCrop(clip.id, { y: v }),
+                  'effects-crop-y'
+                )}
+                {sliderRow(
+                '너비',
+                cropRect.w,
+                MIN_CROP_SIZE,
+                1,
+                0.01,
+                (v) => setClipCrop(clip.id, resizeCropWidthAroundCenter(cropRect, v)),
+                'effects-crop-w'
+              )}
+                {sliderRow(
+                '높이',
+                cropRect.h,
+                MIN_CROP_SIZE,
+                1,
+                0.01,
+                (v) => setClipCrop(clip.id, resizeCropHeightAroundCenter(cropRect, v)),
+                'effects-crop-h'
+              )}
+                <div style={{ height: 8 }} />
+                <button
+                  type="button"
+                  style={styles.resetBtn}
+                  onClick={() => resetClipCrop(clip.id)}
+                  data-testid="effects-crop-reset"
+                >
+                  크롭 초기화
+                </button>
+              </Section>
+            )}
             {/* Phase 3.13 — bind an overlay clip to a motion track. The
                 bindable tracks live on the project's media clips. */}
             {isOverlay && (
@@ -2096,75 +2184,6 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                   </p>
                 </Section>
               )}
-
-            {/* Crop */}
-            <Section id="crop" title="크롭" testId="effects-section-crop">
-              <div style={styles.presetRow}>
-                {CROP_PRESETS.map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    style={styles.preset}
-                    data-testid={`effects-crop-preset-${p.id}`}
-                    onClick={() => {
-                      if (p.aspect === null) return
-                      setClipCrop(
-                        clip.id,
-                        centeredCropForAspect(p.aspect, srcAspect)
-                      )
-                    }}
-                  >
-                    {p.id === 'free' ? '자유' : p.id}
-                  </button>
-                ))}
-              </div>
-              <div style={{ height: 8 }} />
-              {sliderRow(
-                'X',
-                cropRect.x,
-                0,
-                1,
-                0.01,
-                (v) => setClipCrop(clip.id, { x: v }),
-                'effects-crop-x'
-              )}
-              {sliderRow(
-                'Y',
-                cropRect.y,
-                0,
-                1,
-                0.01,
-                (v) => setClipCrop(clip.id, { y: v }),
-                'effects-crop-y'
-              )}
-              {sliderRow(
-                '너비',
-                cropRect.w,
-                MIN_CROP_SIZE,
-                1,
-                0.01,
-                (v) => setClipCrop(clip.id, { w: v }),
-                'effects-crop-w'
-              )}
-              {sliderRow(
-                '높이',
-                cropRect.h,
-                MIN_CROP_SIZE,
-                1,
-                0.01,
-                (v) => setClipCrop(clip.id, { h: v }),
-                'effects-crop-h'
-              )}
-              <div style={{ height: 8 }} />
-              <button
-                type="button"
-                style={styles.resetBtn}
-                onClick={() => resetClipCrop(clip.id)}
-                data-testid="effects-crop-reset"
-              >
-                크롭 초기화
-              </button>
-            </Section>
 
             {/* Out-of-scope effects — surfaced as disabled placeholders so the
                 panel mirrors CapCut's category list without faking features

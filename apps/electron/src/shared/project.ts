@@ -874,24 +874,56 @@ export interface CaptionStyle {
 
 /**
  * Caption font catalog. The id is what we persist on `CaptionStyle`; the
- * resolver in main/captions/render.ts maps it to a CSS font-family stack
- * that always ends with the embedded Pretendard so Korean glyphs survive
- * even when the picked family lacks Hangul. Adding a new family is a
- * 2-step change: extend this list + add a stack entry in the resolver.
+ * resolver in main/captions/render.ts maps it to a CSS font-family stack.
+ * Non-default picks include distinctive Korean system fallbacks before the
+ * embedded Pretendard fallback so Hangul text visibly changes even when the
+ * exact picked font is not installed on the user's machine.
  */
 export const CAPTION_FONT_FAMILIES = [
   // 한글 (Korean) — Pretendard 가 default embedded, 나머지는 시스템 의존
   { id: 'pretendard', label: 'Pretendard (기본)', stack: "'Pretendard'" },
-  { id: 'malgun', label: '맑은 고딕', stack: "'Malgun Gothic'" },
-  { id: 'apple-sd', label: 'Apple SD 고딕 Neo', stack: "'Apple SD Gothic Neo'" },
-  { id: 'noto-sans-kr', label: 'Noto Sans KR', stack: "'Noto Sans KR'" },
+  { id: 'malgun', label: '맑은 고딕', stack: "'Malgun Gothic','맑은 고딕'" },
+  {
+    id: 'apple-sd',
+    label: 'Apple SD 고딕 Neo',
+    stack: "'Apple SD Gothic Neo','Malgun Gothic','맑은 고딕'"
+  },
+  {
+    id: 'noto-sans-kr',
+    label: 'Noto Sans KR',
+    stack: "'Noto Sans KR','Malgun Gothic','맑은 고딕'"
+  },
   // pptx12 슬라이드 13 — 한글 추가.
-  { id: 'nanum-gothic', label: '나눔고딕', stack: "'NanumGothic','Nanum Gothic'" },
-  { id: 'nanum-myeongjo', label: '나눔명조', stack: "'NanumMyeongjo','Nanum Myeongjo'" },
-  { id: 'nanum-square', label: '나눔스퀘어', stack: "'NanumSquare','Nanum Square'" },
-  { id: 'nanum-pen', label: '나눔손글씨 펜', stack: "'NanumPenScript','Nanum Pen Script'" },
-  { id: 'noto-serif-kr', label: 'Noto Serif KR', stack: "'Noto Serif KR'" },
-  { id: 'gmarket-sans', label: 'G마켓 산스', stack: "'GmarketSansTTFBold','Gmarket Sans'" },
+  {
+    id: 'nanum-gothic',
+    label: '나눔고딕',
+    stack: "'NanumGothic','Nanum Gothic','Malgun Gothic','맑은 고딕'"
+  },
+  {
+    id: 'nanum-myeongjo',
+    label: '나눔명조',
+    stack: "'NanumMyeongjo','Nanum Myeongjo',Batang,'바탕'"
+  },
+  {
+    id: 'nanum-square',
+    label: '나눔스퀘어',
+    stack: "'NanumSquare','Nanum Square','Malgun Gothic','맑은 고딕'"
+  },
+  {
+    id: 'nanum-pen',
+    label: '나눔손글씨 펜',
+    stack: "'NanumPenScript','Nanum Pen Script',Gungsuh,'궁서'"
+  },
+  {
+    id: 'noto-serif-kr',
+    label: 'Noto Serif KR',
+    stack: "'Noto Serif KR',Batang,'바탕'"
+  },
+  {
+    id: 'gmarket-sans',
+    label: 'G마켓 산스',
+    stack: "'GmarketSansTTFBold','Gmarket Sans','Malgun Gothic','맑은 고딕'"
+  },
   // 영문 (Latin) — 기존 + 자주 쓰는 시스템 폰트 추가
   { id: 'arial', label: 'Arial', stack: 'Arial' },
   { id: 'helvetica', label: 'Helvetica', stack: "'Helvetica Neue',Helvetica" },
@@ -1318,6 +1350,12 @@ export interface AdjustmentLayer {
    */
   transform?: ClipTransform
   /**
+   * 릴스벤치14 슬라이드 6 — 영상 클립과 동일한 변형 키프레임 트랙. 2개 이상일
+   * 때 활성. `atMs` 는 layer.startMs 기준 오프셋. 프리뷰는 시점별로 보간된
+   * 영역 사각형을 적용한다 (export 는 현재 정적 `transform` 사용 — 추후 단계).
+   */
+  transformKeyframes?: TransformKeyframe[]
+  /**
    * pptx12 slide 19 — context-menu edit actions for adjustment layers.
    * Mirroring only affects the layer's transformed region in preview/export UI
    * terms; absent values mean not mirrored.
@@ -1358,6 +1396,62 @@ export function getAdjustmentLayerTransform(layer: AdjustmentLayer): ClipTransfo
     rotation: Number.isFinite(t.rotation) ? t.rotation : 0,
     opacity: Number.isFinite(t.opacity) ? t.opacity : 1
   }
+}
+
+/** True iff the layer has an active (>= 2 keyframe) transform animation track. */
+export function hasAdjustmentLayerTransformKeyframes(
+  layer: AdjustmentLayer
+): boolean {
+  return (
+    Array.isArray(layer.transformKeyframes) &&
+    layer.transformKeyframes.length >= 2
+  )
+}
+
+/**
+ * 릴스벤치14 슬라이드 6 — adjustment layer 의 ABSOLUTE timeline ms 시점 변형.
+ * `getTransformAt` 의 layer 버전: 활성 키프레임 트랙이 없으면 정적
+ * `getAdjustmentLayerTransform`, 있으면 둘러싼 두 키프레임 사이 선형 보간
+ * (첫 키프레임 이전 / 마지막 키프레임 이후는 hold-clamp). 모든 필드는
+ * finite + range-clamp.
+ */
+export function getAdjustmentLayerTransformAt(
+  layer: AdjustmentLayer,
+  timelineMs: number
+): ClipTransform {
+  if (!hasAdjustmentLayerTransformKeyframes(layer)) {
+    return getAdjustmentLayerTransform(layer)
+  }
+  const kfs = [...(layer.transformKeyframes as TransformKeyframe[])].sort(
+    (a, b) => a.atMs - b.atMs
+  )
+  const localMs = timelineMs - layer.startMs
+  const first = kfs[0]
+  const last = kfs[kfs.length - 1]
+  if (localMs <= first.atMs) return clampTransform(first.transform)
+  if (localMs >= last.atMs) return clampTransform(last.transform)
+  let k0 = first
+  let k1 = last
+  for (let i = 0; i < kfs.length - 1; i++) {
+    if (localMs >= kfs[i].atMs && localMs <= kfs[i + 1].atMs) {
+      k0 = kfs[i]
+      k1 = kfs[i + 1]
+      break
+    }
+  }
+  const span = k1.atMs - k0.atMs
+  if (span <= 0) return clampTransform(k0.transform)
+  const f = easeFraction((localMs - k0.atMs) / span, k0.easing)
+  const a = clampTransform(k0.transform)
+  const b = clampTransform(k1.transform)
+  const lerp = (u: number, v: number): number => u + (v - u) * f
+  return clampTransform({
+    x: lerp(a.x, b.x),
+    y: lerp(a.y, b.y),
+    scale: lerp(a.scale, b.scale),
+    rotation: lerp(a.rotation, b.rotation),
+    opacity: lerp(a.opacity, b.opacity)
+  })
 }
 
 /**
@@ -1561,6 +1655,10 @@ export function getAdjustmentLayers(project: Project): AdjustmentLayer[] {
       filterPreset: l.filterPreset,
       filterIntensity: l.filterIntensity,
       transform: l.transform
+    }
+    // 릴스벤치14 슬라이드 6 — 변형 키프레임 트랙 보존 (preview 보간용).
+    if (Array.isArray(l.transformKeyframes) && l.transformKeyframes.length > 0) {
+      layer.transformKeyframes = l.transformKeyframes
     }
     // pptx11 슬라이드 23/24 — 새 필드들 (fade / lock) 보존.
     if (Number.isFinite(l.fadeInMs) && (l.fadeInMs ?? 0) > 0) {

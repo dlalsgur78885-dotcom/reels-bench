@@ -65,6 +65,10 @@ import { AdjustmentLayerContextMenu } from './AdjustmentLayerContextMenu'
 import { ClipContextMenu } from './ClipContextMenu'
 import { TrackContextMenu } from './TrackContextMenu'
 import { MEDIA_DRAG_MIME } from './MediaLibrary'
+import {
+  PENDING_MEDIA_DRAG_MIME,
+  awaitPending
+} from '../lib/pendingImport'
 
 interface TimelineProps {
   project: Project
@@ -72,6 +76,7 @@ interface TimelineProps {
   onSeek: (ms: number) => void
   selectedClipId: string | null
   onSelectClip: (clipId: string | null) => void
+  onOpenEffectsClip?: (clipId: string) => void
   onEditCaption: (clipId: string) => void
   onDeleteClip: (clipId: string) => void
   /** Phase 2.5 — invoked when the user picks "무음 자동 제거…" on a media clip. */
@@ -634,6 +639,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
     onSeek,
     selectedClipId,
     onSelectClip,
+    onOpenEffectsClip,
     onEditCaption,
     onDeleteClip
   } = props
@@ -1322,7 +1328,12 @@ export function Timeline(props: TimelineProps): JSX.Element {
     track: Track
   ): void => {
     // Only intercept our own MIME so unrelated drags pass through.
-    if (!e.dataTransfer.types.includes(MEDIA_DRAG_MIME)) return
+    if (
+      !e.dataTransfer.types.includes(MEDIA_DRAG_MIME) &&
+      !e.dataTransfer.types.includes(PENDING_MEDIA_DRAG_MIME)
+    ) {
+      return
+    }
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
     if (dropTargetTrackId !== track.id) setDropTargetTrackId(track.id)
@@ -1345,57 +1356,69 @@ export function Timeline(props: TimelineProps): JSX.Element {
     e.preventDefault()
     e.stopPropagation()
     setDropTargetTrackId(null)
-    const mediaId = e.dataTransfer.getData(MEDIA_DRAG_MIME)
-    if (!mediaId) return
-    const media: MediaAsset | undefined = project.media[mediaId]
-    if (!media) return
-
-    // Auto-route by MEDIA kind (not by which lane the cursor happened to be
-    // over): audio → an audio track, video/image → a video track. This is the
-    // slide-10 fix — an audio clip must never land on a video track.
-    //   - audio  → drop lane if it is an audio track, else any audio track,
-    //              else a freshly-created Voice track (ensureAudioTrack).
-    //   - video  → drop lane if it is a video track, else the first video track.
-    //   - image  → same as video.
-    let target: Track | undefined
-    if (media.kind === 'audio') {
-      if (track.kind === 'audio') {
-        target = track
-      } else {
-        const audioTrackId = ensureAudioTrack('voice')
-        target = useProjectStore
-          .getState()
-          .project.tracks.find((t) => t.id === audioTrackId)
-      }
-    } else {
-      // video / image → a video track.
-      target =
-        track.kind === 'video'
-          ? track
-          : project.tracks.find((t) => t.kind === 'video')
-    }
-    if (!target) return
-
     const rect = e.currentTarget.getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const dropMs = Math.max(0, Math.round((x / pps) * 1000))
-    const durationMs =
-      media.durationMs > 0 ? media.durationMs : IMAGE_DEFAULT_MS
-    // Snap to nearest second unless Alt is held.
-    const desired = e.altKey ? dropMs : Math.round(dropMs / 1000) * 1000
-    const startMs = findFreeStart(target, desired, durationMs)
-    const clip: VideoAudioClip = {
-      id: ulid(),
-      kind: 'media',
-      mediaId,
-      trackId: target.id,
-      startMs,
-      endMs: startMs + durationMs,
-      trimInMs: 0,
-      trimOutMs: media.durationMs > 0 ? media.durationMs : durationMs,
-      speed: 1
+    const clientX = e.clientX
+    const altKey = e.altKey
+    const mediaId = e.dataTransfer.getData(MEDIA_DRAG_MIME)
+    const pendingId = e.dataTransfer.getData(PENDING_MEDIA_DRAG_MIME)
+
+    const addDroppedMedia = (media: MediaAsset): void => {
+      const liveProject = useProjectStore.getState().project
+
+      // Auto-route by MEDIA kind (not by which lane the cursor happened to be
+      // over): audio → an audio track, video/image → a video track.
+      let target: Track | undefined
+      const liveDropTrack = liveProject.tracks.find((t) => t.id === track.id) ?? track
+      if (media.kind === 'audio') {
+        if (liveDropTrack.kind === 'audio') {
+          target = liveDropTrack
+        } else {
+          const audioTrackId = ensureAudioTrack('voice')
+          target = useProjectStore
+            .getState()
+            .project.tracks.find((t) => t.id === audioTrackId)
+        }
+      } else {
+        target =
+          liveDropTrack.kind === 'video'
+            ? liveDropTrack
+            : liveProject.tracks.find((t) => t.kind === 'video')
+      }
+      if (!target) return
+
+      const x = clientX - rect.left
+      const dropMs = Math.max(0, Math.round((x / pps) * 1000))
+      const durationMs =
+        media.durationMs > 0 ? media.durationMs : IMAGE_DEFAULT_MS
+      // Snap to nearest second unless Alt is held.
+      const desired = altKey ? dropMs : Math.round(dropMs / 1000) * 1000
+      const startMs = findFreeStart(target, desired, durationMs)
+      const clip: VideoAudioClip = {
+        id: ulid(),
+        kind: 'media',
+        mediaId: media.id,
+        trackId: target.id,
+        startMs,
+        endMs: startMs + durationMs,
+        trimInMs: 0,
+        trimOutMs: media.durationMs > 0 ? media.durationMs : durationMs,
+        speed: 1
+      }
+      addClip(clip)
     }
-    addClip(clip)
+
+    if (mediaId) {
+      const media: MediaAsset | undefined =
+        useProjectStore.getState().project.media[mediaId]
+      if (media) addDroppedMedia(media)
+      return
+    }
+
+    if (pendingId) {
+      void awaitPending(pendingId).then((asset) => {
+        if (asset) addDroppedMedia(asset)
+      })
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -2780,6 +2803,7 @@ export function Timeline(props: TimelineProps): JSX.Element {
                         e.stopPropagation()
                         if (toolMode === 'split') return
                         if (isCap) onEditCaption(clip.id)
+                        else onOpenEffectsClip?.(clip.id)
                       }}
                     >
                       {label}

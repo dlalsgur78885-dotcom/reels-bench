@@ -32,6 +32,29 @@ const SUPPORTED_EXTS = new Set([
   'gif'
 ])
 
+const ALL_FOLDERS = '__all__'
+
+type MediaSortKey =
+  | 'importedDesc'
+  | 'importedAsc'
+  | 'nameAsc'
+  | 'nameDesc'
+  | 'durationDesc'
+  | 'durationAsc'
+  | 'kindAsc'
+  | 'sizeDesc'
+
+const MEDIA_SORT_OPTIONS: { key: MediaSortKey; label: string }[] = [
+  { key: 'importedDesc', label: '최근 가져온 순' },
+  { key: 'importedAsc', label: '오래된 순' },
+  { key: 'nameAsc', label: '이름 오름차순' },
+  { key: 'nameDesc', label: '이름 내림차순' },
+  { key: 'durationDesc', label: '길이 긴 순' },
+  { key: 'durationAsc', label: '길이 짧은 순' },
+  { key: 'kindAsc', label: '종류별' },
+  { key: 'sizeDesc', label: '용량 큰 순' }
+]
+
 function extOf(filePath: string): string {
   const ix = filePath.lastIndexOf('.')
   if (ix < 0) return ''
@@ -56,6 +79,42 @@ function fmtSize(bytes: number): string {
   if (mb >= 1) return `${mb.toFixed(1)} MB`
   const kb = bytes / 1024
   return `${kb.toFixed(0)} KB`
+}
+
+function parentDir(filePath: string): string {
+  const i = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'))
+  if (i <= 0) return ''
+  return filePath.slice(0, i)
+}
+
+function folderName(dir: string): string {
+  if (!dir) return '폴더 없음'
+  const trimmed = dir.replace(/[\\/]$/, '')
+  const i = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  return i >= 0 ? trimmed.slice(i + 1) : trimmed
+}
+
+function compareBySort(a: MediaAsset, b: MediaAsset, sortKey: MediaSortKey): number {
+  const byName = a.fileName.localeCompare(b.fileName, 'ko')
+  switch (sortKey) {
+    case 'importedAsc':
+      return a.importedAt - b.importedAt || byName
+    case 'nameAsc':
+      return byName || b.importedAt - a.importedAt
+    case 'nameDesc':
+      return -byName || b.importedAt - a.importedAt
+    case 'durationDesc':
+      return b.durationMs - a.durationMs || byName
+    case 'durationAsc':
+      return a.durationMs - b.durationMs || byName
+    case 'kindAsc':
+      return a.kind.localeCompare(b.kind) || byName
+    case 'sizeDesc':
+      return b.fileSizeBytes - a.fileSizeBytes || byName
+    case 'importedDesc':
+    default:
+      return b.importedAt - a.importedAt || byName
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +181,34 @@ const styles = {
     display: 'flex',
     flexDirection: 'column',
     gap: 8
+  } as React.CSSProperties,
+  libraryControls: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    gap: 8,
+    padding: '0 12px 10px'
+  } as React.CSSProperties,
+  controlBlock: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    minWidth: 0
+  } as React.CSSProperties,
+  controlLabel: {
+    fontSize: 10,
+    color: '#64748b',
+    fontWeight: 700
+  } as React.CSSProperties,
+  select: {
+    width: '100%',
+    minWidth: 0,
+    background: '#0d0d0d',
+    color: '#e2e8f0',
+    border: '1px solid #2a2a2a',
+    borderRadius: 6,
+    padding: '6px 8px',
+    fontSize: 11,
+    fontWeight: 600
   } as React.CSSProperties,
   card: {
     display: 'flex',
@@ -304,6 +391,43 @@ const styles = {
     background: '#10b981',
     color: '#04231a',
     borderColor: '#10b981'
+  } as React.CSSProperties,
+  libraryContextMenu: {
+    position: 'fixed',
+    zIndex: 1000,
+    width: 220,
+    maxHeight: 420,
+    overflowY: 'auto',
+    background: '#111827',
+    border: '1px solid #334155',
+    borderRadius: 8,
+    boxShadow: '0 18px 40px rgba(0,0,0,0.45)',
+    padding: 8,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6
+  } as React.CSSProperties,
+  contextSectionTitle: {
+    color: '#94a3b8',
+    fontSize: 10,
+    fontWeight: 800,
+    padding: '4px 6px 2px'
+  } as React.CSSProperties,
+  contextBtn: {
+    width: '100%',
+    textAlign: 'left',
+    background: 'transparent',
+    border: 'none',
+    borderRadius: 6,
+    color: '#e2e8f0',
+    padding: '6px 8px',
+    fontSize: 11,
+    cursor: 'pointer'
+  } as React.CSSProperties,
+  contextBtnActive: {
+    background: '#10b981',
+    color: '#04231a',
+    fontWeight: 800
   } as React.CSSProperties
 }
 
@@ -332,6 +456,11 @@ export function MediaLibrary(): JSX.Element {
   const [notices, setNotices] = useState<string[]>([])
   /** 현재 선택된 가져오기 소스 탭. */
   const [tab, setTab] = useState<ImportTab>('local')
+  const [folderFilter, setFolderFilter] = useState<string>(ALL_FOLDERS)
+  const [sortKey, setSortKey] = useState<MediaSortKey>('importedDesc')
+  const [libraryMenu, setLibraryMenu] = useState<{ x: number; y: number } | null>(
+    null
+  )
   /** mediaId -> data URI (loaded lazily after hydration). */
   const [thumbCache, setThumbCache] = useState<Record<string, string>>({})
 
@@ -344,10 +473,32 @@ export function MediaLibrary(): JSX.Element {
     }
   }
 
+  const allAssets = useMemo(() => Object.values(media), [media])
+
+  const folders = useMemo(() => {
+    const byPath = new Map<string, { path: string; label: string; count: number }>()
+    for (const asset of allAssets) {
+      const dir = parentDir(asset.path)
+      const cur = byPath.get(dir)
+      if (cur) cur.count += 1
+      else byPath.set(dir, { path: dir, label: folderName(dir), count: 1 })
+    }
+    return [...byPath.values()].sort((a, b) => a.label.localeCompare(b.label, 'ko'))
+  }, [allAssets])
+
+  useEffect(() => {
+    if (folderFilter === ALL_FOLDERS) return
+    if (!folders.some((f) => f.path === folderFilter)) {
+      setFolderFilter(ALL_FOLDERS)
+    }
+  }, [folderFilter, folders])
+
   const assets = useMemo(
     () =>
-      Object.values(media).sort((a, b) => b.importedAt - a.importedAt),
-    [media]
+      allAssets
+        .filter((a) => folderFilter === ALL_FOLDERS || parentDir(a.path) === folderFilter)
+        .sort((a, b) => compareBySort(a, b, sortKey)),
+    [allAssets, folderFilter, sortKey]
   )
 
   // Hydrate thumbnail data URIs for assets that have a thumbnailPath but
@@ -494,29 +645,32 @@ export function MediaLibrary(): JSX.Element {
   // 있게 관리하고, dragLeave는 자식 element 가로지름을 무시하기 위해
   // relatedTarget 가 wrapper 안이면 skip.
   const wrapDragOver = (e: React.DragEvent<HTMLDivElement>): void => {
-    if (tab !== 'local') return
     if (!e.dataTransfer.types.includes('Files')) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
     if (!dragOver) setDragOver(true)
   }
   const wrapDragLeave = (e: React.DragEvent<HTMLDivElement>): void => {
-    if (tab !== 'local') return
     const related = e.relatedTarget as Node | null
     if (related && e.currentTarget.contains(related)) return
     setDragOver(false)
   }
   const wrapDrop = (e: React.DragEvent<HTMLDivElement>): void => {
-    if (tab !== 'local') return
     if (!e.dataTransfer.types.includes('Files')) return
     void onDrop(e)
   }
+  const openLibraryMenu = (e: React.MouseEvent<HTMLElement>): void => {
+    if (tab !== 'local') return
+    e.preventDefault()
+    setLibraryMenu({ x: e.clientX, y: e.clientY })
+  }
+  const closeLibraryMenu = (): void => setLibraryMenu(null)
   // pptx10 슬라이드 5 (0.2.22) — dragOver 시 wrap 전체에 dashed 강조 +
   // 가운데 안내 텍스트 overlay. 작은 점선 박스만 활성화 보이던 0.2.16의
   // 잔여 시각 누락 보강. overlay 는 pointer-events: none 이라 drop 이벤트
   // 는 그대로 wrap 이 받음.
   const wrapStyle: React.CSSProperties =
-    dragOver && tab === 'local'
+    dragOver
       ? { ...styles.wrap, ...styles.wrapDragActive }
       : styles.wrap
   return (
@@ -526,10 +680,11 @@ export function MediaLibrary(): JSX.Element {
       onDragEnter={wrapDragOver}
       onDragLeave={wrapDragLeave}
       onDrop={wrapDrop}
+      onClick={closeLibraryMenu}
     >
-      {dragOver && tab === 'local' && (
+      {dragOver && (
         <div style={styles.wrapDragOverlay} data-testid="wrap-drop-overlay">
-          여기에 놓아주세요 — 패널 어디든 OK
+          여기에 놓아주세요 — 현재 탭에서도 가져오기
         </div>
       )}
       <div style={styles.header}>
@@ -567,10 +722,45 @@ export function MediaLibrary(): JSX.Element {
           <div
             style={{ ...styles.drop, ...(dragOver ? styles.dropActive : {}) }}
             data-testid="drop-zone"
+            onContextMenu={openLibraryMenu}
           >
             {dragOver
               ? '여기에 놓아주세요'
               : '파일을 드래그하거나 위 [가져오기]를 눌러주세요'}
+          </div>
+
+          <div style={styles.libraryControls} data-testid="media-library-controls">
+            <label style={styles.controlBlock}>
+              <span style={styles.controlLabel}>폴더</span>
+              <select
+                value={folderFilter}
+                onChange={(e) => setFolderFilter(e.currentTarget.value)}
+                style={styles.select}
+                data-testid="media-folder-filter"
+              >
+                <option value={ALL_FOLDERS}>전체 폴더 ({allAssets.length})</option>
+                {folders.map((f) => (
+                  <option key={f.path || 'none'} value={f.path}>
+                    {f.label} ({f.count})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label style={styles.controlBlock}>
+              <span style={styles.controlLabel}>분류</span>
+              <select
+                value={sortKey}
+                onChange={(e) => setSortKey(e.currentTarget.value as MediaSortKey)}
+                style={styles.select}
+                data-testid="media-sort-select"
+              >
+                {MEDIA_SORT_OPTIONS.map((opt) => (
+                  <option key={opt.key} value={opt.key}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
 
           {importing.length > 0 && (
@@ -581,12 +771,22 @@ export function MediaLibrary(): JSX.Element {
 
           {banners}
 
-          {assets.length === 0 ? (
-            <div style={styles.empty}>
+          {allAssets.length === 0 ? (
+            <div style={styles.empty} onContextMenu={openLibraryMenu}>
               비어있어요. 영상·음원·이미지를 가져오세요.
             </div>
+          ) : assets.length === 0 ? (
+            <div style={styles.empty} onContextMenu={openLibraryMenu}>
+              선택한 폴더에 표시할 미디어가 없습니다.
+            </div>
           ) : (
-            <div style={styles.list} data-testid="media-list">
+            <div
+              style={styles.list}
+              data-testid="media-list"
+              onContextMenu={(e) => {
+                if (e.target === e.currentTarget) openLibraryMenu(e)
+              }}
+            >
               {assets.map((a) => (
                 <MediaCard
                   key={a.id}
@@ -595,6 +795,66 @@ export function MediaLibrary(): JSX.Element {
                   onRemove={() => removeMedia(a.id)}
                   onRename={(n) => renameMedia(a.id, n)}
                 />
+              ))}
+            </div>
+          )}
+          {libraryMenu && (
+            <div
+              style={{
+                ...styles.libraryContextMenu,
+                left: libraryMenu.x,
+                top: libraryMenu.y
+              }}
+              data-testid="media-library-context-menu"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={styles.contextSectionTitle}>폴더</div>
+              <button
+                style={{
+                  ...styles.contextBtn,
+                  ...(folderFilter === ALL_FOLDERS ? styles.contextBtnActive : {})
+                }}
+                onClick={() => {
+                  setFolderFilter(ALL_FOLDERS)
+                  closeLibraryMenu()
+                }}
+                data-testid="media-context-folder-all"
+              >
+                전체 폴더 ({allAssets.length})
+              </button>
+              {folders.map((f) => (
+                <button
+                  key={f.path || 'none'}
+                  style={{
+                    ...styles.contextBtn,
+                    ...(folderFilter === f.path ? styles.contextBtnActive : {})
+                  }}
+                  onClick={() => {
+                    setFolderFilter(f.path)
+                    closeLibraryMenu()
+                  }}
+                  data-testid="media-context-folder"
+                  title={f.path}
+                >
+                  {f.label} ({f.count})
+                </button>
+              ))}
+              <div style={styles.contextSectionTitle}>분류</div>
+              {MEDIA_SORT_OPTIONS.map((opt) => (
+                <button
+                  key={opt.key}
+                  style={{
+                    ...styles.contextBtn,
+                    ...(sortKey === opt.key ? styles.contextBtnActive : {})
+                  }}
+                  onClick={() => {
+                    setSortKey(opt.key)
+                    closeLibraryMenu()
+                  }}
+                  data-testid={`media-context-sort-${opt.key}`}
+                >
+                  {opt.label}
+                </button>
               ))}
             </div>
           )}

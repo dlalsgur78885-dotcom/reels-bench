@@ -1034,6 +1034,47 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     !editingCaptionId &&
     ((effectsOpen && !!effectsClipId) || !!selectedAdjustmentLayerId)
 
+  const findClipById = useCallback(
+    (id: string | null): Clip | null => {
+      if (!id) return null
+      for (const t of project.tracks) {
+        const c = t.clips.find((cc) => cc.id === id)
+        if (c) return c
+      }
+      return null
+    },
+    [project]
+  )
+
+  const handleSelectClip = useCallback(
+    (id: string | null): void => {
+      setSelectedClipId(id)
+      const clip = findClipById(id)
+      if (clip && !isCaptionClip(clip)) {
+        setEditingCaptionId(null)
+      }
+    },
+    [findClipById]
+  )
+
+  const handleOpenEffectsClip = useCallback(
+    (id: string): void => {
+      const clip = findClipById(id)
+      if (!clip || (!isMediaClip(clip) && !isOverlayClip(clip))) return
+      setSelectedClipId(id)
+      setEditingCaptionId(null)
+      setEffectsOpen(true)
+    },
+    [findClipById]
+  )
+
+  const openTextTemplatePicker = useCallback((): void => {
+    setEditingCaptionId(null)
+    setEffectsOpen(false)
+    useTimelineUi.getState().setSelectedAdjustmentLayerId(null)
+    setTemplatePickerOpen(true)
+  }, [])
+
   // Recompute beats whenever BPM or total duration changes — but ONLY if
   // current beats originated from the metronome. When prefill loads real
   // detected beats (`beatsSource === 'detected'`), preserve them so the
@@ -1794,7 +1835,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
           </div>
           <button
             style={styles.secondaryBtn}
-            onClick={() => setTemplatePickerOpen(true)}
+            onClick={openTextTemplatePicker}
             data-testid="open-text-template-picker"
             title="미리 디자인된 텍스트 블록 삽입"
           >
@@ -2061,7 +2102,14 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
               : {}),
             ...(effectsClipId ? {} : { opacity: 0.5, cursor: 'not-allowed' })
           }}
-          onClick={() => setEffectsOpen((v) => !v)}
+          onClick={() => {
+            if (editingCaptionId) {
+              setEditingCaptionId(null)
+              setEffectsOpen(true)
+              return
+            }
+            setEffectsOpen((v) => !v)
+          }}
           disabled={!effectsClipId}
           aria-pressed={effectsOpen}
           data-testid="toggle-effects-panel"
@@ -2083,7 +2131,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
 
       <div
         style={
-          editingCaptionId || showEffectsPanel || templatePickerOpen
+          editingCaptionId || templatePickerOpen || showEffectsPanel
             ? styles.bodyWithEditor
             : styles.body
         }
@@ -2119,7 +2167,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
                 }}
                 onClick={() => {
                   if (isText) {
-                    setTemplatePickerOpen(true)
+                    openTextTemplatePicker()
                     return
                   }
                   setLeftTab(item.key)
@@ -2393,7 +2441,8 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
               playheadMs={playheadMs}
               onSeek={setPlayheadMs}
               selectedClipId={selectedClipId}
-              onSelectClip={setSelectedClipId}
+              onSelectClip={handleSelectClip}
+              onOpenEffectsClip={handleOpenEffectsClip}
               onEditCaption={(id) => {
                 setSelectedClipId(id)
                 setEditingCaptionId(id)
@@ -2437,26 +2486,18 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
             />
           </div>
         </div>
-        {editingCaptionId && (
+        {editingCaptionId ? (
           <CaptionEditor
             project={project}
             captionId={editingCaptionId}
             onClose={() => setEditingCaptionId(null)}
           />
-        )}
-        {/* Phase 3.24 — text-template picker. Applying a template inserts a
-            plain caption clip, then opens CaptionEditor for the new clip. */}
-        {templatePickerOpen && (
+        ) : templatePickerOpen ? (
           <TextTemplatePicker
             onClose={() => setTemplatePickerOpen(false)}
             onApply={handleApplyTemplate}
           />
-        )}
-        {/* Phase 7 — docked 효과 panel. Mutually exclusive with the caption
-            editor (both occupy the right 360px slot). Renders for an effect-
-            eligible (media/overlay) clip while toggled on, OR for a selected
-            adjustment layer (Phase 3.32 — shows the layer grade editor). */}
-        {showEffectsPanel && (
+        ) : showEffectsPanel ? (
           <EffectsPanel
             project={project}
             clipId={effectsClipId}
@@ -2466,7 +2507,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
               useTimelineUi.getState().setSelectedAdjustmentLayerId(null)
             }}
           />
-        )}
+        ) : null}
       </div>
       {silenceTargetClipId && (
         <SilenceRemoveDialog

@@ -137,8 +137,7 @@ function RotatingMusicDisc(): JSX.Element {
     <div
       data-testid="social-action-music-disc"
       style={{
-        width: '11%',
-        minWidth: 30,
+        width: 'clamp(20px, 52%, 34px)',
         aspectRatio: '1 / 1',
         borderRadius: '50%',
         background:
@@ -206,8 +205,7 @@ function ActionButton(props: {
     >
       <div
         style={{
-          width: '11%',
-          minWidth: 30,
+          width: 'clamp(20px, 52%, 34px)',
           aspectRatio: '1 / 1',
           color: '#fff',
           filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.6))',
@@ -300,7 +298,7 @@ function ActionStack(props: {
         right: '3.5%',
         bottom: `${props.bottomPct}%`,
         width: '14%',
-        minWidth: 48,
+        maxWidth: 58,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
@@ -647,8 +645,7 @@ function InstagramReelsChrome(): JSX.Element {
         <div
           data-testid="social-action-audio"
           style={{
-            width: '11%',
-            minWidth: 28,
+            width: 'clamp(20px, 52%, 34px)',
             aspectRatio: '1 / 1',
             borderRadius: 6,
             border: '2px solid rgba(255,255,255,0.85)',

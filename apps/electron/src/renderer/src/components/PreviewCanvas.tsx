@@ -16,7 +16,7 @@ import {
   getCaptionTextStroke,
   getAdjustmentLayerFadeFactor,
   getAdjustmentLayers,
-  getAdjustmentLayerTransform,
+  getAdjustmentLayerTransformAt,
   getCanvasBackground,
   getClipBlurRegions,
   getClipColorAdjust,
@@ -287,6 +287,59 @@ function refreshVideoPoster(video: HTMLVideoElement): void {
   } catch {
     /* Cross-origin or decoder race; poster is best-effort preview fallback. */
   }
+}
+
+const PLAYBACK_WATCHDOG_INTERVAL_MS = 250
+const PLAYBACK_STALL_MS = 750
+const PLAYBACK_STALL_EPS_SEC = 0.015
+const PLAYBACK_DRIFT_SEEK_SEC = 1.15
+
+interface MediaPlaybackHealth {
+  currentTime: number
+  checkedAt: number
+}
+
+function setMediaTime(el: HTMLMediaElement, targetSec: number): void {
+  if (!Number.isFinite(targetSec)) return
+  try {
+    el.currentTime = Math.max(0, targetSec)
+  } catch {
+    /* Media may not be seekable until metadata arrives; retry next tick. */
+  }
+}
+
+function retryMediaPlay(el: HTMLMediaElement): void {
+  try {
+    const p = el.play()
+    if (p && typeof p.catch === 'function') {
+      p.catch(() => {
+        /* Autoplay / decoder readiness rejection; watchdog retries. */
+      })
+    }
+  } catch {
+    /* Defensive: HTMLMediaElement.play can throw synchronously in tests. */
+  }
+}
+
+function elementLooksStalled(
+  key: string,
+  el: HTMLMediaElement,
+  health: Map<string, MediaPlaybackHealth>,
+  now: number
+): boolean {
+  const prev = health.get(key)
+  const ct = Number.isFinite(el.currentTime) ? el.currentTime : 0
+  if (!prev) {
+    health.set(key, { currentTime: ct, checkedAt: now })
+    return false
+  }
+  const moved = Math.abs(ct - prev.currentTime) > PLAYBACK_STALL_EPS_SEC
+  if (moved) {
+    health.set(key, { currentTime: ct, checkedAt: now })
+    return false
+  }
+  const stalledFor = now - prev.checkedAt
+  return stalledFor >= PLAYBACK_STALL_MS
 }
 
 /**
@@ -754,17 +807,18 @@ function CaptionOverlay(props: {
   // User-picked font wins over preset's hardcoded font. Pretendard (the legacy
   // default) is left implicit so byte-identical preview is preserved when no
   // pick is made. Resolver mirrors main/captions/render.ts so preview matches
-  // the exported PNG: picked family leads, then Pretendard + system Korean
-  // fallbacks fill any missing glyphs.
+  // the exported PNG: picked family leads, then system Korean fallbacks, then
+  // Pretendard. This keeps non-default Korean choices visibly different even
+  // when the exact selected font is not installed.
   if (style.fontFamilyId?.startsWith('custom:')) {
     const customFont = customFonts.find((f) => f.id === style.fontFamilyId)
     if (customFont) {
-      presetCss.fontFamily = `'${customFont.familyName}','Pretendard','Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',sans-serif`
+      presetCss.fontFamily = `'${customFont.familyName}','Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR','Pretendard',sans-serif`
     }
   } else if (style.fontFamilyId && style.fontFamilyId !== 'pretendard') {
     const entry = CAPTION_FONT_FAMILIES.find((f) => f.id === style.fontFamilyId)
     if (entry) {
-      presetCss.fontFamily = `${entry.stack},'Pretendard','Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',sans-serif`
+      presetCss.fontFamily = `${entry.stack},'Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR','Pretendard',sans-serif`
     }
   }
   const presetShadowCss =
@@ -1222,6 +1276,9 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   const loadedAudioIds = useRef<Map<string, string>>(new Map())
   /** Per-track playing state (for play/pause sync without redundant calls). */
   const audioPlaying = useRef<Map<string, boolean>>(new Map())
+  /** Last observed media clocks used to recover when the transport keeps
+      ticking but a DOM media element / decoder stalls. */
+  const mediaHealth = useRef<Map<string, MediaPlaybackHealth>>(new Map())
   const swapRaf = useRef<number | null>(null)
 
   const videoLayers = useMemo(
@@ -1418,7 +1475,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           </svg>
         )
       }
-      const transform = getAdjustmentLayerTransform(layer)
+      const transform = getAdjustmentLayerTransformAt(layer, playheadMs)
       if (!isIdentityTransform(transform)) {
         regions.push({
           id: layer.id,
@@ -1453,6 +1510,42 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
     for (const h of audioHits) map.set(h.track.id, h)
     return map
   }, [audioHits])
+
+  const latestPlaybackState = useRef({
+    project,
+    playheadMs,
+    videoTracks,
+    layerByTrackId,
+    bottomLayer,
+    audioTracks,
+    hitByTrackId,
+    multiVideoPreview,
+    canvasBgKind: canvasBg.kind
+  })
+
+  useEffect(() => {
+    latestPlaybackState.current = {
+      project,
+      playheadMs,
+      videoTracks,
+      layerByTrackId,
+      bottomLayer,
+      audioTracks,
+      hitByTrackId,
+      multiVideoPreview,
+      canvasBgKind: canvasBg.kind
+    }
+  }, [
+    project,
+    playheadMs,
+    videoTracks,
+    layerByTrackId,
+    bottomLayer,
+    audioTracks,
+    hitByTrackId,
+    multiVideoPreview,
+    canvasBg.kind
+  ])
 
   // -----------------------------------------------------------------------
   // Install the one-shot user-gesture listener so AudioContext.resume()
@@ -1849,6 +1942,114 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
       }
     }
   }, [playing, audioTracks, videoTracks, multiVideoPreview])
+
+  // -----------------------------------------------------------------------
+  // Playback watchdog / reconcile.
+  //
+  // The transport rAF owns `playheadMs`, while Chromium owns actual
+  // <video>/<audio> decoding. Project mutations (layout, undo, adjustment
+  // edits) can reset media elements to paused/stalled even though the store
+  // still says playing=true. In that failure mode the timeline keeps moving
+  // but preview/TTS/BGM are frozen. While playing, periodically verify the
+  // active DOM media elements are advancing; if not, seek them back to the
+  // store playhead and retry play().
+  // -----------------------------------------------------------------------
+  useEffect(() => {
+    if (!playing) {
+      mediaHealth.current.clear()
+      return
+    }
+
+    const graph = getPreviewAudioGraph()
+    let cancelled = false
+
+    const reconcile = (): void => {
+      if (cancelled) return
+      void graph.resume()
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
+      const state = latestPlaybackState.current
+
+      for (const track of state.videoTracks) {
+        const layer = state.layerByTrackId.get(track.id)
+        const v = videoEls.current.get(track.id)
+        if (!layer || !v) continue
+        const media = state.project.media[layer.clip.mediaId]
+        if (!media || media.kind === 'audio' || media.kind === 'image') continue
+        if (!v.src) continue
+
+        if (v.readyState === HTMLMediaElement.HAVE_NOTHING) {
+          try { v.load() } catch {}
+        }
+
+        const key = `video:${track.id}`
+        const target = clipSourceTimeSec(layer.clip, state.playheadMs)
+        const stalled = elementLooksStalled(key, v, mediaHealth.current, now)
+        const drift = Math.abs((v.currentTime || 0) - target)
+        const shouldSeek =
+          stalled ||
+          drift > PLAYBACK_DRIFT_SEEK_SEC ||
+          (v.paused && !v.ended && Number.isFinite(target))
+
+        if (shouldSeek) {
+          setMediaTime(v, target)
+        }
+        if (v.paused && !v.ended) {
+          if (state.multiVideoPreview) v.muted = true
+          retryMediaPlay(v)
+        }
+      }
+
+      if (state.canvasBgKind === 'blur' && state.bottomLayer && bgVideoEl.current) {
+        const bg = bgVideoEl.current
+        const media = state.project.media[state.bottomLayer.clip.mediaId]
+        if (media && media.kind !== 'audio' && media.kind !== 'image' && bg.src) {
+          const key = 'video:bg'
+          const target = clipSourceTimeSec(state.bottomLayer.clip, state.playheadMs)
+          const stalled = elementLooksStalled(key, bg, mediaHealth.current, now)
+          if (stalled || Math.abs((bg.currentTime || 0) - target) > PLAYBACK_DRIFT_SEEK_SEC) {
+            setMediaTime(bg, target)
+          }
+          if (bg.paused && !bg.ended) retryMediaPlay(bg)
+        }
+      }
+
+      for (const track of state.audioTracks) {
+        const hit = state.hitByTrackId.get(track.id)
+        const a = audioEls.current.get(track.id)
+        if (!hit || !a) continue
+        const media = state.project.media[hit.clip.mediaId]
+        if (!media || media.kind !== 'audio' || !a.src) continue
+
+        if (a.readyState === HTMLMediaElement.HAVE_NOTHING) {
+          try { a.load() } catch {}
+        }
+
+        const key = `audio:${track.id}`
+        const target = clipSourceTimeSec(hit.clip, state.playheadMs)
+        const stalled = elementLooksStalled(key, a, mediaHealth.current, now)
+        const drift = Math.abs((a.currentTime || 0) - target)
+        if (
+          stalled ||
+          drift > PLAYBACK_DRIFT_SEEK_SEC ||
+          (a.paused && !a.ended && Number.isFinite(target))
+        ) {
+          setMediaTime(a, target)
+        }
+        if (a.paused && !a.ended) {
+          retryMediaPlay(a)
+          audioPlaying.current.set(track.id, true)
+        }
+      }
+    }
+
+    const initial = window.setTimeout(reconcile, 0)
+    const interval = window.setInterval(reconcile, PLAYBACK_WATCHDOG_INTERVAL_MS)
+    return () => {
+      cancelled = true
+      window.clearTimeout(initial)
+      window.clearInterval(interval)
+    }
+  }, [playing])
 
   const hasFit = fitted.width > 0 && fitted.height > 0
   const fittedStyle: React.CSSProperties = hasFit

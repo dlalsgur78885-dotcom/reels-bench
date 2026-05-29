@@ -1027,4 +1027,82 @@ test.describe('@phase-3-18-collage collage / split-screen layout', () => {
       expect(state.rect.height).toBeGreaterThan(0)
     }
   })
+
+  // -------------------------------------------------------------------------
+  // (11) REGRESSION: applyLayout that must CREATE a track is ONE atomic undo
+  //      step even with an immediate Ctrl+Z (inside the 200ms zundo throttle).
+  //      The two clips start on the SAME video track, so applyLayout calls
+  //      addVideoTrack() internally. Before the atomic-undo fix a quick undo
+  //      either left a phantom empty video track (slow undo) or reverted the
+  //      wrong amount + wiped redo (fast undo) — which silently dropped
+  //      recently-added clips and froze playback.
+  // -------------------------------------------------------------------------
+  test('(11) applyLayout creating a track + immediate undo: fully reverts in one step, redo intact', async () => {
+    if (!launched) throw new Error('launch failed')
+    await openEditor(launched)
+    const { mediaId, durationMs } = await addFixtureMedia(launched)
+
+    // Two SEQUENTIAL clips on the SAME (default) video track → applyLayout
+    // must create a second track for clip B.
+    const cA = await addVideoClip(launched, mediaId, durationMs, 0)
+    const cB = await addVideoClip(launched, mediaId, durationMs, durationMs)
+
+    const videoTrackCountBefore = await launched.page.evaluate(
+      () =>
+        (window as unknown as { __reelsStore: ReelsStore }).__reelsStore
+          .state()
+          .project.tracks.filter((t) => t.kind === 'video').length
+    )
+    expect(videoTrackCountBefore).toBe(1)
+
+    // Settle the setup edits past the throttle so they are their own entry.
+    await tick(launched)
+
+    // Apply top/bottom (2up-v) then undo IMMEDIATELY (no tick) — the fast race.
+    await launched.page.evaluate(
+      ({ idA, idB }) => {
+        const reels = (window as unknown as { __reelsStore: ReelsStore }).__reelsStore
+        reels.applyLayout('2up-v', [idA, idB])
+        ;(window as unknown as { __reelsUndoRedo: Window['__reelsUndoRedo'] }).__reelsUndoRedo
+          .getState()
+          .undo()
+      },
+      { idA: cA, idB: cB }
+    )
+    // Wait past the throttle window so any (buggy) trailing flush would land.
+    await launched.page.waitForTimeout(350)
+
+    // No phantom empty video track — back to the single original track.
+    const videoTracksAfter = await launched.page.evaluate(() =>
+      (window as unknown as { __reelsStore: ReelsStore }).__reelsStore
+        .state()
+        .project.tracks.filter((t) => t.kind === 'video')
+        .map((t) => t.clips.length)
+    )
+    expect(videoTracksAfter).toEqual([2])
+
+    // Layout fully undone on both clips.
+    const undoneA = await getClip(launched, cA)
+    const undoneB = await getClip(launched, cB)
+    expect(undoneA!.transform).toBeUndefined()
+    expect(undoneB!.transform).toBeUndefined()
+    expect(undoneA!.layoutGroupId).toBeUndefined()
+    expect(undoneB!.layoutGroupId).toBeUndefined()
+
+    // Redo is still available (the trailing-flush race did NOT wipe it).
+    const futureCount = await launched.page.evaluate(
+      () =>
+        (window as unknown as { __reelsUndoRedo: Window['__reelsUndoRedo'] }).__reelsUndoRedo
+          .getState()
+          .futureStates.length
+    )
+    expect(futureCount).toBeGreaterThan(0)
+
+    // Redo re-applies the layout in one step (creates the track again).
+    await redo(launched)
+    await launched.page.waitForTimeout(100)
+    const redoneA = await getClip(launched, cA)
+    expect((redoneA!.transform as Record<string, number> | undefined)?.y).toBeCloseTo(-0.25, 5)
+    expect(redoneA!.layoutGroupId).toBeTruthy()
+  })
 })

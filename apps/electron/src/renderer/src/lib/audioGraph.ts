@@ -282,8 +282,10 @@ export class PreviewAudioGraph {
       } catch {
         /* idempotent */
       }
-      this.sources.delete(id)
     }
+    // Keep the source cached. Chromium forbids wrapping the same media
+    // element twice, so deleting this entry can strand re-attached elements
+    // in a silent state after React/Electron ref churn.
     this.sourceTracks.delete(id)
   }
 

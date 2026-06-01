@@ -26,6 +26,10 @@ import {
   isIdentityCurveChannel,
   isNeutralHslBand,
   isNeutralVoiceEnhance,
+  getAdjustmentLayerEnhance,
+  getAdjustmentLayerFilmLook,
+  getAdjustmentLayerRetouch,
+  getAdjustmentLayerVisualEffect,
   resolveClipCurves,
   resolveClipHsl,
   resolveColorAdjust
@@ -985,6 +989,15 @@ function adjustmentLayerSegmentToFfmpeg(
       const hs = hslToFfmpeg(resolveClipHsl(layer.hsl))
       if (hs) parts.push(hs)
     }
+    const rt = retouchToFfmpeg(getAdjustmentLayerRetouch(layer))
+    if (rt) parts.push(rt)
+    const en = enhanceToFfmpeg(getAdjustmentLayerEnhance(layer))
+    if (en) parts.push(en)
+    for (const f of filmLookToFfmpeg(getAdjustmentLayerFilmLook(layer))) {
+      parts.push(f)
+    }
+    const vfx = visualEffectToFfmpeg(getAdjustmentLayerVisualEffect(layer))
+    if (vfx) parts.push(vfx)
   }
   if (parts.length === 0) return ''
   const enable = `:enable='between(t,${startSec.toFixed(3)},${endSec.toFixed(3)})'`

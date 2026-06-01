@@ -4,21 +4,35 @@ import type {
   ClipHsl,
   ClipTransform,
   ColorAdjust,
+  CropRect,
   EasingKind,
+  FilmLook,
   FilterPreset,
   HslBandAdjust,
-  HslBandKey
+  HslBandKey,
+  VisualEffectId
 } from '../../../shared/project'
 import {
+  DEFAULT_ENHANCE,
+  DEFAULT_RETOUCH,
   EASING_KINDS,
   EASING_LABELS,
   FILTER_PRESETS,
+  FILM_TONE_IDS,
+  getAdjustmentLayerCropRect,
+  getAdjustmentLayerEnhance,
+  getAdjustmentLayerFilmLook,
+  getAdjustmentLayerRetouch,
   getAdjustmentLayerTransform,
   getAdjustmentLayerTransformAt,
+  getAdjustmentLayerVisualEffect,
   hasAdjustmentLayerTransformKeyframes,
   HSL_BAND_KEYS,
+  MAX_ENHANCE,
   MAX_COLOR_ADJUST,
+  MAX_FILM_LOOK,
   MAX_HSL_ADJUST,
+  MAX_RETOUCH,
   MAX_TRANSFORM_OFFSET,
   MAX_TRANSFORM_ROTATION,
   MAX_TRANSFORM_SCALE,
@@ -27,22 +41,31 @@ import {
   MIN_TRANSFORM_ROTATION,
   MIN_TRANSFORM_SCALE,
   MIN_COLOR_ADJUST,
+  MIN_ENHANCE,
+  MIN_FILM_LOOK,
   MIN_HSL_ADJUST,
+  MIN_RETOUCH,
   NEUTRAL_CLIP_HSL,
   NEUTRAL_COLOR_ADJUST,
+  NEUTRAL_FILM_LOOK,
+  VISUAL_EFFECT_IDS,
   resolveClipHsl,
   resolveColorAdjust
 } from '../../../shared/project'
 import {
   COLOR_ADJUST_LABELS,
+  FILM_LOOK_PRESETS,
+  FILM_TONE_LABELS,
   FILTER_PRESET_LABELS,
   HSL_BAND_LABELS,
   HSL_BAND_SWATCHES,
+  VISUAL_EFFECT_LABELS,
   filterPresetToCss
 } from '../../../shared/filterPresets'
 import { useProjectStore } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
 import { CurveEditor } from './CurveEditor'
+import { CropControls } from './CropControls'
 
 /**
  * Phase 3.32 — the grade editor for a selected adjustment layer.
@@ -125,6 +148,15 @@ const styles = {
     display: 'flex',
     gap: 6,
     flexWrap: 'wrap' as const
+  } as React.CSSProperties,
+  preset: {
+    background: '#1f2937',
+    color: '#f5f5f5',
+    border: '1px solid #374151',
+    borderRadius: 4,
+    padding: '4px 9px',
+    fontSize: 11,
+    cursor: 'pointer'
   } as React.CSSProperties,
   resetBtn: {
     background: '#1f2937',
@@ -249,6 +281,9 @@ export function AdjustmentLayerEditor(
   const setAdjustmentLayerFade = useProjectStore(
     (s) => s.setAdjustmentLayerFade
   )
+  const setAdjustmentLayerProperties = useProjectStore(
+    (s) => s.setAdjustmentLayerProperties
+  )
   const setAdjustmentLayerTransform = useProjectStore(
     (s) => s.setAdjustmentLayerTransform
   )
@@ -286,6 +321,16 @@ export function AdjustmentLayerEditor(
   const hslBandAdjust: HslBandAdjust = hsl[hslBand]
   const filterPreset: FilterPreset = layer.filterPreset ?? 'none'
   const filterIntensity = layer.filterIntensity ?? 1
+  const cropRect: CropRect = getAdjustmentLayerCropRect(layer) ?? {
+    x: 0,
+    y: 0,
+    w: 1,
+    h: 1
+  }
+  const retouch = getAdjustmentLayerRetouch(layer) ?? 0
+  const enhance = getAdjustmentLayerEnhance(layer) ?? 0
+  const film: FilmLook = getAdjustmentLayerFilmLook(layer) ?? NEUTRAL_FILM_LOOK
+  const visualEffect = getAdjustmentLayerVisualEffect(layer) ?? 'none'
   // Effective transform at the playhead — interpolated when a keyframe track
   // is active, otherwise the static layer transform.
   const transform: ClipTransform = getAdjustmentLayerTransformAt(
@@ -480,6 +525,24 @@ export function AdjustmentLayerEditor(
     </div>
   )
 
+  const patchLayer = (partial: Partial<AdjustmentLayer>): void => {
+    setAdjustmentLayerProperties(layer.id, { ...layer, ...partial })
+  }
+
+  const setLayerCrop = (partial: Partial<CropRect>): void => {
+    const next = { ...cropRect, ...partial }
+    const isIdentity =
+      Math.abs(next.x) < 1e-4 &&
+      Math.abs(next.y) < 1e-4 &&
+      Math.abs(next.w - 1) < 1e-4 &&
+      Math.abs(next.h - 1) < 1e-4
+    patchLayer({ cropRect: isIdentity ? undefined : next })
+  }
+
+  const setLayerFilmLook = (partial: Partial<FilmLook>): void => {
+    patchLayer({ filmLook: { ...film, ...partial } })
+  }
+
   // pptx12 slide 18 — scaled adjustment layers need a real region transform:
   // the grade applies only inside the resized/moved rectangle.
   const transformPanel = (
@@ -665,7 +728,7 @@ export function AdjustmentLayerEditor(
             </select>
           </div>
 
-          {/* 키프레임 리스트 — 행 클릭 시 그 시점으로 재생헤드 점프. */}
+          {/* 키프레임 리스트 — 영상 클립 애니메이션 탭처럼 시간 직접 수정 가능. */}
           <div
             data-testid="adjustment-keyframe-list"
             style={{
@@ -697,8 +760,38 @@ export function AdjustmentLayerEditor(
                 <span style={{ color: '#94a3b8', fontSize: 11, width: 18 }}>
                   #{idx + 1}
                 </span>
-                <span style={{ flex: 1, fontSize: 11, color: '#cbd5e1' }}>
-                  {(kf.atMs / 1000).toFixed(2)}s
+                <input
+                  type="number"
+                  min={0}
+                  max={Math.max(0, layer.endMs - layer.startMs)}
+                  step={1}
+                  defaultValue={kf.atMs}
+                  onClick={(e) => e.stopPropagation()}
+                  onBlur={(e) => {
+                    const raw = parseInt(e.currentTarget.value, 10)
+                    if (!Number.isFinite(raw)) return
+                    const dur = Math.max(0, layer.endMs - layer.startMs)
+                    const clamped = Math.max(0, Math.min(dur, raw))
+                    e.currentTarget.value = String(clamped)
+                    updateAdjustmentLayerTransformKeyframe(layer.id, idx, {
+                      atMs: clamped
+                    })
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.currentTarget.blur()
+                    }
+                  }}
+                  data-testid={`adjustment-keyframe-time-${idx}`}
+                  aria-label={`조정 레이어 키프레임 ${idx + 1} 시간 ms`}
+                  style={{
+                    ...styles.numInput,
+                    width: 80,
+                    flex: 'none'
+                  }}
+                />
+                <span style={{ flex: 1, fontSize: 11, color: '#64748b' }}>
+                  ms
                 </span>
                 <button
                   type="button"
@@ -945,6 +1038,160 @@ export function AdjustmentLayerEditor(
           미리보기는 근사값입니다 — 정확한 색은 내보내기 결과를 확인하세요.
         </p>
       </div>
+
+      <hr style={styles.divider} />
+      <p style={styles.sectionLabel}>리터치 / 뷰티</p>
+      <div style={{ height: 6 }} />
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: '#9aa0a6', marginBottom: 8 }}>
+        <input
+          type="checkbox"
+          checked={retouch > 0}
+          data-testid="adjustment-retouch-toggle"
+          aria-label="조정 레이어 리터치 / 뷰티"
+          onChange={(e) =>
+            patchLayer({ retouch: e.target.checked ? DEFAULT_RETOUCH : undefined })
+          }
+        />
+        <span>리터치 / 뷰티</span>
+      </label>
+      <div style={{ opacity: retouch > 0 ? 1 : 0.5 }}>
+        {sliderRow(
+          '강도',
+          retouch,
+          MIN_RETOUCH,
+          MAX_RETOUCH,
+          (v) => patchLayer({ retouch: v }),
+          'adjustment-retouch'
+        )}
+      </div>
+
+      <hr style={styles.divider} />
+      <p style={styles.sectionLabel}>화질 향상</p>
+      <div style={{ height: 6 }} />
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: '#9aa0a6', marginBottom: 8 }}>
+        <input
+          type="checkbox"
+          checked={enhance > 0}
+          data-testid="adjustment-enhance-toggle"
+          aria-label="조정 레이어 화질 향상"
+          onChange={(e) =>
+            patchLayer({ enhance: e.target.checked ? DEFAULT_ENHANCE : undefined })
+          }
+        />
+        <span>화질 향상</span>
+      </label>
+      <div style={{ opacity: enhance > 0 ? 1 : 0.5 }}>
+        {sliderRow(
+          '강도',
+          enhance,
+          MIN_ENHANCE,
+          MAX_ENHANCE,
+          (v) => patchLayer({ enhance: v }),
+          'adjustment-enhance'
+        )}
+      </div>
+
+      <hr style={styles.divider} />
+      <p style={styles.sectionLabel}>비주얼 이펙트</p>
+      <div style={{ height: 6 }} />
+      <select
+        data-testid="adjustment-visual-effect-select"
+        value={visualEffect}
+        onChange={(e) =>
+          patchLayer({ visualEffect: e.target.value as VisualEffectId })
+        }
+        style={{
+          width: '100%',
+          background: '#1a1a1a',
+          color: '#f5f5f5',
+          border: '1px solid #2a2a2a',
+          borderRadius: 4,
+          padding: '6px 8px',
+          fontSize: 12
+        }}
+      >
+        {VISUAL_EFFECT_IDS.map((id) => (
+          <option key={id} value={id}>
+            {VISUAL_EFFECT_LABELS[id]}
+          </option>
+        ))}
+      </select>
+
+      <hr style={styles.divider} />
+      <p style={styles.sectionLabel}>필름 룩</p>
+      <div style={{ height: 6 }} />
+      <div style={styles.presetRow}>
+        {FILM_LOOK_PRESETS.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            style={styles.preset}
+            data-testid={`adjustment-filmlook-preset-${p.id}`}
+            onClick={() => patchLayer({ filmLook: p.value })}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+      <div style={{ height: 8 }} />
+      <div style={styles.row}>
+        <span style={styles.ctrlLabel}>톤</span>
+        <select
+          data-testid="adjustment-filmlook-tone"
+          value={film.toneId}
+          onChange={(e) =>
+            setLayerFilmLook({
+              toneId: e.target.value as (typeof FILM_TONE_IDS)[number]
+            })
+          }
+          style={{ ...styles.numInput, flex: 1, width: 'auto' }}
+          aria-label="조정 레이어 필름 톤"
+        >
+          {FILM_TONE_IDS.map((t) => (
+            <option key={t} value={t}>
+              {FILM_TONE_LABELS[t]}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div style={{ height: 6 }} />
+      {sliderRow(
+        '비네트',
+        film.vignette,
+        MIN_FILM_LOOK,
+        MAX_FILM_LOOK,
+        (v) => setLayerFilmLook({ vignette: v }),
+        'adjustment-filmlook-vignette'
+      )}
+      {sliderRow(
+        '그레인',
+        film.grain,
+        MIN_FILM_LOOK,
+        MAX_FILM_LOOK,
+        (v) => setLayerFilmLook({ grain: v }),
+        'adjustment-filmlook-grain'
+      )}
+
+      <hr style={styles.divider} />
+      <p style={styles.sectionLabel}>크롭</p>
+      <div style={{ height: 6 }} />
+      <CropControls
+        cropRect={cropRect}
+        sourceAspect={1}
+        onCropChange={setLayerCrop}
+        onCropReset={() => patchLayer({ cropRect: undefined })}
+        testPrefix="adjustment-crop"
+        resetLabel="크롭 초기화"
+        styles={{
+          presetRow: { ...styles.presetRow, marginBottom: 8 },
+          preset: styles.preset,
+          row: styles.row,
+          label: styles.ctrlLabel,
+          slider: styles.slider,
+          input: styles.numInput,
+          resetButton: { ...styles.resetBtn, marginTop: 8 }
+        }}
+      />
         </div>
       )}
 

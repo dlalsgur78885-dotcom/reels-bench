@@ -102,6 +102,42 @@ test.describe('@phase-adjustment-layer-tabs 조정 레이어 6탭 구조', () =>
     ).toHaveCount(0)
   })
 
+  test('slide 16: 조정 탭에 리터치/화질/비주얼/필름/크롭 컨트롤 노출 및 저장', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    await expect(page.locator('[data-testid="adjustment-retouch-toggle"]')).toBeVisible()
+    await expect(page.locator('[data-testid="adjustment-enhance-toggle"]')).toBeVisible()
+    await expect(page.locator('[data-testid="adjustment-visual-effect-select"]')).toBeVisible()
+    await expect(page.locator('[data-testid="adjustment-filmlook-tone"]')).toBeVisible()
+    await expect(page.locator('[data-testid="adjustment-crop-w-input"]')).toBeVisible()
+
+    await page.locator('[data-testid="adjustment-retouch-toggle"]').check()
+    await page.locator('[data-testid="adjustment-enhance-toggle"]').check()
+    await page.locator('[data-testid="adjustment-visual-effect-select"]').selectOption('vhs')
+    await page.locator('[data-testid="adjustment-filmlook-tone"]').selectOption('fade')
+    await page.locator('[data-testid="adjustment-crop-w-input"]').fill('0.5')
+    await page.locator('[data-testid="adjustment-crop-w-input"]').blur()
+    await page.waitForTimeout(150)
+
+    const layer = await page.evaluate(() => {
+      const p = window.__reelsStore.state().project as {
+        adjustmentLayers?: Array<{
+          retouch?: number
+          enhance?: number
+          visualEffect?: string
+          filmLook?: { toneId?: string }
+          cropRect?: { w?: number }
+        }>
+      }
+      return p.adjustmentLayers?.[0] ?? null
+    })
+    expect(layer?.retouch).toBeGreaterThan(0)
+    expect(layer?.enhance).toBeGreaterThan(0)
+    expect(layer?.visualEffect).toBe('vhs')
+    expect(layer?.filmLook?.toneId).toBe('fade')
+    expect(layer?.cropRect?.w).toBeCloseTo(0.5, 2)
+  })
+
   test('변형 탭은 조정 레이어 영역 크기/위치/투명도 저장', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
@@ -267,6 +303,29 @@ test.describe('@phase-adjustment-layer-tabs 조정 레이어 6탭 구조', () =>
     await expect(
       page.locator('[data-testid="adjustment-keyframe-row-0"]')
     ).toBeVisible()
+    await expect(
+      page.locator('[data-testid="adjustment-keyframe-time-0"]')
+    ).toBeVisible()
+    await page.locator('[data-testid="adjustment-keyframe-time-0"]').fill('500')
+    await page.locator('[data-testid="adjustment-keyframe-time-0"]').blur()
+    await page.waitForTimeout(120)
+    const keyframeTimes = await page.evaluate(() => {
+      const p = (
+        window as unknown as {
+          __reelsStore: {
+            state: () => {
+              project: {
+                adjustmentLayers?: Array<{
+                  transformKeyframes?: Array<{ atMs: number }>
+                }>
+              }
+            }
+          }
+        }
+      ).__reelsStore.state().project
+      return p.adjustmentLayers?.[0]?.transformKeyframes?.map((kf) => kf.atMs) ?? []
+    })
+    expect(keyframeTimes).toContain(500)
   })
 
   test('키프레임 보간이 프리뷰 영역 transform 에 반영', async () => {

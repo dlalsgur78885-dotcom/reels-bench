@@ -33,6 +33,9 @@ const SUPPORTED_EXTS = new Set([
 ])
 
 const ALL_FOLDERS = '__all__'
+const USER_FOLDER_PREFIX = 'user:'
+const UNCATEGORIZED_FOLDER = '__uncategorized__'
+const DEFAULT_USER_FOLDERS = ['영상', '효과음', 'BGM', '성우', '자료'] as const
 
 type MediaSortKey =
   | 'importedDesc'
@@ -45,14 +48,14 @@ type MediaSortKey =
   | 'sizeDesc'
 
 const MEDIA_SORT_OPTIONS: { key: MediaSortKey; label: string }[] = [
-  { key: 'importedDesc', label: '최근 가져온 순' },
-  { key: 'importedAsc', label: '오래된 순' },
-  { key: 'nameAsc', label: '이름 오름차순' },
-  { key: 'nameDesc', label: '이름 내림차순' },
-  { key: 'durationDesc', label: '길이 긴 순' },
-  { key: 'durationAsc', label: '길이 짧은 순' },
-  { key: 'kindAsc', label: '종류별' },
-  { key: 'sizeDesc', label: '용량 큰 순' }
+  { key: 'importedDesc', label: '가져온 시간 · 최신순' },
+  { key: 'importedAsc', label: '가져온 시간 · 오래된 순' },
+  { key: 'nameAsc', label: '이름 · 오름차순' },
+  { key: 'nameDesc', label: '이름 · 내림차순' },
+  { key: 'durationDesc', label: '기간 · 긴 순' },
+  { key: 'durationAsc', label: '기간 · 짧은 순' },
+  { key: 'kindAsc', label: '유형별' },
+  { key: 'sizeDesc', label: '용량 · 큰 순' }
 ]
 
 function extOf(filePath: string): string {
@@ -92,6 +95,21 @@ function folderName(dir: string): string {
   const trimmed = dir.replace(/[\\/]$/, '')
   const i = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
   return i >= 0 ? trimmed.slice(i + 1) : trimmed
+}
+
+function userFolderKey(name: string): string {
+  return `${USER_FOLDER_PREFIX}${name}`
+}
+
+function userFolderFromKey(key: string): string | null {
+  return key.startsWith(USER_FOLDER_PREFIX)
+    ? key.slice(USER_FOLDER_PREFIX.length)
+    : null
+}
+
+function mediaFolderKey(asset: MediaAsset): string {
+  const custom = asset.libraryFolder?.trim()
+  return custom ? userFolderKey(custom) : parentDir(asset.path)
 }
 
 function compareBySort(a: MediaAsset, b: MediaAsset, sortKey: MediaSortKey): number {
@@ -187,6 +205,53 @@ const styles = {
     gridTemplateColumns: '1fr 1fr',
     gap: 8,
     padding: '0 12px 10px'
+  } as React.CSSProperties,
+  folderDropTray: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 8,
+    padding: '0 12px 10px'
+  } as React.CSSProperties,
+  folderDropTarget: {
+    background: '#101010',
+    color: '#cbd5e1',
+    border: '1px solid #2a2a2a',
+    borderRadius: 6,
+    padding: '9px 10px',
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: 'pointer',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  } as React.CSSProperties,
+  folderDropTargetActive: {
+    borderColor: '#10b981',
+    background: 'rgba(16, 185, 129, 0.14)',
+    color: '#86efac'
+  } as React.CSSProperties,
+  folderDropTargetSelected: {
+    borderColor: '#10b981',
+    color: '#86efac'
+  } as React.CSSProperties,
+  folderIcon: {
+    display: 'block',
+    fontSize: 16,
+    lineHeight: 1,
+    marginBottom: 5
+  } as React.CSSProperties,
+  folderName: {
+    display: 'block',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  } as React.CSSProperties,
+  folderCount: {
+    display: 'block',
+    color: '#94a3b8',
+    fontSize: 10,
+    fontWeight: 600,
+    marginTop: 2
   } as React.CSSProperties,
   controlBlock: {
     display: 'flex',
@@ -413,6 +478,11 @@ const styles = {
     fontWeight: 800,
     padding: '4px 6px 2px'
   } as React.CSSProperties,
+  contextDivider: {
+    height: 1,
+    background: '#1f2937',
+    margin: '2px 0'
+  } as React.CSSProperties,
   contextBtn: {
     width: '100%',
     textAlign: 'left',
@@ -422,6 +492,35 @@ const styles = {
     color: '#e2e8f0',
     padding: '6px 8px',
     fontSize: 11,
+    cursor: 'pointer'
+  } as React.CSSProperties,
+  contextBtnMuted: {
+    color: '#94a3b8'
+  } as React.CSSProperties,
+  contextInputRow: {
+    display: 'flex',
+    gap: 6,
+    padding: '4px 0'
+  } as React.CSSProperties,
+  contextInput: {
+    flex: 1,
+    minWidth: 0,
+    background: '#0b1220',
+    color: '#e2e8f0',
+    border: '1px solid #334155',
+    borderRadius: 6,
+    padding: '6px 8px',
+    fontSize: 11,
+    outline: 'none'
+  } as React.CSSProperties,
+  contextSmallBtn: {
+    border: 'none',
+    borderRadius: 6,
+    background: '#10b981',
+    color: '#04231a',
+    padding: '0 8px',
+    fontSize: 11,
+    fontWeight: 800,
     cursor: 'pointer'
   } as React.CSSProperties,
   contextBtnActive: {
@@ -449,6 +548,7 @@ export function MediaLibrary(): JSX.Element {
   const media = useProjectStore((s) => s.project.media)
   const removeMedia = useProjectStore((s) => s.removeMedia)
   const renameMedia = useProjectStore((s) => s.renameMedia)
+  const updateMediaLibraryFolder = useProjectStore((s) => s.updateMediaLibraryFolder)
 
   const [dragOver, setDragOver] = useState(false)
   const [importing, setImporting] = useState<string[]>([])
@@ -457,10 +557,14 @@ export function MediaLibrary(): JSX.Element {
   /** 현재 선택된 가져오기 소스 탭. */
   const [tab, setTab] = useState<ImportTab>('local')
   const [folderFilter, setFolderFilter] = useState<string>(ALL_FOLDERS)
+  const [createdFolders, setCreatedFolders] = useState<string[]>([])
+  const [folderDragTarget, setFolderDragTarget] = useState<string | null>(null)
   const [sortKey, setSortKey] = useState<MediaSortKey>('importedDesc')
   const [libraryMenu, setLibraryMenu] = useState<{ x: number; y: number } | null>(
     null
   )
+  const [creatingFolder, setCreatingFolder] = useState(false)
+  const [newFolderDraft, setNewFolderDraft] = useState('')
   /** mediaId -> data URI (loaded lazily after hydration). */
   const [thumbCache, setThumbCache] = useState<Record<string, string>>({})
 
@@ -475,16 +579,42 @@ export function MediaLibrary(): JSX.Element {
 
   const allAssets = useMemo(() => Object.values(media), [media])
 
-  const folders = useMemo(() => {
-    const byPath = new Map<string, { path: string; label: string; count: number }>()
+  const customFolders = useMemo(() => {
+    const names = new Set<string>()
+    for (const name of DEFAULT_USER_FOLDERS) names.add(name)
+    for (const name of createdFolders) {
+      const trimmed = name.trim()
+      if (trimmed) names.add(trimmed)
+    }
     for (const asset of allAssets) {
+      const name = asset.libraryFolder?.trim()
+      if (name) names.add(name)
+    }
+    return [...names].sort((a, b) => a.localeCompare(b, 'ko'))
+  }, [allAssets, createdFolders])
+
+  const folders = useMemo(() => {
+    const byPath = new Map<string, { path: string; label: string; count: number; custom?: boolean }>()
+    for (const name of customFolders) {
+      byPath.set(userFolderKey(name), {
+        path: userFolderKey(name),
+        label: name,
+        count: allAssets.filter((a) => a.libraryFolder?.trim() === name).length,
+        custom: true
+      })
+    }
+    for (const asset of allAssets) {
+      if (asset.libraryFolder?.trim()) continue
       const dir = parentDir(asset.path)
       const cur = byPath.get(dir)
       if (cur) cur.count += 1
       else byPath.set(dir, { path: dir, label: folderName(dir), count: 1 })
     }
-    return [...byPath.values()].sort((a, b) => a.label.localeCompare(b.label, 'ko'))
-  }, [allAssets])
+    return [...byPath.values()].sort((a, b) => {
+      if (a.custom !== b.custom) return a.custom ? -1 : 1
+      return a.label.localeCompare(b.label, 'ko')
+    })
+  }, [allAssets, customFolders])
 
   useEffect(() => {
     if (folderFilter === ALL_FOLDERS) return
@@ -496,9 +626,29 @@ export function MediaLibrary(): JSX.Element {
   const assets = useMemo(
     () =>
       allAssets
-        .filter((a) => folderFilter === ALL_FOLDERS || parentDir(a.path) === folderFilter)
+        .filter((a) => folderFilter === ALL_FOLDERS || mediaFolderKey(a) === folderFilter)
         .sort((a, b) => compareBySort(a, b, sortKey)),
     [allAssets, folderFilter, sortKey]
+  )
+
+  const activeUserFolder = userFolderFromKey(folderFilter)
+  const userFolderDropTargets = useMemo(
+    () =>
+      [
+        ...customFolders.map((name) => ({
+          key: userFolderKey(name),
+          name,
+          count: allAssets.filter((asset) => asset.libraryFolder?.trim() === name).length,
+          clear: false
+        })),
+        {
+          key: UNCATEGORIZED_FOLDER,
+          name: '미분류',
+          count: allAssets.filter((asset) => !asset.libraryFolder?.trim()).length,
+          clear: true
+        }
+      ],
+    [allAssets, customFolders]
   )
 
   // Hydrate thumbnail data URIs for assets that have a thumbnailPath but
@@ -551,7 +701,13 @@ export function MediaLibrary(): JSX.Element {
           ...prev
         ])
       }
-      await importFilesByPath(supported, { onAssetReady, onError })
+      const added = await importFilesByPath(supported, { onAssetReady, onError })
+      const targetFolder = userFolderFromKey(folderFilter)
+      if (targetFolder) {
+        for (const asset of added) {
+          updateMediaLibraryFolder(asset.id, targetFolder)
+        }
+      }
     } finally {
       setImporting((prev) =>
         prev.filter((p) => !supported.includes(p))
@@ -664,7 +820,59 @@ export function MediaLibrary(): JSX.Element {
     e.preventDefault()
     setLibraryMenu({ x: e.clientX, y: e.clientY })
   }
-  const closeLibraryMenu = (): void => setLibraryMenu(null)
+  const closeLibraryMenu = (): void => {
+    setLibraryMenu(null)
+    setCreatingFolder(false)
+    setNewFolderDraft('')
+  }
+  const createFolder = (raw: string): void => {
+    const name = String(raw ?? '').trim().slice(0, 80)
+    if (!name) return
+    setCreatedFolders((prev) =>
+      prev.some((f) => f.trim() === name) ? prev : [...prev, name]
+    )
+    setFolderFilter(userFolderKey(name))
+    closeLibraryMenu()
+  }
+  const moveMediaToUserFolder = (mediaId: string, folderName: string): void => {
+    const asset = media[mediaId]
+    const name = String(folderName ?? '').trim().slice(0, 80)
+    if (!asset || !name) return
+    if (folderName === UNCATEGORIZED_FOLDER) {
+      updateMediaLibraryFolder(mediaId, null)
+      return
+    }
+    if (asset.libraryFolder?.trim() === name) return
+    updateMediaLibraryFolder(mediaId, name)
+  }
+  const handleFolderDragOver = (
+    e: React.DragEvent<HTMLButtonElement>,
+    folderName: string
+  ): void => {
+    if (
+      !e.dataTransfer.types.includes(MEDIA_DRAG_MIME) &&
+      !e.dataTransfer.types.includes('text/plain')
+    ) {
+      return
+    }
+    e.preventDefault()
+    e.stopPropagation()
+    e.dataTransfer.dropEffect = 'move'
+    setFolderDragTarget(folderName === UNCATEGORIZED_FOLDER ? '미분류' : folderName)
+  }
+  const handleFolderDrop = (
+    e: React.DragEvent<HTMLButtonElement>,
+    folderName: string
+  ): void => {
+    e.preventDefault()
+    e.stopPropagation()
+    const mediaId =
+      e.dataTransfer.getData(MEDIA_DRAG_MIME) ||
+      e.dataTransfer.getData('text/plain')
+    setFolderDragTarget(null)
+    if (!mediaId) return
+    moveMediaToUserFolder(mediaId, folderName)
+  }
   // pptx10 슬라이드 5 (0.2.22) — dragOver 시 wrap 전체에 dashed 강조 +
   // 가운데 안내 텍스트 overlay. 작은 점선 박스만 활성화 보이던 0.2.16의
   // 잔여 시각 누락 보강. overlay 는 pointer-events: none 이라 drop 이벤트
@@ -726,7 +934,9 @@ export function MediaLibrary(): JSX.Element {
           >
             {dragOver
               ? '여기에 놓아주세요'
-              : '파일을 드래그하거나 위 [가져오기]를 눌러주세요'}
+              : activeUserFolder
+                ? `"${activeUserFolder}" 폴더로 가져오기`
+                : '파일을 드래그하거나 위 [가져오기]를 눌러주세요'}
           </div>
 
           <div style={styles.libraryControls} data-testid="media-library-controls">
@@ -762,6 +972,60 @@ export function MediaLibrary(): JSX.Element {
               </select>
             </label>
           </div>
+
+          {userFolderDropTargets.length > 0 && (
+            <div
+              style={styles.folderDropTray}
+              data-testid="media-folder-drop-tray"
+              onDragLeave={(e) => {
+                const related = e.relatedTarget as Node | null
+                if (related && e.currentTarget.contains(related)) return
+                setFolderDragTarget(null)
+              }}
+            >
+              {userFolderDropTargets.map((folder) => (
+                <button
+                  key={folder.key}
+                  type="button"
+                  title={`${folder.name} (${folder.count})`}
+                  style={{
+                    ...styles.folderDropTarget,
+                    ...(folderFilter === folder.key
+                      ? styles.folderDropTargetSelected
+                      : {}),
+                    ...(folderDragTarget === folder.name
+                      ? styles.folderDropTargetActive
+                      : {})
+                  }}
+                  onClick={() => setFolderFilter(folder.clear ? ALL_FOLDERS : folder.key)}
+                  onDragOver={(e) =>
+                    handleFolderDragOver(
+                      e,
+                      folder.clear ? UNCATEGORIZED_FOLDER : folder.name
+                    )
+                  }
+                  onDragEnter={(e) =>
+                    handleFolderDragOver(
+                      e,
+                      folder.clear ? UNCATEGORIZED_FOLDER : folder.name
+                    )
+                  }
+                  onDrop={(e) =>
+                    handleFolderDrop(
+                      e,
+                      folder.clear ? UNCATEGORIZED_FOLDER : folder.name
+                    )
+                  }
+                  data-testid="media-folder-drop-target"
+                  data-folder-name={folder.name}
+                >
+                  <span style={styles.folderIcon}>📁</span>
+                  <span style={styles.folderName}>{folder.name}</span>
+                  <span style={styles.folderCount}>{folder.count} 항목</span>
+                </button>
+              ))}
+            </div>
+          )}
 
           {importing.length > 0 && (
             <div style={styles.importingRow}>
@@ -812,6 +1076,46 @@ export function MediaLibrary(): JSX.Element {
               <button
                 style={{
                   ...styles.contextBtn,
+                  ...styles.contextBtnMuted
+                }}
+                onClick={() => setCreatingFolder(true)}
+                data-testid="media-context-folder-new"
+              >
+                + 새 폴더
+              </button>
+              {creatingFolder && (
+                <div style={styles.contextInputRow}>
+                  <input
+                    autoFocus
+                    value={newFolderDraft}
+                    onChange={(e) => setNewFolderDraft(e.currentTarget.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        createFolder(newFolderDraft)
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault()
+                        setCreatingFolder(false)
+                        setNewFolderDraft('')
+                      }
+                    }}
+                    placeholder="폴더 이름"
+                    style={styles.contextInput}
+                    data-testid="media-context-folder-new-input"
+                  />
+                  <button
+                    style={styles.contextSmallBtn}
+                    onClick={() => createFolder(newFolderDraft)}
+                    data-testid="media-context-folder-new-ok"
+                  >
+                    생성
+                  </button>
+                </div>
+              )}
+              <div style={styles.contextDivider} />
+              <button
+                style={{
+                  ...styles.contextBtn,
                   ...(folderFilter === ALL_FOLDERS ? styles.contextBtnActive : {})
                 }}
                 onClick={() => {
@@ -836,7 +1140,7 @@ export function MediaLibrary(): JSX.Element {
                   data-testid="media-context-folder"
                   title={f.path}
                 >
-                  {f.label} ({f.count})
+                  {f.custom ? '📁 ' : ''}{f.label} ({f.count})
                 </button>
               ))}
               <div style={styles.contextSectionTitle}>분류</div>

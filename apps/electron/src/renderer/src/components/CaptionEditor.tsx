@@ -31,11 +31,13 @@ import {
   type CaptionKaraokeStyle,
   type CaptionPreset,
   type CaptionSpan,
+  type CaptionStyle,
   type CaptionTextShadow,
   type CaptionTextStroke,
   type Project
 } from '../../../shared/project'
 import { useProjectStore } from '../store/project'
+import { useTimelineUi } from '../store/timelineUi'
 import {
   ALL_PRESETS,
   CAPTION_ANIM_LABELS,
@@ -272,12 +274,34 @@ function findCaption(project: Project, id: string): CaptionClip | null {
   return null
 }
 
+function bulkCaptionIds(
+  project: Project,
+  selectedClipIds: ReadonlySet<string>,
+  captionId: string
+): string[] {
+  if (!selectedClipIds.has(captionId)) return [captionId]
+  const ids: string[] = []
+  for (const t of project.tracks) {
+    if (t.kind !== 'caption') continue
+    for (const c of t.clips) {
+      if (isCaptionClip(c) && selectedClipIds.has(c.id)) ids.push(c.id)
+    }
+  }
+  return ids.length > 1 ? ids : [captionId]
+}
+
 export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
   const { project, captionId, onClose } = props
   const updateCaption = useProjectStore((s) => s.updateCaption)
+  const updateCaptions = useProjectStore((s) => s.updateCaptions)
   const removeCaption = useProjectStore((s) => s.removeCaption)
+  const selectedClipIds = useTimelineUi((s) => s.selectedClipIds)
 
   const caption = useMemo(() => findCaption(project, captionId), [project, captionId])
+  const styleTargetIds = useMemo(
+    () => bulkCaptionIds(project, selectedClipIds, captionId),
+    [project, selectedClipIds, captionId]
+  )
 
   // Local draft for text field — flush on blur.
   const [draftText, setDraftText] = useState(
@@ -379,7 +403,11 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
 
   const applyPreset = (preset: CaptionPreset): void => {
     const fresh = makeStyleFromPreset(preset)
-    updateCaption(captionId, { style: fresh })
+    updateCaptions(styleTargetIds, { style: fresh })
+  }
+
+  const updateCaptionStyle = (partial: Partial<CaptionStyle>): void => {
+    updateCaptions(styleTargetIds, { style: partial })
   }
 
   const toggleEmphasis = (spanIdx: number, e: CaptionEmphasis): void => {
@@ -403,7 +431,7 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
   // and undo is automatic (updateCaption → set + temporal).
   const anim: CaptionAnimation = caption.animation ?? NO_CAPTION_ANIMATION
   const setAnim = (partial: Partial<CaptionAnimation>): void => {
-    updateCaption(captionId, {
+    updateCaptions(styleTargetIds, {
       animation: { ...(caption.animation ?? NO_CAPTION_ANIMATION), ...partial }
     })
   }
@@ -448,38 +476,28 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
   const textShadow = caption.style.textShadow
   const setTextStroke = (partial: Partial<CaptionTextStroke> | null): void => {
     if (partial === null) {
-      updateCaption(captionId, {
-        style: { ...caption.style, textStroke: undefined }
-      })
+      updateCaptionStyle({ textStroke: undefined })
       return
     }
-    updateCaption(captionId, {
-      style: {
-        ...caption.style,
-        textStroke: {
-          ...(caption.style.textStroke ?? {
-            color: DEFAULT_CAPTION_STROKE_COLOR,
-            width: DEFAULT_CAPTION_STROKE_WIDTH
-          }),
-          ...partial
-        }
+    updateCaptionStyle({
+      textStroke: {
+        ...(caption.style.textStroke ?? {
+          color: DEFAULT_CAPTION_STROKE_COLOR,
+          width: DEFAULT_CAPTION_STROKE_WIDTH
+        }),
+        ...partial
       }
     })
   }
   const setTextShadow = (partial: Partial<CaptionTextShadow> | null): void => {
     if (partial === null) {
-      updateCaption(captionId, {
-        style: { ...caption.style, textShadow: undefined }
-      })
+      updateCaptionStyle({ textShadow: undefined })
       return
     }
-    updateCaption(captionId, {
-      style: {
-        ...caption.style,
-        textShadow: {
-          ...(caption.style.textShadow ?? DEFAULT_CAPTION_SHADOW),
-          ...partial
-        }
+    updateCaptionStyle({
+      textShadow: {
+        ...(caption.style.textShadow ?? DEFAULT_CAPTION_SHADOW),
+        ...partial
       }
     })
   }
@@ -528,9 +546,7 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
     const next = await ext.captionFonts.list()
     setCustomFonts(next)
     injectCustomCaptionFonts(next)
-    updateCaption(captionId, {
-      style: { ...caption.style, fontFamilyId: result.font.id }
-    })
+    updateCaptionStyle({ fontFamilyId: result.font.id })
     setFontSearch('')
   }
 
@@ -635,11 +651,8 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
             style={styles.input}
             value={caption.style.fontFamilyId ?? 'pretendard'}
             onChange={(e) =>
-              updateCaption(captionId, {
-                style: {
-                  ...caption.style,
-                  fontFamilyId: e.target.value as CaptionFontFamilyId
-                }
+              updateCaptionStyle({
+                fontFamilyId: e.target.value as CaptionFontFamilyId
               })
             }
             data-testid="caption-fontfamily-select"
@@ -675,9 +688,7 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
               step={1}
               value={caption.style.fontSize}
               onChange={(e) =>
-                updateCaption(captionId, {
-                  style: { ...caption.style, fontSize: Number(e.target.value) }
-                })
+                updateCaptionStyle({ fontSize: Number(e.target.value) })
               }
               style={{ flex: 1 }}
               data-testid="caption-fontsize-slider"
@@ -692,9 +703,7 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
                 const v = Number(e.target.value)
                 if (!Number.isFinite(v)) return
                 const clamped = Math.max(16, Math.min(500, Math.round(v)))
-                updateCaption(captionId, {
-                  style: { ...caption.style, fontSize: clamped }
-                })
+                updateCaptionStyle({ fontSize: clamped })
               }}
               style={{
                 width: 64,
@@ -724,9 +733,7 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
             step={0.01}
             value={caption.style.yPosition}
             onChange={(e) =>
-              updateCaption(captionId, {
-                style: { ...caption.style, yPosition: Number(e.target.value) }
-              })
+              updateCaptionStyle({ yPosition: Number(e.target.value) })
             }
             data-testid="caption-yposition-slider"
           />
@@ -744,9 +751,7 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
                   ...(caption.style.align === a ? styles.pillBtnActive : {})
                 }}
                 onClick={() =>
-                  updateCaption(captionId, {
-                    style: { ...caption.style, align: a }
-                  })
+                  updateCaptionStyle({ align: a })
                 }
                 data-testid={`caption-align-${a}`}
               >
@@ -768,9 +773,7 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
                   ...(caption.style.background === bg ? styles.pillBtnActive : {})
                 }}
                 onClick={() =>
-                  updateCaption(captionId, {
-                    style: { ...caption.style, background: bg }
-                  })
+                  updateCaptionStyle({ background: bg })
                 }
                 data-testid={`caption-bg-${bg}`}
               >
@@ -800,9 +803,7 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
               step={0.01}
               value={caption.style.backgroundHeightFrac ?? 0}
               onChange={(e) =>
-                updateCaption(captionId, {
-                  style: { ...caption.style, backgroundHeightFrac: Number(e.target.value) }
-                })
+                updateCaptionStyle({ backgroundHeightFrac: Number(e.target.value) })
               }
               data-testid="caption-bg-height-frac"
             />
@@ -817,9 +818,7 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
               step={0.01}
               value={caption.style.backgroundWidthFrac ?? 0}
               onChange={(e) =>
-                updateCaption(captionId, {
-                  style: { ...caption.style, backgroundWidthFrac: Number(e.target.value) }
-                })
+                updateCaptionStyle({ backgroundWidthFrac: Number(e.target.value) })
               }
               data-testid="caption-bg-width-frac"
             />

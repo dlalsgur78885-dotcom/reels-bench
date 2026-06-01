@@ -95,6 +95,69 @@ function resolveFontFamily(
 
 let cachedFontDataUri: string | null | undefined
 const cachedCustomFontDataUris = new Map<string, string | null>()
+const cachedBuiltInFontDataUris = new Map<string, string | null>()
+
+const BUILT_IN_CAPTION_FONT_FILES: Record<string, Array<{ family: string; path: string }>> = {
+  malgun: [{ family: 'ReelsMalgunGothic', path: 'C:\\Windows\\Fonts\\malgun.ttf' }],
+  'apple-sd': [{ family: 'ReelsMalgunGothic', path: 'C:\\Windows\\Fonts\\malgun.ttf' }],
+  'noto-sans-kr': [
+    { family: 'ReelsNotoSansKR', path: 'C:\\Windows\\Fonts\\NotoSansKR-VF.ttf' },
+    { family: 'ReelsMalgunGothic', path: 'C:\\Windows\\Fonts\\malgun.ttf' }
+  ],
+  'nanum-gothic': [
+    { family: 'ReelsNotoSansKR', path: 'C:\\Windows\\Fonts\\NotoSansKR-VF.ttf' },
+    { family: 'ReelsMalgunGothic', path: 'C:\\Windows\\Fonts\\malgun.ttf' }
+  ],
+  'nanum-myeongjo': [
+    { family: 'ReelsNotoSerifKR', path: 'C:\\Windows\\Fonts\\NotoSerifKR-VF.ttf' }
+  ],
+  'nanum-square': [
+    { family: 'ReelsNotoSansKR', path: 'C:\\Windows\\Fonts\\NotoSansKR-VF.ttf' },
+    { family: 'ReelsMalgunGothic', path: 'C:\\Windows\\Fonts\\malgun.ttf' }
+  ],
+  'noto-serif-kr': [
+    { family: 'ReelsNotoSerifKR', path: 'C:\\Windows\\Fonts\\NotoSerifKR-VF.ttf' }
+  ],
+  'gmarket-sans': [
+    { family: 'ReelsNotoSansKR', path: 'C:\\Windows\\Fonts\\NotoSansKR-VF.ttf' },
+    { family: 'ReelsMalgunGothic', path: 'C:\\Windows\\Fonts\\malgun.ttf' }
+  ],
+  arial: [
+    { family: 'ReelsArial', path: 'C:\\Windows\\Fonts\\arial.ttf' },
+    { family: 'ReelsNotoSansKR', path: 'C:\\Windows\\Fonts\\NotoSansKR-VF.ttf' }
+  ],
+  impact: [
+    { family: 'ReelsImpact', path: 'C:\\Windows\\Fonts\\impact.ttf' },
+    { family: 'ReelsMalgunGothic', path: 'C:\\Windows\\Fonts\\malgun.ttf' }
+  ],
+  georgia: [
+    { family: 'ReelsGeorgia', path: 'C:\\Windows\\Fonts\\georgia.ttf' },
+    { family: 'ReelsNotoSerifKR', path: 'C:\\Windows\\Fonts\\NotoSerifKR-VF.ttf' }
+  ],
+  times: [
+    { family: 'ReelsTimesNewRoman', path: 'C:\\Windows\\Fonts\\times.ttf' },
+    { family: 'ReelsNotoSerifKR', path: 'C:\\Windows\\Fonts\\NotoSerifKR-VF.ttf' }
+  ],
+  courier: [
+    { family: 'ReelsCourierNew', path: 'C:\\Windows\\Fonts\\cour.ttf' },
+    { family: 'ReelsGulim', path: 'C:\\Windows\\Fonts\\gulim.ttc' }
+  ],
+  verdana: [
+    { family: 'ReelsVerdana', path: 'C:\\Windows\\Fonts\\verdana.ttf' },
+    { family: 'ReelsNotoSansKR', path: 'C:\\Windows\\Fonts\\NotoSansKR-VF.ttf' }
+  ],
+  tahoma: [
+    { family: 'ReelsTahoma', path: 'C:\\Windows\\Fonts\\tahoma.ttf' },
+    { family: 'ReelsNotoSansKR', path: 'C:\\Windows\\Fonts\\NotoSansKR-VF.ttf' }
+  ],
+  trebuchet: [
+    { family: 'ReelsTrebuchetMS', path: 'C:\\Windows\\Fonts\\trebuc.ttf' },
+    { family: 'ReelsNotoSansKR', path: 'C:\\Windows\\Fonts\\NotoSansKR-VF.ttf' }
+  ],
+  comic: [
+    { family: 'ReelsComicSansMS', path: 'C:\\Windows\\Fonts\\comic.ttf' }
+  ]
+}
 
 function resolveFontPath(): string | null {
   // Dev: src/main → ../../build/fonts/Pretendard-Bold.otf
@@ -209,6 +272,34 @@ function getCustomFontDataUri(id: CaptionFontFamilyId | undefined): {
     fontFace: `@font-face{font-family:'${font.familyName}';src:url(${dataUri}) format('${font.format}');font-weight:400 900;font-style:normal;}`,
     familyName: font.familyName
   }
+}
+
+function getBuiltInFontFaces(id: CaptionFontFamilyId | undefined): string {
+  if (!id || id === 'pretendard' || id.startsWith('custom:')) return ''
+  const files = BUILT_IN_CAPTION_FONT_FILES[id]
+  if (!files) return ''
+  return files
+    .map(({ family, path: fontPath }) => {
+      const cacheKey = `${family}:${fontPath}`
+      let dataUri = cachedBuiltInFontDataUris.get(cacheKey)
+      if (dataUri === undefined) {
+        try {
+          if (!existsSync(fontPath)) {
+            dataUri = null
+          } else {
+            const buf = readFileSync(fontPath)
+            dataUri = `data:font/ttf;base64,${buf.toString('base64')}`
+          }
+        } catch {
+          dataUri = null
+        }
+        cachedBuiltInFontDataUris.set(cacheKey, dataUri)
+      }
+      if (!dataUri) return ''
+      return `@font-face{font-family:'${family}';src:url(${dataUri}) format('truetype');font-weight:400 900;font-style:normal;}`
+    })
+    .filter(Boolean)
+    .join('')
 }
 
 // ---------------------------------------------------------------------------
@@ -888,6 +979,7 @@ export function buildCaptionSvg(
     ? `@font-face{font-family:'Pretendard';src:url(${fontDataUri}) format('opentype');font-weight:bold;font-style:normal;}`
     : ''
   const customFont = getCustomFontDataUri(style.fontFamilyId)
+  const builtInFontFaces = getBuiltInFontFaces(style.fontFamilyId)
   const fontFamily = resolveFontFamily(
     style.fontFamilyId,
     fontDataUri != null,
@@ -926,7 +1018,7 @@ export function buildCaptionSvg(
     baselineY,
     spansBody,
     plainText,
-    fontFace: `${fontFace}${customFont.fontFace}`,
+    fontFace: `${fontFace}${builtInFontFaces}${customFont.fontFace}`,
     fontFamily,
     style,
     spans,

@@ -41,6 +41,8 @@ export interface MediaAsset {
   importedAt: number
   fileName: string
   fileSizeBytes: number
+  /** Optional user-facing bin inside the editor media library. */
+  libraryFolder?: string
   /** Phase 8 — SFX provenance (license/attribution/source) for credit roll. */
   sfxMeta?: SfxMeta
 }
@@ -882,32 +884,36 @@ export interface CaptionStyle {
 export const CAPTION_FONT_FAMILIES = [
   // 한글 (Korean) — Pretendard 가 default embedded, 나머지는 시스템 의존
   { id: 'pretendard', label: 'Pretendard (기본)', stack: "'Pretendard'" },
-  { id: 'malgun', label: '맑은 고딕', stack: "'Malgun Gothic','맑은 고딕'" },
+  {
+    id: 'malgun',
+    label: '맑은 고딕',
+    stack: "'ReelsMalgunGothic','Malgun Gothic','맑은 고딕'"
+  },
   {
     id: 'apple-sd',
     label: 'Apple SD 고딕 Neo',
-    stack: "'Apple SD Gothic Neo','Malgun Gothic','맑은 고딕'"
+    stack: "'Apple SD Gothic Neo','ReelsMalgunGothic','Malgun Gothic','맑은 고딕'"
   },
   {
     id: 'noto-sans-kr',
     label: 'Noto Sans KR',
-    stack: "'Noto Sans KR','Malgun Gothic','맑은 고딕'"
+    stack: "'ReelsNotoSansKR','Noto Sans KR','ReelsMalgunGothic','Malgun Gothic','맑은 고딕'"
   },
   // pptx12 슬라이드 13 — 한글 추가.
   {
     id: 'nanum-gothic',
     label: '나눔고딕',
-    stack: "'NanumGothic','Nanum Gothic','Malgun Gothic','맑은 고딕'"
+    stack: "'NanumGothic','Nanum Gothic','ReelsNotoSansKR','Noto Sans KR','ReelsMalgunGothic','Malgun Gothic','맑은 고딕'"
   },
   {
     id: 'nanum-myeongjo',
     label: '나눔명조',
-    stack: "'NanumMyeongjo','Nanum Myeongjo',Batang,'바탕'"
+    stack: "'NanumMyeongjo','Nanum Myeongjo','ReelsNotoSerifKR','Noto Serif KR',Batang,'바탕'"
   },
   {
     id: 'nanum-square',
     label: '나눔스퀘어',
-    stack: "'NanumSquare','Nanum Square','Malgun Gothic','맑은 고딕'"
+    stack: "'NanumSquare','Nanum Square','ReelsNotoSansKR','Noto Sans KR','ReelsMalgunGothic','Malgun Gothic','맑은 고딕'"
   },
   {
     id: 'nanum-pen',
@@ -917,24 +923,24 @@ export const CAPTION_FONT_FAMILIES = [
   {
     id: 'noto-serif-kr',
     label: 'Noto Serif KR',
-    stack: "'Noto Serif KR',Batang,'바탕'"
+    stack: "'ReelsNotoSerifKR','Noto Serif KR',Batang,'바탕'"
   },
   {
     id: 'gmarket-sans',
     label: 'G마켓 산스',
-    stack: "'GmarketSansTTFBold','Gmarket Sans','Malgun Gothic','맑은 고딕'"
+    stack: "'GmarketSansTTFBold','Gmarket Sans','ReelsNotoSansKR','Noto Sans KR','ReelsMalgunGothic','Malgun Gothic','맑은 고딕'"
   },
   // 영문 (Latin) — 기존 + 자주 쓰는 시스템 폰트 추가
-  { id: 'arial', label: 'Arial', stack: 'Arial' },
-  { id: 'helvetica', label: 'Helvetica', stack: "'Helvetica Neue',Helvetica" },
-  { id: 'impact', label: 'Impact', stack: 'Impact' },
-  { id: 'georgia', label: 'Georgia', stack: 'Georgia' },
-  { id: 'times', label: 'Times New Roman', stack: "'Times New Roman',Times" },
-  { id: 'courier', label: 'Courier New', stack: "'Courier New',Courier,monospace" },
-  { id: 'verdana', label: 'Verdana', stack: 'Verdana' },
-  { id: 'tahoma', label: 'Tahoma', stack: 'Tahoma' },
-  { id: 'trebuchet', label: 'Trebuchet MS', stack: "'Trebuchet MS'" },
-  { id: 'comic', label: 'Comic Sans MS', stack: "'Comic Sans MS'" }
+  { id: 'arial', label: 'Arial', stack: "'ReelsArial',Arial,'ReelsNotoSansKR','Noto Sans KR'" },
+  { id: 'helvetica', label: 'Helvetica', stack: "'Helvetica Neue',Helvetica,'ReelsNotoSansKR','Noto Sans KR'" },
+  { id: 'impact', label: 'Impact', stack: "'ReelsImpact',Impact,'ReelsMalgunGothic','Malgun Gothic'" },
+  { id: 'georgia', label: 'Georgia', stack: "'ReelsGeorgia',Georgia,'ReelsNotoSerifKR','Noto Serif KR'" },
+  { id: 'times', label: 'Times New Roman', stack: "'ReelsTimesNewRoman','Times New Roman',Times,'ReelsNotoSerifKR','Noto Serif KR'" },
+  { id: 'courier', label: 'Courier New', stack: "'ReelsCourierNew','Courier New',Courier,'ReelsGulim',Gulim,monospace" },
+  { id: 'verdana', label: 'Verdana', stack: "'ReelsVerdana',Verdana,'ReelsNotoSansKR','Noto Sans KR'" },
+  { id: 'tahoma', label: 'Tahoma', stack: "'ReelsTahoma',Tahoma,'ReelsNotoSansKR','Noto Sans KR'" },
+  { id: 'trebuchet', label: 'Trebuchet MS', stack: "'ReelsTrebuchetMS','Trebuchet MS','ReelsNotoSansKR','Noto Sans KR'" },
+  { id: 'comic', label: 'Comic Sans MS', stack: "'ReelsComicSansMS','Comic Sans MS',Gungsuh,'궁서'" }
 ] as const
 export type CaptionFontFamilyId =
   | (typeof CAPTION_FONT_FAMILIES)[number]['id']
@@ -1342,6 +1348,16 @@ export interface AdjustmentLayer {
   filterPreset?: FilterPreset
   /** Preset intensity 0..1. Default 1. */
   filterIntensity?: number
+  /** Static crop of the adjustment region, in final-canvas fractions. */
+  cropRect?: CropRect
+  /** Retouch / beauty strength. Absent / 0 = off. */
+  retouch?: number
+  /** Video-quality enhancer strength. Absent / 0 = off. */
+  enhance?: number
+  /** Film-look finishing filter. Absent / neutral = off. */
+  filmLook?: FilmLook
+  /** Visual effect preset. Absent / 'none' = off. */
+  visualEffect?: VisualEffectId
   /**
    * pptx12 slide 18 — adjustment layers can be resized/moved like visual
    * layers. Identity/absent means the grade covers the full composited frame.
@@ -1396,6 +1412,51 @@ export function getAdjustmentLayerTransform(layer: AdjustmentLayer): ClipTransfo
     rotation: Number.isFinite(t.rotation) ? t.rotation : 0,
     opacity: Number.isFinite(t.opacity) ? t.opacity : 1
   }
+}
+
+export function getAdjustmentLayerCropRect(layer: AdjustmentLayer): CropRect | null {
+  const c = layer.cropRect
+  if (!c) return null
+  const clamp01 = (v: number, d: number): number =>
+    Math.min(1, Math.max(0, Number.isFinite(v) ? v : d))
+  const w = Math.max(MIN_CROP_SIZE, clamp01(c.w, 1))
+  const h = Math.max(MIN_CROP_SIZE, clamp01(c.h, 1))
+  let x = clamp01(c.x, 0)
+  let y = clamp01(c.y, 0)
+  if (x + w > 1) x = 1 - w
+  if (y + h > 1) y = 1 - h
+  x = Math.max(0, x)
+  y = Math.max(0, y)
+  const rect = { x, y, w, h }
+  return isIdentityCrop(rect) ? null : rect
+}
+
+export function getAdjustmentLayerRetouch(layer: AdjustmentLayer): number | null {
+  const v = layer.retouch
+  if (v === undefined) return null
+  const n = Number.isFinite(v) ? v : 0
+  const clamped = Math.min(MAX_RETOUCH, Math.max(MIN_RETOUCH, n))
+  return clamped <= 0 ? null : clamped
+}
+
+export function getAdjustmentLayerEnhance(layer: AdjustmentLayer): number | null {
+  const v = layer.enhance
+  if (v === undefined) return null
+  const n = Number.isFinite(v) ? v : 0
+  const clamped = Math.min(MAX_ENHANCE, Math.max(MIN_ENHANCE, n))
+  return clamped <= 0 ? null : clamped
+}
+
+export function getAdjustmentLayerFilmLook(layer: AdjustmentLayer): FilmLook | null {
+  return getFilmLook(layer as unknown as VideoAudioClip)
+}
+
+export function getAdjustmentLayerVisualEffect(
+  layer: AdjustmentLayer
+): VisualEffectId | null {
+  const v = layer.visualEffect
+  if (!v || v === 'none' || !VISUAL_EFFECT_IDS.includes(v)) return null
+  return v
 }
 
 /** True iff the layer has an active (>= 2 keyframe) transform animation track. */
@@ -1623,7 +1684,12 @@ export function isNeutralAdjustmentLayer(layer: AdjustmentLayer): boolean {
     resolveColorAdjust(layer.colorAdjust) === null &&
     resolveClipCurves(layer.curves) === null &&
     resolveClipHsl(layer.hsl) === null &&
-    (!layer.filterPreset || layer.filterPreset === 'none')
+    (!layer.filterPreset || layer.filterPreset === 'none') &&
+    getAdjustmentLayerCropRect(layer) === null &&
+    getAdjustmentLayerRetouch(layer) === null &&
+    getAdjustmentLayerEnhance(layer) === null &&
+    getAdjustmentLayerFilmLook(layer) === null &&
+    getAdjustmentLayerVisualEffect(layer) === null
   )
 }
 
@@ -1654,6 +1720,11 @@ export function getAdjustmentLayers(project: Project): AdjustmentLayer[] {
       hsl: l.hsl,
       filterPreset: l.filterPreset,
       filterIntensity: l.filterIntensity,
+      cropRect: l.cropRect,
+      retouch: l.retouch,
+      enhance: l.enhance,
+      filmLook: l.filmLook,
+      visualEffect: l.visualEffect,
       transform: l.transform
     }
     // 릴스벤치14 슬라이드 6 — 변형 키프레임 트랙 보존 (preview 보간용).
@@ -2350,7 +2421,7 @@ export const MIN_FREEZE_GAP_MS = 50
 /** Default held duration when a freeze is first inserted. */
 export const DEFAULT_FREEZE_MS = 1000
 /** Min / max held duration. */
-export const MIN_FREEZE_MS = 100
+export const MIN_FREEZE_MS = 1
 export const MAX_FREEZE_MS = 10_000
 
 // ---------------------------------------------------------------------------

@@ -300,7 +300,7 @@ test.describe('@phase-3-24 text template picker', () => {
     await expect(page.locator('[data-testid="text-template-picker"]')).not.toBeVisible()
   })
 
-  test('T1b slide 17: picker always reopens in the right dock, never lower-left', async () => {
+  test('T1b slide 20: picker always reopens in the right dock, never lower-left', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
 
@@ -308,6 +308,7 @@ test.describe('@phase-3-24 text template picker', () => {
 
     const expectRightDocked = async (): Promise<void> => {
       const picker = page.locator('[data-testid="text-template-picker"]')
+      await expect(page.locator('[data-testid="right-dock-panel"]')).toBeVisible()
       await expect(picker).toBeVisible()
       const pickerBox = await picker.boundingBox()
       const editorBox = await page.locator('[data-testid="editor-page"]').boundingBox()

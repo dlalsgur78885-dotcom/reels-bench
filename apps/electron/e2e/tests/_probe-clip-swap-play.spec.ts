@@ -176,4 +176,432 @@ test.describe('@clip-swap-play', () => {
     )
     expect(recovered.some((v) => !v.paused)).toBe(true)
   })
+
+  test('재생 중 변형/조정/undo 후에도 프리뷰와 오디오가 계속 진행됨', async () => {
+    test.setTimeout(90_000)
+    const { page } = launched!
+    const videoFixture = process.env.E2E_FIXTURE_MP4
+    const audioFixture = process.env.E2E_FIXTURE_MP3
+    test.skip(!videoFixture || !audioFixture, 'E2E fixtures are required')
+
+    const ids = await page.evaluate(
+      async ({ videoPath, audioPath }) => {
+        await window.electron.fs.allowPath(videoPath)
+        await window.electron.fs.allowPath(audioPath)
+        const videoProbe = await window.electron.media.probe(videoPath)
+        const audioProbe = await window.electron.media.probe(audioPath)
+        const reels = window.__reelsStore
+        const videoId = reels.newId()
+        const audioId = reels.newId()
+        reels.addMedia({
+          id: videoId,
+          path: videoPath,
+          kind: videoProbe.kind,
+          durationMs: videoProbe.durationMs,
+          width: videoProbe.width ?? 720,
+          height: videoProbe.height ?? 1280,
+          codec: videoProbe.codec,
+          importedAt: Date.now(),
+          fileName: 'slide10-video.mp4',
+          fileSizeBytes: 0
+        })
+        reels.addMedia({
+          id: audioId,
+          path: audioPath,
+          kind: audioProbe.kind,
+          durationMs: audioProbe.durationMs,
+          codec: audioProbe.codec,
+          importedAt: Date.now(),
+          fileName: 'slide10-audio.mp3',
+          fileSizeBytes: 0
+        })
+        const videoTrack = reels.state().project.tracks.find((t) => t.kind === 'video')!
+        const secondVideoTrackId = reels.addTrack('video')
+        if (!secondVideoTrackId) throw new Error('failed to add second video track')
+        const voiceTrack = reels
+          .state()
+          .project.tracks.find((t) => t.kind === 'audio' && t.role === 'voice')!
+        if (videoProbe.durationMs < 1800 || audioProbe.durationMs < 1800) {
+          throw new Error('fixtures too short for slide10 playback regression')
+        }
+        const videoClipId = reels.newId()
+        const secondVideoClipId = reels.newId()
+        const audioClipId = reels.newId()
+        reels.addClip({
+          id: videoClipId,
+          kind: 'media',
+          mediaId: videoId,
+          trackId: videoTrack.id,
+          startMs: 0,
+          endMs: Math.min(2400, videoProbe.durationMs),
+          trimInMs: 0,
+          trimOutMs: Math.min(2400, videoProbe.durationMs),
+          speed: 1
+        })
+        reels.addClip({
+          id: secondVideoClipId,
+          kind: 'media',
+          mediaId: videoId,
+          trackId: secondVideoTrackId,
+          startMs: 0,
+          endMs: Math.min(2400, videoProbe.durationMs),
+          trimInMs: 0,
+          trimOutMs: Math.min(2400, videoProbe.durationMs),
+          speed: 1
+        })
+        reels.addClip({
+          id: audioClipId,
+          kind: 'media',
+          mediaId: audioId,
+          trackId: voiceTrack.id,
+          startMs: 0,
+          endMs: Math.min(2400, audioProbe.durationMs),
+          trimInMs: 0,
+          trimOutMs: Math.min(2400, audioProbe.durationMs),
+          speed: 1
+        })
+        return { secondVideoClipId, videoClipId, voiceTrackId: voiceTrack.id }
+      },
+      { videoPath: videoFixture!, audioPath: audioFixture! }
+    )
+
+    await page.waitForTimeout(350)
+    await page.locator('body').click().catch(() => {})
+    await page.evaluate(() => {
+      const ui = window.__reelsTimelineUi.getState()
+      ui.setPlayheadMs(250)
+      ui.setPlaying(true)
+    })
+
+    await page.waitForFunction(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      const a = document.querySelector<HTMLAudioElement>('audio[data-testid="preview-audio"]')
+      return videos.length >= 2 && !!a && videos.every((v) => !v.paused && v.readyState >= 2) && !a.paused
+    }, null, { timeout: 10_000 })
+
+    const before = await page.evaluate(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      const a = document.querySelector<HTMLAudioElement>('audio[data-testid="preview-audio"]')!
+      return { videoTimes: videos.map((v) => v.currentTime), audioTime: a.currentTime }
+    })
+
+    await page.evaluate(async ({ secondVideoClipId, videoClipId }) => {
+      window.__reelsStore.setClipTransform(videoClipId, {
+        scale: 0.52,
+        y: -0.25
+      })
+      window.__reelsStore.setClipTransform(secondVideoClipId, {
+        scale: 0.52,
+        y: 0.25
+      })
+      await new Promise((resolve) => setTimeout(resolve, 260))
+      const layerId = window.__reelsStore.addAdjustmentLayer(0, 2400)
+      if (layerId) {
+        window.__reelsStore.setAdjustmentLayerColorAdjust(layerId, {
+          brightness: 12,
+          saturation: 18
+        })
+      }
+      await new Promise((resolve) => setTimeout(resolve, 260))
+      window.__reelsUndoRedo.getState().undo()
+    }, ids)
+
+    await page.waitForTimeout(650)
+    const after = await page.evaluate(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      const a = document.querySelector<HTMLAudioElement>('audio[data-testid="preview-audio"]')!
+      return {
+        videoPaused: videos.map((v) => v.paused),
+        audioPaused: a.paused,
+        videoTimes: videos.map((v) => v.currentTime),
+        audioTime: a.currentTime,
+        ended: videos.map((v) => v.ended),
+        playing: window.__reelsTimelineUi.getState().playing,
+        playheadMs: window.__reelsTimelineUi.getState().playheadMs,
+        graphState: window.__previewAudioGraph.getState(),
+        gains: window.__previewAudioGraph.trackGains()
+      }
+    })
+    expect(after.videoPaused.every((paused) => paused === false)).toBe(true)
+    expect(after.audioPaused).toBe(false)
+    expect(after.ended.every((ended) => ended === false)).toBe(true)
+    expect(after.playing).toBe(true)
+    expect(after.playheadMs).toBeLessThan(2300)
+    expect(after.videoTimes.length).toBeGreaterThanOrEqual(2)
+    for (let i = 0; i < after.videoTimes.length; i++) {
+      expect(after.videoTimes[i]).toBeGreaterThan((before.videoTimes[i] ?? 0) + 0.15)
+    }
+    expect(after.audioTime).toBeGreaterThan(before.audioTime + 0.15)
+    if (after.graphState !== 'unavailable') {
+      expect(after.gains[ids.voiceTrackId]).toBeGreaterThan(0)
+    }
+  })
+
+  test('slide 7: 상하 레이아웃 적용 후 undo 해도 프리뷰와 오디오가 멈추지 않음', async () => {
+    test.setTimeout(90_000)
+    const { page } = launched!
+    const videoFixture = process.env.E2E_FIXTURE_MP4
+    const audioFixture = process.env.E2E_FIXTURE_MP3
+    test.skip(!videoFixture || !audioFixture, 'E2E fixtures are required')
+
+    const ids = await page.evaluate(
+      async ({ videoPath, audioPath }) => {
+        await window.electron.fs.allowPath(videoPath)
+        await window.electron.fs.allowPath(audioPath)
+        const videoProbe = await window.electron.media.probe(videoPath)
+        const audioProbe = await window.electron.media.probe(audioPath)
+        const reels = window.__reelsStore
+        const videoId = reels.newId()
+        const audioId = reels.newId()
+        reels.addMedia({
+          id: videoId,
+          path: videoPath,
+          kind: videoProbe.kind,
+          durationMs: videoProbe.durationMs,
+          width: videoProbe.width ?? 720,
+          height: videoProbe.height ?? 1280,
+          codec: videoProbe.codec,
+          importedAt: Date.now(),
+          fileName: 'slide7-video.mp4',
+          fileSizeBytes: 0
+        })
+        reels.addMedia({
+          id: audioId,
+          path: audioPath,
+          kind: audioProbe.kind,
+          durationMs: audioProbe.durationMs,
+          codec: audioProbe.codec,
+          importedAt: Date.now(),
+          fileName: 'slide7-voice.mp3',
+          fileSizeBytes: 0
+        })
+        const firstTrack = reels.state().project.tracks.find((t) => t.kind === 'video')!
+        const secondTrackId = reels.addTrack('video')
+        if (!secondTrackId) throw new Error('failed to add second video track')
+        const secondTrack = reels.state().project.tracks.find((t) => t.id === secondTrackId)!
+        const voiceTrack = reels
+          .state()
+          .project.tracks.find((t) => t.kind === 'audio' && t.role === 'voice')!
+        const dur = Math.min(2400, videoProbe.durationMs, audioProbe.durationMs)
+        if (dur < 1800) throw new Error('fixtures too short for slide7 playback regression')
+        const idA = reels.newId()
+        const idB = reels.newId()
+        const audioClipId = reels.newId()
+        reels.addClip({
+          id: idA,
+          kind: 'media',
+          mediaId: videoId,
+          trackId: firstTrack.id,
+          startMs: 0,
+          endMs: dur,
+          trimInMs: 0,
+          trimOutMs: dur,
+          speed: 1
+        })
+        reels.addClip({
+          id: idB,
+          kind: 'media',
+          mediaId: videoId,
+          trackId: secondTrack.id,
+          startMs: 0,
+          endMs: dur,
+          trimInMs: 0,
+          trimOutMs: dur,
+          speed: 1
+        })
+        reels.addClip({
+          id: audioClipId,
+          kind: 'media',
+          mediaId: audioId,
+          trackId: voiceTrack.id,
+          startMs: 0,
+          endMs: dur,
+          trimInMs: 0,
+          trimOutMs: dur,
+          speed: 1
+        })
+        reels.applyLayout('2up-v', [idA, idB])
+        window.__reelsUndoRedo.getState().undo()
+        return { voiceTrackId: voiceTrack.id }
+      },
+      { videoPath: videoFixture!, audioPath: audioFixture! }
+    )
+
+    await page.waitForTimeout(350)
+    await page.locator('body').click().catch(() => {})
+    await page.evaluate(() => {
+      const ui = window.__reelsTimelineUi.getState()
+      ui.setPlayheadMs(250)
+      ui.setPlaying(true)
+    })
+
+    await page.waitForFunction(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      const audio = document.querySelector<HTMLAudioElement>('audio[data-testid="preview-audio"]')
+      return videos.length >= 2 && !!audio && videos.every((v) => !v.paused && v.readyState >= 2) && !audio.paused
+    }, null, { timeout: 10_000 })
+
+    const before = await page.evaluate(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      const audio = document.querySelector<HTMLAudioElement>('audio[data-testid="preview-audio"]')!
+      return {
+        videoTimes: videos.map((v) => v.currentTime),
+        audioTime: audio.currentTime
+      }
+    })
+    await page.waitForTimeout(650)
+    const after = await page.evaluate(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      const audio = document.querySelector<HTMLAudioElement>('audio[data-testid="preview-audio"]')!
+      return {
+        videoPaused: videos.map((v) => v.paused),
+        videoTimes: videos.map((v) => v.currentTime),
+        audioPaused: audio.paused,
+        audioTime: audio.currentTime,
+        playing: window.__reelsTimelineUi.getState().playing,
+        playheadMs: window.__reelsTimelineUi.getState().playheadMs,
+        graphState: window.__previewAudioGraph.getState(),
+        gains: window.__previewAudioGraph.trackGains()
+      }
+    })
+
+    expect(after.playing).toBe(true)
+    expect(after.playheadMs).toBeGreaterThan(600)
+    expect(after.videoPaused.every((paused) => paused === false)).toBe(true)
+    expect(after.audioPaused).toBe(false)
+    expect(after.videoTimes.length).toBeGreaterThanOrEqual(2)
+    for (let i = 0; i < after.videoTimes.length; i++) {
+      expect(after.videoTimes[i]).toBeGreaterThan((before.videoTimes[i] ?? 0) + 0.15)
+    }
+    expect(after.audioTime).toBeGreaterThan(before.audioTime + 0.15)
+    if (after.graphState !== 'unavailable') {
+      expect(after.gains[ids.voiceTrackId]).toBeGreaterThan(0)
+    }
+  })
+
+  // 슬라이드 7 — "조정·색보정 넣고 틀면 프리뷰 버벅", "변형·크기/회전 조절 시
+  // 프리뷰 영상 멈춘 상태로 줌 효과 적용". 앞 테스트는 adjustment LAYER 색보정 +
+  // scale/y 만 다룬다. 슬라이드 문구 그대로 (1) 클립 자체 조정 탭 색보정
+  // (setClipColorAdjust) (2) 회전 포함 변형을 재생 중 적용해도 <video> 프레임이
+  // 멈추지 않고 currentTime 이 계속 전진하는지 직접 검증한다. 색보정·변형은 CSS
+  // filter/transform 으로만 적용되고 mediaPlaybackSignature 에 포함되지 않으므로
+  // src 재동기화(=프레임 freeze)를 유발하지 않아야 한다.
+  test('slide 7: 재생 중 클립 색보정 + 회전 변형을 적용해도 프리뷰 프레임이 멈추지 않음', async () => {
+    test.setTimeout(90_000)
+    const { page } = launched!
+    const videoFixture = process.env.E2E_FIXTURE_MP4
+    test.skip(!videoFixture, 'E2E fixtures are required')
+
+    const ids = await page.evaluate(async (videoPath) => {
+      await window.electron.fs.allowPath(videoPath)
+      const probe = await window.electron.media.probe(videoPath)
+      if (probe.durationMs < 1800) {
+        throw new Error('fixture too short for slide7 color/transform regression')
+      }
+      const reels = window.__reelsStore
+      const videoId = reels.newId()
+      reels.addMedia({
+        id: videoId,
+        path: videoPath,
+        kind: probe.kind,
+        durationMs: probe.durationMs,
+        width: probe.width ?? 720,
+        height: probe.height ?? 1280,
+        codec: probe.codec,
+        importedAt: Date.now(),
+        fileName: 'slide7-color-transform.mp4',
+        fileSizeBytes: 0
+      })
+      const videoTrack = reels.state().project.tracks.find((t) => t.kind === 'video')!
+      const dur = Math.min(2400, probe.durationMs)
+      const clipId = reels.newId()
+      reels.addClip({
+        id: clipId,
+        kind: 'media',
+        mediaId: videoId,
+        trackId: videoTrack.id,
+        startMs: 0,
+        endMs: dur,
+        trimInMs: 0,
+        trimOutMs: dur,
+        speed: 1
+      })
+      return { clipId }
+    }, videoFixture!)
+
+    await page.waitForTimeout(300)
+    await page.locator('body').click().catch(() => {})
+    await page.evaluate(() => {
+      const ui = window.__reelsTimelineUi.getState()
+      ui.setPlayheadMs(250)
+      ui.setPlaying(true)
+    })
+
+    await page.waitForFunction(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      return videos.length >= 1 && videos.every((v) => !v.paused && v.readyState >= 2)
+    }, null, { timeout: 10_000 })
+
+    const before = await page.evaluate(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      return { videoTimes: videos.map((v) => v.currentTime) }
+    })
+
+    // 재생 중 (1) 조정 탭 색보정 → (2) 회전 + 크기 변형을 순차 적용.
+    await page.evaluate(async ({ clipId }) => {
+      window.__reelsStore.setClipColorAdjust(clipId, {
+        brightness: 18,
+        contrast: -14,
+        saturation: 22
+      })
+      await new Promise((resolve) => setTimeout(resolve, 220))
+      window.__reelsStore.setClipTransform(clipId, {
+        scale: 1.4,
+        rotation: 15
+      })
+      await new Promise((resolve) => setTimeout(resolve, 220))
+    }, ids)
+
+    await page.waitForTimeout(600)
+    const after = await page.evaluate(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      return {
+        videoPaused: videos.map((v) => v.paused),
+        videoTimes: videos.map((v) => v.currentTime),
+        ended: videos.map((v) => v.ended),
+        playing: window.__reelsTimelineUi.getState().playing,
+        playheadMs: window.__reelsTimelineUi.getState().playheadMs
+      }
+    })
+
+    // 색보정·변형 적용에도 재생은 멈추지 않아야 한다.
+    expect(after.playing).toBe(true)
+    expect(after.playheadMs).toBeGreaterThan(600)
+    expect(after.videoPaused.every((paused) => paused === false)).toBe(true)
+    expect(after.ended.every((ended) => ended === false)).toBe(true)
+    // 핵심: 프레임이 "멈춘 상태로 줌 효과만 적용"되는 회귀가 없도록
+    // currentTime 이 적용 전 대비 실제로 전진했는지 확인.
+    expect(after.videoTimes.length).toBeGreaterThanOrEqual(1)
+    for (let i = 0; i < after.videoTimes.length; i++) {
+      expect(after.videoTimes[i]).toBeGreaterThan((before.videoTimes[i] ?? 0) + 0.15)
+    }
+  })
 })

@@ -44,7 +44,7 @@ import { launchElectron, type LaunchedApp } from '../helpers/launch'
 const MAX_FREEZE_FRAMES_PER_CLIP = 8
 const MIN_FREEZE_GAP_MS = 50
 const DEFAULT_FREEZE_MS = 1000
-const MIN_FREEZE_MS = 100
+const MIN_FREEZE_MS = 1
 const MAX_FREEZE_MS = 10_000
 
 // ---------------------------------------------------------------------------
@@ -517,6 +517,32 @@ test.describe('@phase-3-16-freeze-frame freeze frame feature', () => {
     expect(freezes3.length).toBe(1)
     expect(freezes3[0].durationMs).toBeGreaterThanOrEqual(MIN_FREEZE_MS)
     expect(freezes3[0].durationMs).toBeLessThanOrEqual(MAX_FREEZE_MS)
+  })
+
+  test('(5b) slide 14: freeze duration can be exactly one project frame, not clamped to three frames', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    await openEditor()
+    const { mediaId, durationMs } = await addFixtureMedia()
+    const cid = await addVideoClip(mediaId, durationMs)
+
+    const oneFrameMs = Math.round(1000 / 30)
+    await page.evaluate(
+      ({ id, srcMs, dur }) => {
+        ;(window as unknown as { __reelsStore: Window['__reelsStore'] }).__reelsStore
+          .addFreezeFrame(id, srcMs, dur)
+      },
+      { id: cid, srcMs: Math.floor(durationMs / 2), dur: oneFrameMs }
+    )
+
+    const clip = await getClipFromState(cid)
+    const freezes = clip!.freezeFrames as FreezeFrame[]
+    expect(freezes).toHaveLength(1)
+    expect(freezes[0].durationMs).toBe(oneFrameMs)
+    expect(freezes[0].durationMs).toBeLessThan(100)
+    expect((clip!.endMs as number) - (clip!.startMs as number)).toBe(
+      durationMs + oneFrameMs
+    )
   })
 
   // =========================================================================

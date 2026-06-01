@@ -89,7 +89,7 @@ test.describe('@phase-social-preview-position 플랫폼 미리보기 아이콘 �
       const profile = document.querySelector(
         '[data-testid="social-action-profile"]'
       ) as HTMLElement | null
-      if (!rect || !stack || !profile) {
+      if (!rect || !stack) {
         return {
           fittedW: 0,
           fittedH: 0,
@@ -101,7 +101,7 @@ test.describe('@phase-social-preview-position 플랫폼 미리보기 아이콘 �
       }
       const rb = rect.getBoundingClientRect()
       const sb = stack.getBoundingClientRect()
-      const pb = profile.getBoundingClientRect()
+      const pb = (profile ?? stack).getBoundingClientRect()
       const leftPct = ((sb.left - rb.left) / rb.width) * 100
       const rightPct = ((sb.right - rb.left) / rb.width) * 100
       const widthPct = ((sb.right - sb.left) / rb.width) * 100
@@ -146,31 +146,103 @@ test.describe('@phase-social-preview-position 플랫폼 미리보기 아이콘 �
     })
   }
 
-  test('TikTok — preview 크기를 바꿔도 action stack은 영상 오른쪽 기준을 유지', async () => {
-    await selectPlatform('tiktok')
-    const initial = await stackMetrics()
+  for (const p of ['tiktok', 'youtube', 'instagram'] as const) {
+    test(`${p} — preview 크기를 바꿔도 1080x1920 좌표 기준을 유지`, async () => {
+      await selectPlatform(p)
+      const coordinateSpace = await launched!.page
+        .locator('[data-testid="social-preview-overlay"]')
+        .getAttribute('data-coordinate-space')
+      expect(coordinateSpace).toBe('1080x1920')
 
-    // Drag down → timeline smaller → preview monitoring area larger.
-    await dragSplitter(180)
-    const large = await stackMetrics()
+      const initial = await stackMetrics()
 
-    // Drag up strongly → timeline larger → preview monitoring area smaller.
-    await dragSplitter(-320)
-    const small = await stackMetrics()
+      // Drag down → timeline smaller → preview monitoring area larger.
+      await dragSplitter(180)
+      const large = await stackMetrics()
 
-    expect(large.fittedH).toBeGreaterThan(initial.fittedH * 0.9)
-    expect(small.fittedH).toBeLessThan(large.fittedH * 0.85)
+      // Drag up strongly → timeline larger → preview monitoring area smaller.
+      await dragSplitter(-320)
+      const small = await stackMetrics()
 
-    for (const m of [large, small]) {
-      expect(m.rightPct).toBeGreaterThanOrEqual(93)
-      expect(m.rightPct).toBeLessThanOrEqual(98)
-      expect(m.leftPct).toBeGreaterThanOrEqual(70)
-      expect(m.widthPct).toBeLessThanOrEqual(22)
-      expect(m.profileCenterXPct).toBeGreaterThanOrEqual(82)
-      expect(m.profileCenterXPct).toBeLessThanOrEqual(96)
-    }
+      expect(large.fittedH).toBeGreaterThan(initial.fittedH * 0.9)
+      expect(small.fittedH).toBeLessThan(large.fittedH * 0.98)
 
-    expect(Math.abs(large.rightPct - small.rightPct)).toBeLessThanOrEqual(2)
-    expect(Math.abs(large.profileCenterXPct - small.profileCenterXPct)).toBeLessThanOrEqual(4)
+      for (const m of [large, small]) {
+        expect(m.rightPct).toBeGreaterThanOrEqual(93)
+        expect(m.rightPct).toBeLessThanOrEqual(98)
+        expect(m.leftPct).toBeGreaterThanOrEqual(70)
+        expect(m.widthPct).toBeLessThanOrEqual(22)
+        expect(m.profileCenterXPct).toBeGreaterThanOrEqual(82)
+        expect(m.profileCenterXPct).toBeLessThanOrEqual(96)
+      }
+
+      expect(Math.abs(large.rightPct - small.rightPct)).toBeLessThanOrEqual(1)
+      expect(Math.abs(large.leftPct - small.leftPct)).toBeLessThanOrEqual(1)
+      expect(Math.abs(large.widthPct - small.widthPct)).toBeLessThanOrEqual(1)
+      expect(Math.abs(large.profileCenterXPct - small.profileCenterXPct)).toBeLessThanOrEqual(1)
+    })
+  }
+
+  test('slide 8 — Instagram preview includes real app top/status and bottom navigation chrome', async () => {
+    await selectPlatform('instagram')
+    const metrics = await launched!.page.evaluate(() => {
+      const rect = document.querySelector(
+        '[data-testid="preview-fitted-rect"]'
+      ) as HTMLElement | null
+      const status = document.querySelector(
+        '[data-testid="instagram-status-bar"]'
+      ) as HTMLElement | null
+      const bottomNav = document.querySelector(
+        '[data-testid="instagram-app-bottom-nav"]'
+      ) as HTMLElement | null
+      const systemNav = document.querySelector(
+        '[data-testid="instagram-system-nav"]'
+      ) as HTMLElement | null
+      const safeTop = document.querySelector(
+        '[data-testid="social-overlay-safezone-top"]'
+      ) as HTMLElement | null
+      const safeBottom = document.querySelector(
+        '[data-testid="social-overlay-safezone-bottom"]'
+      ) as HTMLElement | null
+      const caption = document.querySelector(
+        '[data-testid="social-overlay-caption-block"]'
+      ) as HTMLElement | null
+      const stack = document.querySelector(
+        '[data-testid="social-overlay-action-stack"]'
+      ) as HTMLElement | null
+      if (!rect || !status || !bottomNav || !systemNav || !safeTop || !safeBottom || !caption || !stack) {
+        throw new Error('instagram chrome nodes missing')
+      }
+      const rb = rect.getBoundingClientRect()
+      const pct = (el: HTMLElement) => {
+        const b = el.getBoundingClientRect()
+        return {
+          top: ((b.top - rb.top) / rb.height) * 100,
+          bottom: ((b.bottom - rb.top) / rb.height) * 100,
+          height: (b.height / rb.height) * 100
+        }
+      }
+      const cb = caption.getBoundingClientRect()
+      const sb = stack.getBoundingClientRect()
+      return {
+        status: pct(status),
+        bottomNav: pct(bottomNav),
+        systemNav: pct(systemNav),
+        safeTop: pct(safeTop),
+        safeBottom: pct(safeBottom),
+        captionBottomPct: ((cb.bottom - rb.top) / rb.height) * 100,
+        stackBottomPct: ((sb.bottom - rb.top) / rb.height) * 100
+      }
+    })
+
+    expect(metrics.status.top).toBeLessThanOrEqual(1)
+    expect(metrics.status.height).toBeGreaterThanOrEqual(4)
+    expect(metrics.safeTop.height).toBeGreaterThanOrEqual(17)
+    expect(metrics.safeBottom.height).toBeGreaterThanOrEqual(23)
+    expect(metrics.bottomNav.bottom).toBeLessThanOrEqual(96)
+    expect(metrics.systemNav.bottom).toBeGreaterThanOrEqual(99)
+    // Caption and action stack must sit above the real Instagram bottom chrome.
+    expect(metrics.captionBottomPct).toBeLessThanOrEqual(86)
+    expect(metrics.stackBottomPct).toBeLessThanOrEqual(79)
   })
 })

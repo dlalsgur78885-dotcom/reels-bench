@@ -16,7 +16,11 @@ import {
   getCaptionTextStroke,
   getAdjustmentLayerFadeFactor,
   getAdjustmentLayers,
+  getAdjustmentLayerCropRect,
+  getAdjustmentLayerFilmLook,
+  getAdjustmentLayerRetouch,
   getAdjustmentLayerTransformAt,
+  getAdjustmentLayerVisualEffect,
   getCanvasBackground,
   getClipBlurRegions,
   getClipColorAdjust,
@@ -111,6 +115,35 @@ function injectCustomCaptionFonts(fonts: CustomCaptionFont[]): void {
     .join('\n')
 }
 
+function injectBuiltInCaptionFonts(): void {
+  if (typeof document === 'undefined') return
+  const id = 'reels-builtin-caption-fonts'
+  if (document.getElementById(id)) return
+  const styleEl = document.createElement('style')
+  styleEl.id = id
+  styleEl.textContent = [
+    ['ReelsMalgunGothic', 'Malgun Gothic'],
+    ['ReelsNotoSansKR', 'Noto Sans KR'],
+    ['ReelsNotoSerifKR', 'Noto Serif KR'],
+    ['ReelsGulim', 'Gulim'],
+    ['ReelsArial', 'Arial'],
+    ['ReelsImpact', 'Impact'],
+    ['ReelsGeorgia', 'Georgia'],
+    ['ReelsTimesNewRoman', 'Times New Roman'],
+    ['ReelsCourierNew', 'Courier New'],
+    ['ReelsVerdana', 'Verdana'],
+    ['ReelsTahoma', 'Tahoma'],
+    ['ReelsTrebuchetMS', 'Trebuchet MS'],
+    ['ReelsComicSansMS', 'Comic Sans MS']
+  ]
+    .map(
+      ([family, localName]) =>
+        `@font-face{font-family:'${family}';src:local('${localName}');font-weight:400 900;font-style:normal;font-display:swap;}`
+    )
+    .join('\n')
+  document.head.appendChild(styleEl)
+}
+
 // ---------------------------------------------------------------------------
 // Source-time mapping (Phase 2.3 speed-aware; Phase 3.10 curve-aware;
 // Phase 3.16 freeze-aware).
@@ -196,6 +229,55 @@ export function clipPlaybackRate(
   return clip.speed ?? 1
 }
 
+function clipTimingSignature(clip: VideoAudioClip): string {
+  return [
+    clip.id,
+    clip.mediaId,
+    clip.startMs,
+    clip.endMs,
+    clip.trimInMs,
+    clip.trimOutMs,
+    clip.speed ?? 1,
+    isClipReversed(clip) ? 'rev' : 'fwd',
+    JSON.stringify(clip.speedKeyframes ?? null),
+    JSON.stringify(clip.freezeFrames ?? null),
+    JSON.stringify(clip.deletedRanges ?? null)
+  ].join('|')
+}
+
+function mediaPlaybackSignature(args: {
+  project: Project
+  videoTracks: Track[]
+  layerByTrackId: Map<string, VideoLayer>
+  audioTracks: Track[]
+  hitByTrackId: Map<string, { clip: VideoAudioClip; track: Track }>
+}): string {
+  const parts: string[] = []
+  for (const track of args.videoTracks) {
+    const layer = args.layerByTrackId.get(track.id)
+    if (!layer) {
+      parts.push(`v:${track.id}:none`)
+      continue
+    }
+    const media = args.project.media[layer.clip.mediaId]
+    parts.push(
+      `v:${track.id}:${clipTimingSignature(layer.clip)}:${media?.path ?? ''}:${media?.kind ?? ''}`
+    )
+  }
+  for (const track of args.audioTracks) {
+    const hit = args.hitByTrackId.get(track.id)
+    if (!hit) {
+      parts.push(`a:${track.id}:none`)
+      continue
+    }
+    const media = args.project.media[hit.clip.mediaId]
+    parts.push(
+      `a:${track.id}:${clipTimingSignature(hit.clip)}:${media?.path ?? ''}:${media?.kind ?? ''}`
+    )
+  }
+  return parts.join('\n')
+}
+
 interface PreviewCanvasProps {
   project: Project
   /** Playhead position (ms). Captions visible when startMs <= playheadMs < endMs. */
@@ -206,6 +288,7 @@ interface ScopedAdjustmentRegion {
   id: string
   filter: string
   transform: ClipTransform
+  cropRect?: { x: number; y: number; w: number; h: number } | null
   mirrorX?: boolean
   mirrorY?: boolean
 }
@@ -293,9 +376,17 @@ const PLAYBACK_WATCHDOG_INTERVAL_MS = 250
 const PLAYBACK_STALL_MS = 750
 const PLAYBACK_STALL_EPS_SEC = 0.015
 const PLAYBACK_DRIFT_SEEK_SEC = 1.15
+const PLAYBACK_FRAME_STALL_MS = 900
+const PLAYBACK_FRAME_NUDGE_SEC = 0.001
 
 interface MediaPlaybackHealth {
   currentTime: number
+  checkedAt: number
+}
+
+interface VideoFrameHealth {
+  mediaTime: number
+  totalFrames: number
   checkedAt: number
 }
 
@@ -340,6 +431,52 @@ function elementLooksStalled(
   }
   const stalledFor = now - prev.checkedAt
   return stalledFor >= PLAYBACK_STALL_MS
+}
+
+function readPresentedVideoFrames(video: HTMLVideoElement): number {
+  try {
+    const quality = video.getVideoPlaybackQuality?.()
+    if (quality && Number.isFinite(quality.totalVideoFrames)) {
+      return quality.totalVideoFrames
+    }
+  } catch {
+    /* Some Chromium builds can throw while the element is reloading. */
+  }
+  return -1
+}
+
+function videoFramesLookStalled(
+  key: string,
+  video: HTMLVideoElement,
+  health: Map<string, VideoFrameHealth>,
+  now: number
+): boolean {
+  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return false
+  if (video.paused || video.ended || video.seeking) return false
+  const mediaTime = Number.isFinite(video.currentTime) ? video.currentTime : 0
+  const totalFrames = readPresentedVideoFrames(video)
+  const prev = health.get(key)
+  if (!prev) {
+    health.set(key, { mediaTime, totalFrames, checkedAt: now })
+    return false
+  }
+  const mediaAdvanced = mediaTime - prev.mediaTime > PLAYBACK_STALL_EPS_SEC
+  const frameAdvanced =
+    totalFrames >= 0 && prev.totalFrames >= 0
+      ? totalFrames > prev.totalFrames
+      : false
+  if (!mediaAdvanced || frameAdvanced) {
+    health.set(key, { mediaTime, totalFrames, checkedAt: now })
+    return false
+  }
+  return now - prev.checkedAt >= PLAYBACK_FRAME_STALL_MS
+}
+
+function nudgeVideoDecoder(video: HTMLVideoElement, targetSec: number): void {
+  const base = Number.isFinite(targetSec) ? targetSec : video.currentTime
+  const nudge = Math.max(0, base + PLAYBACK_FRAME_NUDGE_SEC)
+  setMediaTime(video, nudge)
+  retryMediaPlay(video)
 }
 
 /**
@@ -1270,6 +1407,9 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
    * that needs an explicit currentTime sync.
    */
   const prevPlayheadMs = useRef<number | null>(null)
+  /** Previous media-playback signature. Visual-only project edits must not
+      force-seek the decoder; only source/timing graph changes should. */
+  const prevPlaybackSignature = useRef<string | null>(null)
   /** Media id loaded into the blurred-bg element (for src-change detection). */
   const loadedBgId = useRef<string | null>(null)
   /** Per-track currently-loaded media id (for src-change detection). */
@@ -1279,6 +1419,9 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   /** Last observed media clocks used to recover when the transport keeps
       ticking but a DOM media element / decoder stalls. */
   const mediaHealth = useRef<Map<string, MediaPlaybackHealth>>(new Map())
+  /** Last observed presented video frames. currentTime can advance while the
+      compositor is stuck on a stale frame; this catches that separate class. */
+  const videoFrameHealth = useRef<Map<string, VideoFrameHealth>>(new Map())
   const swapRaf = useRef<number | null>(null)
 
   const videoLayers = useMemo(
@@ -1359,6 +1502,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   const multiVideoPreview = videoLayers.length > 1
 
   useEffect(() => {
+    injectBuiltInCaptionFonts()
     let cancelled = false
     const ext = window.electron?.captionFonts
     if (!ext) return
@@ -1475,12 +1619,24 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           </svg>
         )
       }
+      const rt = getAdjustmentLayerRetouch(layer)
+      if (rt !== null) {
+        layerParts.push(`blur(${((rt / 100) * 1.8).toFixed(2)}px)`)
+      }
+      const filmLook = getAdjustmentLayerFilmLook(layer)
+      const filmTone = filmToneToCss(filmLook?.toneId)
+      if (filmTone) layerParts.push(filmTone)
+      const visualEffect = getAdjustmentLayerVisualEffect(layer)
+      const visualCss = visualEffectToCss(visualEffect)
+      if (visualCss) layerParts.push(visualCss)
       const transform = getAdjustmentLayerTransformAt(layer, playheadMs)
-      if (!isIdentityTransform(transform)) {
+      const cropRect = getAdjustmentLayerCropRect(layer)
+      if (!isIdentityTransform(transform) || cropRect) {
         regions.push({
           id: layer.id,
           filter: layerParts.join(' '),
           transform,
+          cropRect,
           mirrorX: layer.mirrorX,
           mirrorY: layer.mirrorY
         })
@@ -1602,6 +1758,18 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
       const isUserScrub =
         prev !== null && Math.abs(playheadMs - prev) > 1000
       prevPlayheadMs.current = playheadMs
+      const playbackSignature = mediaPlaybackSignature({
+        project,
+        videoTracks,
+        layerByTrackId,
+        audioTracks,
+        hitByTrackId
+      })
+      const forceMediaSync =
+        playing &&
+        prevPlaybackSignature.current !== null &&
+        prevPlaybackSignature.current !== playbackSignature
+      prevPlaybackSignature.current = playbackSignature
 
       // ----- VIDEO TRACKS — one <video> element per track (layer stack) -----
       for (const track of videoTracks) {
@@ -1649,7 +1817,6 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               // 새 src에 직접 play() — slide 6 추가 증상 "스페이스 눌러야
               // 두 번째 영상이 재생됨" 해결.
               if (playing) {
-                if (multiVideoPreview) v.muted = true
                 v.play().catch(() => {
                   /* autoplay rejection / src not ready — silently ignored;
                      load() 완료 후 next tick에서 다시 시도 가능 */
@@ -1668,7 +1835,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                 hasSpeedCurve(activeVideo) ||
                 hasFreezeFrames(activeVideo) ||
                 hasTranscriptDeletions(activeVideo)
-              if (needsTightSync) {
+              if (needsTightSync || forceMediaSync) {
                 const target = clipSourceTimeSec(activeVideo, playheadMs)
                 if (Math.abs((v.currentTime || 0) - target) > 0.08) {
                   try {
@@ -1693,21 +1860,23 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               // 그 외 평범한 clip은 currentTime/playbackRate 둘 다 안 건드림.
               // src 교체 시 initial seek + native engine 1x 자연 재생만 사용.
             }
+            if (playing && v.paused && !v.ended) {
+              retryMediaPlay(v)
+            }
 
             // Compute effective video-track gain. Use the GainNode if the
             // graph is ready; otherwise fall back to `el.volume`.
             const trackIsAudible = trackAudible(track, soloMode)
             const gain = clipGain(activeVideo, playheadMs)
-            const wantAudible = !multiVideoPreview && trackIsAudible && gain > 0
+            const wantAudible = trackIsAudible && gain > 0
             const effectiveGain = wantAudible ? gain : 0
             if (graph.isReady()) {
               graph.setTrackGain(track.id, effectiveGain, 20)
               // WebAudio path uses unity passthrough on `el.volume` to avoid
-              // double-attenuation. In multi-video preview, keep DOM video
-              // elements muted too; Chromium can otherwise treat simultaneous
-              // audible <video> playback differently even when the GainNode is
-              // ramped to zero, which makes layout preview frames stall.
-              const wantElMuted = multiVideoPreview || !trackIsAudible
+              // double-attenuation. Embedded video audio is a first-class
+              // preview source; multiple active video tracks are mixed unless
+              // the user mutes/solos tracks or mutes the clip.
+              const wantElMuted = !trackIsAudible
               if (v.muted !== wantElMuted) v.muted = wantElMuted
               if (Math.abs(v.volume - 1) > 0.005) v.volume = 1
             } else {
@@ -1820,10 +1989,16 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                 }
                 const rate = clipPlaybackRate(clip, playheadMs)
                 if (Math.abs(a.playbackRate - rate) > 0.001) a.playbackRate = rate
-              } else if (isUserScrub) {
+              } else if (isUserScrub || forceMediaSync) {
                 const target = clipSourceTimeSec(clip, playheadMs)
                 try { a.currentTime = Math.max(0, target) } catch {}
+                const rate = clipPlaybackRate(clip, playheadMs)
+                if (Math.abs(a.playbackRate - rate) > 0.001) a.playbackRate = rate
               }
+            }
+            if (playing && a.paused && !a.ended) {
+              retryMediaPlay(a)
+              audioPlaying.current.set(track.id, true)
             }
           }
 
@@ -1908,7 +2083,6 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
         const v = videoEls.current.get(track.id)
         if (!v) continue
         if (loadedVideoId.current.get(track.id)) {
-          if (multiVideoPreview) v.muted = true
           v.play().catch(() => {
             /* autoplay rejection / src not ready — silently ignored */
           })
@@ -1957,6 +2131,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   useEffect(() => {
     if (!playing) {
       mediaHealth.current.clear()
+      videoFrameHealth.current.clear()
       return
     }
 
@@ -1984,6 +2159,12 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
         const key = `video:${track.id}`
         const target = clipSourceTimeSec(layer.clip, state.playheadMs)
         const stalled = elementLooksStalled(key, v, mediaHealth.current, now)
+        const frameStalled = videoFramesLookStalled(
+          key,
+          v,
+          videoFrameHealth.current,
+          now
+        )
         const drift = Math.abs((v.currentTime || 0) - target)
         const shouldSeek =
           stalled ||
@@ -1992,9 +2173,10 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
 
         if (shouldSeek) {
           setMediaTime(v, target)
+        } else if (frameStalled) {
+          nudgeVideoDecoder(v, target)
         }
         if (v.paused && !v.ended) {
-          if (state.multiVideoPreview) v.muted = true
           retryMediaPlay(v)
         }
       }
@@ -2006,8 +2188,16 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           const key = 'video:bg'
           const target = clipSourceTimeSec(state.bottomLayer.clip, state.playheadMs)
           const stalled = elementLooksStalled(key, bg, mediaHealth.current, now)
+          const frameStalled = videoFramesLookStalled(
+            key,
+            bg,
+            videoFrameHealth.current,
+            now
+          )
           if (stalled || Math.abs((bg.currentTime || 0) - target) > PLAYBACK_DRIFT_SEEK_SEC) {
             setMediaTime(bg, target)
+          } else if (frameStalled) {
+            nudgeVideoDecoder(bg, target)
           }
           if (bg.paused && !bg.ended) retryMediaPlay(bg)
         }
@@ -2280,6 +2470,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           // the <video> is rendered exactly as before (no wrapper) so the DOM
           // stays byte-identical for the regression-critical specs.
           const cr = clip ? getClipCropRect(clip) : null
+          const cropUsesLegacySourceFit = Boolean(clip?.layoutGroupId)
           // Phase 3.7 — manual color-adjust STACKS on top of the filter
           // preset. Compute the combined CSS `filter` string ONCE here so the
           // cropped + non-cropped paths stay in lockstep. INVARIANT: for a
@@ -2398,7 +2589,6 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               onLoadedData={(e) => {
                 refreshVideoPoster(e.currentTarget)
                 if (playing) {
-                  if (multiVideoPreview) e.currentTarget.muted = true
                   ;(e.currentTarget as HTMLVideoElement).play().catch(() => {})
                 }
               }}
@@ -2408,7 +2598,6 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                   playing &&
                   (e.currentTarget as HTMLVideoElement).paused
                 ) {
-                  if (multiVideoPreview) e.currentTarget.muted = true
                   ;(e.currentTarget as HTMLVideoElement).play().catch(() => {})
                 }
               }}
@@ -2666,12 +2855,12 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               </Fragment>
             )
           }
-          // Cropped path: wrap the <video> in an overflow:hidden div. The
-          // wrapper carries the layer zIndex + the CSS transform/opacity; the
-          // inner <video> (unchanged ref + data-* attrs — the WebAudio graph
-          // wraps the element, not the div) is sized/translated above so only
-          // the crop sub-rect is visible. Outermost node keyed with track.id
-          // so React reconciliation stays stable across crop on/off toggles.
+          // Cropped path: wrap the <video> in an overflow:hidden div. Manual
+          // crop is an edge crop: the wrapper is inset to the kept rectangle,
+          // so cropped pixels disappear instead of the kept pixels being
+          // scaled back up to fill the original slot. Layout-generated crops
+          // keep the legacy source-fit behavior because layouts use cropRect
+          // internally to make a clip cover a cell.
           // The blur layer (Phase 3.11) is emitted as a SIBLING of the crop
           // wrapper (direct child of the fitted-rect) so it is NOT
           // double-transformed by the wrapper's CSS transform.
@@ -2683,7 +2872,14 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               data-crop-active="true"
               style={{
                 position: 'absolute',
-                inset: 0,
+                ...(cropUsesLegacySourceFit
+                  ? { inset: 0 }
+                  : {
+                      left: `${cr.x * 100}%`,
+                      top: `${cr.y * 100}%`,
+                      width: `${cr.w * 100}%`,
+                      height: `${cr.h * 100}%`
+                    }),
                 overflow: 'hidden',
                 zIndex,
                 display: layer ? undefined : 'none',
@@ -2789,7 +2985,14 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
             aria-hidden="true"
             style={{
               position: 'absolute',
-              inset: 0,
+              ...(region.cropRect
+                ? {
+                    left: `${region.cropRect.x * 100}%`,
+                    top: `${region.cropRect.y * 100}%`,
+                    width: `${region.cropRect.w * 100}%`,
+                    height: `${region.cropRect.h * 100}%`
+                  }
+                : { inset: 0 }),
               pointerEvents: 'none',
               zIndex: captionZIndex - 1,
               transformOrigin: 'center center',
@@ -2865,7 +3068,11 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           }}
           data-testid="social-preview-layer"
         >
-          <SocialPreviewOverlay platform={socialPlatform} />
+          <SocialPreviewOverlay
+            platform={socialPlatform}
+            fittedWidth={fitted.width}
+            fittedHeight={fitted.height}
+          />
         </div>
 
         {/* Motion-track markers (Phase 3.13) — a faint box at the tracked

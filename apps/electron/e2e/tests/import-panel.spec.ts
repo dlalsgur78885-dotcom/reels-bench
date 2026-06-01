@@ -215,6 +215,134 @@ test.describe('@phase-1-import-panel MediaLibrary 5-tab import panel', () => {
     ])
   })
 
+  test('local media can create a user folder from the empty-space context menu', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+
+    await switchToTab(launched, 'local')
+    await page.locator('[data-testid="drop-zone"]').click({ button: 'right' })
+    await page.locator('[data-testid="media-context-folder-new"]').click()
+    await page.locator('[data-testid="media-context-folder-new-input"]').fill('캠페인 A')
+    await page.locator('[data-testid="media-context-folder-new-ok"]').click()
+
+    await expect(page.locator('[data-testid="media-folder-filter"]')).toHaveValue('user:캠페인 A')
+    await expect(page.locator('[data-testid="drop-zone"]')).toContainText('"캠페인 A" 폴더로 가져오기')
+  })
+
+  test('slide 5: imported media can be dragged into a visible default folder', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+
+    await page.evaluate(() => {
+      const store = (
+        window as unknown as {
+          __PROJECT_STORE_FOR_TEST__: {
+            getState: () => {
+              createNew: () => void
+              addMedia: (asset: unknown) => void
+            }
+          }
+        }
+      ).__PROJECT_STORE_FOR_TEST__
+      const state = store.getState()
+      state.createNew()
+      const base = {
+        kind: 'video',
+        width: 1080,
+        height: 1920,
+        codec: 'h264',
+        fileSizeBytes: 0
+      }
+      state.addMedia({
+        ...base,
+        id: 'media-alpha',
+        path: 'C:\\source\\imports\\alpha.mp4',
+        durationMs: 1000,
+        importedAt: 100,
+        fileName: 'alpha.mp4'
+      })
+      state.addMedia({
+        ...base,
+        id: 'media-bravo',
+        path: 'C:\\source\\imports\\bravo.mp4',
+        durationMs: 2000,
+        importedAt: 200,
+        fileName: 'bravo.mp4'
+      })
+    })
+
+    await expect(page.locator('[data-testid="media-card"]')).toHaveCount(2)
+
+    await expect(page.locator('[data-testid="media-folder-drop-tray"]')).toBeVisible()
+    await expect(
+      page.locator('[data-testid="media-folder-drop-target"]').filter({ hasText: '영상' })
+    ).toBeVisible()
+
+    await page.evaluate(() => {
+      const card = document.querySelector(
+        '[data-testid="media-card"][data-media-id="media-alpha"]'
+      ) as HTMLElement | null
+      const target = Array.from(
+        document.querySelectorAll('[data-testid="media-folder-drop-target"]')
+      ).find(
+        (el) => (el as HTMLElement).dataset.folderName === '영상'
+      ) as HTMLElement | undefined
+      if (!card || !target) throw new Error('drag source or folder target missing')
+
+      const dt = new DataTransfer()
+      dt.setData('application/x-reels-media-id', 'media-alpha')
+      dt.setData('text/plain', 'media-alpha')
+      card.dispatchEvent(
+        new DragEvent('dragstart', {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: dt
+        })
+      )
+      target.dispatchEvent(
+        new DragEvent('dragover', {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: dt
+        })
+      )
+      target.dispatchEvent(
+        new DragEvent('drop', {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: dt
+        })
+      )
+      card.dispatchEvent(
+        new DragEvent('dragend', {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: dt
+        })
+      )
+    })
+
+    await page.waitForFunction(
+      () =>
+        (
+          window as unknown as {
+            __PROJECT_STORE_FOR_TEST__: {
+              getState: () => {
+                project: { media: Record<string, { libraryFolder?: string }> }
+              }
+            }
+          }
+        ).__PROJECT_STORE_FOR_TEST__.getState().project.media['media-alpha']
+          ?.libraryFolder === '영상',
+      null,
+      { timeout: 3_000 }
+    )
+
+    await page.locator('[data-testid="media-folder-filter"]').selectOption('user:영상')
+    await expect(page.locator('[data-testid="media-card"]')).toHaveCount(1)
+    await expect(page.locator('[data-testid="media-card-name"]')).toHaveText('alpha.mp4')
+  })
+
   test('switching away from local tab hides the import button', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched

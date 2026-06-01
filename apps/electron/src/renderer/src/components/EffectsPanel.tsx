@@ -54,7 +54,6 @@ import {
   MAX_TRANSITION_MS,
   MIN_CLIP_SPEED,
   MIN_COLOR_ADJUST,
-  MIN_CROP_SIZE,
   MIN_HSL_ADJUST,
   MIN_KEYFRAME_GAP_MS,
   MIN_ENHANCE,
@@ -95,6 +94,7 @@ import { CurveEditor } from './CurveEditor'
 import { LayoutPanel } from './LayoutPanel'
 import { AdjustmentLayerEditor } from './AdjustmentLayerEditor'
 import { useTimelineUi } from '../store/timelineUi'
+import { CropControls } from './CropControls'
 
 /**
  * Phase 7 — CapCut-style docked Effects panel.
@@ -143,43 +143,6 @@ const TAB_LABELS: Record<EffectTab, string> = {
 }
 
 const SPEED_PRESETS = [0.5, 1, 1.5, 2]
-
-// Crop aspect presets — identical set to ClipContextMenu's CROP_PRESETS.
-const CROP_PRESETS: ReadonlyArray<{ id: string; aspect: number | null }> = [
-  { id: 'free', aspect: null },
-  { id: '1:1', aspect: 1 },
-  { id: '4:5', aspect: 4 / 5 },
-  { id: '9:16', aspect: 9 / 16 },
-  { id: '16:9', aspect: 16 / 9 }
-]
-
-/**
- * Compute a centered, maximum-area crop rect (source fractions) for a target
- * aspect ratio `aR` (W/H) within a source of aspect `srcAspect` (W/H).
- * Copied verbatim from ClipContextMenu so behaviour stays identical.
- */
-function centeredCropForAspect(aR: number, srcAspect: number): CropRect {
-  if (aR >= srcAspect) {
-    const h = srcAspect / aR
-    return { x: 0, y: (1 - h) / 2, w: 1, h }
-  }
-  const w = aR / srcAspect
-  return { x: (1 - w) / 2, y: 0, w, h: 1 }
-}
-
-function resizeCropWidthAroundCenter(c: CropRect, w: number): Partial<CropRect> {
-  const nextW = Math.max(MIN_CROP_SIZE, Math.min(1, w))
-  const centerX = c.x + c.w / 2
-  const x = Math.max(0, Math.min(1 - nextW, centerX - nextW / 2))
-  return { x, w: nextW }
-}
-
-function resizeCropHeightAroundCenter(c: CropRect, h: number): Partial<CropRect> {
-  const nextH = Math.max(MIN_CROP_SIZE, Math.min(1, h))
-  const centerY = c.y + c.h / 2
-  const y = Math.max(0, Math.min(1 - nextH, centerY - nextH / 2))
-  return { y, h: nextH }
-}
 
 const styles = {
   panel: {
@@ -671,6 +634,28 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   const filterIntensity = isMedia ? clip.filterIntensity ?? 1 : 1
   const keyframeCount = clip.transformKeyframes?.length ?? 0
   const isOnKeyframe = keyframeIndex >= 0
+  const sortedTransformKeyframes = [...(clip.transformKeyframes ?? [])].sort(
+    (a, b) => a.atMs - b.atMs
+  )
+  const localPlayheadMs = playheadMs - clip.startMs
+  const previousTransformKeyframe =
+    sortedTransformKeyframes
+      .filter((kf) => kf.atMs < localPlayheadMs - 1)
+      .at(-1) ?? null
+  const nextTransformKeyframe =
+    sortedTransformKeyframes.find((kf) => kf.atMs > localPlayheadMs + 1) ?? null
+  const jumpToTransformKeyframe = (atMs: number | null | undefined): void => {
+    if (!Number.isFinite(atMs)) return
+    const clipDuration = Math.max(0, clip.endMs - clip.startMs)
+    const clamped = Math.max(0, Math.min(clipDuration, atMs ?? 0))
+    setPlayheadMs(clip.startMs + clamped)
+  }
+  const jumpToPreviousTransformKeyframe = (): void => {
+    jumpToTransformKeyframe(previousTransformKeyframe?.atMs)
+  }
+  const jumpToNextTransformKeyframe = (): void => {
+    jumpToTransformKeyframe(nextTransformKeyframe?.atMs)
+  }
 
   // Source aspect ratio for the crop presets.
   const srcAspect = ((): number => {
@@ -773,6 +758,12 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
   const _activeKf: typeof keyframeIndex = keyframeIndex
   const kfHas = (_key: keyof ClipTransform): boolean => {
     return keyframeIndex >= 0
+  }
+  const transformKeyframeNavProps = {
+    canPrev: previousTransformKeyframe !== null,
+    canNext: nextTransformKeyframe !== null,
+    onPrev: jumpToPreviousTransformKeyframe,
+    onNext: jumpToNextTransformKeyframe
   }
 
   /**
@@ -906,7 +897,15 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
      * Reels 11 슬라이드 17 — 행 끝의 ♦ 다이아몬드(클릭 시 그 속성에 한해
      * 현재 playhead 에 키프레임 삽입). undefined 면 다이아몬드 미표시.
      */
-    keyframe?: { active: boolean; onAdd: () => void; testid: string }
+    keyframe?: {
+      active: boolean
+      canPrev: boolean
+      canNext: boolean
+      onAdd: () => void
+      onPrev: () => void
+      onNext: () => void
+      testid: string
+    }
   ): JSX.Element => (
     <div style={styles.row}>
       <span style={styles.ctrlLabel}>{label}</span>
@@ -947,45 +946,95 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
         aria-label={`${label} 숫자`}
       />
       {keyframe && (
-        <button
-          type="button"
-          onClick={keyframe.onAdd}
-          disabled={disabled}
-          data-testid={keyframe.testid}
-          data-kf-active={keyframe.active ? 'true' : 'false'}
-          title={
-            keyframe.active
-              ? '현재 위치에 이 속성 키프레임 있음 (클릭 시 갱신)'
-              : '현재 위치에 이 속성 키프레임 추가'
-          }
-          aria-label={`${label} 키프레임 추가`}
-          aria-pressed={keyframe.active}
+        <div
           style={{
-            width: 24,
-            height: 24,
-            marginLeft: 6,
-            padding: 0,
-            background: 'transparent',
-            border: 'none',
-            cursor: disabled ? 'not-allowed' : 'pointer',
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'center'
+            gap: 2,
+            marginLeft: 6
           }}
         >
-          <span
-            aria-hidden="true"
+          <button
+            type="button"
+            onClick={keyframe.onPrev}
+            disabled={disabled || !keyframe.canPrev}
+            data-testid={`${keyframe.testid}-prev`}
+            title="이전 키프레임으로 이동"
+            aria-label={`${label} 이전 키프레임으로 이동`}
             style={{
-              display: 'inline-block',
-              width: 11,
-              height: 11,
-              transform: 'rotate(45deg)',
-              background: keyframe.active ? '#3b82f6' : 'transparent',
-              border: `1.5px solid ${keyframe.active ? '#3b82f6' : '#64748b'}`,
-              borderRadius: 2
+              width: 20,
+              height: 24,
+              padding: 0,
+              background: 'transparent',
+              border: 'none',
+              color: disabled || !keyframe.canPrev ? '#334155' : '#94a3b8',
+              cursor: disabled || !keyframe.canPrev ? 'not-allowed' : 'pointer',
+              fontSize: 15,
+              lineHeight: 1
             }}
-          />
-        </button>
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            onClick={keyframe.onAdd}
+            disabled={disabled}
+            data-testid={keyframe.testid}
+            data-kf-active={keyframe.active ? 'true' : 'false'}
+            title={
+              keyframe.active
+                ? '현재 위치에 이 속성 키프레임 있음 (클릭 시 갱신)'
+                : '현재 위치에 이 속성 키프레임 추가'
+            }
+            aria-label={`${label} 키프레임 추가`}
+            aria-pressed={keyframe.active}
+            style={{
+              width: 24,
+              height: 24,
+              padding: 0,
+              background: 'transparent',
+              border: 'none',
+              cursor: disabled ? 'not-allowed' : 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+          >
+            <span
+              aria-hidden="true"
+              style={{
+                display: 'inline-block',
+                width: 11,
+                height: 11,
+                transform: 'rotate(45deg)',
+                background: keyframe.active ? '#3b82f6' : 'transparent',
+                border: `1.5px solid ${keyframe.active ? '#3b82f6' : '#64748b'}`,
+                borderRadius: 2
+              }}
+            />
+          </button>
+          <button
+            type="button"
+            onClick={keyframe.onNext}
+            disabled={disabled || !keyframe.canNext}
+            data-testid={`${keyframe.testid}-next`}
+            title="다음 키프레임으로 이동"
+            aria-label={`${label} 다음 키프레임으로 이동`}
+            style={{
+              width: 20,
+              height: 24,
+              padding: 0,
+              background: 'transparent',
+              border: 'none',
+              color: disabled || !keyframe.canNext ? '#334155' : '#94a3b8',
+              cursor: disabled || !keyframe.canNext ? 'not-allowed' : 'pointer',
+              fontSize: 15,
+              lineHeight: 1
+            }}
+          >
+            ›
+          </button>
+        </div>
       )}
     </div>
   )
@@ -1048,6 +1097,7 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 false,
                 false,
                 {
+                  ...transformKeyframeNavProps,
                   active: kfHas('scale'),
                   onAdd: () => handleAddTransformKeyframe({ scale: transform.scale }),
                   testid: 'effects-transform-scale-kf'
@@ -1065,6 +1115,7 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 false,
                 false,
                 {
+                  ...transformKeyframeNavProps,
                   active: kfHas('rotation'),
                   onAdd: () =>
                     handleAddTransformKeyframe({ rotation: transform.rotation }),
@@ -1083,6 +1134,7 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 false,
                 false,
                 {
+                  ...transformKeyframeNavProps,
                   active: kfHas('opacity'),
                   onAdd: () =>
                     handleAddTransformKeyframe({ opacity: transform.opacity }),
@@ -1101,6 +1153,7 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 false,
                 false,
                 {
+                  ...transformKeyframeNavProps,
                   active: kfHas('x'),
                   onAdd: () => handleAddTransformKeyframe({ x: transform.x }),
                   testid: 'effects-transform-x-kf'
@@ -1118,6 +1171,7 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 false,
                 false,
                 {
+                  ...transformKeyframeNavProps,
                   active: kfHas('y'),
                   onAdd: () => handleAddTransformKeyframe({ y: transform.y }),
                   testid: 'effects-transform-y-kf'
@@ -1146,71 +1200,23 @@ export function EffectsPanel(props: EffectsPanelProps): JSX.Element {
                 testId="effects-section-crop"
                 defaultOpen
               >
-                <div style={styles.presetRow}>
-                  {CROP_PRESETS.map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      style={styles.preset}
-                      data-testid={`effects-crop-preset-${p.id}`}
-                      onClick={() => {
-                        if (p.aspect === null) return
-                        setClipCrop(
-                          clip.id,
-                          centeredCropForAspect(p.aspect, srcAspect)
-                        )
-                      }}
-                    >
-                      {p.id === 'free' ? '자유' : p.id}
-                    </button>
-                  ))}
-                </div>
-                <div style={{ height: 8 }} />
-                {sliderRow(
-                  'X',
-                  cropRect.x,
-                  0,
-                  1,
-                  0.01,
-                  (v) => setClipCrop(clip.id, { x: v }),
-                  'effects-crop-x'
-                )}
-                {sliderRow(
-                  'Y',
-                  cropRect.y,
-                  0,
-                  1,
-                  0.01,
-                  (v) => setClipCrop(clip.id, { y: v }),
-                  'effects-crop-y'
-                )}
-                {sliderRow(
-                '너비',
-                cropRect.w,
-                MIN_CROP_SIZE,
-                1,
-                0.01,
-                (v) => setClipCrop(clip.id, resizeCropWidthAroundCenter(cropRect, v)),
-                'effects-crop-w'
-              )}
-                {sliderRow(
-                '높이',
-                cropRect.h,
-                MIN_CROP_SIZE,
-                1,
-                0.01,
-                (v) => setClipCrop(clip.id, resizeCropHeightAroundCenter(cropRect, v)),
-                'effects-crop-h'
-              )}
-                <div style={{ height: 8 }} />
-                <button
-                  type="button"
-                  style={styles.resetBtn}
-                  onClick={() => resetClipCrop(clip.id)}
-                  data-testid="effects-crop-reset"
-                >
-                  크롭 초기화
-                </button>
+                <CropControls
+                  cropRect={cropRect}
+                  sourceAspect={srcAspect}
+                  onCropChange={(partial) => setClipCrop(clip.id, partial)}
+                  onCropReset={() => resetClipCrop(clip.id)}
+                  testPrefix="effects-crop"
+                  resetLabel="크롭 초기화"
+                  styles={{
+                    presetRow: { ...styles.presetRow, marginBottom: 8 },
+                    preset: styles.preset,
+                    row: styles.row,
+                    label: styles.ctrlLabel,
+                    slider: styles.slider,
+                    input: styles.numInput,
+                    resetButton: { ...styles.resetBtn, marginTop: 8 }
+                  }}
+                />
               </Section>
             )}
             {/* Phase 3.13 — bind an overlay clip to a motion track. The

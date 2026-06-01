@@ -89,6 +89,46 @@ test.describe('@phase-4-webaudio preview audio graph', () => {
     }, fixture)
   }
 
+  async function importVideoFixture(): Promise<{ mediaId: string; durationMs: number }> {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    const fixture = process.env.E2E_FIXTURE_MP4
+    if (!fixture) throw new Error('E2E_FIXTURE_MP4 not set')
+
+    await page.locator('[data-testid="open-editor-button"]').click()
+    await expect(page.locator('[data-testid="editor-page"]')).toBeVisible()
+    await page.waitForFunction(
+      () => !!(window as unknown as { __reelsStore?: unknown }).__reelsStore,
+      null,
+      { timeout: 5_000 }
+    )
+
+    return await page.evaluate(async (filePath: string) => {
+      await window.electron.fs.allowPath(filePath)
+      const probe = await window.electron.media.probe(filePath)
+      const fileName = filePath.split(/[/\\]/).pop() ?? filePath
+      const reels = (
+        window as unknown as {
+          __reelsStore: { addMedia: (a: unknown) => void; newId: () => string }
+        }
+      ).__reelsStore
+      const id = reels.newId()
+      reels.addMedia({
+        id,
+        path: filePath,
+        kind: probe.kind,
+        durationMs: probe.durationMs,
+        width: probe.width,
+        height: probe.height,
+        codec: probe.codec,
+        importedAt: Date.now(),
+        fileName,
+        fileSizeBytes: 0
+      })
+      return { mediaId: id, durationMs: probe.durationMs }
+    }, fixture)
+  }
+
   async function addAudioClipOnRole(
     mediaId: string,
     durationMs: number,
@@ -130,6 +170,52 @@ test.describe('@phase-4-webaudio preview audio graph', () => {
         return { clipId: cid, trackId: trk.id }
       },
       { mid: mediaId, dur: durationMs, r: role }
+    )
+  }
+
+  async function addVideoClipOnTrack(
+    mediaId: string,
+    durationMs: number,
+    trackId?: string
+  ): Promise<{ clipId: string; trackId: string }> {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    return await page.evaluate(
+      ({ mid, dur, tid }) => {
+        const reels = (
+          window as unknown as {
+            __reelsStore: {
+              state: () => {
+                project: {
+                  tracks: Array<{ id: string; kind: string }>
+                }
+              }
+              addClip: (c: unknown) => void
+              newId: () => string
+            }
+          }
+        ).__reelsStore
+        const trk =
+          tid
+            ? reels.state().project.tracks.find((t) => t.id === tid)
+            : reels.state().project.tracks.find((t) => t.kind === 'video')
+        if (!trk) throw new Error('no video track')
+        const cid = reels.newId()
+        const durMs = Math.min(dur, 3000)
+        reels.addClip({
+          id: cid,
+          kind: 'media',
+          mediaId: mid,
+          trackId: trk.id,
+          startMs: 0,
+          endMs: durMs,
+          trimInMs: 0,
+          trimOutMs: durMs,
+          speed: 1
+        })
+        return { clipId: cid, trackId: trk.id }
+      },
+      { mid: mediaId, dur: durationMs, tid: trackId ?? null }
     )
   }
 
@@ -236,6 +322,64 @@ test.describe('@phase-4-webaudio preview audio graph', () => {
     // Default duck = -12dB → linear 0.251. Allow some slack.
     expect(gains[bgm.trackId]).toBeLessThan(gains[voice.trackId])
     expect(gains[bgm.trackId]).toBeLessThan(0.4)
+  })
+
+  test('slide 9: embedded audio in active video tracks is not muted by multi-video preview', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    const { mediaId, durationMs } = await importVideoFixture()
+    const first = await addVideoClipOnTrack(mediaId, durationMs)
+    const secondTrackId = await page.evaluate(() => {
+      const reels = (
+        window as unknown as {
+          __reelsStore: { addTrack: (kind: 'video') => string | null }
+        }
+      ).__reelsStore
+      const id = reels.addTrack('video')
+      if (!id) throw new Error('failed to add second video track')
+      return id
+    })
+    const second = await addVideoClipOnTrack(mediaId, durationMs, secondTrackId)
+
+    await setPlayhead(1000)
+    await page.locator('[data-testid="transport-play"]').click()
+    await page.waitForTimeout(100)
+
+    const isUnavailable = await page.evaluate(() => {
+      const g = (
+        window as unknown as { __previewAudioGraph: { getState: () => string } }
+      ).__previewAudioGraph
+      return g.getState() === 'unavailable'
+    })
+    test.skip(isUnavailable, 'AudioContext unavailable in this sandbox')
+
+    await page.waitForTimeout(80)
+    const result = await page.evaluate(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      const gains = (
+        window as unknown as {
+          __previewAudioGraph: { trackGains: () => Record<string, number> }
+        }
+      ).__previewAudioGraph.trackGains()
+      return {
+        videos: videos.map((v) => ({
+          trackId: v.dataset.trackId ?? '',
+          muted: v.muted,
+          audible: v.getAttribute('data-track-audible')
+        })),
+        gains
+      }
+    })
+
+    expect(result.videos.length).toBeGreaterThanOrEqual(2)
+    for (const trackId of [first.trackId, second.trackId]) {
+      const video = result.videos.find((v) => v.trackId === trackId)
+      expect(video?.audible).toBe('true')
+      expect(video?.muted).toBe(false)
+      expect(result.gains[trackId]).toBeGreaterThan(0)
+    }
   })
 
   // -------------------------------------------------------------------------

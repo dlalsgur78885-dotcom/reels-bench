@@ -423,9 +423,9 @@ test.describe('@phase-3-6-crop static per-clip source crop', () => {
   })
 
   // -------------------------------------------------------------------------
-  // Scenario (7) — cropped clip renders crop-wrapper + inner video percentages
+  // Scenario (7) — manual crop renders as an edge crop, not zoom-to-fill
   // -------------------------------------------------------------------------
-  test('(7) cropped clip renders preview-crop-wrapper with correct video width/left', async () => {
+  test('(7) cropped clip renders inset preview-crop-wrapper with correct video width/left', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
     await openEditor()
@@ -450,17 +450,40 @@ test.describe('@phase-3-6-crop static per-clip source crop', () => {
     const wrapper = page.locator('[data-testid="preview-crop-wrapper"][data-crop-active="true"]')
     await expect(wrapper).toBeVisible({ timeout: 5_000 })
 
-    // Inner <video> must be position:absolute with width/left reflecting crop math.
-    const { vidWidth, vidLeft } = await page.evaluate(() => {
+    // Wrapper must be inset to the kept region; this is the key Premiere-style
+    // edge crop behavior. The inner video is still oversized/translated so the
+    // visible pixels keep their original fitted scale instead of zooming up.
+    const { wrapperLeft, wrapperTop, wrapperWidth, wrapperHeight, vidWidth, vidLeft } = await page.evaluate(() => {
+      const wrapper = document.querySelector(
+        '[data-testid="preview-crop-wrapper"]'
+      ) as HTMLElement | null
       const vid = document.querySelector(
         '[data-testid="preview-crop-wrapper"] [data-preview-video-layer="true"]'
       ) as HTMLVideoElement | null
-      if (!vid) return { vidWidth: '', vidLeft: '' }
+      if (!wrapper || !vid) {
+        return {
+          wrapperLeft: '',
+          wrapperTop: '',
+          wrapperWidth: '',
+          wrapperHeight: '',
+          vidWidth: '',
+          vidLeft: ''
+        }
+      }
       return {
+        wrapperLeft: wrapper.style.left,
+        wrapperTop: wrapper.style.top,
+        wrapperWidth: wrapper.style.width,
+        wrapperHeight: wrapper.style.height,
         vidWidth: vid.style.width,
         vidLeft: vid.style.left
       }
     })
+
+    expect(parseFloat(wrapperLeft)).toBeCloseTo(cropInput.x * 100, 0)
+    expect(parseFloat(wrapperTop)).toBeCloseTo(cropInput.y * 100, 0)
+    expect(parseFloat(wrapperWidth)).toBeCloseTo(cropInput.w * 100, 0)
+    expect(parseFloat(wrapperHeight)).toBeCloseTo(cropInput.h * 100, 0)
 
     // width should be approximately (100/cr.w)% = 100/0.6 ≈ 166.67%
     const expectedWidthPct = 100 / cropInput.w
@@ -650,9 +673,9 @@ test.describe('@phase-3-6-crop static per-clip source crop', () => {
   })
 
   // -------------------------------------------------------------------------
-  // Scenario (12) — buildPlan: cropped clip → filterGraph contains crop filter
+  // Scenario (12) — buildPlan: manual cropped clip → edge crop after fit
   // -------------------------------------------------------------------------
-  test('(12) buildPlan: clip with cropRect → filterGraph contains `crop=w=floor(iw*`', async () => {
+  test('(12) buildPlan: clip with cropRect → filterGraph contains canvas edge crop', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
     await openEditor()
@@ -679,14 +702,17 @@ test.describe('@phase-3-6-crop static per-clip source crop', () => {
 
     expect(result.ok).toBe(true)
     expect(result.filterGraph).toBeTruthy()
-    // Crop filter must be present.
-    expect(result.filterGraph).toContain('crop=w=floor(iw*')
-    // Crop must appear before boxblur (step 3.5 before step 4-BASE).
-    const cropIdx = result.filterGraph!.indexOf('crop=w=floor(iw*')
+    // Manual crop must be a canvas-space edge crop after scale/pad, not the
+    // old source-space crop that zoomed the kept region back to full size.
+    expect(result.filterGraph).toContain('crop=w=floor(1080*')
+    expect(result.filterGraph).toContain('pad=1080:1920:1080*0.100000:1920*0.200000:color=black@0')
+    expect(result.filterGraph).not.toContain('crop=w=floor(iw*0.700000')
+    // Crop must appear after the fitted main scale/pad and after bg boxblur.
+    const cropIdx = result.filterGraph!.indexOf('crop=w=floor(1080*')
     const boxblurIdx = result.filterGraph!.indexOf('boxblur')
     expect(cropIdx).toBeGreaterThanOrEqual(0)
     expect(boxblurIdx).toBeGreaterThanOrEqual(0)
-    expect(cropIdx).toBeLessThan(boxblurIdx)
+    expect(cropIdx).toBeGreaterThan(boxblurIdx)
   })
 
   // -------------------------------------------------------------------------
@@ -758,12 +784,13 @@ test.describe('@phase-3-6-crop static per-clip source crop', () => {
     expect(result.ok).toBe(true)
     const graph = result.filterGraph ?? ''
     // Both crop and transform filters must be present.
-    expect(graph).toContain('crop=w=floor(iw*')
+    expect(graph).toContain('crop=w=floor(1080*')
     expect(graph).toContain('rotate=')
     expect(graph).toContain('colorchannelmixer=aa=')
 
-    // Crop must appear before rotate= (step 3.5 before step 6).
-    const cropIdx = graph.indexOf('crop=w=floor(iw*')
+    // Edge crop must appear before rotate= so transform moves the already
+    // cropped visual rectangle.
+    const cropIdx = graph.indexOf('crop=w=floor(1080*')
     const rotateIdx = graph.indexOf('rotate=')
     expect(cropIdx).toBeLessThan(rotateIdx)
   })

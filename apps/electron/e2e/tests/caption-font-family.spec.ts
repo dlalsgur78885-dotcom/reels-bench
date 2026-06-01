@@ -262,4 +262,56 @@ test.describe('@caption-font-family CaptionStyle.fontFamilyId', () => {
       fontFamilyDecl!.indexOf('pretendard')
     )
   })
+
+  test('A-6 slide 18: picked fonts are registered for preview and export', async () => {
+    const cid = await seedCaption()
+    await launched!.page.evaluate((id: string) => {
+      const reels = window.__reelsStore
+      const cap = reels
+        .state()
+        .project.tracks.find((t) => t.kind === 'caption')!
+        .clips.find((c) => c.id === id)!
+      reels.updateCaption(id, {
+        style: { ...(cap.style ?? {}), fontFamilyId: 'noto-sans-kr' }
+      })
+    }, cid)
+    await launched!.page.waitForTimeout(150)
+
+    const overlay = launched!.page.locator(
+      `[data-testid="caption-overlay"][data-caption-id="${cid}"]`
+    )
+    await expect(overlay).toBeAttached({ timeout: 5_000 })
+    const previewFamily = (
+      await overlay.evaluate((el) => getComputedStyle(el).fontFamily)
+    ).toLowerCase()
+    expect(previewFamily).toContain('reelsnotosanskr')
+
+    const svg = await launched!.page.evaluate(async () => {
+      return (
+        window as unknown as {
+          electron: {
+            captions: {
+              buildSvg: (caption: unknown, width: number, height: number) => Promise<string>
+            }
+          }
+        }
+      ).electron.captions.buildSvg(
+        {
+          spans: [{ text: '치루화된' }],
+          style: {
+            preset: 'block-bold',
+            fontSize: 80,
+            align: 'center',
+            yPosition: 0.8,
+            background: 'none',
+            fontFamilyId: 'noto-sans-kr'
+          }
+        },
+        1080,
+        1920
+      )
+    })
+    expect(svg).toContain("@font-face{font-family:'ReelsNotoSansKR'")
+    expect(svg.toLowerCase()).toContain('reelsnotosanskr')
+  })
 })

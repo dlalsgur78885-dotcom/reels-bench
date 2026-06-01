@@ -87,6 +87,7 @@ import {
   isClipReversed,
   getClipTimelineDuration,
   getAdjustmentLayers,
+  getAdjustmentLayerCropRect,
   getAdjustmentLayerTransform,
   MAX_TRANSFORM_OFFSET,
   MAX_TRANSFORM_ROTATION,
@@ -112,6 +113,7 @@ import {
   type CaptionClip,
   type CaptionStyle,
   type ClipTransform,
+  type CropRect,
   type DeletedRange,
   type MotionTrack,
   type OverlayClip,
@@ -2318,6 +2320,22 @@ function buildTransformSubchain(
   return fragment
 }
 
+function clipUsesLegacySourceCrop(clip: { layoutGroupId?: unknown }): boolean {
+  return typeof clip.layoutGroupId === 'string' && clip.layoutGroupId.length > 0
+}
+
+function edgeCropToFfmpeg(cropRect: CropRect | null, W: number, H: number): string {
+  if (!cropRect) return ''
+  const cw = cropRect.w.toFixed(6)
+  const ch = cropRect.h.toFixed(6)
+  const cx = cropRect.x.toFixed(6)
+  const cy = cropRect.y.toFixed(6)
+  return [
+    `crop=w=floor(${W}*${cw}/2)*2:h=floor(${H}*${ch}/2)*2:x=${W}*${cx}:y=${H}*${cy}`,
+    `pad=${W}:${H}:${W}*${cx}:${H}*${cy}:color=black@0`
+  ].join(',')
+}
+
 // ---------------------------------------------------------------------------
 // Phase 3.11 — mosaic / blur region sub-chain builder.
 //
@@ -2734,7 +2752,7 @@ function buildVideoSegmentChain(
     if (vfxFreeze) freezeParts.push(vfxFreeze)
     freezeParts.push(`fps=${preset.fps}`)
     const cropRectFreeze = getClipCropRect(seg.clip)
-    if (cropRectFreeze) {
+    if (cropRectFreeze && clipUsesLegacySourceCrop(seg.clip)) {
       const cw = cropRectFreeze.w.toFixed(6)
       const ch = cropRectFreeze.h.toFixed(6)
       const cx = cropRectFreeze.x.toFixed(6)
@@ -2748,6 +2766,10 @@ function buildVideoSegmentChain(
     const H = preset.height
     const labelIn = `pre${seg.inputIdx}`
     const freezePreChain = freezeParts.join(',')
+    const edgeCropFreeze = clipUsesLegacySourceCrop(seg.clip)
+      ? ''
+      : edgeCropToFfmpeg(cropRectFreeze, W, H)
+    const edgeCropFreezeSuffix = edgeCropFreeze ? `,${edgeCropFreeze}` : ''
 
     let freezeFragment: string
     if (isBaseLayer) {
@@ -2759,7 +2781,7 @@ function buildVideoSegmentChain(
           `[${seg.inputIdx}:v]${freezePreChain}[${labelIn}];` +
           `[${labelIn}]split=2[${labelMain}src][${labelBg}src];` +
           `[${labelBg}src]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=20:1,eq=brightness=-0.2[${labelBg}];` +
-          `[${labelMain}src]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0[${labelMain}];` +
+          `[${labelMain}src]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0${edgeCropFreezeSuffix}[${labelMain}];` +
           `[${labelBg}][${labelMain}]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1`
       } else {
         // Solid-color backdrop — drop split+boxblur; use a color= source.
@@ -2767,14 +2789,14 @@ function buildVideoSegmentChain(
         freezeFragment =
           `[${seg.inputIdx}:v]${freezePreChain}[${labelIn}];` +
           `color=c=${cArg}:s=${W}x${H}:d=${freezeDurSec.toFixed(4)}:r=${preset.fps}[${labelBg}];` +
-          `[${labelIn}]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0[${labelMain}];` +
+          `[${labelIn}]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0${edgeCropFreezeSuffix}[${labelMain}];` +
           `[${labelBg}][${labelMain}]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1`
       }
     } else {
       freezeFragment =
         `[${seg.inputIdx}:v]${freezePreChain}[${labelIn}];` +
         `[${labelIn}]scale=${W}:${H}:force_original_aspect_ratio=decrease,` +
-        `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1`
+        `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0${edgeCropFreezeSuffix},setsar=1`
     }
 
     // Captions during freeze (drawtext path only — static captions are valid
@@ -2966,13 +2988,14 @@ function buildVideoSegmentChain(
   //    share the same timebase before overlay).
   parts.push(`fps=${preset.fps}`)
 
-  // 3.5. SOURCE CROP (Phase 3.6). crop samples the source frame; it MUST run
-  //      before the step-4 aspect-fit + blurred-bg pad so the blurred gutters
-  //      and the contain-fit both derive from the cropped region.
+  // 3.5. SOURCE CROP (Phase 3.6). Layout-generated cropRect values still
+  //      mean "source crop then fit" because layout cells rely on that cover
+  //      math. Manual user crop is applied later as an edge mask on the fitted
+  //      canvas frame so it behaves like Premiere's Crop effect.
   //      CRITICAL INVARIANT: getClipCropRect returns null for an absent OR
   //      identity crop — the `if` is skipped and `parts` stays byte-identical.
   const cropRect = getClipCropRect(seg.clip)
-  if (cropRect) {
+  if (cropRect && clipUsesLegacySourceCrop(seg.clip)) {
     const cw = cropRect.w.toFixed(6)
     const ch = cropRect.h.toFixed(6)
     const cx = cropRect.x.toFixed(6)
@@ -2987,6 +3010,10 @@ function buildVideoSegmentChain(
   const H = preset.height
   const labelIn = `pre${seg.inputIdx}`
   const preChain = parts.join(',')
+  const edgeCrop = clipUsesLegacySourceCrop(seg.clip)
+    ? ''
+    : edgeCropToFfmpeg(cropRect, W, H)
+  const edgeCropSuffix = edgeCrop ? `,${edgeCrop}` : ''
 
   let fragment: string
 
@@ -3003,7 +3030,7 @@ function buildVideoSegmentChain(
         `[${seg.inputIdx}:v]${preChain}[${labelIn}];` +
         `[${labelIn}]split=2[${labelMain}src][${labelBg}src];` +
         `[${labelBg}src]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=20:1,eq=brightness=-0.2[${labelBg}];` +
-        `[${labelMain}src]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0[${labelMain}];` +
+        `[${labelMain}src]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0${edgeCropSuffix}[${labelMain}];` +
         `[${labelBg}][${labelMain}]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1`
     } else {
       // Solid-color backdrop — drop split+boxblur; use a color= source.
@@ -3011,7 +3038,7 @@ function buildVideoSegmentChain(
       fragment =
         `[${seg.inputIdx}:v]${preChain}[${labelIn}];` +
         `color=c=${cArg}:s=${W}x${H}:d=${segDurSec.toFixed(4)}:r=${preset.fps}[${labelBg}];` +
-        `[${labelIn}]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0[${labelMain}];` +
+        `[${labelIn}]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0${edgeCropSuffix}[${labelMain}];` +
         `[${labelBg}][${labelMain}]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1`
     }
   } else {
@@ -3021,7 +3048,7 @@ function buildVideoSegmentChain(
     fragment =
       `[${seg.inputIdx}:v]${preChain}[${labelIn}];` +
       `[${labelIn}]scale=${W}:${H}:force_original_aspect_ratio=decrease,` +
-      `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1`
+      `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0${edgeCropSuffix},setsar=1`
   }
 
   // 5. Caption drawtext overlays. Each caption clip becomes one drawtext
@@ -4004,7 +4031,8 @@ function stitchAdjustments(
     const newLabel = `vadj${adjCount}`
     adjCount++
     const transform = getAdjustmentLayerTransform(layer)
-    if (isIdentityTransform(transform)) {
+    const cropRect = getAdjustmentLayerCropRect(layer)
+    if (isIdentityTransform(transform) && !cropRect) {
       fragments.push(`[${prevLabel}]${frag}[${newLabel}]`)
       prevLabel = newLabel
       continue
@@ -4013,10 +4041,16 @@ function stitchAdjustments(
       MIN_TRANSFORM_SCALE,
       Math.min(1, Number.isFinite(transform.scale) ? transform.scale : 1)
     )
-    const w = Math.max(2, Math.round(canvasWidth * scale))
-    const h = Math.max(2, Math.round(canvasHeight * scale))
-    const rawX = Math.round((canvasWidth - w) / 2 + transform.x * canvasWidth)
-    const rawY = Math.round((canvasHeight - h) / 2 + transform.y * canvasHeight)
+    const cropX = cropRect ? cropRect.x : 0
+    const cropY = cropRect ? cropRect.y : 0
+    const cropW = cropRect ? cropRect.w : 1
+    const cropH = cropRect ? cropRect.h : 1
+    const w = Math.max(2, Math.round(canvasWidth * scale * cropW))
+    const h = Math.max(2, Math.round(canvasHeight * scale * cropH))
+    const baseW = Math.round(canvasWidth * scale)
+    const baseH = Math.round(canvasHeight * scale)
+    const rawX = Math.round((canvasWidth - baseW) / 2 + transform.x * canvasWidth + cropX * baseW)
+    const rawY = Math.round((canvasHeight - baseH) / 2 + transform.y * canvasHeight + cropY * baseH)
     const x = Math.max(0, Math.min(Math.max(0, canvasWidth - w), rawX))
     const y = Math.max(0, Math.min(Math.max(0, canvasHeight - h), rawY))
     const opacity = Math.max(

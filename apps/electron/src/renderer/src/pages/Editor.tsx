@@ -137,6 +137,13 @@ const styles = {
     // splitter row 는 4px 고정. inline style 로 row template 매번 override.
     overflow: 'hidden'
   } as React.CSSProperties,
+  rightDock: {
+    gridColumn: 4,
+    gridRow: '1 / -1',
+    minHeight: 0,
+    overflow: 'hidden',
+    display: 'flex'
+  } as React.CSSProperties,
   rowSplitter: {
     cursor: 'row-resize',
     background: '#0a0a0a',
@@ -1046,12 +1053,37 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     [project]
   )
 
+  useEffect(() => {
+    return useTimelineUi.subscribe((state, prev) => {
+      if (state.selectedClipIds === prev.selectedClipIds) return
+      const [activeId] = Array.from(state.selectedClipIds)
+      const nextId = activeId ?? null
+      setSelectedClipId(nextId)
+      const liveProject = useProjectStore.getState().project
+      let clip: Clip | null = null
+      if (nextId) {
+        for (const t of liveProject.tracks) {
+          const c = t.clips.find((cc) => cc.id === nextId)
+          if (c) {
+            clip = c
+            break
+          }
+        }
+      }
+      if (clip && !isCaptionClip(clip)) {
+        setEditingCaptionId(null)
+        setTemplatePickerOpen(false)
+      }
+    })
+  }, [])
+
   const handleSelectClip = useCallback(
     (id: string | null): void => {
       setSelectedClipId(id)
       const clip = findClipById(id)
       if (clip && !isCaptionClip(clip)) {
         setEditingCaptionId(null)
+        setTemplatePickerOpen(false)
       }
     },
     [findClipById]
@@ -1063,6 +1095,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
       if (!clip || (!isMediaClip(clip) && !isOverlayClip(clip))) return
       setSelectedClipId(id)
       setEditingCaptionId(null)
+      setTemplatePickerOpen(false)
       setEffectsOpen(true)
     },
     [findClipById]
@@ -1099,6 +1132,8 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
     const id = insertCaptionAtPlayhead(playheadMs)
     if (id) {
       setSelectedClipId(id)
+      setTemplatePickerOpen(false)
+      setEffectsOpen(false)
       setEditingCaptionId(id)
     }
   }, [playheadMs])
@@ -1117,8 +1152,10 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
         .getState()
         .updateCaption(id, {
           style: { yPosition: yPos } as unknown as never
-        })
+      })
       setSelectedClipId(id)
+      setTemplatePickerOpen(false)
+      setEffectsOpen(false)
       setEditingCaptionId(id)
     },
     [playheadMs]
@@ -1134,8 +1171,9 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
       const id = insertTextTemplateAtPlayhead(tpl, playheadMs)
       if (id) {
         setSelectedClipId(id)
-        setEditingCaptionId(id)
         setTemplatePickerOpen(false)
+        setEffectsOpen(false)
+        setEditingCaptionId(id)
       }
     },
     [playheadMs]
@@ -2103,6 +2141,7 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
             ...(effectsClipId ? {} : { opacity: 0.5, cursor: 'not-allowed' })
           }}
           onClick={() => {
+            setTemplatePickerOpen(false)
             if (editingCaptionId) {
               setEditingCaptionId(null)
               setEffectsOpen(true)
@@ -2445,6 +2484,8 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
               onOpenEffectsClip={handleOpenEffectsClip}
               onEditCaption={(id) => {
                 setSelectedClipId(id)
+                setTemplatePickerOpen(false)
+                setEffectsOpen(false)
                 setEditingCaptionId(id)
               }}
               onDeleteClip={(id) => {
@@ -2486,27 +2527,31 @@ export function Editor({ onBack }: EditorProps): JSX.Element {
             />
           </div>
         </div>
-        {editingCaptionId ? (
-          <CaptionEditor
-            project={project}
-            captionId={editingCaptionId}
-            onClose={() => setEditingCaptionId(null)}
-          />
-        ) : templatePickerOpen ? (
-          <TextTemplatePicker
-            onClose={() => setTemplatePickerOpen(false)}
-            onApply={handleApplyTemplate}
-          />
-        ) : showEffectsPanel ? (
-          <EffectsPanel
-            project={project}
-            clipId={effectsClipId}
-            playheadMs={playheadMs}
-            onClose={() => {
-              setEffectsOpen(false)
-              useTimelineUi.getState().setSelectedAdjustmentLayerId(null)
-            }}
-          />
+        {editingCaptionId || templatePickerOpen || showEffectsPanel ? (
+          <div style={styles.rightDock} data-testid="right-dock-panel">
+            {editingCaptionId ? (
+              <CaptionEditor
+                project={project}
+                captionId={editingCaptionId}
+                onClose={() => setEditingCaptionId(null)}
+              />
+            ) : templatePickerOpen ? (
+              <TextTemplatePicker
+                onClose={() => setTemplatePickerOpen(false)}
+                onApply={handleApplyTemplate}
+              />
+            ) : (
+              <EffectsPanel
+                project={project}
+                clipId={effectsClipId}
+                playheadMs={playheadMs}
+                onClose={() => {
+                  setEffectsOpen(false)
+                  useTimelineUi.getState().setSelectedAdjustmentLayerId(null)
+                }}
+              />
+            )}
+          </div>
         ) : null}
       </div>
       {silenceTargetClipId && (

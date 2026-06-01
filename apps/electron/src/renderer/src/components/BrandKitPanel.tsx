@@ -12,9 +12,16 @@
 import { useEffect, useState } from 'react'
 import { useBrandKit, MAX_BRAND_COLORS, normalizeHex } from '../store/brandKit'
 import { toMediaUrl } from '../lib/mediaUrl'
+import { ingestLocalFile } from '../lib/mediaImport'
+import {
+  PENDING_MEDIA_DRAG_MIME,
+  newPendingId,
+  registerPending
+} from '../lib/pendingImport'
 import { makeImageOverlay } from '../lib/overlays'
 import { useProjectStore } from '../store/project'
 import { useTimelineUi } from '../store/timelineUi'
+import type { MediaAsset } from '../../../shared/project'
 import type { BrandLogoVariant } from '../../../shared/ipc'
 
 interface BrandKitPanelProps {
@@ -247,6 +254,31 @@ function LogoSlot({
     }
   }
 
+  const onDragLogo = (e: React.DragEvent<HTMLImageElement>): void => {
+    if (!logo) return
+    e.dataTransfer.effectAllowed = 'copy'
+    const tempId = newPendingId()
+    e.dataTransfer.setData(PENDING_MEDIA_DRAG_MIME, tempId)
+    e.dataTransfer.setData('text/plain', `${label} 로고`)
+    const promise = (async (): Promise<MediaAsset | null> => {
+      try {
+        await window.electron.fs.allowPath(logo.path)
+        const { asset } = await ingestLocalFile(logo.path, {
+          displayName: `${label} 로고`
+        })
+        onNotice(`${label} 로고를 미디어로 가져왔습니다`, 'info')
+        return asset
+      } catch (err) {
+        onNotice(
+          `로고 드래그 실패: ${err instanceof Error ? err.message : String(err)}`,
+          'error'
+        )
+        return null
+      }
+    })()
+    registerPending(tempId, promise, `${label} 로고`)
+  }
+
   return (
     <div style={styles.logoSlot} data-testid={`brand-logo-slot-${variant}`}>
       <div style={styles.logoSlotLabel}>{label} 로고</div>
@@ -255,6 +287,10 @@ function LogoSlot({
           src={toMediaUrl(logo.path)}
           alt={`${label} 로고`}
           style={styles.logoPreview}
+          draggable
+          onDragStart={onDragLogo}
+          data-testid={`brand-logo-preview-${variant}`}
+          title="타임라인으로 드래그해서 추가"
         />
       ) : (
         <div style={styles.logoPlaceholder}>로고 없음</div>

@@ -22,9 +22,9 @@
  * 14. effects-panel-close button closes the panel.
  * 15. Regression — effects panel open does NOT break context-menu (right-click
  *     on clip opens context menu when panel is also open).
- * 16. Slide 10/11 regression — 크롭 controls live under 변형 tab, update
+ * 16. Slide 13/14 regression — 크롭 controls live under 변형 tab, update
  *     the same cropRect state as the context menu, and width/height resize
- *     around the crop center.
+ *     around the crop center in both store and preview.
  * 18. Slide 16 regression — leaving CaptionEditor for a media clip opens the
  *     영상 효과 panel via the toolbar button or media double-click.
  *
@@ -496,6 +496,53 @@ test.describe('@phase-7-effects-panel CapCut 효과 패널 (Phase 7)', () => {
     expect((kfs ?? []).length).toBeGreaterThan(0)
   })
 
+  test('[7b] slide 12: transform keyframe arrows jump to previous/next keyframe exactly', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+
+    const { mediaId, durationMs } = await addFixtureMedia(launched)
+    const clipId = await addVideoClip(launched, mediaId, durationMs)
+    await selectClip(launched, clipId)
+
+    const kfA = Math.max(100, Math.floor(durationMs * 0.25))
+    const kfB = Math.max(kfA + 200, Math.floor(durationMs * 0.65))
+    const startAt = Math.floor((kfA + kfB) / 2)
+
+    await page.evaluate(
+      ({ id, a, b, start }) => {
+        const store = window.__PROJECT_STORE_FOR_TEST__.getState()
+        store.addTransformKeyframe(id, a, { scale: 1.1 })
+        store.addTransformKeyframe(id, b, { scale: 1.4 })
+        window.__reelsTimelineUi.getState().setPlayheadMs(start)
+      },
+      { id: clipId, a: kfA, b: kfB, start: startAt }
+    )
+    await page.waitForTimeout(150)
+
+    await page.locator('[data-testid="toggle-effects-panel"]').click()
+    await expect(page.locator('[data-testid="effects-panel"]')).toBeVisible({ timeout: 3_000 })
+    await page.locator('[data-testid="effects-tab-transform"]').click()
+
+    const nextBtn = page.locator('[data-testid="effects-transform-scale-kf-next"]')
+    const prevBtn = page.locator('[data-testid="effects-transform-scale-kf-prev"]')
+    await expect(nextBtn).toBeVisible()
+    await expect(prevBtn).toBeVisible()
+
+    await nextBtn.click()
+    await expect
+      .poll(() =>
+        page.evaluate(() => window.__reelsTimelineUi.getState().playheadMs)
+      )
+      .toBe(kfB)
+
+    await prevBtn.click()
+    await expect
+      .poll(() =>
+        page.evaluate(() => window.__reelsTimelineUi.getState().playheadMs)
+      )
+      .toBe(kfA)
+  })
+
   // =========================================================================
   // 8. 조정 tab — filter preset sets clip.filterPreset in store
   // =========================================================================
@@ -797,9 +844,9 @@ test.describe('@phase-7-effects-panel CapCut 효과 패널 (Phase 7)', () => {
   })
 
   // =========================================================================
-  // 16. Slide 10/11 — crop controls are under transform and resize correctly
+  // 16. Slide 13/14 — crop controls are under transform and resize correctly
   // =========================================================================
-  test('[16] slide 10/11: 변형 tab crop controls update cropRect with centered resize', async () => {
+  test('[16] slide 13/14: 변형 tab crop controls update cropRect with centered preview resize', async () => {
     if (!launched) throw new Error('launch failed')
     const { page } = launched
 
@@ -843,6 +890,18 @@ test.describe('@phase-7-effects-panel CapCut 효과 패널 (Phase 7)', () => {
       const cr = clip?.cropRect as Record<string, number> | undefined
       return cr ? { x: Number(cr.x.toFixed(2)), w: Number(cr.w.toFixed(2)) } : null
     }).toEqual({ x: 0.1, w: 0.8 })
+    await expect(page.locator('[data-testid="preview-crop-wrapper"]')).toBeVisible()
+    const afterWidthPreview = await page.evaluate(() => {
+      const video = document.querySelector<HTMLElement>(
+        '[data-testid="preview-crop-wrapper"] [data-preview-video-layer="true"]'
+      )
+      if (!video) return null
+      return {
+        left: parseFloat(video.style.left),
+        width: parseFloat(video.style.width)
+      }
+    })
+    expect(afterWidthPreview).toEqual({ left: -12.5, width: 125 })
 
     const heightInput = page.locator('[data-testid="effects-crop-h-input"]')
     await heightInput.fill('0.70')
@@ -852,6 +911,17 @@ test.describe('@phase-7-effects-panel CapCut 효과 패널 (Phase 7)', () => {
       const cr = clip?.cropRect as Record<string, number> | undefined
       return cr ? { y: Number(cr.y.toFixed(2)), h: Number(cr.h.toFixed(2)) } : null
     }).toEqual({ y: 0.15, h: 0.7 })
+    const afterHeightPreview = await page.evaluate(() => {
+      const video = document.querySelector<HTMLElement>(
+        '[data-testid="preview-crop-wrapper"] [data-preview-video-layer="true"]'
+      )
+      if (!video) return null
+      return {
+        height: Number(parseFloat(video.style.height).toFixed(2)),
+        top: Number(parseFloat(video.style.top).toFixed(2))
+      }
+    })
+    expect(afterHeightPreview).toEqual({ height: 142.86, top: -21.43 })
 
     await page.locator('[data-testid="effects-crop-reset"]').click()
     await expect.poll(async () => {
@@ -910,7 +980,12 @@ test.describe('@phase-7-effects-panel CapCut 효과 패널 (Phase 7)', () => {
       timeout: 5_000
     })
 
-    await selectClip(launched, clipId)
+    // Store-level selection can happen through keyboard/menu paths and used to
+    // leave Editor's local selectedClipId stale, trapping the right dock in
+    // CaptionEditor even though the timeline highlighted a media clip.
+    await page.evaluate((id) => {
+      window.__reelsTimelineUi.getState().selectClip(id)
+    }, clipId)
     await expect(page.locator('[data-testid="caption-editor"]')).toHaveCount(0)
     const toggleBtn = page.locator('[data-testid="toggle-effects-panel"]')
     await expect(toggleBtn).toBeEnabled({ timeout: 3_000 })

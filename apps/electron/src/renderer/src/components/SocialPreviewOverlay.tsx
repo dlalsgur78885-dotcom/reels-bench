@@ -17,7 +17,19 @@ import { useTimelineUi, type SocialPreviewPlatform } from '../store/timelineUi'
 
 interface SocialPreviewOverlayProps {
   platform: SocialPreviewPlatform
+  fittedWidth: number
+  fittedHeight: number
 }
+
+const PLATFORM_CANVAS_W = 1080
+const PLATFORM_CANVAS_H = 1920
+const ACTION_STACK_RIGHT = 38
+const ACTION_STACK_W = 150
+const INSTAGRAM_STATUS_H = 96
+const INSTAGRAM_APP_BOTTOM_NAV_H = 128
+const INSTAGRAM_SYSTEM_NAV_H = 86
+const INSTAGRAM_BOTTOM_CHROME_H =
+  INSTAGRAM_APP_BOTTOM_NAV_H + INSTAGRAM_SYSTEM_NAV_H
 
 // ---------------------------------------------------------------------------
 // Minimal inline icons (stroke-based, generic). Each is a 24×24 viewBox.
@@ -78,6 +90,61 @@ function MoreIcon(): JSX.Element {
   )
 }
 
+function HomeIcon(): JSX.Element {
+  return (
+    <svg viewBox={ICON_VB} width="100%" height="100%" aria-hidden="true">
+      <path
+        d="M3 11 12 3l9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1v-9z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function SearchIcon(): JSX.Element {
+  return (
+    <svg viewBox={ICON_VB} width="100%" height="100%" aria-hidden="true">
+      <circle
+        cx="10.5"
+        cy="10.5"
+        r="6.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+      <path
+        d="m16 16 5 5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function ReelsIcon(): JSX.Element {
+  return (
+    <svg viewBox={ICON_VB} width="100%" height="100%" aria-hidden="true">
+      <rect
+        x="4"
+        y="5"
+        width="16"
+        height="15"
+        rx="3"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+      <path d="M9 5 6 10M15 5l-3 5M5 10h14" stroke="currentColor" strokeWidth="2" />
+      <path d="m10 13 5 3-5 3v-6z" fill="currentColor" />
+    </svg>
+  )
+}
+
 // Reels 11 슬라이드 12 — 플랫폼별 추가 아이콘.
 function ThumbsDownIcon(): JSX.Element {
   return (
@@ -110,15 +177,15 @@ function FollowPlusBadge(): JSX.Element {
     <div
       style={{
         position: 'absolute',
-        bottom: -6,
+        bottom: -10,
         left: '50%',
         transform: 'translateX(-50%)',
-        width: 16,
-        height: 16,
+        width: 34,
+        height: 34,
         borderRadius: '50%',
         background: '#fe2c55',
         color: '#fff',
-        fontSize: 13,
+        fontSize: 28,
         fontWeight: 900,
         display: 'flex',
         alignItems: 'center',
@@ -137,7 +204,7 @@ function RotatingMusicDisc(): JSX.Element {
     <div
       data-testid="social-action-music-disc"
       style={{
-        width: 'clamp(20px, 52%, 34px)',
+        width: 72,
         aspectRatio: '1 / 1',
         borderRadius: '50%',
         background:
@@ -205,7 +272,7 @@ function ActionButton(props: {
     >
       <div
         style={{
-          width: 'clamp(20px, 52%, 34px)',
+          width: 72,
           aspectRatio: '1 / 1',
           color: '#fff',
           filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.6))',
@@ -229,7 +296,7 @@ function ActionButton(props: {
         <span
           style={{
             color: '#fff',
-            fontSize: 10,
+            fontSize: 24,
             fontWeight: 600,
             textShadow: '0 1px 3px rgba(0,0,0,0.7)'
           }}
@@ -279,6 +346,124 @@ function SafeZones(props: { topPct: number; bottomPct: number }): JSX.Element {
   )
 }
 
+function InstagramStatusBar(): JSX.Element {
+  return (
+    <div
+      data-testid="instagram-status-bar"
+      style={{
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        top: 0,
+        height: INSTAGRAM_STATUS_H,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '0 36px',
+        boxSizing: 'border-box',
+        color: '#fff',
+        background: 'rgba(8, 12, 18, 0.94)',
+        fontSize: 32,
+        fontWeight: 800,
+        textShadow: '0 1px 3px rgba(0,0,0,0.8)'
+      }}
+    >
+      <span>1:06</span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 14 }}>
+        <span style={{ fontSize: 26 }}>LTE</span>
+        <span style={{ fontSize: 30 }}>▮▮▮</span>
+        <span
+          style={{
+            border: '2px solid #fff',
+            borderRadius: 14,
+            padding: '1px 9px',
+            fontSize: 24,
+            lineHeight: 1.15
+          }}
+        >
+          88
+        </span>
+      </span>
+    </div>
+  )
+}
+
+function InstagramBottomChrome(): JSX.Element {
+  const navBtn: React.CSSProperties = {
+    width: 58,
+    height: 58,
+    color: '#fff',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center'
+  }
+  return (
+    <div data-testid="instagram-bottom-chrome">
+      <div
+        data-testid="instagram-app-bottom-nav"
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          bottom: INSTAGRAM_SYSTEM_NAV_H,
+          height: INSTAGRAM_APP_BOTTOM_NAV_H,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-around',
+          background: 'rgba(8, 12, 18, 0.96)',
+          borderTop: '1px solid rgba(255,255,255,0.14)'
+        }}
+      >
+        <span style={navBtn}><HomeIcon /></span>
+        <span style={navBtn}><ReelsIcon /></span>
+        <span style={navBtn}><PaperPlaneIcon /></span>
+        <span style={navBtn}><SearchIcon /></span>
+        <span
+          style={{
+            ...navBtn,
+            borderRadius: '50%',
+            background: 'radial-gradient(circle at 45% 45%, #3b1111 0 35%, #070707 36% 100%)',
+            border: '2px solid rgba(255,255,255,0.25)',
+            position: 'relative'
+          }}
+        >
+          <span
+            style={{
+              position: 'absolute',
+              right: -2,
+              bottom: -2,
+              width: 18,
+              height: 18,
+              borderRadius: '50%',
+              background: '#ff1fb3'
+            }}
+          />
+        </span>
+      </div>
+      <div
+        data-testid="instagram-system-nav"
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          bottom: 0,
+          height: INSTAGRAM_SYSTEM_NAV_H,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-around',
+          background: 'rgba(8, 12, 18, 0.98)',
+          color: '#fff',
+          fontSize: 42
+        }}
+      >
+        <span style={{ opacity: 0.9 }}>|||</span>
+        <span style={{ width: 42, height: 42, border: '4px solid #fff', borderRadius: '50%' }} />
+        <span style={{ opacity: 0.9 }}>‹</span>
+      </div>
+    </div>
+  )
+}
+
 /** Right-hand vertical action button stack — anchored bottom-right.
  *
  * pptx11 슬라이드 12 — explicit width 가 없으면 label 텍스트("2.8K",
@@ -290,19 +475,19 @@ function ActionStack(props: {
   bottomPct: number
   children: React.ReactNode
 }): JSX.Element {
+  const bottomPx = Math.round(PLATFORM_CANVAS_H * (props.bottomPct / 100))
   return (
     <div
       data-testid="social-overlay-action-stack"
       style={{
         position: 'absolute',
-        right: '3.5%',
-        bottom: `${props.bottomPct}%`,
-        width: '14%',
-        maxWidth: 58,
+        right: ACTION_STACK_RIGHT,
+        bottom: bottomPx,
+        width: ACTION_STACK_W,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
-        gap: '5.5%'
+        gap: 18
       }}
     >
       {props.children}
@@ -321,14 +506,16 @@ function CaptionBlock(props: {
   showMusic?: boolean
 }): JSX.Element {
   const { accountName, caption, bottomPct, rightPct, showMusic } = props
+  const bottomPx = Math.round(PLATFORM_CANVAS_H * (bottomPct / 100))
+  const rightPx = Math.round(PLATFORM_CANVAS_W * (rightPct / 100))
   return (
     <div
       data-testid="social-overlay-caption-block"
       style={{
         position: 'absolute',
-        left: '4%',
-        bottom: `${bottomPct}%`,
-        right: `${rightPct}%`,
+        left: 43,
+        bottom: bottomPx,
+        right: rightPx,
         display: 'flex',
         flexDirection: 'column',
         gap: 6,
@@ -344,8 +531,8 @@ function CaptionBlock(props: {
       >
         <div
           style={{
-            width: 22,
-            height: 22,
+            width: 48,
+            height: 48,
             borderRadius: '50%',
             background: 'linear-gradient(135deg, #6a5acd, #ff5e8a)',
             border: '1.5px solid rgba(255,255,255,0.85)',
@@ -354,7 +541,7 @@ function CaptionBlock(props: {
         />
         <span
           data-testid="social-overlay-account"
-          style={{ color: '#fff', fontSize: 12, fontWeight: 700 }}
+          style={{ color: '#fff', fontSize: 28, fontWeight: 700 }}
         >
           {accountName}
         </span>
@@ -363,7 +550,7 @@ function CaptionBlock(props: {
         data-testid="social-overlay-caption-text"
         style={{
           color: '#f1f1f1',
-          fontSize: 11,
+          fontSize: 24,
           lineHeight: 1.35,
           display: '-webkit-box',
           WebkitLineClamp: 2,
@@ -381,10 +568,10 @@ function CaptionBlock(props: {
             alignItems: 'center',
             gap: 6,
             color: '#fff',
-            fontSize: 10
+            fontSize: 22
           }}
         >
-          <span style={{ width: 12, height: 12, display: 'inline-block' }}>
+          <span style={{ width: 26, height: 26, display: 'inline-block' }}>
             <MusicIcon />
           </span>
           <span>원본 오디오 · {accountName}</span>
@@ -407,19 +594,19 @@ function TikTokChrome(): JSX.Element {
       <div
         style={{
           position: 'absolute',
-          top: '3.5%',
+          top: 67,
           left: '50%',
           transform: 'translateX(-50%)',
           display: 'flex',
-          gap: 14,
+          gap: 30,
           color: '#fff',
-          fontSize: 12,
+          fontSize: 28,
           fontWeight: 700,
           textShadow: '0 1px 3px rgba(0,0,0,0.7)'
         }}
       >
         <span style={{ opacity: 0.65 }}>팔로잉</span>
-        <span style={{ borderBottom: '2px solid #fff', paddingBottom: 2 }}>
+        <span style={{ borderBottom: '4px solid #fff', paddingBottom: 4 }}>
           추천
         </span>
       </div>
@@ -477,10 +664,10 @@ function YouTubeShortsChrome(): JSX.Element {
       <div
         style={{
           position: 'absolute',
-          top: '3%',
-          left: '4%',
+          top: 58,
+          left: 43,
           color: '#fff',
-          fontSize: 14,
+          fontSize: 32,
           fontWeight: 800,
           textShadow: '0 1px 3px rgba(0,0,0,0.7)'
         }}
@@ -490,10 +677,9 @@ function YouTubeShortsChrome(): JSX.Element {
       <div
         style={{
           position: 'absolute',
-          top: '3%',
-          right: '4%',
-          width: '6%',
-          minWidth: 18,
+          top: 58,
+          right: 43,
+          width: 54,
           color: '#fff',
           filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.6))'
         }}
@@ -540,9 +726,9 @@ function YouTubeShortsChrome(): JSX.Element {
         data-testid="social-overlay-caption-block"
         style={{
           position: 'absolute',
-          left: '4%',
-          right: '20%',
-          bottom: '5%',
+          left: 43,
+          right: 216,
+          bottom: 96,
           display: 'flex',
           flexDirection: 'column',
           gap: 7,
@@ -552,8 +738,8 @@ function YouTubeShortsChrome(): JSX.Element {
         <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
           <div
             style={{
-              width: 22,
-              height: 22,
+              width: 48,
+              height: 48,
               borderRadius: '50%',
               background: 'linear-gradient(135deg, #ff4d4d, #ff8a3d)',
               border: '1.5px solid rgba(255,255,255,0.85)',
@@ -562,7 +748,7 @@ function YouTubeShortsChrome(): JSX.Element {
           />
           <span
             data-testid="social-overlay-account"
-            style={{ color: '#fff', fontSize: 12, fontWeight: 700 }}
+            style={{ color: '#fff', fontSize: 28, fontWeight: 700 }}
           >
             @your_channel
           </span>
@@ -571,9 +757,9 @@ function YouTubeShortsChrome(): JSX.Element {
             style={{
               background: '#fff',
               color: '#0f0f0f',
-              fontSize: 10,
+              fontSize: 22,
               fontWeight: 700,
-              padding: '3px 10px',
+              padding: '7px 22px',
               borderRadius: 999
             }}
           >
@@ -584,7 +770,7 @@ function YouTubeShortsChrome(): JSX.Element {
           data-testid="social-overlay-caption-text"
           style={{
             color: '#f1f1f1',
-            fontSize: 11,
+            fontSize: 24,
             lineHeight: 1.35,
             display: '-webkit-box',
             WebkitLineClamp: 2,
@@ -603,22 +789,25 @@ function YouTubeShortsChrome(): JSX.Element {
 function InstagramReelsChrome(): JSX.Element {
   return (
     <div data-testid="social-overlay-instagram" style={fillStyle}>
-      <SafeZones topPct={8} bottomPct={15} />
-      {/* Top bar — "릴스" title + camera. */}
+      <SafeZones topPct={18} bottomPct={24} />
+      <InstagramStatusBar />
+      <InstagramBottomChrome />
+      {/* Top bar — app chrome starts below the phone status bar. */}
       <div
+        data-testid="instagram-reels-title"
         style={{
           position: 'absolute',
-          top: '3%',
-          left: '4%',
+          top: INSTAGRAM_STATUS_H + 26,
+          left: 43,
           color: '#fff',
-          fontSize: 14,
+          fontSize: 32,
           fontWeight: 800,
           textShadow: '0 1px 3px rgba(0,0,0,0.7)'
         }}
       >
         릴스
       </div>
-      <ActionStack bottomPct={16}>
+      <ActionStack bottomPct={23}>
         {/* Reels 11 슬라이드 12 — Instagram 릴스 실제 순서: 좋아요 → 댓글 →
             보내기(종이비행기) → 더보기 → 회전 음원 썸네일. 저장은 더보기 안에. */}
         <ActionButton
@@ -645,7 +834,7 @@ function InstagramReelsChrome(): JSX.Element {
         <div
           data-testid="social-action-audio"
           style={{
-            width: 'clamp(20px, 52%, 34px)',
+            width: 72,
             aspectRatio: '1 / 1',
             borderRadius: 6,
             border: '2px solid rgba(255,255,255,0.85)',
@@ -657,8 +846,8 @@ function InstagramReelsChrome(): JSX.Element {
       <CaptionBlock
         accountName="Your name"
         caption="여기에 릴스 캡션이 표시됩니다 #reels #instagram"
-        bottomPct={9}
-        rightPct={20}
+        bottomPct={15.5}
+        rightPct={22}
         showMusic
       />
     </div>
@@ -676,22 +865,41 @@ const fillStyle: React.CSSProperties = {
 export function SocialPreviewOverlay(
   props: SocialPreviewOverlayProps
 ): JSX.Element | null {
-  const { platform } = props
+  const { fittedHeight, fittedWidth, platform } = props
   if (platform === 'none') return null
+  const scaleX =
+    fittedWidth > 0 ? fittedWidth / PLATFORM_CANVAS_W : 1
+  const scaleY =
+    fittedHeight > 0 ? fittedHeight / PLATFORM_CANVAS_H : 1
   return (
     <div
       data-testid="social-preview-overlay"
       data-platform={platform}
+      data-coordinate-space={`${PLATFORM_CANVAS_W}x${PLATFORM_CANVAS_H}`}
       style={{
         position: 'absolute',
         inset: 0,
         pointerEvents: 'none',
-        userSelect: 'none'
+        userSelect: 'none',
+        overflow: 'hidden'
       }}
     >
-      {platform === 'tiktok' && <TikTokChrome />}
-      {platform === 'youtube' && <YouTubeShortsChrome />}
-      {platform === 'instagram' && <InstagramReelsChrome />}
+      <div
+        data-testid="social-preview-coordinate-space"
+        style={{
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          width: PLATFORM_CANVAS_W,
+          height: PLATFORM_CANVAS_H,
+          transform: `scale(${scaleX}, ${scaleY})`,
+          transformOrigin: 'top left'
+        }}
+      >
+        {platform === 'tiktok' && <TikTokChrome />}
+        {platform === 'youtube' && <YouTubeShortsChrome />}
+        {platform === 'instagram' && <InstagramReelsChrome />}
+      </div>
     </div>
   )
 }

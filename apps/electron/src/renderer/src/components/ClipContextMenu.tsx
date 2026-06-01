@@ -43,7 +43,6 @@ import {
   MIN_BLUR_STRENGTH,
   MIN_CLIP_SPEED,
   MIN_COLOR_ADJUST,
-  MIN_CROP_SIZE,
   MIN_TRANSFORM_OFFSET,
   MIN_TRANSFORM_ROTATION,
   MIN_TRANSFORM_SCALE,
@@ -69,6 +68,7 @@ import {
   filterPresetToCss
 } from '../../../shared/filterPresets'
 import { BrandSwatchRow } from './BrandSwatchRow'
+import { CropControls } from './CropControls'
 
 interface ClipContextMenuProps {
   clip: Clip
@@ -407,46 +407,6 @@ const styles = {
 }
 
 const SPEED_PRESETS = [0.5, 1, 1.5, 2]
-
-// Phase 3.6 — crop aspect presets. `free` is a no-op affordance; the others
-// carry a target aspect ratio (W/H) that drives a centered max-area crop.
-const CROP_PRESETS: ReadonlyArray<{ id: string; aspect: number | null }> = [
-  { id: 'free', aspect: null },
-  { id: '1:1', aspect: 1 },
-  { id: '4:5', aspect: 4 / 5 },
-  { id: '9:16', aspect: 9 / 16 },
-  { id: '16:9', aspect: 16 / 9 }
-]
-
-/**
- * Compute a centered, maximum-area crop rect (source fractions) for a target
- * aspect ratio `aR` (W/H) within a source of aspect `srcAspect` (W/H).
- */
-function centeredCropForAspect(aR: number, srcAspect: number): CropRect {
-  if (aR >= srcAspect) {
-    // Target is wider (relative to its height) than the source → full width,
-    // shorter height.
-    const h = srcAspect / aR
-    return { x: 0, y: (1 - h) / 2, w: 1, h }
-  }
-  // Target is taller → full height, narrower width.
-  const w = aR / srcAspect
-  return { x: (1 - w) / 2, y: 0, w, h: 1 }
-}
-
-function resizeCropWidthAroundCenter(c: CropRect, w: number): Partial<CropRect> {
-  const nextW = Math.max(MIN_CROP_SIZE, Math.min(1, w))
-  const centerX = c.x + c.w / 2
-  const x = Math.max(0, Math.min(1 - nextW, centerX - nextW / 2))
-  return { x, w: nextW }
-}
-
-function resizeCropHeightAroundCenter(c: CropRect, h: number): Partial<CropRect> {
-  const nextH = Math.max(MIN_CROP_SIZE, Math.min(1, h))
-  const centerY = c.y + c.h / 2
-  const y = Math.max(0, Math.min(1 - nextH, centerY - nextH / 2))
-  return { y, h: nextH }
-}
 
 interface MenuRow {
   key: string
@@ -1608,166 +1568,22 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
           </div>
           {showCrop && (
             <div style={styles.speedPanel} data-testid="menu-crop-panel">
-              {/* Aspect preset row. */}
-              <div style={styles.presetRow}>
-                {CROP_PRESETS.map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    style={styles.preset}
-                    data-testid={`menu-crop-preset-${p.id}`}
-                    onClick={() => {
-                      // `free` is a no-op affordance — keeps the current rect.
-                      if (p.aspect === null) return
-                      onCropChange(centeredCropForAspect(p.aspect, srcAspect))
-                    }}
-                  >
-                    {p.id === 'free' ? '자유' : p.id}
-                  </button>
-                ))}
-              </div>
-              {/* X */}
-              <div style={styles.transformRow}>
-                <span style={styles.transformLabel}>X</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={cropRect.x}
-                  onChange={(e) => {
-                    const v = parseFloat(e.target.value)
-                    if (!Number.isFinite(v)) return
-                    onCropChange({ x: v })
-                  }}
-                  style={styles.slider}
-                  data-testid="menu-crop-x"
-                  aria-label="크롭 X"
-                />
-                <input
-                  type="number"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={Number(cropRect.x.toFixed(2))}
-                  onChange={(e) => {
-                    const v = parseFloat(e.target.value)
-                    if (!Number.isFinite(v)) return
-                    onCropChange({ x: v })
-                  }}
-                  style={styles.speedInput}
-                  aria-label="크롭 X 숫자"
-                />
-              </div>
-              {/* Y */}
-              <div style={styles.transformRow}>
-                <span style={styles.transformLabel}>Y</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={cropRect.y}
-                  onChange={(e) => {
-                    const v = parseFloat(e.target.value)
-                    if (!Number.isFinite(v)) return
-                    onCropChange({ y: v })
-                  }}
-                  style={styles.slider}
-                  data-testid="menu-crop-y"
-                  aria-label="크롭 Y"
-                />
-                <input
-                  type="number"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={Number(cropRect.y.toFixed(2))}
-                  onChange={(e) => {
-                    const v = parseFloat(e.target.value)
-                    if (!Number.isFinite(v)) return
-                    onCropChange({ y: v })
-                  }}
-                  style={styles.speedInput}
-                  aria-label="크롭 Y 숫자"
-                />
-              </div>
-              {/* W */}
-              <div style={styles.transformRow}>
-                <span style={styles.transformLabel}>너비</span>
-                <input
-                  type="range"
-                  min={MIN_CROP_SIZE}
-                  max={1}
-                  step={0.01}
-                  value={cropRect.w}
-                  onChange={(e) => {
-                    const v = parseFloat(e.target.value)
-                    if (!Number.isFinite(v)) return
-                    onCropChange(resizeCropWidthAroundCenter(cropRect, v))
-                  }}
-                  style={styles.slider}
-                  data-testid="menu-crop-w"
-                  aria-label="크롭 너비"
-                />
-                <input
-                  type="number"
-                  min={MIN_CROP_SIZE}
-                  max={1}
-                  step={0.01}
-                  value={Number(cropRect.w.toFixed(2))}
-                  onChange={(e) => {
-                    const v = parseFloat(e.target.value)
-                    if (!Number.isFinite(v)) return
-                    onCropChange(resizeCropWidthAroundCenter(cropRect, v))
-                  }}
-                  style={styles.speedInput}
-                  aria-label="크롭 너비 숫자"
-                />
-              </div>
-              {/* H */}
-              <div style={styles.transformRow}>
-                <span style={styles.transformLabel}>높이</span>
-                <input
-                  type="range"
-                  min={MIN_CROP_SIZE}
-                  max={1}
-                  step={0.01}
-                  value={cropRect.h}
-                  onChange={(e) => {
-                    const v = parseFloat(e.target.value)
-                    if (!Number.isFinite(v)) return
-                    onCropChange(resizeCropHeightAroundCenter(cropRect, v))
-                  }}
-                  style={styles.slider}
-                  data-testid="menu-crop-h"
-                  aria-label="크롭 높이"
-                />
-                <input
-                  type="number"
-                  min={MIN_CROP_SIZE}
-                  max={1}
-                  step={0.01}
-                  value={Number(cropRect.h.toFixed(2))}
-                  onChange={(e) => {
-                    const v = parseFloat(e.target.value)
-                    if (!Number.isFinite(v)) return
-                    onCropChange(resizeCropHeightAroundCenter(cropRect, v))
-                  }}
-                  style={styles.speedInput}
-                  aria-label="크롭 높이 숫자"
-                />
-              </div>
-              {onCropReset && (
-                <button
-                  type="button"
-                  style={styles.transformResetBtn}
-                  data-testid="menu-crop-reset"
-                  onClick={() => onCropReset()}
-                >
-                  초기화
-                </button>
-              )}
+              <CropControls
+                cropRect={cropRect}
+                sourceAspect={srcAspect}
+                onCropChange={onCropChange}
+                onCropReset={onCropReset}
+                testPrefix="menu-crop"
+                styles={{
+                  presetRow: styles.presetRow,
+                  preset: styles.preset,
+                  row: styles.transformRow,
+                  label: styles.transformLabel,
+                  slider: styles.slider,
+                  input: styles.speedInput,
+                  resetButton: styles.transformResetBtn
+                }}
+              />
             </div>
           )}
         </>
@@ -3042,7 +2858,7 @@ export function ClipContextMenu(props: ClipContextMenuProps): JSX.Element {
                       type="range"
                       min={MIN_FREEZE_MS}
                       max={MAX_FREEZE_MS}
-                      step={50}
+                      step={1}
                       value={freezeDurationAtPlayhead}
                       onChange={(e) => {
                         if (reversed) return

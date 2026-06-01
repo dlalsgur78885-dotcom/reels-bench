@@ -96,6 +96,7 @@ export function installTestBridge(): void {
         updateMediaWaveform: Store['updateMediaWaveform']
         setClipTransitionIn: Store['setClipTransitionIn']
         setClipFilter: Store['setClipFilter']
+        setClipColorAdjust: Store['setClipColorAdjust']
         setClipTransform: Store['setClipTransform']
         resetClipTransform: Store['resetClipTransform']
         addTransformKeyframe: Store['addTransformKeyframe']
@@ -270,6 +271,8 @@ export function installTestBridge(): void {
         useProjectStore.getState().setClipTransitionIn(id, kind, dur),
       setClipFilter: (id, preset, intensity) =>
         useProjectStore.getState().setClipFilter(id, preset, intensity),
+      setClipColorAdjust: (id, partial) =>
+        useProjectStore.getState().setClipColorAdjust(id, partial),
       setClipTransform: (id, partial) =>
         useProjectStore.getState().setClipTransform(id, partial),
       resetClipTransform: (id) =>

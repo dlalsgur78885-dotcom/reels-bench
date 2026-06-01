@@ -4,8 +4,8 @@ import { api } from '../api'
 
 type Release = Awaited<ReturnType<typeof api.editorLatest>>
 
-const CURRENT_EDITOR_VERSION = '0.2.54'
-const CURRENT_EDITOR_COMMIT_AT = '2026-05-29T16:57:07+09:00'
+const CURRENT_EDITOR_VERSION = '0.3.2'
+const CURRENT_EDITOR_COMMIT_AT = '2026-06-02T04:10:00+09:00'
 
 function fmtSize(bytes: number | null): string {
   if (!bytes) return ''

@@ -704,13 +704,13 @@ test.describe('@phase-3-7-coloradjust manual per-clip color adjustment', () => {
 
     // All three features must be present.
     expect(graph).toContain('eq=brightness=')
-    expect(graph).toContain('crop=w=floor(iw*')
+    expect(graph).toContain('crop=w=floor(1080*')
     expect(graph).toContain('rotate=')
 
     // CRITICAL ORDER: color-adjust eq BEFORE crop=.
     // In the pipeline: step 2.5 (color-adjust) → step 3 (fps) → step 3.5 (crop).
     const eqIdx = graph.indexOf('eq=brightness=')
-    const cropIdx = graph.indexOf('crop=w=floor(iw*')
+    const cropIdx = graph.indexOf('crop=w=floor(1080*')
     expect(eqIdx).toBeGreaterThanOrEqual(0)
     expect(cropIdx).toBeGreaterThanOrEqual(0)
     expect(eqIdx).toBeLessThan(cropIdx)

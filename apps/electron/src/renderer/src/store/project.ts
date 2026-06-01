@@ -763,6 +763,11 @@ export interface ProjectStore {
         | 'hsl'
         | 'filterPreset'
         | 'filterIntensity'
+        | 'cropRect'
+        | 'retouch'
+        | 'enhance'
+        | 'filmLook'
+        | 'visualEffect'
         | 'transform'
         | 'mirrorX'
         | 'mirrorY'
@@ -801,6 +806,7 @@ export interface ProjectStore {
   addMedia(asset: MediaAsset): void
   removeMedia(mediaId: string): void
   renameMedia(mediaId: string, fileName: string): void
+  updateMediaLibraryFolder(mediaId: string, folder: string | null): void
   updateMediaThumbnail(mediaId: string, thumbnailPath: string): void
   /** Attach a generated waveform PNG to a media asset (Phase 2.5). */
   updateMediaWaveform(mediaId: string, waveformPath: string): void
@@ -1566,6 +1572,8 @@ export interface ProjectStore {
   addCaptions(captions: CaptionClip[]): void
   /** Generic partial update for a caption clip. */
   updateCaption(captionId: string, partial: Partial<Omit<CaptionClip, 'id' | 'kind' | 'trackId'>>): void
+  /** Generic partial update for several caption clips in one atomic store update. */
+  updateCaptions(captionIds: string[], partial: Partial<Omit<CaptionClip, 'id' | 'kind' | 'trackId'>>): void
   /** Remove a caption clip (alias of removeClip with kind guard). */
   removeCaption(captionId: string): void
   /** Get the id of the (first) caption track in the project. */
@@ -2459,6 +2467,11 @@ export const useProjectStore = create<ProjectStore>()(
         hsl: clone(properties.hsl),
         filterPreset: properties.filterPreset,
         filterIntensity: properties.filterIntensity,
+        cropRect: clone(properties.cropRect),
+        retouch: properties.retouch,
+        enhance: properties.enhance,
+        filmLook: clone(properties.filmLook),
+        visualEffect: properties.visualEffect,
         transform: clone(properties.transform),
         mirrorX: properties.mirrorX === true ? true : undefined,
         mirrorY: properties.mirrorY === true ? true : undefined,
@@ -2611,6 +2624,29 @@ export const useProjectStore = create<ProjectStore>()(
       media: {
         ...project.media,
         [mediaId]: { ...existing, fileName: trimmed }
+      }
+    })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  updateMediaLibraryFolder(mediaId: string, folder: string | null): void {
+    const project = get().project
+    const existing = project.media[mediaId]
+    if (!existing) return
+    const trimmed = String(folder ?? '').trim().slice(0, 80)
+    const nextAsset =
+      trimmed.length > 0
+        ? { ...existing, libraryFolder: trimmed }
+        : (() => {
+            const { libraryFolder: _drop, ...rest } = existing
+            return rest
+          })()
+    const next = touch({
+      ...project,
+      media: {
+        ...project.media,
+        [mediaId]: nextAsset
       }
     })
     set({ project: next })
@@ -7013,6 +7049,40 @@ export const useProjectStore = create<ProjectStore>()(
         return merged
       })
       return { ...t, clips }
+    })
+    if (!touched) return
+    const next = touch({ ...project, tracks })
+    set({ project: next })
+    schedulePersist(next)
+  },
+
+  updateCaptions(captionIds, partial): void {
+    if (!Array.isArray(captionIds) || captionIds.length === 0) return
+    const targetIds = new Set(captionIds.filter((id) => typeof id === 'string' && id))
+    if (targetIds.size === 0) return
+    const project = get().project
+    let touched = false
+    const tracks = project.tracks.map((t) => {
+      if (t.kind !== 'caption') return t
+      let trackTouched = false
+      const clips = t.clips.map((c) => {
+        if (!isCaptionClip(c)) return c
+        if (!targetIds.has(c.id)) return c
+        if (isClipLocked(c)) return c
+        touched = true
+        trackTouched = true
+        const merged: CaptionClip = {
+          ...c,
+          ...partial,
+          id: c.id,
+          kind: 'caption',
+          trackId: c.trackId,
+          style: partial.style ? { ...c.style, ...partial.style } : c.style,
+          spans: partial.spans ?? c.spans
+        }
+        return merged
+      })
+      return trackTouched ? { ...t, clips } : t
     })
     if (!touched) return
     const next = touch({ ...project, tracks })

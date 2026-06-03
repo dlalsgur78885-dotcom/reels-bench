@@ -52,6 +52,7 @@ type ReelsStore = {
   addClip: (c: unknown) => void
   setClipTransform: (id: string, partial: Record<string, number>) => void
   resetClipTransform: (id: string) => void
+  addTransformKeyframe: (id: string, atMs: number, transform?: Record<string, number>) => void
   addVideoTrack: () => string | null
   removeVideoTrack: (tid: string) => void
   newId: () => string
@@ -296,6 +297,77 @@ test.describe('@phase-3-transform-layers transform + layer compositing', () => {
     expect(clip!.transform).toBeUndefined()
   })
 
+  test('slide 13: transform reset clears keyframed transform values too', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    await openEditor()
+    const { mediaId, durationMs } = await addFixtureMedia()
+    const cid = await addVideoClip(mediaId, durationMs)
+
+    await page.evaluate(
+      ({ id, dur }) => {
+        const reels = (window as unknown as { __reelsStore: ReelsStore }).__reelsStore
+        reels.addTransformKeyframe(id, 0, { scale: 1.44, rotation: 16 })
+        reels.addTransformKeyframe(id, Math.min(2000, dur), {
+          scale: 1.44,
+          rotation: 16
+        })
+        ;(
+          window as unknown as {
+            __reelsTimelineUi: {
+              getState: () => {
+                setPlayheadMs: (ms: number) => void
+                selectClip: (id: string | null) => void
+              }
+            }
+          }
+        ).__reelsTimelineUi.getState().setPlayheadMs(Math.min(1000, dur))
+        ;(
+          window as unknown as {
+            __reelsTimelineUi: {
+              getState: () => { selectClip: (id: string | null) => void }
+            }
+          }
+        ).__reelsTimelineUi.getState().selectClip(id)
+      },
+      { id: cid, dur: durationMs }
+    )
+
+    let clip = await getClipFromState(cid)
+    expect(clip!.transformKeyframes).toBeDefined()
+
+    await page
+      .locator(`[data-testid="media-clip-block"][data-clip-id="${cid}"]`)
+      .first()
+      .click({ force: true })
+    await page.locator('[data-testid="toggle-effects-panel"]').click()
+    await expect(page.locator('[data-testid="effects-panel"]')).toBeVisible({
+      timeout: 3_000
+    })
+    await page.locator('[data-testid="effects-tab-transform"]').click()
+    await page.waitForTimeout(120)
+    await expect(page.locator('[data-testid="effects-transform-reset"]')).toBeVisible()
+    await page.locator('[data-testid="effects-transform-reset"]').click()
+    await page.waitForTimeout(120)
+
+    clip = await getClipFromState(cid)
+    expect(clip!.transform).toBeUndefined()
+    expect(clip!.transformKeyframes).toBeUndefined()
+
+    const values = await page.evaluate(() => ({
+      scale: (
+        document.querySelector('[data-testid="effects-transform-scale-input"]') as HTMLInputElement | null
+      )?.value,
+      rotation: (
+        document.querySelector(
+          '[data-testid="effects-transform-rotation-input"]'
+        ) as HTMLInputElement | null
+      )?.value
+    }))
+    expect(Number(values.scale)).toBeCloseTo(1, 2)
+    expect(Number(values.rotation)).toBeCloseTo(0, 2)
+  })
+
   // -------------------------------------------------------------------------
   // Scenario (4) — addVideoTrack caps at MAX_VIDEO_TRACKS (6)
   // -------------------------------------------------------------------------
@@ -389,7 +461,7 @@ test.describe('@phase-3-transform-layers transform + layer compositing', () => {
     // Verify that the element with the higher layer-index has the larger zIndex.
     const zIndexes = await page.evaluate(() => {
       const layers = Array.from(
-        document.querySelectorAll<HTMLElement>('[data-preview-video-layer="true"]')
+        document.querySelectorAll<HTMLElement>('[data-preview-video-layer-shell="true"]')
       )
       return layers.map((el) => ({
         layerIndex: Number(el.getAttribute('data-layer-index')),
@@ -433,21 +505,105 @@ test.describe('@phase-3-transform-layers transform + layer compositing', () => {
 
     // The top-most video layer carries data-testid="preview-video".
     // Since this is a single-track project, there's one active layer.
-    const videoEl = page.locator('[data-preview-video-layer="true"]').first()
+    const videoShell = page.locator('[data-preview-video-layer-shell="true"]').first()
 
     // CSS transform must contain scale(1.5) and rotate(10deg).
-    const cssTransform = await videoEl.evaluate(
+    const cssTransform = await videoShell.evaluate(
       (el) => (el as HTMLElement).style.transform
     )
     expect(cssTransform).toContain('scale(1.5)')
     expect(cssTransform).toContain('rotate(10deg)')
 
     // opacity must reflect 0.4.
-    const cssOpacity = await videoEl.evaluate(
+    const cssOpacity = await videoShell.evaluate(
       (el) => (el as HTMLElement).style.opacity
     )
     const opacityNum = parseFloat(cssOpacity)
     expect(opacityNum).toBeCloseTo(0.4, 2)
+  })
+
+  test('slide 11: cropped upper video remains visible above the base video layer', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+    await openEditor()
+    const { mediaId, durationMs } = await addFixtureMedia()
+
+    const secondTrackId = await page.evaluate(() => {
+      return (window as unknown as { __reelsStore: ReelsStore }).__reelsStore.addVideoTrack()
+    })
+    expect(secondTrackId).not.toBeNull()
+
+    // "Top track = front" convention (릴스벤치19 slide 14): the cropped overlay
+    // lives on track 0 (top of the timeline → FRONT); the plain base goes on the
+    // second, lower track (→ BEHIND).
+    await addVideoClip(mediaId, durationMs, 0, secondTrackId as string)
+    const upperCid = await addVideoClip(mediaId, durationMs, 0)
+
+    await page.evaluate((id) => {
+      ;(window as unknown as {
+        __PROJECT_STORE_FOR_TEST__: {
+          getState: () => {
+            setClipCrop: (id: string, partial: Record<string, number>) => void
+            setClipTransform: (id: string, partial: Record<string, number>) => void
+          }
+        }
+      }).__PROJECT_STORE_FOR_TEST__.getState().setClipCrop(id, {
+        x: 0.18,
+        y: 0.08,
+        w: 0.58,
+        h: 0.62
+      })
+      ;(window as unknown as {
+        __PROJECT_STORE_FOR_TEST__: {
+          getState: () => {
+            setClipTransform: (id: string, partial: Record<string, number>) => void
+          }
+        }
+      }).__PROJECT_STORE_FOR_TEST__.getState().setClipTransform(id, {
+        scale: 0.82,
+        x: -0.12,
+        y: -0.04
+      })
+    }, upperCid)
+
+    await page.evaluate((ms) => {
+      const ui = (window as unknown as {
+        __reelsTimelineUi: { getState: () => { setPlayheadMs: (ms: number) => void } }
+      }).__reelsTimelineUi
+      ui.getState().setPlayheadMs(ms)
+    }, Math.floor(durationMs / 2))
+    await page.waitForTimeout(400)
+
+    const metrics = await page.evaluate((clipId) => {
+      const shells = Array.from(
+        document.querySelectorAll<HTMLElement>('[data-preview-video-layer-shell="true"]')
+      ).map((el) => {
+        const rect = el.getBoundingClientRect()
+        return {
+          clipId: el.getAttribute('data-clip-id'),
+          layerIndex: Number(el.getAttribute('data-layer-index')),
+          zIndex: Number(el.style.zIndex),
+          display: getComputedStyle(el).display,
+          opacity: Number(getComputedStyle(el).opacity),
+          width: rect.width,
+          height: rect.height,
+          area: rect.width * rect.height
+        }
+      })
+      const upper = shells.find((s) => s.clipId === clipId) ?? null
+      const active = shells.filter((s) => s.layerIndex >= 0 && s.display !== 'none')
+      return { upper, active }
+    }, upperCid)
+
+    expect(metrics.active.length).toBe(2)
+    expect(metrics.upper).not.toBeNull()
+    const other = metrics.active.find((s) => s.clipId !== upperCid)!
+    // The cropped overlay on the TOP timeline track must composite in FRONT of
+    // the base (higher layerIndex → higher zIndex).
+    expect(metrics.upper!.layerIndex).toBeGreaterThan(other.layerIndex)
+    expect(metrics.upper!.zIndex).toBeGreaterThan(other.zIndex)
+    expect(metrics.upper!.opacity).toBeGreaterThan(0.9)
+    expect(metrics.upper!.area).toBeGreaterThan(1_000)
   })
 
   // -------------------------------------------------------------------------

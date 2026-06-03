@@ -52,6 +52,7 @@ import {
   isIdentityTransform,
   isMediaClip,
   isOverlayClip,
+  isWithinFreezeHold,
   MIN_TRACK_SOURCE_SIZE,
   resolveCaptionWords,
   sourceOffsetForTimelineOffset,
@@ -220,6 +221,16 @@ export function clipPlaybackRate(
       hasTranscriptDeletions(clip)) &&
     timelineMs !== undefined
   ) {
+    // FREEZE HOLD — pin the frame by stopping native advancement (rate 0).
+    // Without this the <video> keeps playing at the clip speed during a freeze
+    // plateau and only snaps back to the held frame once drift exceeds the sync
+    // tolerance, producing a 2-3 frame loop (릴스벤치19 slide 17).
+    if (
+      hasFreezeFrames(clip) &&
+      isWithinFreezeHold(clip, timelineMs - clip.startMs)
+    ) {
+      return 0
+    }
     const sourceOffsetMs = sourceOffsetForTimelineOffset(
       clip,
       timelineMs - clip.startMs
@@ -313,8 +324,16 @@ export interface VideoLayer {
  */
 function activeVideoLayers(project: Project, ms: number): VideoLayer[] {
   const out: VideoLayer[] = []
-  for (const t of project.tracks) {
-    if (t.kind !== 'video') continue
+  // Iterate video tracks in REVERSE array order so the EARLIER track in
+  // `project.tracks` (= the TOP track in the timeline UI) gets the HIGHEST
+  // layerIndex → highest zIndex → composites in FRONT. This matches the
+  // CapCut/Premiere "top track = front" convention. Previously later-array
+  // tracks rendered on top, so a cropped overlay placed on the top timeline
+  // track was hidden behind a full-frame clip on a lower track (릴스벤치19
+  // slide 14). Keep in lockstep with export.ts collectSegments.
+  const videoTracks = project.tracks.filter((t) => t.kind === 'video')
+  for (let i = videoTracks.length - 1; i >= 0; i--) {
+    const t = videoTracks[i]
     for (const c of t.clips) {
       if (isMediaClip(c) && ms >= c.startMs && ms < c.endMs) {
         out.push({ clip: c, track: t, layerIndex: out.length })
@@ -733,6 +752,36 @@ function useFittedRect(
     }
   }, [containerRef, canvasAspect])
   return rect
+}
+
+/**
+ * Fit a content rectangle of `contentAspect` (contain / letterbox) inside an
+ * already-positioned `frame` rect, returning container-relative coordinates.
+ * Used by the SNS platform preview (slide 12): the platform frame is a fixed
+ * 9:16 viewport, and the project content (any aspect) is letterboxed into it
+ * exactly the way Instagram/TikTok/Shorts fit non-9:16 uploads.
+ */
+function fitContentIntoFrame(
+  frame: { width: number; height: number; top: number; left: number },
+  contentAspect: number
+): { width: number; height: number; top: number; left: number } {
+  if (frame.width <= 0 || frame.height <= 0) return frame
+  const frameAspect = frame.width / Math.max(1, frame.height)
+  let w: number
+  let h: number
+  if (frameAspect > contentAspect) {
+    h = frame.height
+    w = h * contentAspect
+  } else {
+    w = frame.width
+    h = w / contentAspect
+  }
+  return {
+    width: Math.max(1, Math.floor(w)),
+    height: Math.max(1, Math.floor(h)),
+    top: frame.top + Math.floor((frame.height - h) / 2),
+    left: frame.left + Math.floor((frame.width - w) / 2)
+  }
 }
 
 /** Karaoke per-word state relative to the playhead (Phase 3.22). */
@@ -1381,7 +1430,23 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
   const [customCaptionFonts, setCustomCaptionFonts] = useState<CustomCaptionFont[]>([])
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasAspect = project.width / Math.max(1, project.height)
-  const fitted = useFittedRect(containerRef, canvasAspect)
+  // SNS platform previews (Instagram Reels / TikTok / YouTube Shorts) are all
+  // 9:16. When one is active the preview must show a true 9:16 *platform frame*
+  // and letterbox the project content INTO it — matching how the real apps fit
+  // non-9:16 uploads. Previously the 9:16 chrome was stretched to the project
+  // aspect (non-uniform scale), so the preview was distorted / wrong-sized for
+  // any non-9:16 project (릴스벤치19 slide 12).
+  const platformActive = socialPlatform !== 'none'
+  const PLATFORM_FRAME_ASPECT = 9 / 16
+  const frameAspect = platformActive ? PLATFORM_FRAME_ASPECT : canvasAspect
+  // `frame` = the platform viewport (or the plain project rect when no platform
+  // is selected). `fitted` = where the project content actually draws: it fills
+  // the frame when aspects match, else it is letterboxed inside the frame.
+  const frame = useFittedRect(containerRef, frameAspect)
+  const fitted = useMemo(
+    () => (platformActive ? fitContentIntoFrame(frame, canvasAspect) : frame),
+    [platformActive, frame, canvasAspect]
+  )
 
   /**
    * One foreground <video> per VIDEO TRACK, indexed by trackId. A video
@@ -1837,7 +1902,15 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                 hasTranscriptDeletions(activeVideo)
               if (needsTightSync || forceMediaSync) {
                 const target = clipSourceTimeSec(activeVideo, playheadMs)
-                if (Math.abs((v.currentTime || 0) - target) > 0.08) {
+                // Inside a freeze plateau the rate is 0 (no native creep), so
+                // snap to the EXACT held frame with a tight tolerance — the
+                // usual 80ms slack would otherwise leave the hold parked up to
+                // ~2 frames off the intended freeze frame (slide 17).
+                const inFreezeHold =
+                  hasFreezeFrames(activeVideo) &&
+                  isWithinFreezeHold(activeVideo, playheadMs - activeVideo.startMs)
+                const syncTol = inFreezeHold ? 0.004 : 0.08
+                if (Math.abs((v.currentTime || 0) - target) > syncTol) {
                   try {
                     v.currentTime = Math.max(0, target)
                   } catch {
@@ -2351,7 +2424,10 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
         overflow: 'hidden',
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'center'
+        justifyContent: 'center',
+        // Black surround for the 9:16 platform frame so the letterbox bars of a
+        // non-9:16 project read like a real reel background (slide 12).
+        ...(platformActive ? { background: '#000' } : {})
       }}
       data-testid="preview-canvas"
     >
@@ -2436,8 +2512,10 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
         )}
         {/* Video layer stack — one <video> per video TRACK. object-fit:
             contain preserves the source aspect ratio inside the letterbox.
-            zIndex = 1 + layerIndex so later tracks composite on top; the
-            caption overlay sits above all layers. Each element stays mounted
+            zIndex = 1 + layerIndex; layerIndex comes from activeVideoLayers,
+            which reverses video tracks so the EARLIER (top-of-timeline) track
+            gets the highest layerIndex and composites in FRONT. The caption
+            overlay sits above all layers. Each element stays mounted
             across clip changes (wrap-once invariant — see getVideoRef).
             The TOP-most layer additionally carries the legacy
             data-testid="preview-video" attribute so existing E2E selectors
@@ -2446,10 +2524,13 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
           const layer = layerByTrackId.get(track.id)
           const isTop = topLayer?.track.id === track.id
           const trackIsAudible = trackAudible(track, soloMode)
-          // zIndex: video tracks with no active clip still render a (blank)
-          // element — base it on the track's ordinal so the stack stays
-          // stable, but active layers always sit at 1 + layerIndex.
-          const zIndex = layer ? 1 + layer.layerIndex : 1 + trackIdx
+          // zIndex: video tracks with no active clip still render a (blank,
+          // display:none) element — base it on the REVERSED track ordinal so an
+          // empty earlier (top-of-timeline) track still ranks in front, keeping
+          // the stack consistent with active layers (1 + layerIndex).
+          const zIndex = layer
+            ? 1 + layer.layerIndex
+            : 1 + (videoTracks.length - 1 - trackIdx)
           const clip = layer?.clip
           // Phase 3.5 — resolve the effective transform AT the playhead so
           // keyframed clips animate during scrub/playback. For a static clip
@@ -2512,11 +2593,8 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                 .join(' ') || 'none'
             : 'none'
           // Vignette overlay — rendered only when strength > 0. Opacity scales
-          // vignette/100 up to ~0.7. The radial-gradient fills the clip rect;
-          // it is placed inside the same crop/transform wrapper as the clip so
-          // it tracks crop + transform. `extraTransform` is non-empty only for
-          // the un-cropped path (there the <video> itself carries the CSS
-          // transform — no wrapper — so the vignette must mirror it).
+          // vignette/100 up to ~0.7. It lives inside the stable video shell so
+          // visual-only edits never move/remount the underlying <video>.
           const vignetteBg =
             filmLook && filmLook.vignette > 0
               ? `radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,${(
@@ -2524,9 +2602,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                   0.7
                 ).toFixed(3)}) 100%)`
               : null
-          const makeVignette = (
-            withTransform: boolean
-          ): JSX.Element | null =>
+          const makeVignette = (): JSX.Element | null =>
             vignetteBg ? (
               <div
                 key={`${track.id}-vignette`}
@@ -2537,15 +2613,7 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                   inset: 0,
                   pointerEvents: 'none',
                   zIndex: zIndex + 1,
-                  background: vignetteBg,
-                  ...(withTransform
-                    ? {
-                        display: layer ? undefined : 'none',
-                        transformOrigin: 'center center',
-                        transform: cssTransform,
-                        opacity: t ? t.opacity : 1
-                      }
-                    : null)
+                  background: vignetteBg
                 }}
               />
             ) : null
@@ -2623,11 +2691,6 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
                       height: '100%',
                       objectFit: 'contain',
                       background: 'transparent',
-                      zIndex,
-                      display: layer ? undefined : 'none',
-                      transformOrigin: 'center center',
-                      transform: cssTransform,
-                      opacity: t ? t.opacity : 1,
                       filter: combinedFilter
                     }
               }
@@ -2838,67 +2901,55 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
               </svg>
             ) : null
 
-          if (!cr) {
-            // Un-cropped path. When the clip has no blur regions AND no tone
-            // curves AND no vignette, return the bare <video> exactly as
-            // before (byte-identical DOM). Otherwise emit the extras
-            // alongside it. The vignette mirrors the <video>'s CSS transform
-            // (the <video> carries it directly — no wrapper on this path).
-            const vignetteEl = makeVignette(true)
-            if (!blurLayer && !curveFilterSvg && !vignetteEl) return videoEl
-            return (
-              <Fragment key={track.id}>
-                {videoEl}
-                {curveFilterSvg}
-                {blurLayer}
-                {vignetteEl}
-              </Fragment>
-            )
-          }
-          // Cropped path: wrap the <video> in an overflow:hidden div. Manual
-          // crop is an edge crop: the wrapper is inset to the kept rectangle,
-          // so cropped pixels disappear instead of the kept pixels being
-          // scaled back up to fill the original slot. Layout-generated crops
-          // keep the legacy source-fit behavior because layouts use cropRect
+          // Stable video shell. It is always rendered for a video track, while
+          // crop/transform/filter only mutate styles inside it. This prevents
+          // layout apply/undo, curves, vignette, or transform edits from
+          // remounting the media element and breaking decoder/WebAudio state.
+          //
+          // Manual crop is an edge crop: the wrapper is inset to the kept
+          // rectangle, so cropped pixels disappear. Layout-generated crops keep
+          // the legacy source-fit behavior because layouts use cropRect
           // internally to make a clip cover a cell.
-          // The blur layer (Phase 3.11) is emitted as a SIBLING of the crop
-          // wrapper (direct child of the fitted-rect) so it is NOT
-          // double-transformed by the wrapper's CSS transform.
-          const cropWrapper = (
+          //
+          // The blur layer (Phase 3.11) is emitted as a SIBLING of the stable
+          // shell (direct child of the fitted-rect) so it is NOT
+          // double-transformed by the shell's CSS transform.
+          const videoShell = (
             <div
               key={track.id}
-              data-testid="preview-crop-wrapper"
+              data-testid={cr ? 'preview-crop-wrapper' : undefined}
+              data-preview-video-layer-shell="true"
               data-track-id={track.id}
-              data-crop-active="true"
+              data-clip-id={clip?.id}
+              data-layer-index={layer ? layer.layerIndex : -1}
+              data-crop-active={cr ? 'true' : undefined}
               style={{
                 position: 'absolute',
-                ...(cropUsesLegacySourceFit
-                  ? { inset: 0 }
-                  : {
+                ...(cr && !cropUsesLegacySourceFit
+                  ? {
                       left: `${cr.x * 100}%`,
                       top: `${cr.y * 100}%`,
                       width: `${cr.w * 100}%`,
                       height: `${cr.h * 100}%`
-                    }),
-                overflow: 'hidden',
+                    }
+                  : { inset: 0 }),
+                overflow: cr ? 'hidden' : 'visible',
                 zIndex,
                 display: layer ? undefined : 'none',
                 transformOrigin: 'center center',
                 transform: cssTransform,
-                opacity: t ? t.opacity : 1
+                opacity: t ? t.opacity : 1,
+                pointerEvents: 'none'
               }}
             >
               {videoEl}
-              {/* Vignette lives INSIDE the crop wrapper so it tracks both
-                  the crop sub-rect and the wrapper's CSS transform. No own
-                  transform here — the wrapper already applies it. */}
-              {makeVignette(false)}
+              {makeVignette()}
             </div>
           )
-          if (!blurLayer && !curveFilterSvg) return cropWrapper
+          if (!blurLayer && !curveFilterSvg) return videoShell
           return (
             <Fragment key={track.id}>
-              {cropWrapper}
+              {videoShell}
               {curveFilterSvg}
               {blurLayer}
             </Fragment>
@@ -3062,16 +3113,23 @@ export function PreviewCanvas(props: PreviewCanvasProps): JSX.Element {
         <div
           style={{
             position: 'absolute',
-            inset: 0,
+            // Anchored to the 9:16 platform FRAME (not the letterboxed content
+            // rect), so the chrome scales uniformly and lines up with the
+            // platform viewport (slide 12 fix).
+            left: frame.left,
+            top: frame.top,
+            width: frame.width,
+            height: frame.height,
             pointerEvents: 'none',
+            overflow: 'hidden',
             zIndex: socialZIndex
           }}
           data-testid="social-preview-layer"
         >
           <SocialPreviewOverlay
             platform={socialPlatform}
-            fittedWidth={fitted.width}
-            fittedHeight={fitted.height}
+            fittedWidth={frame.width}
+            fittedHeight={frame.height}
           />
         </div>
 

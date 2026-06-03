@@ -198,4 +198,68 @@ export default async function globalSetup(): Promise<void> {
   })
 
   process.env.E2E_FIXTURE_PNG = pngTarget
+
+  // Generate a 1080×1920 (vertical reels) HD fixture, 8s, 30fps.
+  // Used by the preview-perf profiling spec (slide 11 / 릴스벤치19) to measure
+  // dropped/decoded video frames + presented fps under heavy effects on a
+  // realistically-sized source. The 320×240 default fixture is far too small
+  // to surface the compositor/decoder contention the user reports.
+  const hdTarget = path.join(e2eRoot, 'test_hd.mp4')
+  if (existsSync(hdTarget)) {
+    try {
+      unlinkSync(hdTarget)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'testsrc2=size=1080x1920:rate=30',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=440:sample_rate=44100',
+      '-t',
+      '8',
+      '-c:v',
+      'libx264',
+      '-preset',
+      'ultrafast',
+      '-pix_fmt',
+      'yuv420p',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '96k',
+      '-shortest',
+      hdTarget
+    ]
+    const proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stderr = ''
+    proc.stderr.on('data', (b: Buffer) => {
+      stderr += b.toString('utf8')
+    })
+    proc.on('error', reject)
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`hd fixture ffmpeg exited ${code}: ${stderr}`))
+        return
+      }
+      if (!existsSync(hdTarget) || statSync(hdTarget).size < 4096) {
+        reject(new Error(`hd fixture missing or too small at ${hdTarget}`))
+        return
+      }
+      resolve()
+    })
+  })
+
+  process.env.E2E_FIXTURE_MP4_HD = hdTarget
 }

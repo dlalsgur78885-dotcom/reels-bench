@@ -419,10 +419,14 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
   }
 
   const setSpanColor = (spanIdx: number, color: string | undefined): void => {
-    const next = caption.spans.map((s, i) =>
-      i === spanIdx ? { ...s, color } : s
-    )
-    updateCaption(captionId, { spans: next })
+    for (const id of styleTargetIds) {
+      const target = findCaption(project, id)
+      if (!target || !target.spans[spanIdx]) continue
+      const next = target.spans.map((s, i) =>
+        i === spanIdx ? { ...s, color } : s
+      )
+      updateCaption(id, { spans: next })
+    }
   }
 
   // Phase 3.9 — caption animation. Merge a partial onto the current spec
@@ -443,28 +447,43 @@ export function CaptionEditor(props: CaptionEditorProps): JSX.Element | null {
   const hasWordTiming = words.length > 0
   const karaoke = caption.karaoke
   const karaokeOn = karaoke?.enabled === true
+  // Karaoke STYLE (enabled / highlightStyle / highlightColor / highlightBox) is
+  // a style-like edit, so it applies to EVERY selected caption — like font,
+  // outline and word color (릴스벤치19 slide 21). Each caption's change is
+  // merged onto ITS OWN karaoke so per-caption state is preserved; per-word
+  // `words` timing stays single-caption (it differs per clip). Single-selection
+  // ⇒ styleTargetIds === [captionId] ⇒ byte-identical to the old behavior.
   const setKaraoke = (partial: Partial<CaptionKaraoke>): void => {
-    updateCaption(captionId, {
-      karaoke: { ...(caption.karaoke ?? NO_CAPTION_KARAOKE), ...partial }
-    })
+    for (const id of styleTargetIds) {
+      const target = findCaption(project, id)
+      if (!target) continue
+      updateCaption(id, {
+        karaoke: { ...(target.karaoke ?? NO_CAPTION_KARAOKE), ...partial }
+      })
+    }
   }
-  // Toggle karaoke on/off. Turning ON also resets a typewriter entrance to
-  // 'none' — the two reveal mechanisms must not fight (see disabled option).
+  // Toggle karaoke on/off for all selected. Turning ON also resets a typewriter
+  // entrance to 'none' — the two reveal mechanisms must not fight (see disabled
+  // option) — applied per-caption so other captions' animations are untouched.
   const toggleKaraoke = (): void => {
     if (karaokeOn) {
       setKaraoke({ enabled: false })
       return
     }
-    const patch: Partial<CaptionClip> = {
-      karaoke: { ...(caption.karaoke ?? NO_CAPTION_KARAOKE), enabled: true }
-    }
-    if ((caption.animation ?? NO_CAPTION_ANIMATION).entrance === 'typewriter') {
-      patch.animation = {
-        ...(caption.animation ?? NO_CAPTION_ANIMATION),
-        entrance: 'none'
+    for (const id of styleTargetIds) {
+      const target = findCaption(project, id)
+      if (!target) continue
+      const patch: Partial<CaptionClip> = {
+        karaoke: { ...(target.karaoke ?? NO_CAPTION_KARAOKE), enabled: true }
       }
+      if ((target.animation ?? NO_CAPTION_ANIMATION).entrance === 'typewriter') {
+        patch.animation = {
+          ...(target.animation ?? NO_CAPTION_ANIMATION),
+          entrance: 'none'
+        }
+      }
+      updateCaption(id, patch)
     }
-    updateCaption(captionId, patch)
   }
 
   // Phase 3.23 — caption text decoration (outline / drop-shadow / glow).

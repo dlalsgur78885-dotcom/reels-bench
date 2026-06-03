@@ -2104,6 +2104,7 @@ export type VisualEffectId =
   | 'pixelate'
   | 'old-film'
   | 'blur-bg'
+  | 'gaussian-blur'
   | 'cartoon'
   | 'thermal'
   | 'chromatic'
@@ -2123,6 +2124,7 @@ export const VISUAL_EFFECT_IDS: readonly VisualEffectId[] = [
   'pixelate',
   'old-film',
   'blur-bg',
+  'gaussian-blur',
   'cartoon',
   'thermal',
   'chromatic',
@@ -3668,6 +3670,45 @@ export function freezeAwareSourceOffset(
     consumedTimeline += f.durationMs
   }
   return speedOnlySourceOffset(clip, timelineOffsetMs - consumedTimeline)
+}
+
+/**
+ * True iff `timelineOffsetMs` (offset from clip.startMs, in FINAL output time)
+ * falls inside a freeze-frame HOLD plateau. During a hold the preview must NOT
+ * advance the <video> (rate 0) — otherwise native playback creeps forward and
+ * the per-tick currentTime snap-back produces a 2-3 frame loop instead of a
+ * still frame (릴스벤치19 slide 17). Mirrors the deletion compaction +
+ * plateau detection of `sourceOffsetForTimelineOffset` / `freezeAwareSourceOffset`.
+ */
+export function isWithinFreezeHold(
+  clip: VideoAudioClip,
+  timelineOffsetMs: number
+): boolean {
+  const freezes = getClipFreezeFrames(clip)
+  if (freezes.length === 0 || timelineOffsetMs < 0) return false
+  // Apply the SAME deletion compaction the source-offset resolver uses so the
+  // plateaus line up when transcript deletions are also present.
+  let adj = timelineOffsetMs
+  const del = deletedOffsetRanges(clip)
+  if (del.length > 0) {
+    let cutBefore = 0
+    for (const d of del) {
+      const cutStartFinal = freezeAwareTimelineOffset(clip, d.start) - cutBefore
+      if (timelineOffsetMs < cutStartFinal) break
+      cutBefore +=
+        freezeAwareTimelineOffset(clip, d.end) -
+        freezeAwareTimelineOffset(clip, d.start)
+    }
+    adj = timelineOffsetMs + cutBefore
+  }
+  let consumedTimeline = 0
+  for (const f of freezes) {
+    const freezeStart = speedOnlyTimelineOffset(clip, f.sourceMs) + consumedTimeline
+    if (adj < freezeStart) return false
+    if (adj < freezeStart + f.durationMs) return true
+    consumedTimeline += f.durationMs
+  }
+  return false
 }
 
 /**

@@ -299,6 +299,13 @@ test.describe('@phase-1-import-panel MediaLibrary 5-tab import panel', () => {
           dataTransfer: dt
         })
       )
+      // NOTE: this synthetic path cannot reproduce the real-browser bug where
+      // the folder's dropEffect='move' is refused unless the card declares a
+      // move-permitting effectAllowed. A programmatic DataTransfer ignores the
+      // effectAllowed setter (it stays "none"), so the gating never engages
+      // here. The fix lives in the card's dragstart handler
+      // (effectAllowed='copyMove', see MediaLibrary MediaCard); this test only
+      // guards the data wiring (mediaId → libraryFolder), not the UA gating.
       target.dispatchEvent(
         new DragEvent('dragover', {
           bubbles: true,
@@ -341,6 +348,79 @@ test.describe('@phase-1-import-panel MediaLibrary 5-tab import panel', () => {
     await page.locator('[data-testid="media-folder-filter"]').selectOption('user:영상')
     await expect(page.locator('[data-testid="media-card"]')).toHaveCount(1)
     await expect(page.locator('[data-testid="media-card-name"]')).toHaveText('alpha.mp4')
+  })
+
+  // Unlike the synthetic-DragEvent test above, this drives a REAL pointer drag
+  // through Playwright's CDP drag interception. That path goes through
+  // Chromium's native DragController, which honours the effectAllowed↔dropEffect
+  // compatibility rule — so it actually reproduces the shipped bug: when the
+  // card declared effectAllowed='copy' the folder's dropEffect='move' was
+  // refused and nothing moved. Guards the 'copyMove' fix for real.
+  test('slide 9: real pointer drag moves media into a folder (native DnD gating)', async () => {
+    if (!launched) throw new Error('launch failed')
+    const { page } = launched
+
+    await page.evaluate(() => {
+      const store = (
+        window as unknown as {
+          __PROJECT_STORE_FOR_TEST__: {
+            getState: () => {
+              createNew: () => void
+              addMedia: (asset: unknown) => void
+            }
+          }
+        }
+      ).__PROJECT_STORE_FOR_TEST__
+      const state = store.getState()
+      state.createNew()
+      state.addMedia({
+        kind: 'video',
+        width: 1080,
+        height: 1920,
+        codec: 'h264',
+        fileSizeBytes: 0,
+        id: 'media-charlie',
+        path: 'C:\\source\\imports\\charlie.mp4',
+        durationMs: 1500,
+        importedAt: 300,
+        fileName: 'charlie.mp4'
+      })
+    })
+
+    const card = page.locator('[data-testid="media-card"][data-media-id="media-charlie"]')
+    const target = page
+      .locator('[data-testid="media-folder-drop-target"][data-folder-name="영상"]')
+    await expect(card).toBeVisible()
+    await expect(target).toBeVisible()
+
+    const from = await card.boundingBox()
+    const to = await target.boundingBox()
+    if (!from || !to) throw new Error('missing bounding box for drag')
+
+    // Hover → press → move in ≥2 steps (dragover needs more than one move in
+    // all browsers) → release. Playwright auto-enables drag interception when
+    // it sees the pointer leave a draggable element with the button held.
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 8 })
+    await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2 + 1, { steps: 4 })
+    await page.mouse.up()
+
+    await page.waitForFunction(
+      () =>
+        (
+          window as unknown as {
+            __PROJECT_STORE_FOR_TEST__: {
+              getState: () => {
+                project: { media: Record<string, { libraryFolder?: string }> }
+              }
+            }
+          }
+        ).__PROJECT_STORE_FOR_TEST__.getState().project.media['media-charlie']
+          ?.libraryFolder === '영상',
+      null,
+      { timeout: 5_000 }
+    )
   })
 
   test('switching away from local tab hides the import button', async () => {

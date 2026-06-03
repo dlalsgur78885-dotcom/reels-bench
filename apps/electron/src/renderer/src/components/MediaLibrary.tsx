@@ -1204,7 +1204,7 @@ function MediaCard(props: {
       data-media-id={asset.id}
       draggable
       onDragStart={(e) => {
-        e.dataTransfer.effectAllowed = 'copy'
+        e.dataTransfer.effectAllowed = 'copyMove'
         // Two MIME types: the strict one (consumed by Timeline) and a
         // text fallback for debugging / other drop targets.
         e.dataTransfer.setData(MEDIA_DRAG_MIME, asset.id)

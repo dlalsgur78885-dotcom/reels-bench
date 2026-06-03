@@ -604,4 +604,337 @@ test.describe('@clip-swap-play', () => {
       expect(after.videoTimes[i]).toBeGreaterThan((before.videoTimes[i] ?? 0) + 0.15)
     }
   })
+
+  test('slide 8: layout undo and visual edits do not remount preview video elements', async () => {
+    test.setTimeout(90_000)
+    const { page } = launched!
+    const videoFixture = process.env.E2E_FIXTURE_MP4
+    if (!videoFixture) throw new Error('E2E_FIXTURE_MP4 not set')
+
+    const ids = await page.evaluate(async (videoPath) => {
+      await window.electron.fs.allowPath(videoPath)
+      const probe = await window.electron.media.probe(videoPath)
+      if (probe.durationMs < 4200) {
+        throw new Error('fixture too short for slide8 stable-node regression')
+      }
+      const reels = window.__reelsStore
+      const mediaId = reels.newId()
+      reels.addMedia({
+        id: mediaId,
+        path: videoPath,
+        kind: probe.kind,
+        durationMs: probe.durationMs,
+        width: probe.width,
+        height: probe.height,
+        codec: probe.codec,
+        importedAt: Date.now(),
+        fileName: 'stable-node.mp4',
+        fileSizeBytes: 1
+      })
+      const firstTrack = reels.state().project.tracks.find((t) => t.kind === 'video')!
+      const secondTrackId = reels.addTrack('video')
+      if (!secondTrackId) throw new Error('failed to add second video track')
+      const clipA = reels.newId()
+      const clipB = reels.newId()
+      const dur = Math.min(4200, probe.durationMs)
+      reels.addClip({
+        id: clipA,
+        kind: 'media',
+        mediaKind: 'video',
+        mediaId,
+        trackId: firstTrack.id,
+        startMs: 0,
+        endMs: dur,
+        trimInMs: 0,
+        trimOutMs: dur,
+        speed: 1
+      })
+      reels.addClip({
+        id: clipB,
+        kind: 'media',
+        mediaKind: 'video',
+        mediaId,
+        trackId: secondTrackId,
+        startMs: 0,
+        endMs: dur,
+        trimInMs: 0,
+        trimOutMs: dur,
+        speed: 1
+      })
+      return { clipA, clipB }
+    }, videoFixture)
+
+    await page.locator('body').click().catch(() => {})
+    await page.evaluate(() => {
+      window.__reelsTimelineUi.getState().setPlayheadMs(120)
+      window.__reelsTimelineUi.getState().setPlaying(true)
+    })
+    await page.waitForFunction(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      return videos.length >= 2 && videos.every((v) => !v.paused && v.readyState >= 2)
+    }, null, { timeout: 10_000 })
+
+    const before = await page.evaluate(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      videos.forEach((v, idx) => {
+        ;(v as HTMLVideoElement & { __stableNodeToken?: string }).__stableNodeToken =
+          `stable-${idx}`
+      })
+      return videos.map((v) => ({
+        trackId: v.dataset.trackId,
+        token: (v as HTMLVideoElement & { __stableNodeToken?: string }).__stableNodeToken
+      }))
+    })
+    expect(before.length).toBeGreaterThanOrEqual(2)
+
+    await page.evaluate(async ({ clipA, clipB }) => {
+      window.__reelsStore.applyLayout('2up-v', [clipA, clipB])
+      await new Promise((resolve) => setTimeout(resolve, 260))
+      window.__reelsUndoRedo.getState().undo()
+      await new Promise((resolve) => setTimeout(resolve, 260))
+      window.__reelsStore.setClipColorAdjust(clipA, {
+        brightness: 16,
+        contrast: -10,
+        saturation: 18
+      })
+      await new Promise((resolve) => setTimeout(resolve, 180))
+      window.__reelsStore.setClipTransform(clipA, {
+        scale: 1.35,
+        rotation: 12
+      })
+      await new Promise((resolve) => setTimeout(resolve, 180))
+    }, ids)
+    await page.waitForTimeout(900)
+
+    const after = await page.evaluate(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      return videos.map((v) => ({
+        trackId: v.dataset.trackId,
+        active: v.getClientRects().length > 0,
+        src: v.currentSrc || v.src,
+        token: (v as HTMLVideoElement & { __stableNodeToken?: string }).__stableNodeToken,
+        paused: v.paused,
+        currentTime: v.currentTime
+      }))
+    })
+
+    expect(after.length).toBeGreaterThanOrEqual(before.length)
+    for (const item of before) {
+      const sameTrack = after.find((v) => v.trackId === item.trackId)
+      expect(sameTrack?.token).toBe(item.token)
+      if (sameTrack?.active && sameTrack.src) {
+        expect(sameTrack.paused).toBe(false)
+        expect(sameTrack.currentTime).toBeGreaterThan(0.2)
+      }
+    }
+    expect(after.some((v) => v.active && v.src && !v.paused)).toBe(true)
+  })
+
+  // 슬라이드 11 (릴스벤치19) — "작업 여러번 걸치면 프리뷰 멈춤, TTS·음악 안
+  // 들림". 기존 slide 7/8/10 테스트는 변형·색보정·레이아웃·undo 를 1회씩만
+  // 적용한다. 이 테스트는 그 편집들을 재생 중 20회 누적시킨 뒤에도
+  //   (1) <video> currentTime 이 계속 전진하고
+  //   (2) requestVideoFrameCallback 로 센 "실제 표시된 프레임" 수가 늘어나며
+  //       (= 프레임이 멈춘 채 줌만 적용되는 회귀가 없고)
+  //   (3) voice 오디오가 계속 재생되고 audioGraph gain 이 살아있는지
+  // 를 검증한다. 누적 편집이 src 재동기화(freeze)나 오디오 그래프 끊김을
+  // 유발하면 여기서 잡힌다.
+  test('slide 11: 재생 중 변형·색보정·레이아웃·undo 를 20회 누적해도 프리뷰·오디오가 멈추지 않음', async () => {
+    test.setTimeout(120_000)
+    const { page } = launched!
+    const videoFixture = process.env.E2E_FIXTURE_MP4
+    const audioFixture = process.env.E2E_FIXTURE_MP3
+    test.skip(!videoFixture || !audioFixture, 'E2E fixtures are required')
+
+    const ids = await page.evaluate(
+      async ({ videoPath, audioPath }) => {
+        await window.electron.fs.allowPath(videoPath)
+        await window.electron.fs.allowPath(audioPath)
+        const videoProbe = await window.electron.media.probe(videoPath)
+        const audioProbe = await window.electron.media.probe(audioPath)
+        const reels = window.__reelsStore
+        const videoId = reels.newId()
+        const audioId = reels.newId()
+        reels.addMedia({
+          id: videoId,
+          path: videoPath,
+          kind: videoProbe.kind,
+          durationMs: videoProbe.durationMs,
+          width: videoProbe.width ?? 720,
+          height: videoProbe.height ?? 1280,
+          codec: videoProbe.codec,
+          importedAt: Date.now(),
+          fileName: 'slide11-video.mp4',
+          fileSizeBytes: 0
+        })
+        reels.addMedia({
+          id: audioId,
+          path: audioPath,
+          kind: audioProbe.kind,
+          durationMs: audioProbe.durationMs,
+          codec: audioProbe.codec,
+          importedAt: Date.now(),
+          fileName: 'slide11-voice.mp3',
+          fileSizeBytes: 0
+        })
+        const firstTrack = reels.state().project.tracks.find((t) => t.kind === 'video')!
+        const secondTrackId = reels.addTrack('video')
+        if (!secondTrackId) throw new Error('failed to add second video track')
+        const secondTrack = reels.state().project.tracks.find((t) => t.id === secondTrackId)!
+        const voiceTrack = reels
+          .state()
+          .project.tracks.find((t) => t.kind === 'audio' && t.role === 'voice')!
+        // 누적 편집 동안 클립이 끝나 ended 되지 않도록 fixture 전체 길이를 쓴다.
+        const dur = Math.min(videoProbe.durationMs, audioProbe.durationMs)
+        if (dur < 3000) throw new Error('fixtures too short for slide11 stress regression')
+        const clipA = reels.newId()
+        const clipB = reels.newId()
+        const audioClipId = reels.newId()
+        reels.addClip({
+          id: clipA, kind: 'media', mediaId: videoId, trackId: firstTrack.id,
+          startMs: 0, endMs: dur, trimInMs: 0, trimOutMs: dur, speed: 1
+        })
+        reels.addClip({
+          id: clipB, kind: 'media', mediaId: videoId, trackId: secondTrack.id,
+          startMs: 0, endMs: dur, trimInMs: 0, trimOutMs: dur, speed: 1
+        })
+        reels.addClip({
+          id: audioClipId, kind: 'media', mediaId: audioId, trackId: voiceTrack.id,
+          startMs: 0, endMs: dur, trimInMs: 0, trimOutMs: dur, speed: 1
+        })
+        return { clipA, clipB, voiceTrackId: voiceTrack.id }
+      },
+      { videoPath: videoFixture!, audioPath: audioFixture! }
+    )
+
+    await page.waitForTimeout(350)
+    await page.locator('body').click().catch(() => {})
+    await page.evaluate(() => {
+      const ui = window.__reelsTimelineUi.getState()
+      ui.setPlayheadMs(120)
+      ui.setPlaying(true)
+    })
+
+    await page.waitForFunction(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      const audio = document.querySelector<HTMLAudioElement>('audio[data-testid="preview-audio"]')
+      return videos.length >= 2 && !!audio &&
+        videos.every((v) => !v.paused && v.readyState >= 2) && !audio.paused
+    }, null, { timeout: 10_000 })
+
+    // 실제 표시 프레임 카운터를 video element 마다 설치 (requestVideoFrameCallback).
+    await page.evaluate(() => {
+      const w = window as unknown as { __slide11FrameCounts?: Record<number, number> }
+      w.__slide11FrameCounts = {}
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      videos.forEach((v, idx) => {
+        w.__slide11FrameCounts![idx] = 0
+        const rvfc = (v as HTMLVideoElement & {
+          requestVideoFrameCallback?: (cb: () => void) => number
+        }).requestVideoFrameCallback
+        if (typeof rvfc !== 'function') return
+        const pump = (): void => {
+          w.__slide11FrameCounts![idx] += 1
+          ;(v as HTMLVideoElement & {
+            requestVideoFrameCallback: (cb: () => void) => number
+          }).requestVideoFrameCallback(pump)
+        }
+        ;(v as HTMLVideoElement & {
+          requestVideoFrameCallback: (cb: () => void) => number
+        }).requestVideoFrameCallback(pump)
+      })
+    })
+
+    const before = await page.evaluate(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      const audio = document.querySelector<HTMLAudioElement>('audio[data-testid="preview-audio"]')!
+      const w = window as unknown as { __slide11FrameCounts: Record<number, number> }
+      return {
+        videoTimes: videos.map((v) => v.currentTime),
+        audioTime: audio.currentTime,
+        frameCounts: { ...w.__slide11FrameCounts }
+      }
+    })
+
+    // 재생을 유지한 채 변형·색보정·레이아웃·undo 를 20회 누적.
+    await page.evaluate(async ({ clipA, clipB }) => {
+      const reels = window.__reelsStore
+      const sleep = (ms: number): Promise<void> =>
+        new Promise((resolve) => setTimeout(resolve, ms))
+      for (let i = 0; i < 20; i++) {
+        reels.setClipTransform(clipA, {
+          scale: 1 + (i % 5) * 0.08,
+          rotation: (i % 7) * 5,
+          y: ((i % 3) - 1) * 0.2
+        })
+        reels.setClipColorAdjust(clipA, {
+          brightness: (i % 9) * 4,
+          contrast: ((i % 6) - 3) * 5,
+          saturation: (i % 8) * 6
+        })
+        if (i % 4 === 0) {
+          reels.applyLayout('2up-v', [clipA, clipB])
+          await sleep(40)
+          window.__reelsUndoRedo.getState().undo()
+        }
+        await sleep(70)
+      }
+    }, ids)
+
+    await page.waitForTimeout(700)
+    const after = await page.evaluate(() => {
+      const videos = Array.from(
+        document.querySelectorAll<HTMLVideoElement>('video[data-preview-video-layer]')
+      )
+      const audio = document.querySelector<HTMLAudioElement>('audio[data-testid="preview-audio"]')!
+      const w = window as unknown as { __slide11FrameCounts: Record<number, number> }
+      return {
+        videoPaused: videos.map((v) => v.paused),
+        videoTimes: videos.map((v) => v.currentTime),
+        ended: videos.map((v) => v.ended),
+        audioPaused: audio.paused,
+        audioTime: audio.currentTime,
+        playing: window.__reelsTimelineUi.getState().playing,
+        graphState: window.__previewAudioGraph.getState(),
+        gains: window.__previewAudioGraph.trackGains(),
+        frameCounts: { ...w.__slide11FrameCounts }
+      }
+    })
+
+    // (1) 재생 상태·프레임 유지.
+    expect(after.playing).toBe(true)
+    expect(after.videoPaused.every((p) => p === false)).toBe(true)
+    expect(after.ended.every((e) => e === false)).toBe(true)
+    // (2) video currentTime 누적 편집 후에도 전진.
+    expect(after.videoTimes.length).toBeGreaterThanOrEqual(2)
+    for (let i = 0; i < after.videoTimes.length; i++) {
+      expect(after.videoTimes[i]).toBeGreaterThan((before.videoTimes[i] ?? 0) + 0.15)
+    }
+    // (3) "프레임이 멈춘 채 줌만 적용" 회귀 차단 — 실제 표시 프레임이 늘어야 함.
+    const rvfcSupported = Object.values(before.frameCounts).length > 0
+    if (rvfcSupported) {
+      for (const key of Object.keys(after.frameCounts)) {
+        const idx = Number(key)
+        expect(after.frameCounts[idx]).toBeGreaterThan((before.frameCounts[idx] ?? 0) + 3)
+      }
+    }
+    // (4) TTS·음악 안 들림 회귀 차단 — voice 오디오 계속 재생 + gain 유지.
+    expect(after.audioPaused).toBe(false)
+    expect(after.audioTime).toBeGreaterThan(before.audioTime + 0.15)
+    if (after.graphState !== 'unavailable') {
+      expect(after.gains[ids.voiceTrackId]).toBeGreaterThan(0)
+    }
+  })
 })

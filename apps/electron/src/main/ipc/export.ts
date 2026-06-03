@@ -1203,10 +1203,17 @@ function collectSegments(
   }
 
   // Build per-track segment lists; each track gets its own layerIndex.
+  // layerIndex 0 is the opaque BASE (composited first); higher layerIndex
+  // composites in FRONT. We map layerIndex 0 to the LAST video track in the
+  // array and the highest layerIndex to the FIRST — so the EARLIER track in
+  // `project.tracks` (= the TOP track in the timeline UI) ends up in FRONT,
+  // matching the CapCut/Premiere "top track = front" convention and the
+  // preview's `activeVideoLayers` ordering (릴스벤치19 slide 14). Keep this in
+  // lockstep with PreviewCanvas.activeVideoLayers — both reverse video tracks.
   const videoTrackLayers: VideoSegment[][] = []
 
   for (let layerIndex = 0; layerIndex < videoTracks.length; layerIndex++) {
-    const t = videoTracks[layerIndex]
+    const t = videoTracks[videoTracks.length - 1 - layerIndex]
     const trackClips: { clip: VideoAudioClip; track: Track }[] = []
     for (const c of t.clips) {
       if (!isMediaClip(c)) continue

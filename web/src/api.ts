@@ -308,11 +308,12 @@ export interface BenchPage {
   has_more: boolean
 }
 
-/** Build thumb URL — Supabase Storage 직접. 404 시 onError로 backend fallback. */
-const SUPABASE_URL = 'https://mrpbovbxtablvawszhey.supabase.co'
+/** Build thumb URL — Vercel edge cache 프록시 통과.
+ *  Supabase Sydney의 cold cache가 ~1초라 한국에서 느림 → Vercel ICN edge에 1년 캐시.
+ *  404 시 onError로 backend 308 redirect fallback (storage 직접). */
 export function thumbUrl(shortcode: string): string {
   if (!shortcode) return ''
-  return `${SUPABASE_URL}/storage/v1/object/public/thumbs/${shortcode}.webp`
+  return `${BASE}/api/thumb-proxy/${shortcode}.webp`
 }
 export function thumbFallbackUrl(shortcode: string): string {
   if (!shortcode) return ''
@@ -476,7 +477,7 @@ export const api = {
   },
   updateExtra: (sc: string, data: { script_structure?: any; category?: any; sentences?: any[] }) =>
     patch<any>(`/api/extra/${sc}`, { shortcode: sc, ...data }),
-  fetchComments: (sc: string) => post<{ count: number; comments: any[] }>(`/api/comments/${sc}/fetch`, {}),
+  fetchComments: (sc: string) => post<{ count: number; comments: any[]; analyzed?: boolean }>(`/api/comments/${sc}/fetch`, {}),
   channels: () => cachedGet<Channel[]>('/api/channels', 60_000),
   addChannel: (username: string) => post<{ message: string; username: string }>('/api/channels', { username })
     .then(r => { clearClientCache('/api/channels'); return r }),
@@ -643,6 +644,14 @@ export const api = {
   updateUser: (id: string, data: { role?: 'admin' | 'employee'; active?: boolean; display_name?: string; can_delete_reels?: boolean }) =>
     patch<UserProfile>(`/api/users/${id}`, data),
   deleteUser: (id: string) => del<{ message: string }>(`/api/users/${id}`),
+  // Staff channels — 직원별 담당 SNS 채널 (self-service)
+  myChannels: () => get<StaffChannel[]>('/api/me/channels'),
+  addMyChannel: (data: { platform: string; handle: string; url?: string; label?: string; account_id?: string; account_password?: string }) =>
+    post<StaffChannel>('/api/me/channels', data),
+  updateMyChannel: (cid: string, data: { platform?: string; handle?: string; url?: string; label?: string; account_id?: string; account_password?: string }) =>
+    patch<StaffChannel>(`/api/me/channels/${cid}`, data),
+  deleteMyChannel: (cid: string) => del<{ message: string }>(`/api/me/channels/${cid}`),
+  adminStaffChannels: () => get<AdminStaffRow[]>('/api/admin/staff-channels'),
   deleteReel: (shortcode: string) => del<{ message: string }>(`/api/reels/${shortcode}`),
   bulkDeleteReels: (shortcodes: string[]) =>
     post<{ deleted: string[]; failed: string[]; deleted_count: number; failed_count: number }>(
@@ -704,6 +713,8 @@ export interface PersonaCandidate {
   pain_scene?: string
   desire_scene?: string
   identity?: string
+  root_emotion?: string  // lf8/scene 밑에 깔린 체감 정서 (근원 감정)
+  tone_dna?: string      // root_emotion이 어투에 미치는 영향 (문장 길이·종결·리듬)
   signals: string[]
   destinations?: string[]
   review_count: number
@@ -760,6 +771,37 @@ export interface Channel {
   reel_count: number
   last_collected_at: string | null
   created_at: string
+}
+
+export type StaffPlatform = 'instagram' | 'tiktok' | 'youtube'
+export interface MetricStat { total: number; avg: number }
+export interface StaffChannel {
+  id: string
+  profile_id: string
+  platform: StaffPlatform
+  handle: string
+  url: string | null
+  label: string | null
+  account_id: string | null          // 채널 로그인 아이디
+  account_password: string | null    // 채널 로그인 비밀번호 (본인 조회 시만)
+  followers: number | null
+  posts: number | null
+  last_synced_at: string | null
+  created_at: string
+  // 수집데이터 기반 파생 지표 (영상들의 조회수·좋아요·댓글 total·avg)
+  collected_posts?: number
+  avg_views?: number | null
+  views?: MetricStat | null
+  likes?: MetricStat | null
+  comments?: MetricStat | null
+  has_password?: boolean             // admin overview 전용 (비번 노출 X)
+}
+export interface AdminStaffRow {
+  id: string
+  email: string | null
+  display_name: string | null
+  role: 'admin' | 'employee'
+  channels: StaffChannel[]
 }
 
 export interface UserAnalysisItem extends BenchItem {

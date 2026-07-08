@@ -349,6 +349,8 @@ export default function ScriptGen() {
               pain_scene: persona.pain_scene || '',
               desire_scene: persona.desire_scene || '',
               identity: persona.identity || '',
+              root_emotion: persona.root_emotion || '',
+              tone_dna: persona.tone_dna || '',
             } : null,
           }),
         })

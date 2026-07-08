@@ -95,6 +95,8 @@ export default function ScriptGenWizard() {
   const [genResult, setGenResult] = useState<Record<string, GeneratedScript>>(saved?.genResult || {})
   // 진행률 polling state — 페르소나별 (sessionId → progress)
   const [genProgress, setGenProgress] = useState<Record<string, { step?: string; percent?: number; message?: string; label: string }>>({})
+  // 완료(성공/실패 불문)된 sessionId 집합 — done 화면에서 "아직 생성 중" 배너 판별용
+  const [genDoneSids, setGenDoneSids] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     api.listMyProducts().then(setProducts).catch(() => {})
@@ -482,9 +484,14 @@ export default function ScriptGenWizard() {
     personas.forEach((p, idx) => {
       const baseName = p ? p.name : '기본'
       const label = personas.length > 1 ? `${baseName} #${idx + 1}` : baseName
-      initialProgress[sessionIds[idx]] = { label, step: 'start', percent: 0, message: '시작' }
+      // 순차 생성 — idx>0은 앞 대본이 끝나야 시작 (TPM 경합 방지)
+      initialProgress[sessionIds[idx]] = {
+        label, step: 'start', percent: 0,
+        message: idx > 0 ? '이전 대본 완료 후 시작 (순차 생성)' : '시작',
+      }
     })
     setGenProgress(initialProgress)
+    setGenDoneSids(new Set())
 
     // 진행률 polling (3초마다 모든 session 갱신)
     const pollInterval = setInterval(async () => {
@@ -507,7 +514,22 @@ export default function ScriptGenWizard() {
 
     try {
       const token = await getAccessToken()
-      const calls = personas.map(async (persona, idx): Promise<[string, GeneratedScript]> => {
+      // refine skip 옵션 — 개별 refine에서 쓰므로 호출 루프 앞에 정의
+      const skipOpts = {
+        skip_chunk_sections: skippedChunks.size > 0 ? Array.from(skippedChunks) : undefined,
+        skip_sentence_starts: skippedSentenceStarts.size > 0 ? Array.from(skippedSentenceStarts) : undefined,
+      }
+      const out: Record<string, GeneratedScript> = {}
+      const errors: string[] = []
+      let firstShown = false
+
+      // 완전 순차 생성 — 동시 실행 시 Anthropic 분당 토큰 한도(TPM) 경합으로
+      // 429 재시도 백오프가 누적돼 한쪽 대본이 Vercel 함수 한도(800s)를 넘겨
+      // 500/504로 죽던 문제(페르소나 하나 깨짐)의 근본 수정. 직전 대본이 끝나야
+      // 다음을 시작하므로 동시 호출 0 → 경합 없음. 점진 표시로 P1은 즉시 화면에,
+      // P2는 P1 결과를 보는 동안 백그라운드로 완성된다.
+      const runOne = async (persona: PersonaLike, idx: number): Promise<void> => {
+        try {
         const r = await fetch(`${BASE}/api/script/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: token ? `Bearer ${token}` : '' },
@@ -528,6 +550,8 @@ export default function ScriptGenWizard() {
               pain_scene: persona.pain_scene || '',
               desire_scene: persona.desire_scene || '',
               identity: persona.identity || '',
+              root_emotion: persona.root_emotion || '',
+              tone_dna: persona.tone_dna || '',
             } : null,
             chunk_usp_override: Object.keys(chunkOverrides).length
               ? chunkOverrides
@@ -557,62 +581,65 @@ export default function ScriptGenWizard() {
         const key = personas.length > 1 ? `${baseName} #${idx + 1}` : baseName
         // 페르소나 dict을 result에 임베드 — 후속 refine(다듬기 A/B)에서 anchor로 활용
         const body = await r.json()
-        return [key, { ...body, _target_persona: persona }]
-      })
-      const settled = await Promise.allSettled(calls)
-      clearInterval(pollInterval)
-      console.log('[script/gen] personas count:', personas.length, 'settled:', settled.length)
-      const out: Record<string, GeneratedScript> = {}
-      const errors: string[] = []
-      settled.forEach((s, i) => {
-        if (s.status === 'fulfilled') {
-          const [name, draft] = s.value
-          console.log(`[script/gen] persona ${i + 1} OK, key="${name}"`)
-          out[name] = draft
-        } else {
-          const msg = s.reason?.message || String(s.reason)
-          console.error(`[script/gen] persona ${i + 1} FAILED:`, msg)
-          errors.push(`P${i + 1}: ${msg}`)
+        const draft: GeneratedScript = { ...body, _target_persona: persona }
+        out[key] = draft
+        console.log(`[script/gen] persona ${idx + 1} OK, key="${key}"`)
+        // ⭐ 점진 표시 — 완성 즉시 결과에 추가, 첫 완성 시 바로 done 화면으로
+        //    (나머지 페르소나는 done 화면 상단 배너에서 계속 진행률 표시)
+        setGenResult(prev => ({ ...prev, [key]: draft }))
+        if (!firstShown) {
+          firstShown = true
+          setStep('done')
         }
-      })
-      if (Object.keys(out).length === 0) {
-        throw new Error(`모든 호출 실패: ${errors.join(' | ')}`)
-      }
-      // 일부 실패도 사용자에게 알림
-      if (errors.length > 0) {
-        setGenError(`${errors.length}/${personas.length} 페르소나 실패: ${errors.join(' | ')}`)
-      }
-      setGenResult(out)
-      setStep('done')
-
-      // 1차 끝나면 자동 2차 refine — vocab 중복 자동 검출 + pinpoint 교체
-      // 사용자가 chunk 안 어휘 중복 안 보고 싶음. 백그라운드 silent 실행.
-      // skip 정보 전달 — 삭제된 chunk/sentence가 ref에서 복원되지 않도록
-      const skipOpts = {
-        skip_chunk_sections: skippedChunks.size > 0 ? Array.from(skippedChunks) : undefined,
-        skip_sentence_starts: skippedSentenceStarts.size > 0 ? Array.from(skippedSentenceStarts) : undefined,
-      }
-      ;(async () => {
-        const refinedOut: Record<string, GeneratedScript> = { ...out }
-        await Promise.all(Object.entries(out).map(async ([name, draft]) => {
+        // 백엔드가 표면화한 섹션 실패(_failed_sections) 경고
+        const failedSecs = (body as any)._failed_sections as Array<{ section: string; error: string }> | undefined
+        if (failedSecs?.length) {
+          errors.push(`${key}: ${failedSecs.map(f => f.section).join(', ')} 섹션 생성 실패 (재생성 권장)`)
+        }
+        // 개별 자동 2차 refine — vocab 중복 검출 + pinpoint 교체. 대본별로
+        // 완성 직후 백그라운드 silent 실행 (전체 대기 없음).
+        ;(async () => {
           try {
-            const persona = (draft as any)._target_persona || null
             const refined = await api.refineScript(draft, cleanUsps, shortcode, skipOpts, 'default', persona,
               { name: mapping.product.name, capability_out: (mapping.product as any).capability_out || null })
             if (refined && refined.sentences) {
-              refinedOut[name] = {
-                ...draft,
-                sentences: refined.sentences,
-                tts_script: refined.tts_script || draft.tts_script,
-              }
+              setGenResult(prev => ({
+                ...prev,
+                [key]: { ...draft, sentences: refined.sentences, tts_script: refined.tts_script || draft.tts_script },
+              }))
             }
           } catch (e) {
-            console.warn(`[auto-refine] ${name} skipped:`, e)
+            console.warn(`[auto-refine] ${key} skipped:`, e)
           }
-        }))
-        setGenResult(refinedOut)
-      })()
+        })()
+        } catch (e: any) {
+          const msg = e?.message || String(e)
+          console.error(`[script/gen] persona ${idx + 1} FAILED:`, msg)
+          errors.push(`P${idx + 1}: ${msg}`)
+        } finally {
+          // 성공/실패 불문 완료 표시 → done 배너에서 진행바 제거
+          setGenDoneSids(prev => {
+            const next = new Set(prev)
+            next.add(sessionIds[idx])
+            return next
+          })
+        }
+      }
+      // 순차 실행 — idx 0이 끝나야 1 시작 (동시 호출 0). 점진 표시로 P1은 즉시 보임.
+      for (let idx = 0; idx < personas.length; idx++) {
+        await runOne(personas[idx], idx)
+      }
+      clearInterval(pollInterval)
+      console.log('[script/gen] personas count:', personas.length, 'done:', Object.keys(out).length)
+      if (Object.keys(out).length === 0) {
+        throw new Error(`모든 호출 실패: ${errors.join(' | ')}`)
+      }
+      // 일부 실패/섹션 실패도 사용자에게 알림
+      if (errors.length > 0) {
+        setGenError(errors.join(' | '))
+      }
     } catch (e: any) {
+      clearInterval(pollInterval)
       setGenError(e.message || String(e))
       setStep('persona')
     }
@@ -849,6 +876,44 @@ export default function ScriptGenWizard() {
         </div>
       )}
 
+      {/* ⭐ 점진 표시 — 먼저 끝난 대본을 보는 동안 아직 생성 중인 페르소나 진행률 배너 */}
+      {step === 'done' && Object.keys(genProgress).some(sid => !genDoneSids.has(sid)) && (
+        <div style={{
+          ...cardSt, marginBottom: 12, padding: 12,
+          border: '1px solid var(--accent)', background: 'var(--bg-elevated)',
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent)', marginBottom: 8 }}>
+            ⏳ 나머지 페르소나 대본 생성 중 — 완성되면 탭이 자동으로 추가돼요
+          </div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {Object.entries(genProgress).filter(([sid]) => !genDoneSids.has(sid)).map(([sid, p]) => {
+              const pct = Math.max(0, Math.min(100, p.percent || 0))
+              return (
+                <div key={sid}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>{p.label}</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)' }}>{pct}%</span>
+                  </div>
+                  <div style={{ height: 4, background: 'var(--bg-base)', borderRadius: 2, overflow: 'hidden', marginBottom: 3 }}>
+                    <div style={{ height: '100%', width: `${pct}%`, background: 'var(--accent)', transition: 'width 300ms ease' }} />
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                    {p.step ? `[${p.step}]` : ''} {p.message || '대기 중…'}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+      {/* 부분 실패 / 섹션 실패 경고 */}
+      {step === 'done' && genError && (
+        <div style={{
+          marginBottom: 12, padding: 10, background: 'rgba(239,68,68,0.1)',
+          border: '1px solid var(--error)', color: 'var(--error)', fontSize: 12,
+          borderRadius: 'var(--radius-sm)',
+        }}>⚠️ {genError}</div>
+      )}
       {step === 'done' && (
         <StepDone
           result={genResult}

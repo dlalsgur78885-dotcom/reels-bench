@@ -33,9 +33,13 @@ _PRICING = {
     "gemini-3-flash-preview": {"in": 0.30, "out": 2.50},
     "gemini-3.1-flash-lite-preview": {"in": 0.25, "out": 1.50},
     "gemini-3.1-flash-lite": {"in": 0.25, "out": 1.50},
+    "gemini-3.5-flash": {"in": 1.50, "out": 9.00},
     "anthropic/claude-sonnet-4-6": {"in": 3.0, "out": 15.0},
     "anthropic/claude-sonnet-4-5": {"in": 3.0, "out": 15.0},
     "anthropic/claude-opus-4-7": {"in": 5.0, "out": 25.0},
+    "anthropic/claude-opus-4-8": {"in": 5.0, "out": 25.0},
+    # Fable 5 — thinking 토큰도 output 단가로 과금됨에 유의.
+    "anthropic/claude-fable-5": {"in": 10.0, "out": 50.0},
 }
 
 
@@ -2091,18 +2095,29 @@ def extract_unified_personas(usps: list[dict], product_name: str = "") -> dict:
 
 위 5축은 가이드. product 도메인에 맞춰 조정하되 **5개 모두 다른 인구·상황** 확보.
 
-각 페르소나 6필드 (extract_personas와 동일):
+각 페르소나 8필드:
 1. **job_statement**: "When [상황], I want to [motivation], so I can [outcome]"
 2. **lf8**: Drew Whitman LF8 (1-8 정수)
 3. **lf8_label**: 한국어
 4. **pain_scene**: 구체 visual scene
 5. **desire_scene**: 구체 visual scene
 6. **identity**: 정체성 한 줄
+7. **root_emotion** ⭐ (가장 중요): lf8(욕구 카테고리)·scene(외부 상황) **밑에 깔린 체감 정서 한 줄**.
+   - 욕구가 아니라 *실제로 느끼는 감정* — 불안/초조/억울/외로움/은근한 자부심/뒤처진 조바심/들킬까 봐 조마조마 등
+   - ❌ "편하고 싶다"(욕구) → ✅ "또 속을까 봐 미리 방어하는 마음"(감정)
+   - ❌ "예뻐 보이고 싶다"(욕구) → ✅ "남들 앞에서 초라해지는 게 무서운 마음"(감정)
+   - lf8/pain_scene에서 한 단 더 내려가서, 그 사람이 *혼잣말로 느낄* 감정을 적을 것
+8. **tone_dna** ⭐: 위 root_emotion이 **어투에 미치는 구체적 영향 한 줄** — 문장 길이·종결어미·어휘 결·리듬.
+   - 예: "불안 → 짧게 끊어치고, 단정 회피('~인 것 같아'), 따지듯 검증조"
+   - 예: "외로움 → 문장이 늘어지고, '그냥·혼자'가 새어나오고, 말끝 흐림"
+   - 예: "해방감 → 짧고 경쾌, 느낌표·반말 섞임, 군더더기 없음"
 
 ### 페르소나 룰
 - **모든 USP를 한 페르소나가 자연스럽게 사용**해야 함 — 한 USP만 fit하는 페르소나는 X
 - shared_keywords가 페르소나 scenario·signals에 박혀야 함
 - pain_scene/desire_scene이 어떤 USP angle에서도 자연 호응
+- ⭐ **root_emotion → tone_dna는 반드시 인과로 연결**: 감정이 먼저, 어투는 그 감정의 *부산물*. 같은 desire_scene이라도 root_emotion이 다르면 tone_dna가 달라야 함.
+- 5개 페르소나는 root_emotion도 **서로 달라야 함** (불안/자부심/외로움/조바심/억울 등 겹치지 말 것)
 
 ## 출력 JSON — **personas 배열에 정확히 5개 객체** (반드시)
 {{
@@ -2111,11 +2126,11 @@ def extract_unified_personas(usps: list[dict], product_name: str = "") -> dict:
   "common_audience": "...",
   "shared_keywords": ["키워드1", "키워드2", ...],
   "personas": [
-    {{"name":"페르소나 1 — ...","scenario":"...","job_statement":"...","lf8":4,"lf8_label":"...","pain_scene":"...","desire_scene":"...","identity":"...","pain":"...","desire":"...","signals":["..."],"destinations":[],"tone_hint":"...","covers_usps":[1,2,3]}},
-    {{"name":"페르소나 2 — ...","scenario":"...","job_statement":"...","lf8":5,"lf8_label":"...","pain_scene":"...","desire_scene":"...","identity":"...","pain":"...","desire":"...","signals":["..."],"destinations":[],"tone_hint":"...","covers_usps":[1,2,3]}},
-    {{"name":"페르소나 3 — ...","scenario":"...","job_statement":"...","lf8":7,"lf8_label":"...","pain_scene":"...","desire_scene":"...","identity":"...","pain":"...","desire":"...","signals":["..."],"destinations":[],"tone_hint":"...","covers_usps":[1,2,3]}},
-    {{"name":"페르소나 4 — ...","scenario":"...","job_statement":"...","lf8":6,"lf8_label":"...","pain_scene":"...","desire_scene":"...","identity":"...","pain":"...","desire":"...","signals":["..."],"destinations":[],"tone_hint":"...","covers_usps":[1,2,3]}},
-    {{"name":"페르소나 5 — ...","scenario":"...","job_statement":"...","lf8":8,"lf8_label":"...","pain_scene":"...","desire_scene":"...","identity":"...","pain":"...","desire":"...","signals":["..."],"destinations":[],"tone_hint":"...","covers_usps":[1,2,3]}}
+    {{"name":"페르소나 1 — ...","scenario":"...","job_statement":"...","lf8":4,"lf8_label":"...","pain_scene":"...","desire_scene":"...","identity":"...","root_emotion":"또 속을까 봐 미리 방어하는 마음","tone_dna":"불안 → 짧게 끊어치고 단정 회피, 따지듯 검증조","pain":"...","desire":"...","signals":["..."],"destinations":[],"tone_hint":"...","covers_usps":[1,2,3]}},
+    {{"name":"페르소나 2 — ...","scenario":"...","job_statement":"...","lf8":5,"lf8_label":"...","pain_scene":"...","desire_scene":"...","identity":"...","root_emotion":"남들 다 하는데 나만 뒤처진 조바심","tone_dna":"조바심 → 빠른 호흡, 나열형, 결론 먼저","pain":"...","desire":"...","signals":["..."],"destinations":[],"tone_hint":"...","covers_usps":[1,2,3]}},
+    {{"name":"페르소나 3 — ...","scenario":"...","job_statement":"...","lf8":7,"lf8_label":"...","pain_scene":"...","desire_scene":"...","identity":"...","root_emotion":"잘 골랐다는 은근한 자부심","tone_dna":"자부심 → 차분·단정, 군더더기 없음, 가볍게 추천조","pain":"...","desire":"...","signals":["..."],"destinations":[],"tone_hint":"...","covers_usps":[1,2,3]}},
+    {{"name":"페르소나 4 — ...","scenario":"...","job_statement":"...","lf8":6,"lf8_label":"...","pain_scene":"...","desire_scene":"...","identity":"...","root_emotion":"혼자 감당하느라 지친 외로움","tone_dna":"외로움 → 문장 늘어지고 '그냥·혼자' 새어나옴, 말끝 흐림","pain":"...","desire":"...","signals":["..."],"destinations":[],"tone_hint":"...","covers_usps":[1,2,3]}},
+    {{"name":"페르소나 5 — ...","scenario":"...","job_statement":"...","lf8":8,"lf8_label":"...","pain_scene":"...","desire_scene":"...","identity":"...","root_emotion":"드디어 벗어났다는 해방감","tone_dna":"해방감 → 짧고 경쾌, 느낌표·반말 섞임","pain":"...","desire":"...","signals":["..."],"destinations":[],"tone_hint":"...","covers_usps":[1,2,3]}}
   ]
 }}
 
@@ -2143,45 +2158,55 @@ def extract_unified_personas(usps: list[dict], product_name: str = "") -> dict:
                         "pain_scene": {"type": "string"},
                         "desire_scene": {"type": "string"},
                         "identity": {"type": "string"},
+                        "root_emotion": {"type": "string"},
+                        "tone_dna": {"type": "string"},
                         "pain": {"type": "string"},
                         "desire": {"type": "string"},
                         "signals": {"type": "array", "items": {"type": "string"}},
                         "tone_hint": {"type": "string"},
                     },
-                    "required": ["name", "scenario", "pain_scene", "desire_scene"],
+                    "required": ["name", "scenario", "pain_scene", "desire_scene", "root_emotion", "tone_dna"],
                 },
             },
         },
         "required": ["personas"],
     }
     def _call_and_extract():
-        result = call_gemini(prompt, model="gemini-3.1-flash-lite-preview", max_tokens=8192, response_schema=schema)
+        result = call_gemini(prompt, model="gemini-3.5-flash", max_tokens=16384, response_schema=schema)
         if isinstance(result, list) and result:
             result = result[0]
         return result if isinstance(result, dict) else None
 
+    result = None
+    # 첫 호출 — 예외(truncation/JSON 파싱 실패 등) 시 1회 재시도
     try:
         result = _call_and_extract()
-        # personas가 5개 미만이면 1회 retry
-        if result and len(result.get("personas") or []) < 5:
-            logger.warning("[unified-personas] got %d/5 — retrying with stronger 5-count emphasis",
-                          len(result.get("personas") or []))
-            try:
-                result2 = _call_and_extract()
-                if result2 and len(result2.get("personas") or []) > len(result.get("personas") or []):
-                    result = result2
-            except Exception as e:
-                logger.warning("[unified-personas] retry failed: %s", e)
-        if isinstance(result, dict):
-            return {
-                "common_pain": (result.get("common_pain") or "").strip(),
-                "common_context": (result.get("common_context") or "").strip(),
-                "common_audience": (result.get("common_audience") or "").strip(),
-                "shared_keywords": result.get("shared_keywords") or [],
-                "personas": result.get("personas") or [],
-            }
     except Exception as e:
-        logger.warning("extract_unified_personas failed: %s", e)
+        logger.warning("[unified-personas] first call failed: %s — retrying", e)
+        try:
+            result = _call_and_extract()
+        except Exception as e2:
+            logger.warning("[unified-personas] retry also failed: %s", e2)
+
+    # personas 5개 미만이면 추가 1회 retry
+    if result and len(result.get("personas") or []) < 5:
+        logger.warning("[unified-personas] got %d/5 — retrying with stronger 5-count emphasis",
+                      len(result.get("personas") or []))
+        try:
+            result2 = _call_and_extract()
+            if result2 and len(result2.get("personas") or []) > len(result.get("personas") or []):
+                result = result2
+        except Exception as e:
+            logger.warning("[unified-personas] count-retry failed: %s", e)
+
+    if isinstance(result, dict):
+        return {
+            "common_pain": (result.get("common_pain") or "").strip(),
+            "common_context": (result.get("common_context") or "").strip(),
+            "common_audience": (result.get("common_audience") or "").strip(),
+            "shared_keywords": result.get("shared_keywords") or [],
+            "personas": result.get("personas") or [],
+        }
     return {"common_pain": "", "common_context": "", "common_audience": "", "shared_keywords": [], "personas": []}
 
 
@@ -2838,20 +2863,65 @@ def call_anthropic(prompt: str, model: str, max_tokens: int = 8192) -> dict:
         "messages": [{"role": "user", "content": content}],
         "max_tokens": max_tokens,
     }
-    # Opus 4.7+은 temperature 미지원. 그 외 모델은 default temperature 사용.
-    if "opus-4-7" not in api_model:
+    # Opus 4.7+ / Fable 5는 temperature 미지원. 그 외 모델은 default temperature 사용.
+    if not any(m in api_model for m in ("opus-4-7", "opus-4-8", "fable-5")):
         body["temperature"] = 0.85
-    r = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "x-api-key": key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        },
-        json=body, timeout=240,
-    )
-    if r.status_code != 200:
+    # Fable 5는 adaptive thinking이 기본이라 writer처럼 제약 많은 프롬프트에서
+    # thinking 토큰이 폭증(출력의 ~95%) → 호출당 2배+ 느려짐 (대본 1건 15분 이슈).
+    # effort로 thinking을 억제. 기본 medium, env WRITER_EFFORT로 조절
+    # (low/medium/high/xhigh/max).
+    if "fable-5" in api_model:
+        effort = (os.getenv("WRITER_EFFORT", "") or "medium").strip().lower()
+        if effort not in ("low", "medium", "high", "xhigh", "max"):
+            effort = "medium"
+        body["output_config"] = {"effort": effort}
+    # 일시 오류(429 한도/529 과부하/5xx) 자동 재시도 — 페르소나 2개 병렬 생성 시
+    # TPM 경합으로 429가 몰려 한쪽 대본 섹션이 통째로 죽던 문제의 근본 수정.
+    # 이 코드들은 추론 전 거절이라 과금 0 → 재시도 비용 없음. 타임아웃/네트워크
+    # 예외는 중복 과금 가능성이 있어 재시도하지 않고 기존처럼 즉시 raise.
+    import time as _rt
+    _RETRYABLE = (429, 500, 502, 503, 529)
+    _MAX_ATTEMPTS = 3
+    r = None
+    _attempt = 0
+    _temp_stripped = False
+    while _attempt < _MAX_ATTEMPTS:
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+            json=body, timeout=240,
+        )
+        if r.status_code == 200:
+            break
+        # temperature 미지원 400 → temperature 빼고 재시도 (재시도 예산 소모 안 함).
+        # 위 denylist(opus-4-7/4-8/fable-5)가 신규 모델을 못 잡아도 self-heal 되도록.
+        # opus-4-8 temperature 400으로 대본이 통째 빈값 되던 사고(2회 재발)의 근본 방어.
+        if (r.status_code == 400 and not _temp_stripped
+                and "temperature" in body
+                and "temperature" in (r.text or "").lower()):
+            logger.warning("[anthropic] %s temperature 미지원(400) — 제거 후 재시도: %s",
+                           api_model, (r.text or "")[:160])
+            body.pop("temperature", None)
+            _temp_stripped = True
+            continue
+        if r.status_code in _RETRYABLE and _attempt < _MAX_ATTEMPTS - 1:
+            try:
+                retry_after = float(r.headers.get("retry-after") or 0)
+            except (TypeError, ValueError):
+                retry_after = 0.0
+            wait = max(retry_after, 5.0 * (2 ** _attempt))  # 5s → 10s (retry-after 우선)
+            logger.warning("[anthropic] HTTP %d — %.0fs 후 재시도 (시도 %d/%d)",
+                           r.status_code, wait, _attempt + 2, _MAX_ATTEMPTS)
+            _rt.sleep(wait)
+            _attempt += 1
+            continue
         raise RuntimeError(f"Anthropic call {r.status_code}: {r.text[:300]}")
+    if r is None or r.status_code != 200:
+        raise RuntimeError(f"Anthropic call {r.status_code if r is not None else '?'}: 재시도 소진")
     data = r.json()
 
     # 비용 추적
@@ -2862,6 +2932,10 @@ def call_anthropic(prompt: str, model: str, max_tokens: int = 8192) -> dict:
         cached_tok = int(um.get("cache_read_input_tokens") or 0)
         cache_create = int(um.get("cache_creation_input_tokens") or 0)
         total_in = in_tok + cached_tok + cache_create
+        # Fable 5 등 thinking 모델 — output_tokens 안의 thinking 비중 추적.
+        thinking_tok = int(
+            (um.get("output_tokens_details") or {}).get("thinking_tokens") or 0
+        )
         meter_model = f"anthropic/{api_model}"
         _cost_meter.append({
             "model": meter_model,
@@ -2869,6 +2943,7 @@ def call_anthropic(prompt: str, model: str, max_tokens: int = 8192) -> dict:
             "out_tokens": out_tok,
             "cached_tokens": cached_tok,
             "cache_create_tokens": cache_create,
+            "thoughts_tokens": thinking_tok,
         })
         if cached_tok > 0 or cache_create > 0:
             logger.info("[anthropic-cache] in=%d (cached=%d, create=%d) out=%d",
@@ -2927,6 +3002,18 @@ def call_llm(prompt: str, model: str, min_sentences: int | None = None, max_toke
     if model.startswith("anthropic/"):
         return call_anthropic(prompt, model, max_tokens=max_tokens)
     return call_gemini(prompt, min_sentences=min_sentences, model=model, max_tokens=max_tokens)
+
+
+def call_refine(prompt: str, min_sentences: int | None = None, max_tokens: int = 32768) -> dict:
+    """2차 다듬기(refine) 전용 LLM 호출 — server.py /api/script/refine에서 사용.
+
+    기본은 현행 Gemini. REFINE_MODEL env(예: "anthropic/claude-opus-4-8")를 주면
+    call_llm 라우팅으로 모델 스위치 — _dbg_refine_compare.py 비교 실험용.
+    """
+    model = (os.environ.get("REFINE_MODEL") or "").strip()
+    if model:
+        return call_llm(prompt, model, min_sentences=min_sentences, max_tokens=max_tokens)
+    return call_gemini(prompt, min_sentences=min_sentences, max_tokens=max_tokens)
 
 
 def detect_awkward_sentences(sentences: list[dict], ref_sents: list[dict] | None = None) -> list[dict]:
@@ -4330,8 +4417,14 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
         _pain_scene = (target_persona.get("pain_scene") or target_persona.get("pain") or "").strip()
         _desire_scene = (target_persona.get("desire_scene") or target_persona.get("desire") or "").strip()
         _identity = (target_persona.get("identity") or "").strip()
-        if _pain_scene or _desire_scene or _job:
+        _root_emotion = (target_persona.get("root_emotion") or "").strip()
+        _tone_dna = (target_persona.get("tone_dna") or "").strip()
+        if _pain_scene or _desire_scene or _job or _root_emotion:
             persona_str += "\n⭐⭐⭐ **페르소나 핵심 동기 — Schwartz/Whitman 프레임워크** ⭐⭐⭐\n"
+            if _root_emotion:
+                persona_str += f"- 🔥 **root_emotion (근원 감정 — 모든 문장이 여기서 출발)**: {_root_emotion}\n"
+            if _tone_dna:
+                persona_str += f"- 🎙 **tone_dna (이 감정이 만드는 어투)**: {_tone_dna}\n"
             if _job:
                 persona_str += f"- **JTBD job_statement**: {_job}\n"
             if _lf8:
@@ -4344,6 +4437,14 @@ def _build_section_writer_prompt(section: dict, product_name: str, target_person
                 persona_str += f"- **identity**: {_identity}\n"
             persona_str += """
 ### ⚠️ 적용 룰 (Hook · Intro · 페르소나성 chunk에 강제)
+0. ⭐ **어투는 root_emotion의 부산물 — tone_dna대로 어미·리듬을 빚을 것** (다른 룰보다 우선):
+   - 위 root_emotion을 *직접 단어로 박지 말고* (감정 이름 "불안/외로움" 노출 ❌), 그 감정이 **새어나오는 문장**으로 쓸 것.
+   - tone_dna에 적힌 대로 **문장 길이·종결어미·리듬**을 맞춰라:
+     · "짧게 끊어치고 단정 회피" → 문장 짧게, "~인 것 같아 / ~더라고" 류 종결
+     · "늘어지고 말끝 흐림" → 문장 길게, "그냥 / 혼자" 삽입, "...했는데" 흐림
+     · "짧고 경쾌·반말" → 단문 + 느낌표 + 반말체
+   - 같은 내용이라도 **tone_dna가 다르면 어미·리듬이 달라져야** 한다 (label만 바꾸는 게 아니라 호흡 자체).
+   - tone_hint(라벨)는 보조일 뿐, 충돌하면 **tone_dna가 우선**.
 1. **시각적 명사·동작 화이트리스트** — pain_scene / desire_scene / identity 단어를 **직접** 차용
    - ❌ 추상명사 금지: "편함 / 만족 / 행복 / 자신감 / 즐거움" — 이런 단어 1회 등장 시 무효
    - ✅ scene 단어 사용: 위 pain_scene/desire_scene에 박힌 명사·동사를 어절·음절 룰 안에서 그대로
@@ -5790,7 +5891,7 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
         try:
             _t_pp = _t.time()
             pre_prompt = _build_pre_planner_prompt(usps, section_chunks, locked_mappings=locked_mappings)
-            pre_result = call_gemini(pre_prompt, model="gemini-3-flash-preview", max_tokens=8192, response_schema=PRE_PLANNER_SCHEMA)
+            pre_result = call_gemini(pre_prompt, model="gemini-3.5-flash", max_tokens=8192, response_schema=PRE_PLANNER_SCHEMA)
             logger.info("[multistep timing] pre-planner Flash: %.1fs", _t.time() - _t_pp)
             if isinstance(pre_result, list) and pre_result:
                 pre_result = pre_result[0]
@@ -6058,6 +6159,10 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
     if writer_model != MODEL:
         logger.info("[writer] using model: %s (cache=%s)", writer_model, "Y" if writer_model.startswith("anthropic/") else "N")
 
+    # 섹션 writer 실패 기록 — 빈 문장으로 조용히 넘어가지 않고 결과에 표면화
+    # (draft["_failed_sections"]). 프론트가 "○○ 섹션 생성 실패"를 사용자에게 표시.
+    writer_failures: list[dict] = []
+
     def _write_section(sec, prev_chunks=None):
         prompt = _build_section_writer_prompt(
             sec, product_name, target_persona, usps, pain, desire,
@@ -6148,6 +6253,10 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
             return sec["name"], sentences
         except Exception as e:
             logger.warning("section %s failed: %s", sec.get("name"), e)
+            writer_failures.append({
+                "section": sec.get("_orig_section") or sec.get("name") or "?",
+                "error": str(e)[:200],
+            })
             return sec["name"], []
 
     # 큰 섹션(>10 specs) chunk로 분할 → 병렬 Writer 처리량 ↑, MAX_TOKENS 회피
@@ -6267,6 +6376,8 @@ def _generate_multistep(product_name: str, pain: str, desire: str, usps: list[di
         "sentences": final_sents,
         "_plan": plan,
         "_usp_mapping": chunk_mapping_full,
+        # 섹션 writer 실패 내역 — 빈 리스트면 전 섹션 정상 (프론트 경고용)
+        "_failed_sections": writer_failures,
     }
 
     # 4. CRITIC + 5. REFINER — 제거됨 (별도 /api/script/refine 2차 단계가 동일 역할)
